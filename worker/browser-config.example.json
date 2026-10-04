@@ -1,21 +1,34 @@
 {
   "selectors_verified_on": null,
   "neurobro": {
-    "url": "https://REPLACE_WITH_VERIFIED_NEUROBRO_CHAT_URL",
+    "url": "https://app.neurobro.ai/",
     "composer": "",
     "send": "",
     "assistant_messages": "",
     "completed_response": "",
     "upload": "",
     "attachment_ready": "",
-    "new_chat": ""
+    "new_chat": "",
+    "response_text": "",
+    "user_messages": "",
+    "authenticated": "",
+    "login_required": "",
+    "captcha": "",
+    "loading": "",
+    "streaming": ""
   },
   "binance": {
     "symbol": "",
     "timeframe": "",
     "chart": "",
     "chart_ready": "",
-    "timeframe_buttons": {"1h": "", "15m": ""},
-    "timeframe_labels": {"1h": "", "15m": ""}
+    "timeframe_buttons": {
+      "1h": "",
+      "15m": ""
+    },
+    "timeframe_labels": {
+      "1h": "",
+      "15m": ""
+    }
   }
 }

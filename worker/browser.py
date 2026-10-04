@@ -16,27 +16,29 @@ class BrowserAdapter:
     source='BROWSER_DRY_RUN'
     connected=False
     def __init__(self,config,profile,artifacts):
-        from playwright.sync_api import sync_playwright
+        from .screening import private_profile
         self.config=config
+        self.profile=private_profile(profile)
         self.artifacts=Path(artifacts);self.artifacts.mkdir(parents=True,exist_ok=True)
-        self.neuro=config['neurobro'];self.binance=config['binance']
-        url=self.neuro['url']
-        if urlparse(url).scheme!='https': raise Review('NEEDS_REVIEW: URL Neurobro HTTPS wajib')
-        required={'composer','send','assistant_messages','completed_response','upload','attachment_ready'}
-        if not required<=self.neuro.keys() or not all(self.neuro[k] for k in required):
-            raise Review('NEEDS_REVIEW: selector Neurobro belum diverifikasi')
-        required={'symbol','timeframe','chart','timeframe_buttons','chart_ready'}
-        if not required<=self.binance.keys(): raise Review('NEEDS_REVIEW: selector chart belum diverifikasi')
-        if not config.get('selectors_verified_on'): raise Review('NEEDS_REVIEW: audit selector belum dilakukan')
-        self.pw=sync_playwright().start()
+        self.neuro=config.get('neurobro',{});self.binance=config.get('binance',{})
+        self.progress=lambda state,message: None
+    def open_screening(self):
+        from .screening import ChatScreening
+        self.progress('OPENING_NEUROBRO','Membuka chatbot resmi pada profil browser privat')
+        ChatScreening.validate(self.neuro)
+        if not self.config.get('selectors_verified_on'):
+            raise Review('NEEDS_REVIEW: audit selector belum dilakukan')
         try:
-            self.context=self.pw.chromium.launch_persistent_context(str(profile),headless=False,accept_downloads=False)
+            from playwright.sync_api import sync_playwright
+            self.pw=sync_playwright().start()
+            self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False)
+            self.context.set_default_timeout(5000)
+            # Reuse the private session, not a second browser's exported cookies.
             self.chat=self.context.new_page();self.market=self.context.new_page()
-            self.chat.goto(url,wait_until='domcontentloaded',timeout=60000)
-            self.chat.locator(self.neuro['composer']).wait_for(state='visible',timeout=30000)
-            self.connected=True
-        except BaseException:
-            self.close();raise Review('NEEDS_REVIEW: buka worker dan login Neurobro secara lokal')
+            self.chat.goto(self.neuro['url'],wait_until='domcontentloaded',timeout=60000)
+        except Exception:
+            self.close()
+            raise Review('NEEDS_REVIEW: browser/navigasi Neurobro gagal; periksa instalasi dan koneksi lokal') from None
     def close(self):
         self.connected=False
         if hasattr(self,'context'): self.context.close()
@@ -67,7 +69,13 @@ class BrowserAdapter:
         text=response.inner_text().strip()
         if not text: raise Review('NEEDS_REVIEW: respons kosong')
         return text
-    def screen(self,prompt): return self._ask(prompt)
+    def screen(self,prompt):
+        from .screening import ChatScreening, futures_catalog, parse_screening
+        self.open_screening()
+        answer=ChatScreening(self.chat,self.neuro,self.progress).run(prompt)
+        selected=parse_screening(answer,futures_catalog())
+        self.connected=True
+        return '\n'.join(selected)
     def capture(self,symbol,timeframe):
         import re
         if not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol): raise Review('NEEDS_REVIEW: symbol tidak valid')

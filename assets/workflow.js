@@ -2,7 +2,7 @@
 (() => {
  'use strict';
  let snapshot=null, endpoint='', token='', timer=null, busy=false, connected=false, message='Worker belum terhubung. Angka akun belum tersedia.';
- const allowedStates=new Set(['IDLE','SCREENING_NEUROBRO','COINS_SELECTED','CAPTURE_1H','CAPTURE_15M','NEUROBRO_ANALYSIS','SIGNAL_RECEIVED','RISK_CHECK','BINANCE_SETUP','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','ERROR']);
+ const allowedStates=new Set(['IDLE','SCREENING_NEUROBRO','OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE','COINS_SELECTED','CAPTURE_1H','CAPTURE_15M','NEUROBRO_ANALYSIS','SIGNAL_RECEIVED','RISK_CHECK','BINANCE_SETUP','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','ERROR']);
  const panel=document.getElementById('infoPanel'), content=document.getElementById('panelContent'),title=document.getElementById('panelTitle');
  const button=document.createElement('button');button.id='workflowMenu';button.className='menu-item';button.textContent='◇ Workflow DRY RUN';
  document.getElementById('menuDrawer').insertBefore(button,document.querySelector('.drawer-note'));

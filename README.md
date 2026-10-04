@@ -17,7 +17,7 @@ order Binance di frontend.
 | Batas harian | Dua slot paper per hari Asia/Bangkok; transaksi SQLite atomik, tahan restart |
 | Monitoring | PaperMonitor menerima event harga; demo memakai stream FIXTURE eksplisit |
 | Laporan/dashboard | Import/export snapshot JSON, atau polling worker privat dengan token baca |
-| Integrasi situs asli | Kode adapter tersedia, belum dikonfigurasi/login/diverifikasi pada Neurobro/Binance |
+| Integrasi situs asli | Screening browser + guard siap diuji; situs Neurobro menampilkan CAPTCHA pada pemeriksaan 4 Oktober 2026, session/selector login belum diverifikasi |
 | Live trading | **Tidak diimplementasikan dan tidak dapat diaktifkan melalui setting** |
 | Hosting worker / berjalan 24 jam | Belum dipasang; CLI berjalan satu siklus per pemanggilan |
 
@@ -32,6 +32,7 @@ atau pengubahan margin mode pada Binance selama demo/browser-dry-run.
 - `worker/core.py`: parser, risk, preflight, SQLite ledger, laporan.
 - `worker/workflow.py`: koordinator status, verifikasi capture, adapter fixture.
 - `worker/browser.py`: adapter Playwright untuk chat Neurobro dan chart Binance.
+- `worker/screening.py`: kesiapan login/chat, single-send, completion guard, parser dua kontrak dinamis.
 - `worker/monitor.py`: fill LIMIT dan penutupan TP/SL **paper** dari event harga.
 - `worker/__main__.py`: CLI dan endpoint snapshot lokal.
 - `tests/test_worker.py`: unit dan integration tests termasuk race condition.
@@ -64,14 +65,18 @@ Asia/Bangkok; riwayat tidak dihapus. PNL paper dibukukan pada hari penutupan.
 Fees, funding, liquidation dan eksekusi intrabar tidak dimodelkan; gap pada SL bisa
 membuat kerugian aktual/simulasi lebih dari risiko harga rencana.
 
-Parser sengaja menolak jawaban naratif/ambigu: screening menerima dua baris symbol
-USDT eksplisit (boleh `1.` / `2.`); signal menerima field berlabel yang jelas atau
+Parser sengaja menolak jawaban ambigu: fixture screening tetap menerima dua baris
+symbol USDT eksplisit. Browser screening menerima dua pilihan eksplisit bernomor,
+bullet, heading Markdown, atau dua baris pair. Ticker dicocokkan ke katalog kontrak
+USDT perpetual aktif terbaru, tanpa fuzzy matching nama atau tebakan multiplier.
+Narasi alasan diperbolehkan, tetapi coin tambahan, penolakan, contoh, atau alternatif
+ditolak. Format daftar yang tidak dikenali berhenti NEEDS_REVIEW. Signal menerima field berlabel yang jelas atau
 satu JSON object. Ukuran posisi harus memiliki unit base coin atau USDT. Bila
 format chatbot berbeda, status NEEDS_REVIEW diperlukan; prompt asli tidak diubah
 agar parser lebih mudah. Tidak ada tebakan angka, pemilihan TP alternatif, atau
 penghapusan keterangan ambigu secara diam-diam.
 
-## Menghubungkan browser privat (tahap berikutnya)
+## Menghubungkan browser privat
 
 1. Siapkan mesin worker privat dengan Python, Chromium, dan desktop/display untuk
    login interaktif. Install `worker/requirements.txt`, lalu `python -m playwright install chromium`.
@@ -118,3 +123,88 @@ Data impor dapat dipalsukan dan hanya untuk display, tidak pernah menjadi input
 order. Live activation memerlukan implementasi dan audit tersendiri, pengujian situs
 asli end-to-end, rekonsiliasi akun/pending order, perlindungan posisi, dan instruksi
 pengguna yang eksplisit.
+
+## Screening Neurobro saja (tanpa membuka Binance)
+
+```sh
+python -m worker screen-neurobro --config /path/private/browser.json
+```
+
+Perintah ini berhenti pada COINS_SELECTED atau ERROR, tanpa capture, analisis setup,
+reserve slot, maupun order paper/live. `browser-dry-run` memakai screening yang sama
+lalu melanjutkan alur lama hanya jika screening lolos. Prompt tetap diambil dari
+`worker/prompts.py`, tidak ditambah petunjuk format, leverage, atau instruksi lain.
+Tidak ada retry pengiriman otomatis ketika hasil klik kirim tidak pasti.
+
+Profil Chromium persisten berada di `browser/browser-profile` di dalam data-dir
+privat, di luar repository, dengan direktori mode 0700 dan umask CLI 077. Worker
+menolak profil/config di repository. Profil menyimpan sesi **lokal saja**, bukan di
+GitHub Pages. Jangan gunakan profil browser pribadi sehari-hari atau direktori
+public web root sebagai data-dir. Untuk login manual pada profil worker yang sama,
+tutup worker terlebih dahulu, lalu pada mesin privat ber-desktop:
+
+```sh
+umask 077
+mkdir -p "$HOME/.local/state/harun-office/browser/browser-profile"
+chmod 700 "$HOME/.local/state/harun-office/browser/browser-profile"
+python -m playwright open --user-data-dir "$HOME/.local/state/harun-office/browser/browser-profile" https://app.neurobro.ai/
+```
+
+Login/2FA dan CAPTCHA hanya ditangani pengguna secara interaktif sesuai mekanisme
+situs. Tutup browser manual sebelum menjalankan worker. Tidak ada ekstraksi cookie,
+penyimpanan password, pemecah CAPTCHA, stealth plugin, atau rotasi proxy. Session
+browser pemeriksaan cloud berbeda dengan profil worker; tidak disalin di antara keduanya.
+
+Konfigurasi selector harus diaudit pada UI login aktual; isian kosong sengaja
+menghentikan worker. `selectors_verified_on` mencatat tanggal audit, bukan bukti
+otomatis bahwa selector masih benar. Makna field screening:
+
+| Field | Bukti yang wajib ditunjuk selector |
+|---|---|
+| `authenticated` | Indikator sesi akun terautentikasi, bukan sekadar textarea terlihat |
+| `login_required`, `captcha`, `loading` | Indikator login wajib, tantangan keamanan, dan halaman belum siap |
+| `composer`, `send`, `new_chat` | Satu editor, tombol kirim, dan kontrol percakapan baru |
+| `user_messages` | Isi teks pesan pengguna, tanpa label/tombol tambahan |
+| `assistant_messages` | Container pesan asisten pada percakapan aktif |
+| `response_text` | Isi jawaban relatif terhadap container, tanpa tombol/sumber UI |
+| `completed_response` | Penanda final di dalam pesan yang baru selesai, bukan indikator typing |
+| `streaming` | Indikator respons masih ditulis pada percakapan aktif |
+
+Driver memastikan chat baru kosong, prompt identik sebelum kirim dan pada echo
+pesan pengguna, tepat satu jawaban baru, penanda selesai eksplisit, tidak streaming,
+dan teks stabil satu detik. Stabilitas teks saja tidak dianggap selesai. Guard login,
+CAPTCHA termasuk iframe Cloudflare yang terlihat, dan origin diperiksa selama polling.
+Timeout kesiapan 90 detik; respons 180 detik. Perubahan DOM, jawaban belum selesai,
+metadata kontrak gagal, atau hasil selain dua pilihan menghentikan alur.
+
+Log/snapshot menampilkan OPENING_NEUROBRO → WAITING_NEUROBRO → SCREENING_SENT →
+WAITING_RESPONSE → COINS_SELECTED, atau ERROR dengan alasan NEEDS_LOGIN/NEEDS_REVIEW.
+Snapshot progres tidak memuat respons mentah, URL session, cookie, atau trace browser.
+Status dashboard membutuhkan impor snapshot terbaru atau koneksi server baca yang
+sudah tersedia; worker tidak otomatis di-host oleh GitHub Pages.
+
+### Verifikasi perubahan screening
+
+```sh
+python -m unittest discover -s tests -v
+HARUN_BROWSER_TESTS=1 python -m unittest discover -s tests -v
+```
+
+Perintah pertama menjalankan 23 tes Python dan melewati 12 tes browser opsional.
+Perintah kedua menjalankan seluruh **35 tes** setelah Playwright/Chromium terpasang:
+15 tes lama tetap utuh, 8 tes parser/integrasi/keamanan profil, dan 12 tes Chromium
+pada UI mock offline. Semua request UI mock dicegat lokal, tanpa session atau pesan
+ke layanan asli. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` hanya opsi executable untuk tes.
+
+Hasil pengembangan: 35/35 lolos, serta smoke test dashboard ukuran iPhone (7 avatar,
+6 menu, impor laporan, penolakan live snapshot, tanpa error JavaScript). Desain
+`index.html`, CSS, prompt literal, Risk Manager, batas harian, dan monitor tidak diubah;
+`core.py` hanya mendapat nama status baru.
+
+**Batas bukti:** situs resmi Neurobro berhasil dibuka sampai halaman aplikasi,
+tetapi menampilkan CAPTCHA Cloudflare “Verifikasi bahwa Anda adalah manusia”.
+Tidak ada prompt yang dikirim ke Neurobro asli. Login, selector UI terautentikasi,
+completion marker layanan asli, dan parsing respons nyata **belum terverifikasi**.
+Konfigurasi contoh tetap belum siap jalan sampai audit selector dan login privat
+selesai. Tes Chromium offline bukan klaim screening Neurobro produksi berhasil.
+Binance tetap DRY RUN dan tidak menerima order nyata.

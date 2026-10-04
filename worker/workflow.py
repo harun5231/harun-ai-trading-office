@@ -30,8 +30,11 @@ AGENT={'SCREENING_NEUROBRO':'Neurobro','COINS_SELECTED':'Market Analyst','CAPTUR
 'RISK_CHECK':'Risk Manager','BINANCE_SETUP':'Trading Agent','ORDER_READY':'Trading Agent',
 'POSITION_OPEN':'Position Monitor','MONITORING':'Position Monitor','CLOSED':'Trade Reviewer',
 'IDLE':'Coordinator','ERROR':'Risk Manager'}
+AGENT.update({state:'Neurobro' for state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE')})
 ALLOWED={
- 'IDLE':{'SCREENING_NEUROBRO','MONITORING'},'SCREENING_NEUROBRO':{'COINS_SELECTED'},
+ 'IDLE':{'SCREENING_NEUROBRO','MONITORING'},'SCREENING_NEUROBRO':{'COINS_SELECTED','OPENING_NEUROBRO'},
+ 'OPENING_NEUROBRO':{'WAITING_NEUROBRO'},'WAITING_NEUROBRO':{'SCREENING_SENT'},
+ 'SCREENING_SENT':{'WAITING_RESPONSE'},'WAITING_RESPONSE':{'COINS_SELECTED'},
  'COINS_SELECTED':{'CAPTURE_1H'},'CAPTURE_1H':{'CAPTURE_15M'},
  'CAPTURE_15M':{'CAPTURE_1H','NEUROBRO_ANALYSIS'},'NEUROBRO_ANALYSIS':{'SIGNAL_RECEIVED'},
  'SIGNAL_RECEIVED':{'RISK_CHECK'},'RISK_CHECK':{'BINANCE_SETUP'},'BINANCE_SETUP':{'ORDER_READY'},
@@ -43,6 +46,7 @@ class Workflow:
     def __init__(self,ledger,adapter,snapshot_path):
         self.ledger,self.adapter,self.output=ledger,adapter,Path(snapshot_path)
         self.state='IDLE'
+        if hasattr(adapter,'progress'): adapter.progress=self.go
         self.ledger.event('IDLE','Coordinator','Worker DRY RUN siap; '+adapter.source)
     def export(self):
         data=self.ledger.snapshot(self.adapter.source,getattr(self.adapter,'connected',False))
@@ -52,12 +56,13 @@ class Workflow:
     def go(self,state,message):
         if state!='ERROR' and state not in ALLOWED.get(self.state,set()): raise Review('NEEDS_REVIEW: transisi state tidak valid')
         self.state=state;self.ledger.event(state,AGENT[state],message);self.export()
-    def run(self):
+    def run(self,screening_only=False):
         try:
             if self.ledger.count()>=2: raise Locked('LOCKED: batas harian tercapai')
             self.go('SCREENING_NEUROBRO','Mengirim prompt screening persis; '+self.adapter.source)
             selected=coins(self.adapter.screen(SCREENING))
             self.go('COINS_SELECTED',', '.join(selected))
+            if screening_only: return self.export()
             captures={}
             for symbol in selected:
                 captures[symbol]=[]
