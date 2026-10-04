@@ -94,6 +94,7 @@ class SessionController:
         self.mu=threading.Lock();self.jobs=queue.Queue(maxsize=1)
         self.busy=False;self.state='DISCONNECTED';self.checked=0;self.ever_connected=False
         self.error=None;self.desktop=False
+        self.heartbeat=time.monotonic();self.browser_health='IDLE';self.persistence_ok=False
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
     def snapshot(self):
         with self.mu:
@@ -112,17 +113,41 @@ class SessionController:
             self.jobs.put_nowait(action)
         return True
     def run(self):
+        if os.environ.get('OFFICE_MANAGED')=='1':
+            try:
+                # Offline runtime probe: no Neurobro navigation or authentication retry.
+                from playwright.sync_api import sync_playwright
+                with sync_playwright() as pw:
+                    browser=pw.chromium.launch(headless=True)
+                    page=browser.new_page();page.evaluate('1');browser.close()
+            except Exception:
+                self.browser_health='ERROR'
+                return
         while True:
-            action=self.jobs.get()
+            self.heartbeat=time.monotonic()
+            from .health import persistent_probe
+            directory=getattr(self.browser,'directory',None)
+            self.persistence_ok=persistent_probe(directory) if directory is not None else True
+            try:action=self.jobs.get(timeout=5)
+            except queue.Empty:
+                try:
+                    if self.browser.context is not None:
+                        self.browser.page.evaluate('1')
+                        self.browser_health='ALIVE'
+                    else:self.browser_health='IDLE'
+                except Exception:self.browser_health='ERROR'
+                continue
             if action is None:
                 self.browser.close();return
             try:
                 self.browser.open()
+                self.browser_health='ALIVE'
                 if action=='check':self.browser.refresh()
                 state=self.browser.inspect()
                 # Login leaves a real headed browser for remote takeover. Check commits
                 # a validated session to disk and frees the existing CLI's process lock.
-                if action=='check' and state=='CONNECTED':self.browser.close()
+                if action=='check' and state=='CONNECTED':
+                    self.browser.close();self.browser_health='IDLE'
                 with self.mu:
                     if state=='LOGIN_REQUIRED' and self.ever_connected:state='SESSION_EXPIRED'
                     self.ever_connected |= state=='CONNECTED'
@@ -133,6 +158,7 @@ class SessionController:
                 except Exception:pass
                 with self.mu:
                     self.state='DISCONNECTED';self.desktop=False;self.checked=time.time()
+                    self.browser_health='IDLE' if str(exc)=='WORKER_BUSY' else 'ERROR'
                     self.error='WORKER_BUSY' if str(exc)=='WORKER_BUSY' else 'BROWSER_OR_CONFIG_ERROR'
             finally:
                 with self.mu:self.busy=False
@@ -167,6 +193,9 @@ def handler(controller, snapshot_path, read_token, control_token, dashboard_orig
             self.reply(200)
         def do_GET(self):
             if not self.authorized():return self.reply(403)
+            if self.path=='/health':
+                from .health import report
+                return self.reply(200,report(controller))
             if self.path=='/neurobro/status':return self.reply(200,controller.snapshot())
             if self.path=='/snapshot':
                 try:return self.reply(200,json.loads(Path(snapshot_path).read_text()))
@@ -190,6 +219,7 @@ def main():
     p.add_argument('--data-dir',default=str(Path.home()/'.local/state/harun-office'))
     p.add_argument('--config',required=True)
     p.add_argument('--port',type=int,default=8787)
+    p.add_argument('--host',choices=['127.0.0.1','0.0.0.0'],default='127.0.0.1')
     a=p.parse_args()
     repo=Path(__file__).resolve().parent.parent;config=Path(a.config).expanduser().resolve()
     if config==repo or repo in config.parents:raise SystemExit('Config harus di luar repository')
@@ -201,10 +231,13 @@ def main():
     origin=os.environ['OFFICE_WORKER_ORIGIN']
     controller=SessionController(SessionBrowser(directory,json.loads(config.read_text())),origin)
     try:
-        server=ThreadingHTTPServer(('127.0.0.1',a.port),handler(controller,directory/'snapshot.json',
+        server=ThreadingHTTPServer((a.host,a.port),handler(controller,directory/'snapshot.json',
             os.environ['OFFICE_READ_TOKEN'],os.environ['OFFICE_CONTROL_TOKEN'],
             os.environ.get('OFFICE_DASHBOARD_ORIGIN','https://harun5231.github.io')))
+        import signal
+        signal.signal(signal.SIGTERM,lambda *_:threading.Thread(target=server.shutdown,daemon=True).start())
         server.serve_forever()
+        server.server_close()
     finally:controller.close();service_lock.close()
 
 if __name__=='__main__':main()

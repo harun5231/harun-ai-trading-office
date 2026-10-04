@@ -28,3 +28,8 @@ Xauthority
 session-service.lock
 session-state.json
 private-config/
+# Deployment runtime files; .env.example intentionally remains public.
+ACCESS.txt
+secrets/
+*.secret
+runner-attempts/

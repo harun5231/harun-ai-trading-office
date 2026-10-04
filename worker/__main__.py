@@ -17,6 +17,9 @@ def private_directory(value):
 
 
 def main():
+    import signal
+    def stop(*args):raise SystemExit(143)
+    signal.signal(signal.SIGTERM,stop)
     os.umask(0o077)
     p=argparse.ArgumentParser(description='DRY RUN ONLY; tidak ada mode live')
     p.add_argument('command',choices=['demo','browser-dry-run','screen-neurobro','serve'])

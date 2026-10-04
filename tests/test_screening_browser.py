@@ -213,4 +213,26 @@ class BrowserScreeningTests(unittest.TestCase):
         self.assertEqual(self.page.evaluate('localStorage.length'),0)
         self.assertFalse(any('token=' in url for _,url in calls))
 
+    def test_dashboard_worker_online_and_offline_from_health(self):
+        import json
+        from pathlib import Path
+        self.page.set_content('<button id=menuToggle></button><div id=menuDrawer><div class=drawer-note></div></div><div id=infoPanel><h2 id=panelTitle></h2><div id=panelContent></div><button id=panelClose></button></div><button id=workflowMenu></button>')
+        failing={'value':False}
+        def api(route):
+            headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Authorization','Access-Control-Allow-Methods':'GET, POST'}
+            if route.request.method=='OPTIONS':route.fulfill(status=204,headers=headers);return
+            if failing['value']:route.fulfill(status=503,headers=headers);return
+            data={'mode':'DRY_RUN','live_enabled':False}
+            if route.request.url.endswith('/health'):data.update(status='ONLINE',components={'worker':'DISABLED'})
+            else:data.update(status='LOGIN_REQUIRED',busy=False,stale=False,takeover_url=None,checked_at=None,error=None)
+            route.fulfill(status=200,headers=headers,content_type='application/json',body=json.dumps(data))
+        self.page.route('https://worker.test/**',api)
+        self.page.add_script_tag(path=str(Path('assets/neurobro.js').resolve()))
+        self.page.click('#neurobroMenu');self.page.fill('#nbOrigin','https://worker.test');self.page.fill('#nbToken','t'*40);self.page.click('#nbConnect')
+        self.page.wait_for_function("document.querySelector('#nbWorker').textContent.includes('ONLINE')")
+        self.assertEqual(self.page.locator('#nbStatus').inner_text(),'LOGIN REQUIRED')
+        failing['value']=True
+        self.page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        self.page.wait_for_function("document.querySelector('#nbWorker').textContent.includes('OFFLINE')")
+
 if __name__=='__main__': unittest.main()

@@ -1,0 +1,84 @@
+name: harun-office
+services:
+  worker:
+    build: .
+    hostname: harun-worker
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 90s
+    shm_size: 1gb
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+      - /run/office:size=16m,mode=0700
+      - /home/office:size=32m,uid=10001,gid=10001,mode=0700
+    environment:
+      OFFICE_WORKER_ORIGIN: https://${OFFICE_WORKER_HOST:?Run setup first}
+      OFFICE_DASHBOARD_ORIGIN: ${OFFICE_DASHBOARD_ORIGIN:-https://harun5231.github.io}
+      OFFICE_AUTO_DRY_RUN: ${OFFICE_AUTO_DRY_RUN:-false}
+      OFFICE_RUN_AT: ${OFFICE_RUN_AT:-08:00}
+      OFFICE_MANAGED: "1"
+      OFFICE_DATA_DIR: /data
+      OFFICE_RUNTIME_DIR: /run/office
+      OFFICE_CONFIG: /private/browser.json
+      DISPLAY: :99
+      XAUTHORITY: /run/office/Xauthority
+    secrets: [read_token, control_token]
+    volumes:
+      - worker_data:/data
+      - type: bind
+        source: ${OFFICE_PRIVATE_DIR:?Run setup first}/config
+        target: /private
+        read_only: true
+    networks: [office]
+    healthcheck:
+      test: [CMD, gosu, office, python, -m, worker.health, --check]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+  proxy:
+    image: caddy:2.10.2-alpine
+    restart: unless-stopped
+    depends_on:
+      worker: {condition: service_started}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    environment:
+      OFFICE_WORKER_HOST: ${OFFICE_WORKER_HOST:?Run setup first}
+      OFFICE_WORKER_ORIGIN: https://${OFFICE_WORKER_HOST}
+      OFFICE_DESKTOP_USER: ${OFFICE_DESKTOP_USER:-harun}
+    secrets: [desktop_hash]
+    entrypoint: [/bin/sh, /etc/caddy/start.sh]
+    volumes:
+      - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - ./deploy/proxy-start.sh:/etc/caddy/start.sh:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [office]
+    healthcheck:
+      test: [CMD, wget, -q, -O, /dev/null, http://127.0.0.1:2019/config/]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+networks:
+  office: {}
+volumes:
+  worker_data: {}
+  caddy_data: {}
+  caddy_config: {}
+secrets:
+  read_token:
+    file: ${OFFICE_PRIVATE_DIR}/secrets/read_token
+  control_token:
+    file: ${OFFICE_PRIVATE_DIR}/secrets/control_token
+  desktop_hash:
+    file: ${OFFICE_PRIVATE_DIR}/secrets/desktop_hash

@@ -271,3 +271,19 @@ Disediakan launcher desktop Linux/noVNC dan contoh reverse proxy HTTPS terlindun
 Server, domain, kredensial akses desktop, selector login dan sesi Neurobro nyata
 belum tersedia/deploy otomatis. Pengujian revisi: **59 tes lolos**, termasuk semua
 43 tes lama dan 16 tes baru; hasil offline tidak dinyatakan sebagai login nyata.
+
+## Paket satu server Docker Compose
+
+Gunakan [panduan pemasangan dari iPhone](deploy/DOCKER.md) untuk deployment baru.
+`Dockerfile`, `compose.yaml`, `.env.example` dan `deploy/setup.py` menyiapkan worker,
+runner DRY RUN, Chromium/noVNC, session API dan Caddy HTTPS. Setup hanya perlu
+sekali; profil/ledger/sertifikat memakai named volume. Konfigurasi/secret privat
+tetap di luar git. Dashboard kini menampilkan WORKER ONLINE/OFFLINE dari `/health`,
+dengan status login Neurobro yang terpisah; origin dapat diisi pada konfigurasi
+publik `assets/worker-config.json` tanpa secret.
+
+Scheduler tersedia tetapi default DISABLED sampai login dan selector nyata lulus
+audit. Tetap DRY RUN. Minimum rencana server: 2 vCPU, RAM 4 GB, SSD 40 GB,
+Ubuntu Server 24.04 LTS x86_64. Ini belum layanan 24/7 yang terpasang: lingkungan
+pengerjaan tidak menyediakan Docker daemon untuk build/boot test. 71 tes lokal
+lolos termasuk 59 tes lama; validasi Compose runtime dan login nyata perlu server.

@@ -1,0 +1,2 @@
+# Deployment manifest validation; not installed in the worker image.
+PyYAML==6.0.3
