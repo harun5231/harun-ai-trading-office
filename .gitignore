@@ -21,3 +21,10 @@ screening-pending.json
 Singleton*
 Local State
 Default/
+# Private remote desktop and authentication material
+Xauthority
+*.vnc
+*.passwd
+session-service.lock
+session-state.json
+private-config/

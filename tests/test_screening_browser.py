@@ -164,4 +164,53 @@ class BrowserScreeningTests(unittest.TestCase):
                 self.assertEqual(context.cookies('https://session-test.invalid')[0]['value'],'synthetic_only')
             finally:context.close()
 
+    def test_session_service_inspects_visible_browser_state(self):
+        import tempfile
+        from worker.session_service import SessionBrowser
+        with tempfile.TemporaryDirectory() as d:
+            browser=SessionBrowser(d,{'selectors_verified_on':'TEST ONLY','neurobro':CONFIG})
+            browser.page=self.page
+            self.assertEqual(browser.inspect(),'CONNECTED')
+            self.mutate("document.body.insertAdjacentHTML('beforeend','<div id=captcha>Verification</div>')")
+            self.assertEqual(browser.inspect(),'CLOUDFLARE_REQUIRED')
+            self.mutate("document.querySelector('#captcha').remove();document.body.insertAdjacentHTML('beforeend','<div id=login>Login</div>')")
+            self.assertEqual(browser.inspect(),'LOGIN_REQUIRED')
+            self.mutate("document.querySelector('#login').remove();document.body.insertAdjacentHTML('beforeend','<div id=loading>Loading</div>')")
+            self.assertEqual(browser.inspect(),'LOGIN_IN_PROGRESS')
+            browser.config={}
+            self.assertEqual(browser.inspect(),'DISCONNECTED')
+
+    def test_dashboard_session_controls_and_fail_closed_network(self):
+        import json
+        from pathlib import Path
+        from datetime import datetime,timezone
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.page.set_content('<button id=menuToggle></button><div id=menuDrawer><div class=drawer-note></div></div><div id=infoPanel><h2 id=panelTitle></h2><div id=panelContent></div><button id=panelClose></button></div><button id=workflowMenu></button><button data-view=office></button>')
+        calls=[];status={'value':'DISCONNECTED'}
+        def api(route):
+            calls.append((route.request.method,route.request.url))
+            if route.request.method=='OPTIONS':
+                route.fulfill(status=204,headers={'Access-Control-Allow-Origin':'*','Access-Control-Allow-Headers':'Authorization','Access-Control-Allow-Methods':'GET, POST'});return
+            self.assertEqual(route.request.headers.get('authorization'),'Bearer '+'t'*40)
+            if route.request.method=='POST':status['value']='LOGIN_IN_PROGRESS'
+            data={'status':status['value'],'mode':'DRY_RUN','live_enabled':False,'busy':False,'error':None,'stale':False,'takeover_url':None,'checked_at':datetime.now(timezone.utc).isoformat()}
+            route.fulfill(status=200,content_type='application/json',headers={'Access-Control-Allow-Origin':'*'},body=json.dumps(data))
+        self.page.route('https://worker.test/**',api)
+        self.page.add_script_tag(path=str(Path('assets/neurobro.js').resolve()))
+        self.page.click('#neurobroMenu')
+        self.assertTrue(self.page.locator('#nbLogin').is_disabled())
+        self.assertFalse(self.page.locator('#nbTakeover').is_visible())
+        self.page.fill('#nbOrigin','https://worker.test');self.page.fill('#nbToken','t'*40)
+        self.page.click('#nbConnect');self.page.wait_for_timeout(150)
+        self.assertEqual(self.page.locator('#nbToken').input_value(),'')
+        self.page.click('#nbLogin');self.page.wait_for_timeout(150)
+        self.assertIn(('POST','https://worker.test/neurobro/login'),calls)
+        self.assertNotEqual(self.page.locator('#nbStatus').inner_text(),'NEUROBRO CONNECTED')
+        self.page.click('#nbCheck');self.page.wait_for_timeout(150)
+        self.assertIn(('POST','https://worker.test/neurobro/check'),calls)
+        self.page.click('#nbDisconnect')
+        self.assertEqual(self.page.locator('#nbStatus').inner_text(),'DISCONNECTED')
+        self.assertEqual(self.page.evaluate('localStorage.length'),0)
+        self.assertFalse(any('token=' in url for _,url in calls))
+
 if __name__=='__main__': unittest.main()

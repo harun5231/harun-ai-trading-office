@@ -253,3 +253,21 @@ cloud: **PAUSED_NEEDS_LOGIN**, belum ada prompt screening terkirim dan belum ada
 coin asli diperoleh. Pengambilalihan browser cloud tidak otomatis menghubungkan sesi
 tersebut ke worker/server; keduanya profil terpisah. Konfigurasi selector worker
 setelah login masih perlu diverifikasi pada profil worker aktual.
+
+## LOGIN NEUROBRO melalui dashboard kantor
+
+Menu **NEUROBRO** kini menyediakan LOGIN NEUROBRO, CEK SESI, status hasil pemeriksaan
+worker, dan BUKA BROWSER SERVER untuk takeover manual dari iPhone. Implementasi API
+ada di `worker/session_service.py`; panel di `assets/neurobro.js`. `index.html`
+hanya ditambah pemuatan script panel, tanpa perubahan scene atau desain 3D.
+
+Worker menggunakan profil dan lock yang sama dengan screening sebelumnya. Sesi
+tersimpan privat; dashboard tidak menerima kredensial/cookie/token Neurobro. API
+memerlukan token kontrol worker tersendiri, terpisah dari token baca. Token kontrol
+sementara ini bukan token Neurobro. Login/check tidak mengirim prompt atau order.
+
+**Fitur belum aktif di GitHub Pages tanpa server:** ikuti [panduan hosting privat](deploy/README.md).
+Disediakan launcher desktop Linux/noVNC dan contoh reverse proxy HTTPS terlindungi.
+Server, domain, kredensial akses desktop, selector login dan sesi Neurobro nyata
+belum tersedia/deploy otomatis. Pengujian revisi: **59 tes lolos**, termasuk semua
+43 tes lama dan 16 tes baru; hasil offline tidak dinyatakan sebagai login nyata.
