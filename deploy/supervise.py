@@ -6,11 +6,13 @@ import subprocess
 import time
 from pathlib import Path
 from worker.health import probe_api
+from worker.desktop import geometry
 from worker.runner import atomic
 
 
 def main():
     os.umask(0o077)
+    screen_geometry=geometry()
     runtime=Path('/run/office');children=[];stopping=False
     def stop(*args):
         nonlocal stopping
@@ -20,7 +22,7 @@ def main():
         process=subprocess.Popen(args);children.append(process);return process
     try:
         subprocess.run(['xauth','-f',os.environ['XAUTHORITY'],'add',os.environ['DISPLAY'],'.',os.urandom(16).hex()],check=True,stdout=subprocess.DEVNULL)
-        spawn(['Xvfb',':99','-screen','0','1024x768x24','-nolisten','tcp','-auth',os.environ['XAUTHORITY']])
+        spawn(['Xvfb',':99','-screen','0',screen_geometry,'-nolisten','tcp','-auth',os.environ['XAUTHORITY']])
         for _ in range(40):
             if subprocess.run(['xdpyinfo'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode==0:break
             time.sleep(.25)

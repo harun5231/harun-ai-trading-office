@@ -20,11 +20,12 @@ mkdir -p "$OFFICE_DESKTOP_STATE"
 chmod 700 "$OFFICE_DESKTOP_STATE"
 export DISPLAY=:99
 export XAUTHORITY="$OFFICE_DESKTOP_STATE/Xauthority"
+screen_geometry="$(python -m worker.desktop)"
 xauth -f "$XAUTHORITY" add "$DISPLAY" . "$(openssl rand -hex 16)"
 children=''
 cleanup() { [ -z "$children" ] || kill $children 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
-Xvfb "$DISPLAY" -screen 0 1024x768x24 -nolisten tcp -auth "$XAUTHORITY" &
+Xvfb "$DISPLAY" -screen 0 "$screen_geometry" -nolisten tcp -auth "$XAUTHORITY" &
 children="$children $!"
 # Bounded readiness, not a public unauthenticated desktop.
 count=0

@@ -1,6 +1,7 @@
 """Authenticated login control only. No credential fields, prompts or trading endpoints.
 Playwright is owned by one actor thread; HTTP handlers never touch browser objects.
 """
+from .desktop import browser_options
 import fcntl
 import hmac
 import json
@@ -42,7 +43,7 @@ class SessionBrowser:
         try:
             from playwright.sync_api import sync_playwright
             self.pw=sync_playwright().start()
-            self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False)
+            self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False,**browser_options())
             self.context.set_default_timeout(3000)
             self.page=self.context.new_page()
             self.page.goto('https://app.neurobro.ai/',wait_until='domcontentloaded',timeout=45000)
@@ -102,7 +103,7 @@ class SessionController:
             return {'status':'DISCONNECTED' if stale else self.state,
                     'checked_at':datetime.fromtimestamp(self.checked,timezone.utc).isoformat() if self.checked else None,
                     'stale':stale,'busy':self.busy,'error':self.error,
-                    'takeover_url':self.origin+'/desktop/vnc.html#autoconnect=1&resize=remote&path=desktop/websockify' if self.desktop else None,
+                    'takeover_url':self.origin+'/desktop/vnc.html#autoconnect=1&resize=scale&path=desktop/websockify' if self.desktop else None,
                     'mode':'DRY_RUN','live_enabled':False}
     def submit(self, action):
         if action not in ('login','check'):raise ValueError('Unknown action')

@@ -15,7 +15,7 @@
  const menu=document.createElement('button');menu.className='menu-item';menu.id='neurobroMenu';menu.textContent='WORKER OFFLINE · DISCONNECTED';
  document.getElementById('menuDrawer').insertBefore(menu,document.querySelector('.drawer-note'));
  const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
- const takeover=()=>origin+'/desktop/vnc.html#autoconnect=1&resize=remote&path=desktop/websockify';
+ const takeover=()=>origin+'/desktop/vnc.html#autoconnect=1&resize=scale&path=desktop/websockify';
  function validate(d){
   if(!d||!states.has(d.status)||d.mode!=='DRY_RUN'||d.live_enabled!==false||typeof d.busy!=='boolean')throw Error('Status worker tidak valid.');
   if(d.takeover_url!==null&&d.takeover_url!==takeover())throw Error('Alamat pengambilalihan tidak sesuai worker.');

@@ -57,7 +57,8 @@ def main():
     os.chown(private/'config',10001,10001);os.chown(config,10001,10001)
     env=(f'OFFICE_WORKER_HOST={args.host}\nOFFICE_DASHBOARD_ORIGIN=https://harun5231.github.io\n'
          f'OFFICE_DESKTOP_USER=harun\nOFFICE_PRIVATE_DIR={private}\n'
-         'OFFICE_AUTO_DRY_RUN=false\nOFFICE_RUN_AT=08:00\n')
+         'OFFICE_AUTO_DRY_RUN=false\nOFFICE_RUN_AT=08:00\n'
+         'OFFICE_DESKTOP_WIDTH=430\nOFFICE_DESKTOP_HEIGHT=932\n')
     env_path=ROOT/'.env'
     if env_path.exists():
         existing=env_path.read_text().splitlines()

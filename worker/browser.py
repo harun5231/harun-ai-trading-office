@@ -1,6 +1,7 @@
 """Browser-only Neurobro adapter. Selectors must be verified on the signed-in UI.
 No Binance trade-form selector, account-setting change, or submit method exists here.
 """
+from .desktop import browser_options
 import hashlib
 import json
 import time
@@ -33,7 +34,7 @@ class BrowserAdapter:
         try:
             from playwright.sync_api import sync_playwright
             self.pw=sync_playwright().start()
-            self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False)
+            self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False,**browser_options())
             self.context.set_default_timeout(5000)
             # Reuse the private session, not a second browser's exported cookies.
             self.chat=self.context.new_page();self.market=self.context.new_page()

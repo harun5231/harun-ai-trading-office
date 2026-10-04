@@ -172,3 +172,30 @@ Rujukan: [Docker Compose](https://docs.docker.com/reference/compose-file/service
 [Docker secrets](https://docs.docker.com/reference/compose-file/secrets/),
 [Playwright Docker](https://playwright.dev/python/docs/docker),
 [Caddy password hashing](https://caddyserver.com/docs/command-line#caddy-hash-password).
+
+## Pembaruan tampilan portrait iPhone
+
+Desktop default sekarang **430×932**, dapat diatur melalui `OFFICE_DESKTOP_WIDTH`
+dan `OFFICE_DESKTOP_HEIGHT` pada `.env` (integer 320–4096). Compose juga memberi
+nilai default itu bila `.env` lama belum memiliki kedua variabel. Launcher Xvfb
+Docker/non-Docker menggunakan geometry yang sama. Kedua adapter Chromium memakai
+ukuran window yang sama dan `no_viewport=True`, sehingga tidak lagi memaksakan
+viewport Playwright 1280px. Ini perubahan ukuran tampilan, bukan emulasi identitas
+browser atau perubahan profil/login.
+
+Tautan noVNC memakai `resize=scale`: desktop portrait tetap, gambar menyesuaikan
+ukuran layar/rotasi iPhone di sisi noVNC. Mode ini tidak bergantung dukungan resize
+resolusi remote dari Xvfb/x11vnc. Path WebSocket tetap **desktop/websockify**. Buka
+ulang BUKA BROWSER SERVER dari dashboard yang sudah direfresh agar memakai parameter
+scaling baru; bookmark noVNC lama dapat tetap membawa `resize=remote`.
+
+Sesudah `git pull --ff-only origin main` pada checkout VPS existing, jalankan
+`sh deploy/update-portrait.sh`. Script hanya mengatur dua dimensi dalam `.env`,
+memvalidasi Compose, rebuild/recreate worker, menunggu health maksimal 240 detik,
+dan restart proxy. Volume `worker_data`, profil, ledger dan sertifikat tidak dihapus;
+config privat dan token tidak diubah. Login tetap memakai profil lama, tetapi
+Neurobro tetap dapat meminta verifikasi ulang dari sisi layanannya.
+
+Perubahan ini diuji melalui suite lokal dan pemeriksaan konfigurasi. Tidak ada
+akses ke VPS pengguna dalam sesi pengembangan ini, jadi tampilan desktop aktual
+pada VPS perlu dilihat setelah perintah update dijalankan.

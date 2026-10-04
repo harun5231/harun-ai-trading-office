@@ -287,3 +287,11 @@ audit. Tetap DRY RUN. Minimum rencana server: 2 vCPU, RAM 4 GB, SSD 40 GB,
 Ubuntu Server 24.04 LTS x86_64. Ini belum layanan 24/7 yang terpasang: lingkungan
 pengerjaan tidak menyediakan Docker daemon untuk build/boot test. 71 tes lokal
 lolos termasuk 59 tes lama; validasi Compose runtime dan login nyata perlu server.
+
+### Desktop portrait untuk iPhone
+
+Xvfb default 430×932; override melalui `OFFICE_DESKTOP_WIDTH` / `OFFICE_DESKTOP_HEIGHT`.
+Chromium mengikuti window portrait tanpa viewport lebar bawaan Playwright. noVNC
+menggunakan scaling lokal dan tetap memakai `desktop/websockify`. Untuk VPS yang
+sudah berjalan, sesudah pull gunakan `sh deploy/update-portrait.sh`; profil/volume
+existing tetap dipakai. Detail ada di [panduan Docker](deploy/DOCKER.md).

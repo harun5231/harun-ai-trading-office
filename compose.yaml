@@ -24,6 +24,8 @@ services:
       OFFICE_DATA_DIR: /data
       OFFICE_RUNTIME_DIR: /run/office
       OFFICE_CONFIG: /private/browser.json
+      OFFICE_DESKTOP_WIDTH: ${OFFICE_DESKTOP_WIDTH:-430}
+      OFFICE_DESKTOP_HEIGHT: ${OFFICE_DESKTOP_HEIGHT:-932}
       DISPLAY: :99
       XAUTHORITY: /run/office/Xauthority
     secrets: [read_token, control_token]
