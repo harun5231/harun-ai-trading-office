@@ -79,9 +79,17 @@
 <div class="activity-list"><h3>AKTIVITAS TERBARU</h3><div class="event"><time>09:50</time><div class="role">Market Analyst</div><div class="msg">Memindai BTC, ETH, SOL…</div></div><div class="event"><time>09:48</time><div class="role">Neurobro</div><div class="msg">Menganalisis setup trading…</div></div><div class="event"><time>09:45</time><div class="role">Risk Manager</div><div class="msg">Memvalidasi risiko dan ukuran posisi…</div></div><div class="event"><time>09:42</time><div class="role">Trading Agent</div><div class="msg">Menyiapkan order BTCUSDT…</div></div></div>
 </div></div>
 <div class="bottomhint">Geser untuk memutar · Cubit untuk zoom · Avatar bergerak otomatis</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const container=document.querySelector('#scene');
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x070d18);scene.fog=new THREE.Fog(0x070d18,22,52);
 const camera=new THREE.PerspectiveCamera(43,innerWidth/innerHeight,.1,100);camera.position.set(13,12,19);
