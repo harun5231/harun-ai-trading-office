@@ -2,6 +2,7 @@
 No Binance trade-form selector, account-setting change, or submit method exists here.
 """
 from .desktop import browser_options
+from .profile_owner import ProfileOwner
 import hashlib
 import json
 import time
@@ -20,6 +21,7 @@ class BrowserAdapter:
         from .screening import private_profile, PendingSend
         self.config=config
         self.profile=private_profile(profile)
+        self.owner=ProfileOwner(self.profile)
         self.pending=PendingSend(self.profile)
         self.handoff=None
         self.artifacts=Path(artifacts);self.artifacts.mkdir(parents=True,exist_ok=True)
@@ -32,6 +34,7 @@ class BrowserAdapter:
         if not self.config.get('selectors_verified_on'):
             raise Review('NEEDS_REVIEW: audit selector belum dilakukan')
         try:
+            self.owner.acquire()
             from playwright.sync_api import sync_playwright
             self.pw=sync_playwright().start()
             self.context=self.pw.chromium.launch_persistent_context(str(self.profile),headless=False,accept_downloads=False,**browser_options())
@@ -46,6 +49,9 @@ class BrowserAdapter:
         self.connected=False
         if hasattr(self,'context'): self.context.close()
         if hasattr(self,'pw'): self.pw.stop()
+        if self.owner.file is not None:
+            self.owner.wait_released()
+            self.owner.close()
     def _ask(self,prompt,attachments=None):
         c=self.chat;n=self.neuro
         count=c.locator(n['assistant_messages']).count()

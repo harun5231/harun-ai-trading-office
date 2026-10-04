@@ -199,3 +199,47 @@ Neurobro tetap dapat meminta verifikasi ulang dari sisi layanannya.
 Perubahan ini diuji melalui suite lokal dan pemeriksaan konfigurasi. Tidak ada
 akses ke VPS pengguna dalam sesi pengembangan ini, jadi tampilan desktop aktual
 pada VPS perlu dilihat setelah perintah update dijalankan.
+
+## Login manual tanpa Playwright
+
+LOGIN NEUROBRO sekarang menjalankan Chromium headed sebagai proses biasa pada
+Xvfb/noVNC. Tidak ada Playwright, CDP, remote-debugging port, penggantian user agent,
+stealth plugin, ekspor cookie, atau interaksi otomatis dengan challenge dalam
+proses login tersebut. Binary Chromium lengkap menggunakan versi yang sama dengan
+image worker. Konfigurasi sandbox container mengikuti browser worker yang sudah
+ada (`--no-sandbox` hanya pada OFFICE_MANAGED=1); container tetap non-root,
+read-only dan memakai pembatasan capability yang ada. Ini bukan solusi bypass
+Cloudflare dan tidak menjamin Neurobro menerima browser/IP VPS.
+
+1. Tekan LOGIN NEUROBRO lalu BUKA BROWSER SERVER.
+2. Masukkan kredensial hanya langsung di halaman Neurobro melalui noVNC.
+3. Setelah selesai, kembali ke kantor dan tekan SELESAI LOGIN / CEK SESI.
+4. Worker mengirim SIGTERM untuk penutupan Chromium yang bersih, menunggu proses
+   keluar serta singleton profile dilepas, baru membuka profil yang sama dengan
+   Playwright untuk pemeriksaan tanpa prompt. Browser pemeriksaan selalu ditutup.
+5. CONNECTED hanya berasal dari selector authenticated/composer yang terverifikasi.
+   LOGIN REQUIRED atau CLOUDFLARE REQUIRED berarti perlu tindakan manual; tekan
+   LOGIN kembali jika ingin membuka browser biasa. Tidak ada retry verifikasi.
+
+Profil tetap `/data/browser/browser-profile` pada volume `worker_data` yang sama.
+`worker.lock` dan `.office-owner.lock` mencegah akses bersamaan, termasuk adapter
+screening langsung. Proses penjaga mewarisi lock sampai Chromium berhenti walaupun
+API terhenti. Pemeriksaan yang tidak dapat memastikan browser telah berhenti
+berakhir error tanpa membuka Playwright. Singleton yang meragukan tidak dihapus
+otomatis. Restart normal menghentikan browser sebelum Xvfb. Reboot/container
+rebuild tidak menghapus profil, tetapi keabsahan sesi tetap ditentukan Neurobro.
+
+Update dari folder checkout VPS yang sudah ada:
+
+```sh
+git pull --ff-only origin main
+docker compose config --quiet
+docker compose up -d --build --no-deps --force-recreate --wait --wait-timeout 240 worker
+docker compose restart proxy
+docker compose ps
+```
+
+Jangan menjalankan `down -v` atau menghapus volume/profile. Pembaruan ini tidak
+mengubah `.env`, resolusi portrait 430×932, URL noVNC, prompt, risk maupun DRY RUN.
+Tes proses memakai executable lokal sintetis dan browser offline, bukan login
+Neurobro nyata. Login melalui noVNC dan penerimaan Cloudflare perlu diuji di VPS.

@@ -2,6 +2,8 @@
 Playwright is owned by one actor thread; HTTP handlers never touch browser objects.
 """
 from .desktop import browser_options
+from .profile_owner import ProfileOwner
+from .manual_browser import ManualBrowser
 import fcntl
 import hmac
 import json
@@ -33,13 +35,32 @@ class SessionBrowser:
         self.directory=private_profile(directory)
         self.profile=private_profile(self.directory/'browser-profile')
         self.config=config;self.page=None;self.context=None;self.pw=None;self.lock=None
-    def open(self):
-        if self.context is not None:return
+        self.owner=ProfileOwner(self.profile);self.manual=ManualBrowser(self.profile)
+    def acquire(self):
+        if self.lock is not None:return
         self.lock=(self.directory/'worker.lock').open('a')
-        try:fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:
+        try:
+            fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            self.owner.acquire()
+        except Exception:
             self.lock.close();self.lock=None
             raise RuntimeError('WORKER_BUSY') from None
+    def login(self):
+        if self.context is not None:raise RuntimeError('WORKER_BUSY')
+        self.acquire()
+        self.manual.start((self.lock.fileno(),self.owner.file.fileno()))
+        return 'LOGIN_IN_PROGRESS'  # Only the user observes the manual page.
+    def desktop_active(self):return self.manual.active()
+    def prepare_check(self):
+        # Keep BOTH ownership locks throughout handoff; no scheduler can race us.
+        self.acquire()
+        self.manual.stop()
+        self.owner.wait_released()
+    def open(self):
+        if self.manual.active():raise RuntimeError('WORKER_BUSY')
+        if self.context is not None:return
+        self.acquire()
+        self.owner.wait_released()
         try:
             from playwright.sync_api import sync_playwright
             self.pw=sync_playwright().start()
@@ -62,6 +83,10 @@ class SessionBrowser:
     def inspect(self):
         n=self.config.get('neurobro',{})
         # Inspect visible challenges only; never click/solve one.
+        for message in ('Verification failed','Maximum Attempts Reached'):
+            loc=self.page.get_by_text(message,exact=True)
+            if any(loc.nth(i).is_visible() for i in range(loc.count())):
+                return 'CLOUDFLARE_REQUIRED'
         if self.visible('iframe[src*="challenges.cloudflare.com"]'):
             return 'CLOUDFLARE_REQUIRED'
         for frame in self.page.frames:
@@ -78,15 +103,16 @@ class SessionBrowser:
             return 'CONNECTED'
         return 'DISCONNECTED'
     def close(self):
-        try:
-            if self.context:self.context.close()
-        finally:
-            self.context=None;self.page=None
-            try:
-                if self.pw:self.pw.stop()
-            finally:
-                self.pw=None
-                if self.lock:self.lock.close();self.lock=None
+        # On shutdown/timeout retain locks unless the browser has really stopped.
+        self.manual.stop()
+        if self.context:self.context.close()
+        self.context=None;self.page=None
+        if self.pw:self.pw.stop()
+        self.pw=None
+        if self.owner.file is not None:
+            self.owner.wait_released()
+            self.owner.close()
+        if self.lock:self.lock.close();self.lock=None
 
 
 class SessionController:
@@ -132,35 +158,38 @@ class SessionController:
             try:action=self.jobs.get(timeout=5)
             except queue.Empty:
                 try:
-                    if self.browser.context is not None:
-                        self.browser.page.evaluate('1')
-                        self.browser_health='ALIVE'
-                    else:self.browser_health='IDLE'
+                    self.browser_health='ALIVE' if self.browser.desktop_active() else 'IDLE'
                 except Exception:self.browser_health='ERROR'
                 continue
             if action is None:
                 self.browser.close();return
             try:
-                self.browser.open()
-                self.browser_health='ALIVE'
-                if action=='check':self.browser.refresh()
-                state=self.browser.inspect()
-                # Login leaves a real headed browser for remote takeover. Check commits
-                # a validated session to disk and frees the existing CLI's process lock.
-                if action=='check' and state=='CONNECTED':
-                    self.browser.close();self.browser_health='IDLE'
+                if action=='login':
+                    state=self.browser.login()
+                else:
+                    self.browser.prepare_check()
+                    try:
+                        self.browser.open()
+                        state=self.browser.inspect()
+                    finally:
+                        self.browser.close()
+                    # No automatic verification retries or challenge interaction.
+                    # User may press LOGIN again to reopen ordinary Chromium.
+                self.browser_health='ALIVE' if self.browser.desktop_active() else 'IDLE'
                 with self.mu:
                     if state=='LOGIN_REQUIRED' and self.ever_connected:state='SESSION_EXPIRED'
                     self.ever_connected |= state=='CONNECTED'
                     self.state=state;self.checked=time.time()
-                    self.desktop=self.browser.context is not None
+                    self.desktop=self.browser.desktop_active()
             except Exception as exc:
                 try:self.browser.close()
                 except Exception:pass
                 with self.mu:
                     self.state='DISCONNECTED';self.desktop=False;self.checked=time.time()
                     self.browser_health='IDLE' if str(exc)=='WORKER_BUSY' else 'ERROR'
-                    self.error='WORKER_BUSY' if str(exc)=='WORKER_BUSY' else 'BROWSER_OR_CONFIG_ERROR'
+                    self.error=str(exc) if str(exc) in {'WORKER_BUSY','PROFILE_NOT_RELEASED',
+                        'MANUAL_BROWSER_NOT_STOPPED','MANUAL_BROWSER_EXITED',
+                        'CHROMIUM_EXECUTABLE_NOT_FOUND_OR_AMBIGUOUS'} else 'BROWSER_OR_CONFIG_ERROR'
             finally:
                 with self.mu:self.busy=False
     def close(self):

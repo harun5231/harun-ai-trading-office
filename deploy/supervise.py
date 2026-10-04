@@ -43,10 +43,10 @@ def main():
                 if failures>=3:raise RuntimeError('Health watchdog failed')
             time.sleep(5)
     finally:
-        for p in reversed(children):
-            if p.poll() is None:p.terminate()
+        # Stop session/browser cleanly BEFORE taking away its X display.
         deadline=time.monotonic()+60
         for p in reversed(children):
+            if p.poll() is None:p.terminate()
             try:p.wait(timeout=max(.1,deadline-time.monotonic()))
             except subprocess.TimeoutExpired:p.kill()
 

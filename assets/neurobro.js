@@ -57,9 +57,9 @@
   active=true;title.dataset.workflow='false';title.textContent='NEUROBRO · SESI PRIVAT';panel.hidden=false;
   document.getElementById('menuDrawer').hidden=true;document.getElementById('menuToggle').setAttribute('aria-expanded','false');
   body.innerHTML=`<div class="wf-note"><b id="nbWorker"></b><br><b id="nbStatus"></b><p id="nbNote"></p><small>Binance tetap DRY RUN. Login di sini tidak menjalankan trading.</small></div>
-   <div class="wf-actions"><button id="nbLogin">LOGIN NEUROBRO</button><button id="nbCheck">CEK SESI</button></div>
+   <div class="wf-actions"><button id="nbLogin">LOGIN NEUROBRO</button><button id="nbCheck">SELESAI LOGIN / CEK SESI</button></div>
    <a id="nbTakeover" class="wf-file" target="_blank" rel="noopener noreferrer" hidden>BUKA BROWSER SERVER</a>
-   <p style="font-size:12px;line-height:1.6">Login Neurobro dan verifikasi Cloudflare hanya pada halaman Neurobro di browser server. Setelah selesai, kembali ke kantor dan tekan CEK SESI. Jangan kirim prompt sendiri.</p>
+   <p style="font-size:12px;line-height:1.6">Login Neurobro dan verifikasi Cloudflare hanya pada halaman Neurobro di browser server. Browser login manual tidak dikendalikan Playwright. Setelah selesai, kembali ke kantor dan tekan CEK SESI; browser manual akan ditutup sebelum sesi diperiksa. Jika verifikasi masih diminta, tekan LOGIN NEUROBRO kembali. Jangan kirim prompt sendiri.</p>
    <details ${origin?'':'open'}><summary>Koneksi worker privat</summary><label>Origin HTTPS worker<input id="nbOrigin" type="url" placeholder="https://worker-anda" value="${escape(origin||configuredOrigin)}"></label><label>Token kontrol worker (bukan token Neurobro)<input id="nbToken" type="password" autocomplete="off" placeholder="Hanya di memori tab"></label><div class="wf-actions"><button id="nbConnect">HUBUNGKAN WORKER</button><button id="nbDisconnect">PUTUSKAN DASHBOARD</button></div><small>Jangan masukkan username, password, OTP, cookie, atau token Neurobro di dashboard. Putuskan dashboard tidak menghapus sesi di server.</small></details>`;
   document.getElementById('nbLogin').onclick=()=>action('login');document.getElementById('nbCheck').onclick=()=>action('check');
   document.getElementById('nbConnect').onclick=()=>{

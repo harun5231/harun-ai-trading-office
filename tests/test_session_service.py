@@ -12,11 +12,14 @@ from worker.session_service import SessionBrowser, SessionController, handler, p
 
 READ='r'*40;CONTROL='c'*40;ORIGIN='https://harun5231.github.io'
 class StubBrowser:
-    def __init__(self):self.context=None;self.state='LOGIN_REQUIRED';self.opens=0;self.closes=0
+    def __init__(self):self.context=None;self.state='LOGIN_REQUIRED';self.opens=0;self.closes=0;self.manual=False
+    def login(self):self.open();self.manual=True;return 'LOGIN_IN_PROGRESS'
+    def prepare_check(self):self.manual=False
+    def desktop_active(self):return self.manual
     def open(self):self.context=object();self.opens+=1
     def refresh(self):pass
     def inspect(self):return self.state
-    def close(self):self.context=None;self.closes+=1
+    def close(self):self.context=None;self.manual=False;self.closes+=1
 
 class SessionTests(unittest.TestCase):
     def setUp(self):
@@ -29,7 +32,7 @@ class SessionTests(unittest.TestCase):
         while self.controller.snapshot()['busy'] and time.monotonic()<end:time.sleep(.005)
         self.assertFalse(self.controller.snapshot()['busy']);return self.controller.snapshot()
     def test_login_is_browser_observation_not_connected_flag(self):
-        data=self.complete('login');self.assertEqual(data['status'],'LOGIN_REQUIRED')
+        data=self.complete('login');self.assertEqual(data['status'],'LOGIN_IN_PROGRESS')
         self.assertTrue(data['takeover_url'].startswith('https://worker.example/desktop/'))
         self.assertEqual(self.browser.opens,1);self.assertIsNotNone(self.browser.context)
     def test_check_valid_commits_profile_and_releases_browser(self):
@@ -41,7 +44,8 @@ class SessionTests(unittest.TestCase):
         self.browser.state='CONNECTED';self.complete('check')
         self.browser.state='LOGIN_REQUIRED';self.assertEqual(self.complete('check')['status'],'SESSION_EXPIRED')
         self.browser.state='CLOUDFLARE_REQUIRED';self.assertEqual(self.complete('check')['status'],'CLOUDFLARE_REQUIRED')
-        self.assertIsNotNone(self.browser.context)
+        self.assertIsNone(self.browser.context)
+        self.assertIsNone(self.controller.snapshot()['takeover_url'])
     def test_stale_connected_is_not_trusted(self):
         self.browser.state='CONNECTED';self.complete('check');self.controller.checked=time.time()-61
         self.assertEqual(self.controller.snapshot()['status'],'DISCONNECTED')
