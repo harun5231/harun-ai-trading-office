@@ -101,4 +101,67 @@ class BrowserScreeningTests(unittest.TestCase):
         self.mutate("const send=document.querySelector('#send');const old=send.onclick;send.onclick=()=>{old();document.querySelector('.user').textContent='different'}")
         with self.assertRaisesRegex(Review,'pesan terkirim tidak cocok'): self.driver.run(SCREENING)
 
+    def test_pause_and_manual_resume_before_send(self):
+        self.mutate("document.body.insertAdjacentHTML('beforeend','<div id=login>Sign in</div>')")
+        def manual():
+            self.assertEqual(self.page.evaluate('sends'),0)
+            self.mutate("document.querySelector('#login').remove()")
+            return True
+        self.driver.handoff=manual
+        self.driver.run(SCREENING)
+        self.assertIn('PAUSED_NEEDS_LOGIN',self.events)
+        self.assertEqual(self.page.evaluate('sends'),1)
+
+    def test_pause_after_send_resumes_response_without_resending(self):
+        self.mutate("const b=document.querySelector('#send');const old=b.onclick;b.onclick=()=>{old();document.body.insertAdjacentHTML('beforeend','<div id=login>Expired</div>')}")
+        def manual():
+            self.assertEqual(self.page.evaluate('sends'),1)
+            self.mutate("document.querySelector('#login').remove()")
+            return True
+        self.driver.handoff=manual
+        self.driver.run(SCREENING)
+        self.assertIn('PAUSED_NEEDS_LOGIN',self.events)
+        self.assertEqual(self.page.evaluate('sends'),1)
+
+    def test_unresolved_verification_stays_paused(self):
+        from worker.screening import PausedNeedsLogin
+        self.mutate("document.body.insertAdjacentHTML('beforeend','<div id=captcha>Verify</div>')")
+        self.driver.handoff=lambda:True
+        with self.assertRaises(PausedNeedsLogin):self.driver.run(SCREENING)
+        self.assertEqual(self.events[-1],'PAUSED_NEEDS_LOGIN')
+        self.assertEqual(self.page.evaluate('sends'),0)
+
+    def test_valid_session_does_not_request_handoff(self):
+        def unexpected():raise AssertionError('Valid session must not ask for login')
+        self.driver.handoff=unexpected
+        self.driver.run(SCREENING)
+        self.assertNotIn('PAUSED_NEEDS_LOGIN',self.events)
+
+    def test_manual_send_during_pause_does_not_duplicate(self):
+        self.mutate("document.querySelector('#composer').oninput=()=>document.querySelector('#authenticated').style.display='none'")
+        def manual():
+            self.mutate("document.querySelector('#authenticated').style.display='block';document.querySelector('#send').click()")
+            return True
+        self.driver.handoff=manual
+        with self.assertRaisesRegex(Review,'dilarang kirim ulang'):self.driver.run(SCREENING)
+        self.assertEqual(self.page.evaluate('sends'),1)
+
+    def test_persistent_profile_retains_synthetic_session(self):
+        import tempfile,time
+        from worker.screening import private_profile
+        options={'headless':True}
+        if os.getenv('PLAYWRIGHT_CHROMIUM_EXECUTABLE'):
+            options.update(executable_path=os.environ['PLAYWRIGHT_CHROMIUM_EXECUTABLE'],
+                           args=['--no-sandbox','--disable-dev-shm-usage','--no-zygote','--single-process'])
+        with tempfile.TemporaryDirectory() as d:
+            profile=private_profile(d)
+            context=self.pw.chromium.launch_persistent_context(str(profile),**options)
+            context.add_cookies([{'name':'offline_test','value':'synthetic_only',
+                                 'url':'https://session-test.invalid','expires':time.time()+3600}])
+            context.close()
+            context=self.pw.chromium.launch_persistent_context(str(profile),**options)
+            try:
+                self.assertEqual(context.cookies('https://session-test.invalid')[0]['value'],'synthetic_only')
+            finally:context.close()
+
 if __name__=='__main__': unittest.main()

@@ -15,3 +15,9 @@ snapshot.json
 browser-config.local.json
 storage-state*.json
 cookies*.json
+
+# Defense in depth; real profiles still MUST live outside this repository.
+screening-pending.json
+Singleton*
+Local State
+Default/

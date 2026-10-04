@@ -62,8 +62,11 @@ def main():
             if config_path==repo or repo in config_path.parents: raise Review('NEEDS_REVIEW: simpan konfigurasi pribadi di luar repository')
             from .browser import BrowserAdapter
             adapter=BrowserAdapter(json.loads(config_path.read_text()),directory/'browser-profile',directory/'artifacts')
+            from .screening import terminal_handoff
+            adapter.handoff=terminal_handoff
         flow=Workflow(ledger,adapter,output);snapshot=flow.run(screening_only=a.command=='screen-neurobro')
         print(json.dumps({'status':snapshot['status'],'mode':snapshot['mode'],'source':snapshot['source'],'locked':snapshot['locked'],'snapshot':str(output)}))
+        if snapshot['status']=='PAUSED_NEEDS_LOGIN': raise SystemExit(3)
         if snapshot['status']=='ERROR': raise SystemExit(2)
     except Review as exc:
         ledger.event('ERROR','Coordinator',str(exc))

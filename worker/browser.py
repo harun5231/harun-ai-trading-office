@@ -16,9 +16,11 @@ class BrowserAdapter:
     source='BROWSER_DRY_RUN'
     connected=False
     def __init__(self,config,profile,artifacts):
-        from .screening import private_profile
+        from .screening import private_profile, PendingSend
         self.config=config
         self.profile=private_profile(profile)
+        self.pending=PendingSend(self.profile)
+        self.handoff=None
         self.artifacts=Path(artifacts);self.artifacts.mkdir(parents=True,exist_ok=True)
         self.neuro=config.get('neurobro',{});self.binance=config.get('binance',{})
         self.progress=lambda state,message: None
@@ -71,9 +73,12 @@ class BrowserAdapter:
         return text
     def screen(self,prompt):
         from .screening import ChatScreening, futures_catalog, parse_screening
+        self.pending.check()
         self.open_screening()
-        answer=ChatScreening(self.chat,self.neuro,self.progress).run(prompt)
+        answer=ChatScreening(self.chat,self.neuro,self.progress,
+                             handoff=self.handoff,before_send=self.pending.mark).run(prompt)
         selected=parse_screening(answer,futures_catalog())
+        self.pending.complete()
         self.connected=True
         return '\n'.join(selected)
     def capture(self,symbol,timeframe):

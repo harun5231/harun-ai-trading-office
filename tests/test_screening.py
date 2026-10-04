@@ -82,4 +82,32 @@ class ScreeningTests(unittest.TestCase):
             self.assertEqual(data['status'],'ERROR');self.assertEqual(ledger.count(),0)
             self.assertIn('NEEDS_LOGIN',json.dumps(data['events']));ledger.db.close()
 
+    def test_pending_send_survives_restart_and_contains_no_session(self):
+        from worker.screening import PendingSend
+        with tempfile.TemporaryDirectory() as d:
+            first=PendingSend(d);first.check();first.mark()
+            self.assertEqual(first.path.stat().st_mode & 0o777,0o600)
+            self.assertEqual(json.loads(first.path.read_text()),{'pending':True})
+            second=PendingSend(d)
+            with self.assertRaises(Review):second.check()
+            with self.assertRaises(Review):second.mark()
+            first.complete();second.check()
+
+    def test_paused_workflow_does_not_enter_binance(self):
+        from worker.screening import PausedNeedsLogin
+        class Adapter:
+            source='BROWSER_DRY_RUN';connected=False;progress=None
+            def screen(self,prompt):
+                self.progress('OPENING_NEUROBRO','test')
+                self.progress('WAITING_NEUROBRO','test')
+                self.progress('PAUSED_NEEDS_LOGIN','manual required')
+                raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: test')
+            def capture(self,*args):raise AssertionError('No Binance while paused')
+        with tempfile.TemporaryDirectory() as d:
+            ledger=Ledger(Path(d)/'ledger.sqlite3')
+            data=Workflow(ledger,Adapter(),Path(d)/'snapshot.json').run()
+            self.assertEqual(data['status'],'PAUSED_NEEDS_LOGIN')
+            self.assertEqual(ledger.count(),0);self.assertFalse(data['live_enabled'])
+            ledger.db.close()
+
 if __name__=='__main__': unittest.main()

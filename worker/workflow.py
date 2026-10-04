@@ -30,7 +30,7 @@ AGENT={'SCREENING_NEUROBRO':'Neurobro','COINS_SELECTED':'Market Analyst','CAPTUR
 'RISK_CHECK':'Risk Manager','BINANCE_SETUP':'Trading Agent','ORDER_READY':'Trading Agent',
 'POSITION_OPEN':'Position Monitor','MONITORING':'Position Monitor','CLOSED':'Trade Reviewer',
 'IDLE':'Coordinator','ERROR':'Risk Manager'}
-AGENT.update({state:'Neurobro' for state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE')})
+AGENT.update({state:'Neurobro' for state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE','PAUSED_NEEDS_LOGIN')})
 ALLOWED={
  'IDLE':{'SCREENING_NEUROBRO','MONITORING'},'SCREENING_NEUROBRO':{'COINS_SELECTED','OPENING_NEUROBRO'},
  'OPENING_NEUROBRO':{'WAITING_NEUROBRO'},'WAITING_NEUROBRO':{'SCREENING_SENT'},
@@ -41,6 +41,10 @@ ALLOWED={
  'ORDER_READY':{'NEUROBRO_ANALYSIS','POSITION_OPEN','MONITORING'},
  'POSITION_OPEN':{'MONITORING'},'MONITORING':{'POSITION_OPEN','CLOSED'},
  'CLOSED':{'POSITION_OPEN','MONITORING'},'ERROR':set()}
+
+for _state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE'):
+    ALLOWED[_state].add('PAUSED_NEEDS_LOGIN')
+ALLOWED['PAUSED_NEEDS_LOGIN']={'WAITING_NEUROBRO','WAITING_RESPONSE'}
 
 class Workflow:
     def __init__(self,ledger,adapter,snapshot_path):
@@ -88,6 +92,10 @@ class Workflow:
             # Browser dry run stops at verified paper plans: no pretend fill or real submit.
             return self.export()
         except Exception as exc:
+            from .screening import PausedNeedsLogin
+            if isinstance(exc,PausedNeedsLogin):
+                if self.state!='PAUSED_NEEDS_LOGIN': self.go('PAUSED_NEEDS_LOGIN',str(exc))
+                return self.export()
             message=str(exc) if isinstance(exc,Review) else 'ERROR: langkah worker gagal; periksa log lokal tanpa melanjutkan order'
             self.go('ERROR',message)
             return self.export()

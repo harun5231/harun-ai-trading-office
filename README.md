@@ -130,7 +130,7 @@ pengguna yang eksplisit.
 python -m worker screen-neurobro --config /path/private/browser.json
 ```
 
-Perintah ini berhenti pada COINS_SELECTED atau ERROR, tanpa capture, analisis setup,
+Perintah ini berhenti pada COINS_SELECTED, PAUSED_NEEDS_LOGIN, atau ERROR, tanpa capture, analisis setup,
 reserve slot, maupun order paper/live. `browser-dry-run` memakai screening yang sama
 lalu melanjutkan alur lama hanya jika screening lolos. Prompt tetap diambil dari
 `worker/prompts.py`, tidak ditambah petunjuk format, leverage, atau instruksi lain.
@@ -178,7 +178,7 @@ Timeout kesiapan 90 detik; respons 180 detik. Perubahan DOM, jawaban belum seles
 metadata kontrak gagal, atau hasil selain dua pilihan menghentikan alur.
 
 Log/snapshot menampilkan OPENING_NEUROBRO → WAITING_NEUROBRO → SCREENING_SENT →
-WAITING_RESPONSE → COINS_SELECTED, atau ERROR dengan alasan NEEDS_LOGIN/NEEDS_REVIEW.
+WAITING_RESPONSE → COINS_SELECTED, atau PAUSED_NEEDS_LOGIN untuk login/verifikasi manual; ERROR untuk kesalahan lainnya.
 Snapshot progres tidak memuat respons mentah, URL session, cookie, atau trace browser.
 Status dashboard membutuhkan impor snapshot terbaru atau koneksi server baca yang
 sudah tersedia; worker tidak otomatis di-host oleh GitHub Pages.
@@ -190,13 +190,13 @@ python -m unittest discover -s tests -v
 HARUN_BROWSER_TESTS=1 python -m unittest discover -s tests -v
 ```
 
-Perintah pertama menjalankan 23 tes Python dan melewati 12 tes browser opsional.
-Perintah kedua menjalankan seluruh **35 tes** setelah Playwright/Chromium terpasang:
-15 tes lama tetap utuh, 8 tes parser/integrasi/keamanan profil, dan 12 tes Chromium
+Perintah pertama menjalankan 25 tes Python dan melewati 18 tes browser opsional.
+Perintah kedua menjalankan seluruh **43 tes** setelah Playwright/Chromium terpasang:
+15 tes lama tetap utuh, 10 tes parser/integrasi/keamanan profil, dan 18 tes Chromium
 pada UI mock offline. Semua request UI mock dicegat lokal, tanpa session atau pesan
 ke layanan asli. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` hanya opsi executable untuk tes.
 
-Hasil pengembangan: 35/35 lolos, serta smoke test dashboard ukuran iPhone (7 avatar,
+Hasil pengembangan: 43/43 lolos, serta smoke test dashboard ukuran iPhone (7 avatar,
 6 menu, impor laporan, penolakan live snapshot, tanpa error JavaScript). Desain
 `index.html`, CSS, prompt literal, Risk Manager, batas harian, dan monitor tidak diubah;
 `core.py` hanya mendapat nama status baru.
@@ -208,3 +208,48 @@ completion marker layanan asli, dan parsing respons nyata **belum terverifikasi*
 Konfigurasi contoh tetap belum siap jalan sampai audit selector dan login privat
 selesai. Tes Chromium offline bukan klaim screening Neurobro produksi berhasil.
 Binance tetap DRY RUN dan tidak menerima order nyata.
+
+## Jeda verifikasi manual dan sesi persisten
+
+Login/CAPTCHA saat screening sekarang menghasilkan **PAUSED_NEEDS_LOGIN**. Pada
+terminal interaktif, CLI mempertahankan proses dan jendela Chromium yang sama.
+Pemilik mengambil alih desktop worker (langsung atau melalui akses desktop privat
+yang sudah diamankan), menyelesaikan login/verifikasi sendiri, lalu mengetik
+`LANJUT` di terminal. Jangan mengirim prompt sendiri atau mengganti percakapan.
+Worker tidak mengklik, memecahkan, atau melewati CAPTCHA. `LANJUT` hanya meminta
+pemeriksaan ulang: bila challenge masih ada, status tetap PAUSED_NEEDS_LOGIN.
+
+Setelah indikator akun login terverifikasi dan loading selesai, alur melanjutkan
+langkah yang terhenti pada tab yang sama. Jika prompt sudah dikirim, hanya jawaban
+lama yang ditunggu, bukan membuat chat atau mengirim prompt baru. Waktu jeda manual
+tidak memakan timeout respons. Sesi valid tidak memunculkan permintaan login lagi.
+Cookie/token tetap di profil Chromium privat di worker, tidak diekspor ke snapshot
+atau repository. Profil yang sama digunakan pada pemanggilan berikutnya.
+
+Tanpa terminal interaktif, atau jika pengguna membatalkan, CLI menyimpan snapshot
+PAUSED_NEEDS_LOGIN dan keluar dengan kode 3, menutup browser secara teratur tanpa
+menghapus profil. Untuk lanjut sebelum pengiriman, jalankan kembali pada terminal
+interaktif dengan data-dir yang sama. Tidak ada endpoint resume publik atau layanan
+remote desktop yang otomatis dipasang oleh commit ini. Akses desktop worker dari
+iPhone memerlukan server/remote desktop privat tersendiri; GitHub Pages saja tidak
+menjalankan Chromium.
+
+Sebelum klik kirim, worker menulis `screening-pending.json` (mode 0600) di profil
+privat. File hanya berisi penanda pending, tanpa prompt, respons, atau kredensial.
+Jika proses mati atau hasil pengiriman belum pasti, pemanggilan berikutnya ditolak
+NEEDS_REVIEW agar tidak mengirim ulang. File dibersihkan hanya setelah jawaban
+lengkap dan dua coin lolos parser. Pemulihan setelah crash pascapengiriman perlu
+rekonsiliasi manual pada percakapan asli; jangan menghapus penanda tanpa pemeriksaan.
+Lanjut setelah login pada proses yang masih berjalan tidak mengulang pengiriman.
+
+Verifikasi revisi ini: **43 tes lolos**, termasuk semua 35 tes sebelumnya, tes jeda
+sebelum/sesudah kirim, verifikasi belum selesai, sesi valid, interaksi manual yang
+mengirim pesan, crash guard, status workflow, dan persistensi profil Chromium dengan
+cookie sintetis pada domain uji offline. Tes sintetis tidak dihitung sebagai sukses
+Neurobro asli. Smoke test dashboard iPhone tetap lolos.
+
+Pemeriksaan langsung pada 4 Oktober 2026 masih melihat CAPTCHA Cloudflare di browser
+cloud: **PAUSED_NEEDS_LOGIN**, belum ada prompt screening terkirim dan belum ada dua
+coin asli diperoleh. Pengambilalihan browser cloud tidak otomatis menghubungkan sesi
+tersebut ke worker/server; keduanya profil terpisah. Konfigurasi selector worker
+setelah login masih perlu diverifikasi pada profil worker aktual.

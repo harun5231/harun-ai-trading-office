@@ -1,5 +1,6 @@
 """Fail-closed browser screening; no Neurobro HTTP/API client or credentials."""
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -9,6 +10,41 @@ from .core import Review
 from .prompts import SCREENING
 
 PROGRESS = ('OPENING_NEUROBRO', 'WAITING_NEUROBRO', 'SCREENING_SENT', 'WAITING_RESPONSE')
+
+
+class PausedNeedsLogin(Review):
+    """Manual verification is required; never an instruction to bypass a challenge."""
+
+
+def terminal_handoff():
+    """Keep the existing headed context alive while its owner controls the desktop."""
+    import sys
+    if not sys.stdin.isatty():
+        return False
+    print('PAUSED_NEEDS_LOGIN: ambil alih jendela browser worker yang sama. '
+          'Selesaikan login/verifikasi sendiri. Jangan kirim prompt manual.', flush=True)
+    try:
+        return input('Setelah selesai, ketik LANJUT; selain itu berhenti: ').strip() == 'LANJUT'
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+class PendingSend:
+    """Private crash guard: uncertainty after send must never trigger a fresh send."""
+    def __init__(self, profile):
+        self.path = private_profile(profile) / 'screening-pending.json'
+    def check(self):
+        if self.path.exists():
+            raise Review('NEEDS_REVIEW: pengiriman sebelumnya belum direkonsiliasi; dilarang kirim ulang')
+    def mark(self):
+        try:
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            raise Review('NEEDS_REVIEW: pengiriman sebelumnya belum direkonsiliasi') from None
+        with os.fdopen(fd, 'w') as f:
+            f.write('{"pending":true}');f.flush();os.fsync(f.fileno())
+    def complete(self):
+        self.path.unlink()
 
 
 def private_profile(value):
@@ -93,9 +129,13 @@ class ChatScreening:
                 'response_text', 'user_messages', 'authenticated', 'login_required',
                 'captcha', 'loading', 'streaming', 'new_chat')
 
-    def __init__(self, page, config, emit, timeout=90, response_timeout=180):
+    def __init__(self, page, config, emit, timeout=90, response_timeout=180, handoff=None, before_send=None):
         self.page, self.n, self.emit = page, config, emit
         self.timeout, self.response_timeout = timeout, response_timeout
+        self.handoff = handoff
+        self.before_send = before_send or (lambda: None)
+        self.sent = False
+        self.paused_seconds = 0
 
     @classmethod
     def validate(cls, config):
@@ -111,25 +151,48 @@ class ChatScreening:
         loc = (scope or self.page).locator(selector)
         return any(loc.nth(i).is_visible() for i in range(loc.count()))
 
-    def guard(self):
+    def _guard(self):
         for frame in self.page.frames:
             # Visible challenge only: an inert hidden Turnstile widget is not a CAPTCHA.
             if self.visible(self.n['captcha'], frame):
-                raise Review('NEEDS_LOGIN: CAPTCHA/security challenge; selesaikan sendiri di browser lokal')
+                raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: CAPTCHA/security challenge; selesaikan sendiri di browser lokal')
         if self.visible('iframe[src*="challenges.cloudflare.com"]'):
-            raise Review('NEEDS_LOGIN: CAPTCHA Cloudflare; worker berhenti')
+            raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: CAPTCHA Cloudflare; worker berhenti')
         if self.visible(self.n['login_required']):
-            raise Review('NEEDS_LOGIN: sesi Neurobro belum login atau kedaluwarsa')
+            raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: sesi Neurobro belum login atau kedaluwarsa')
         actual = urlsplit(self.page.url)
         if actual.scheme != 'https' or actual.hostname != 'app.neurobro.ai':
-            raise Review('NEEDS_LOGIN: halaman dialihkan dari chatbot Neurobro')
+            raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: halaman dialihkan dari chatbot Neurobro')
+
+    def guard(self):
+        try:
+            self._guard()
+        except PausedNeedsLogin as exc:
+            self.pause(exc)
+
+    def pause(self, exc):
+        self.emit('PAUSED_NEEDS_LOGIN', str(exc))
+        start = time.monotonic()
+        if self.handoff is None or not self.handoff():
+            raise exc
+        # Acknowledgement is not proof of login. Recheck without interacting with a challenge.
+        self._guard()
+        if not self.visible(self.n['authenticated']) or self.visible(self.n['loading']):
+            raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: sesi login belum terverifikasi')
+        self.paused_seconds += time.monotonic() - start
+        self.emit('WAITING_RESPONSE' if self.sent else 'WAITING_NEUROBRO',
+                  'Verifikasi manual selesai; melanjutkan browser dan percakapan yang sama')
 
     def wait(self, predicate, seconds, failure):
-        end = time.monotonic() + seconds
-        while time.monotonic() < end:
+        start = time.monotonic()
+        paused_before = self.paused_seconds
+        while time.monotonic() - start - (self.paused_seconds - paused_before) < seconds:
             self.guard()
-            if predicate():
-                return
+            try:
+                if predicate():
+                    return
+            except PausedNeedsLogin as exc:
+                self.pause(exc)
             self.page.wait_for_timeout(100)
         raise Review(f'NEEDS_REVIEW: {failure}')
 
@@ -171,14 +234,22 @@ class ChatScreening:
         self.wait(lambda: self.page.locator(self.n['send']).is_enabled(), self.timeout, 'tombol kirim belum siap')
         self.guard()
         if not self.visible(self.n['authenticated']):
-            raise Review('NEEDS_LOGIN: sesi login hilang sebelum mengirim')
+            self.pause(PausedNeedsLogin('PAUSED_NEEDS_LOGIN: sesi login hilang sebelum mengirim'))
+        if (self.page.locator(self.n['user_messages']).count() != 0
+                or self.page.locator(self.n['assistant_messages']).count() != 0):
+            raise Review('NEEDS_REVIEW: percakapan berubah sebelum kirim; dilarang kirim ulang')
+        value = c.input_value() if c.evaluate('(e)=>["INPUT","TEXTAREA"].includes(e.tagName)') else c.inner_text()
+        if value != prompt:
+            raise Review('NEEDS_REVIEW: isi prompt berubah selama pengambilalihan manual')
+        self.before_send()
+        self.sent = True  # Treat an uncertain click as attempted; never retry it.
         self.page.locator(self.n['send']).click(timeout=5000)  # exactly once; no automatic retry
         self.emit('SCREENING_SENT', 'Prompt screening literal dikirim sekali melalui browser')
         self.emit('WAITING_RESPONSE', 'Menunggu jawaban baru selesai; tidak menggunakan respons lama')
         stable = {'text': None, 'since': None}
         def completed():
             if not self.visible(self.n['authenticated']):
-                raise Review('NEEDS_LOGIN: sesi login hilang saat menunggu respons')
+                raise PausedNeedsLogin('PAUSED_NEEDS_LOGIN: sesi login hilang saat menunggu respons')
             users = self.page.locator(self.n['user_messages'])
             messages = self.page.locator(self.n['assistant_messages'])
             if users.count() > 1 or messages.count() > 1:
