@@ -1,0 +1,7 @@
+.wf-note{padding:12px;border:1px solid var(--line);background:#25464b70;border-radius:10px;line-height:1.6;font-size:12px;margin:12px 0;overflow-wrap:anywhere}
+.wf-actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+.info-panel .wf-actions button,.wf-file,.wf-note button{min-height:44px;padding:10px 12px;background:#365e68;border:1px solid var(--line);border-radius:9px;color:#eff6ff;font:inherit;font-size:12px}
+.wf-note button{display:block;margin-top:8px}.wf-actions button:disabled{opacity:.4}
+.wf-file{display:flex;align-items:center;position:relative;cursor:pointer}.wf-file input{position:absolute;inset:0;opacity:0;width:100%;cursor:pointer}
+.info-panel details{font-size:12px;line-height:1.6;margin:12px 0}.info-panel summary{cursor:pointer;padding:10px 0}
+.info-panel details label{display:block;margin-top:8px}.info-panel details input{display:block;width:100%;min-height:44px;padding:9px;background:#122934;border:1px solid var(--line);border-radius:7px;color:#fff;font-size:16px;margin-top:4px}

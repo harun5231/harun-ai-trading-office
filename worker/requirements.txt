@@ -1,0 +1,2 @@
+# Optional: only needed on the private browser worker, not GitHub Pages.
+playwright>=1.49,<2

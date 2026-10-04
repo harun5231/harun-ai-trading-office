@@ -1,0 +1,17 @@
+# Private worker state must NEVER be served by GitHub Pages or committed.
+.env
+.env.*
+!.env.example
+*.sqlite*
+*.db
+*.log
+__pycache__/
+.venv/
+node_modules/
+worker-data/
+browser-profile/
+artifacts/
+snapshot.json
+browser-config.local.json
+storage-state*.json
+cookies*.json

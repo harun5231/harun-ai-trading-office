@@ -1,0 +1,21 @@
+{
+  "selectors_verified_on": null,
+  "neurobro": {
+    "url": "https://REPLACE_WITH_VERIFIED_NEUROBRO_CHAT_URL",
+    "composer": "",
+    "send": "",
+    "assistant_messages": "",
+    "completed_response": "",
+    "upload": "",
+    "attachment_ready": "",
+    "new_chat": ""
+  },
+  "binance": {
+    "symbol": "",
+    "timeframe": "",
+    "chart": "",
+    "chart_ready": "",
+    "timeframe_buttons": {"1h": "", "15m": ""},
+    "timeframe_labels": {"1h": "", "15m": ""}
+  }
+}
