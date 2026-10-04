@@ -13,11 +13,41 @@
 .logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#1d89c8,#182544 60%,#111827);display:grid;place-items:center;border:1px solid #6adfff88;font-size:21px}
 .brand strong{font-size:clamp(12px,2.2vw,19px);letter-spacing:.04em}.brand small{display:block;color:var(--green);font-size:11px;margin-top:3px}
 .stats{display:flex;gap:8px;margin-left:auto}.stat{min-width:112px;background:var(--panel);border:1px solid var(--line);padding:9px 13px;border-radius:13px;backdrop-filter:blur(14px)}.stat span{display:block;color:var(--muted);font-size:10px}.stat b{display:block;font-size:17px;margin-top:3px}.positive{color:var(--green)}
-.leftnav{position:absolute;left:16px;top:100px;display:grid;gap:8px}.nav{width:64px;padding:11px 5px;border-radius:14px;text-align:center;color:#aebfd5;background:var(--panel);border:1px solid var(--line);font-size:10px;backdrop-filter:blur(12px)}.nav i{display:block;font-size:20px;font-style:normal;margin-bottom:4px}.nav.active{background:linear-gradient(150deg,#1769cf,#123b77);color:white;border-color:#56c5ff}
-.panel{position:absolute;bottom:16px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px 16px;backdrop-filter:blur(16px);box-shadow:0 16px 40px #0006}.position{left:16px;width:min(310px,calc(50vw - 24px))}.activity{right:16px;width:min(390px,calc(50vw - 24px))}.panel h3{margin:0 0 10px;font-size:13px;letter-spacing:.04em}.coin{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid #ffffff12}.coin:last-child{border:0}.coinicon{width:29px;height:29px;border-radius:50%;display:grid;place-items:center;background:#f3a83b;color:#172033;font-weight:900}.coin b{font-size:12px}.coin small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.tag{margin-left:auto;color:var(--green);font-size:10px;font-weight:800}.event{display:grid;grid-template-columns:42px 90px 1fr;gap:7px;padding:6px 0;font-size:10px;border-bottom:1px solid #ffffff10}.event:last-child{border:0}.event time{color:var(--muted)}.event .role{color:#dcecff}.event .msg{color:#9fb5cf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.panel{position:absolute;bottom:16px;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:14px 16px;backdrop-filter:blur(16px);box-shadow:0 16px 40px #0006}.panel h3{margin:0 0 10px;font-size:13px;letter-spacing:.04em}.coin{display:flex;align-items:center;gap:9px;padding:8px 0;border-bottom:1px solid #ffffff12}.coin:last-child{border:0}.coinicon{width:29px;height:29px;border-radius:50%;display:grid;place-items:center;background:#f3a83b;color:#172033;font-weight:900}.coin b{font-size:12px}.coin small{display:block;color:var(--muted);font-size:10px;margin-top:3px}.tag{margin-left:auto;color:var(--green);font-size:10px;font-weight:800}.event{display:grid;grid-template-columns:42px 90px 1fr;gap:7px;padding:6px 0;font-size:10px;border-bottom:1px solid #ffffff10}.event:last-child{border:0}.event time{color:var(--muted)}.event .role{color:#dcecff}.event .msg{color:#9fb5cf;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bottomhint{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:8px 13px;border-radius:99px;background:#07101dcc;border:1px solid var(--line);font-size:10px;color:#b8cbe2;white-space:nowrap;pointer-events:none}
 #loading{position:absolute;inset:0;display:grid;place-items:center;background:#050a12;z-index:5;color:#d7eaff;text-align:center}#loading span{display:block;color:var(--cyan);font-size:12px;margin-top:8px}
 @media(max-width:700px){.top{left:9px;right:9px;top:9px;gap:6px}.brand{padding:7px 9px;gap:7px}.logo{width:32px;height:32px;font-size:17px}.brand small{font-size:9px}.stats{gap:5px}.stat{min-width:0;padding:7px 8px}.stat span{font-size:8px}.stat b{font-size:12px}.stats .stat:nth-child(2){display:none}.leftnav{left:9px;top:92px;gap:6px}.nav{width:49px;padding:9px 3px;font-size:9px}.nav i{font-size:17px}.panel{bottom:9px;padding:10px;border-radius:14px}.position{left:9px;width:calc(50vw - 14px)}.activity{right:9px;width:calc(50vw - 14px)}.panel h3{font-size:10px}.coin{gap:5px;padding:6px 0}.coinicon{width:22px;height:22px;font-size:10px}.coin b{font-size:10px}.coin small{font-size:8px}.tag{font-size:8px}.event{grid-template-columns:30px 1fr;gap:3px;font-size:8px}.event .msg{grid-column:2}.event .role{display:none}.bottomhint{bottom:144px;font-size:9px;max-width:88vw;overflow:hidden;text-overflow:ellipsis}}
+
+.menu-toggle{position:absolute;left:16px;top:100px;z-index:4;border:1px solid #6b8eb9;background:rgba(8,19,36,.94);color:#eef7ff;border-radius:14px;padding:12px 15px;font-size:15px;font-weight:800;box-shadow:0 8px 24px #0007;backdrop-filter:blur(14px)}
+.menu-toggle span{font-size:12px;margin-left:5px}
+.menu-drawer{position:absolute;left:16px;top:154px;z-index:4;width:min(270px,calc(100vw - 32px));padding:10px;background:rgba(7,16,30,.96);border:1px solid var(--line);border-radius:17px;box-shadow:0 18px 44px #0009;backdrop-filter:blur(16px)}
+.menu-item{display:flex;align-items:center;gap:12px;width:100%;padding:12px;border:0;border-radius:10px;background:transparent;color:#d8e7fa;text-align:left;font:700 14px inherit}
+.menu-item.active,.menu-item:active{background:#1455a4;color:#fff}
+.drawer-note{padding:10px 8px 5px;color:var(--muted);font-size:11px;line-height:1.4}
+.info-panel{left:50%;bottom:16px;transform:translateX(-50%);width:min(620px,calc(100vw - 32px));max-height:42vh;overflow:auto;z-index:3}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.panel-head h3{margin:0 0 10px}
+.panel-close{border:1px solid var(--line);background:#17253a;color:#fff;border-radius:9px;padding:5px 9px}
+.activity-list{margin-top:12px;border-top:1px solid #ffffff20;padding-top:12px}
+.event{display:grid;grid-template-columns:48px 110px 1fr;gap:7px;padding:7px 0;font-size:11px;border-bottom:1px solid #ffffff10}
+.event:last-child{border:0}
+@media(max-width:700px){
+ .top{left:9px;right:9px;top:9px;gap:6px}
+ .brand{padding:7px 9px;gap:7px;max-width:48%}
+ .logo{width:30px;height:30px;font-size:16px;flex-shrink:0}
+ .brand strong{font-size:11px}.brand small{font-size:8px;line-height:1.2}
+ .stats{gap:4px}.stat{padding:7px 6px;min-width:0;max-width:78px}.stat span{font-size:8px}.stat b{font-size:11px;white-space:nowrap}
+ .stats .stat:nth-child(2){display:none}
+ .menu-toggle{left:9px;top:90px;padding:10px 12px;font-size:13px}
+ .menu-drawer{left:9px;top:137px;width:min(245px,calc(100vw - 18px))}
+ .menu-item{padding:10px;font-size:13px}
+ .info-panel{bottom:9px;width:calc(100vw - 18px);padding:11px;max-height:38vh}
+ .panel h3{font-size:11px}.coin{gap:7px;padding:6px 0}.coinicon{width:24px;height:24px;font-size:10px}.coin b{font-size:10px}.coin small{font-size:9px}.tag{font-size:9px}
+ .event{grid-template-columns:38px 1fr;gap:4px;font-size:9px}.event .msg{grid-column:2}.event .role{display:none}
+ .bottomhint{bottom:10px;font-size:9px;max-width:75vw;overflow:hidden;text-overflow:ellipsis;left:auto;right:9px;transform:none}
+}
+
 </style>
 </head>
 <body>
@@ -32,22 +62,35 @@
   <div class="stat"><span>Posisi Aktif</span><b>1</b></div>
  </div>
 </div>
-<div class="leftnav"><div class="nav active"><i>⌂</i>Kantor</div><div class="nav"><i>▥</i>Market</div><div class="nav"><i>↗</i>Trading</div><div class="nav"><i>▤</i>Laporan</div><div class="nav"><i>♙</i>Karyawan AI</div><div class="nav"><i>⚙</i>Pengaturan</div></div>
-<div class="panel position"><h3>POSISI AKTIF</h3><div class="coin"><div class="coinicon">₿</div><div><b>BTCUSDT</b><small>Entry 67,250.0 · PNL +82.40 USDT</small></div><div class="tag">LONG</div></div><div class="coin"><div style="width:29px;color:#8ea5c3">◷</div><div><b>Risk Manager</b><small>SL / TP tervalidasi · Risiko terkendali</small></div><div class="tag">OK</div></div></div>
-<div class="panel activity"><h3>AKTIVITAS TERBARU</h3><div class="event"><time>09:50</time><div class="role">Market Analyst</div><div class="msg">Memindai BTC, ETH, SOL…</div></div><div class="event"><time>09:48</time><div class="role">Neurobro</div><div class="msg">Menganalisis setup trading…</div></div><div class="event"><time>09:45</time><div class="role">Risk Manager</div><div class="msg">Memvalidasi risiko dan ukuran posisi…</div></div><div class="event"><time>09:42</time><div class="role">Trading Agent</div><div class="msg">Menyiapkan order BTCUSDT…</div></div></div>
-<div class="bottomhint">🖱️ Geser untuk memutar · Scroll/cubit untuk zoom · Avatar bekerja otomatis</div>
+<button id="menuToggle" class="menu-toggle" aria-expanded="false">☰ <span>MENU</span></button>
+<div id="menuDrawer" class="menu-drawer" hidden>
+  <button data-view="office" class="menu-item active">⌂ <span>Kantor</span></button>
+  <button data-view="market" class="menu-item">▥ <span>Market</span></button>
+  <button data-view="trading" class="menu-item">↗ <span>Trading</span></button>
+  <button data-view="reports" class="menu-item">▤ <span>Laporan & Aktivitas</span></button>
+  <button data-view="staff" class="menu-item">♙ <span>Karyawan AI</span></button>
+  <button data-view="settings" class="menu-item">⚙ <span>Pengaturan</span></button>
+  <div class="drawer-note">Pilih menu untuk membuka panel. Tampilan kantor tetap terlihat.</div>
+</div>
+<div id="infoPanel" class="panel info-panel" hidden><div class="panel-head"><h3 id="panelTitle">RINGKASAN KANTOR</h3><button id="panelClose" class="panel-close" aria-label="Tutup panel">✕</button></div>
+<div id="panelContent">
+<div class="coin"><div class="coinicon">₿</div><div><b>BTCUSDT</b><small>Entry 67,250.0 · PNL +82.40 USDT</small></div><div class="tag">LONG</div></div>
+<div class="coin"><div style="width:29px;color:#8ea5c3">◷</div><div><b>Risk Manager</b><small>SL / TP tervalidasi · Risiko terkendali</small></div><div class="tag">OK</div></div>
+<div class="activity-list"><h3>AKTIVITAS TERBARU</h3><div class="event"><time>09:50</time><div class="role">Market Analyst</div><div class="msg">Memindai BTC, ETH, SOL…</div></div><div class="event"><time>09:48</time><div class="role">Neurobro</div><div class="msg">Menganalisis setup trading…</div></div><div class="event"><time>09:45</time><div class="role">Risk Manager</div><div class="msg">Memvalidasi risiko dan ukuran posisi…</div></div><div class="event"><time>09:42</time><div class="role">Trading Agent</div><div class="msg">Menyiapkan order BTCUSDT…</div></div></div>
+</div></div>
+<div class="bottomhint">Geser untuk memutar · Cubit untuk zoom · Avatar bergerak otomatis</div>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 const container=document.querySelector('#scene');
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x070d18);scene.fog=new THREE.Fog(0x070d18,22,52);
 const camera=new THREE.PerspectiveCamera(43,innerWidth/innerHeight,.1,100);camera.position.set(13,12,19);
-const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.1;container.appendChild(renderer.domElement);
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.42;container.appendChild(renderer.domElement);
 const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(0,1.1,0);controls.enableDamping=true;controls.dampingFactor=.06;controls.minDistance=8;controls.maxDistance=31;controls.maxPolarAngle=Math.PI*.49;
-scene.add(new THREE.HemisphereLight(0x9dcaff,0x15101b,2.1));
-const key=new THREE.DirectionalLight(0xffe5c2,3.0);key.position.set(7,15,9);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-18;key.shadow.camera.right=18;key.shadow.camera.top=18;key.shadow.camera.bottom=-18;scene.add(key);
+scene.add(new THREE.HemisphereLight(0xc6e4ff,0x35435b,3.0));
+const key=new THREE.DirectionalLight(0xfff1d8,4.2);key.position.set(7,15,9);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-18;key.shadow.camera.right=18;key.shadow.camera.top=18;key.shadow.camera.bottom=-18;scene.add(key);
 function area(color,intensity,pos){const l=new THREE.PointLight(color,intensity,18,2);l.position.set(...pos);scene.add(l)}
-area(0x16baff,42,[-7,5,-3]);area(0x4f8dff,26,[6,4,-5]);area(0xffa34d,30,[0,5,7]);
+area(0x16baff,58,[-7,6,-3]);area(0x4f8dff,42,[6,5,-5]);area(0xffc477,48,[0,6,7]);area(0xd9ecff,30,[0,7,0]);
 const mat=(color,rough=.65,metal=0)=>new THREE.MeshStandardMaterial({color,roughness:rough,metalness:metal});
 const floorMat=mat(0x182335,.82),wallMat=mat(0x18263a),dark=mat(0x0b1220),metal=mat(0x586a80,.3,.8),wood=mat(0x64432f,.45),wood2=mat(0x8b6341,.5),glass=new THREE.MeshPhysicalMaterial({color:0x6bb9e7,transparent:true,opacity:.16,roughness:.12,metalness:.35});
 function box(parent,name,pos,size,material,cast=true){const m=new THREE.Mesh(new THREE.BoxGeometry(...size),material);m.name=name;m.position.set(...pos);m.castShadow=cast;m.receiveShadow=true;parent.add(m);return m}
@@ -105,10 +148,17 @@ function avatar(x,z,role,shirtMat,accent,pose=0){
  for(const ex of [-.105,.105]){box(body,'eyebrow',[ex,2.63,.245],[.09,.025,.025],hair);sphere(body,[ex,2.585,.246],[.047,.036,.025],eye);sphere(body,[ex,2.58,.269],[.022,.027,.012],iris);sphere(body,[ex,2.58,.28],[.01,.015,.008],mat(0x050607))}
  // nose and mouth
  sphere(body,[0,2.52,.27],[.045,.065,.055],skin);box(body,'mouth',[0,2.43,.255],[.095,.018,.02],mat(0x6e3431));
- // arms, forearms hands
- const armY=1.93, elbowY=1.55;
- limb(body,[-.34,armY,0],[-.56,elbowY,.12],.105,shirtMat);limb(body,[-.56,elbowY,.12],[-.43,1.35,.34],.075,shirtMat);sphere(body,[-.43,1.31,.35],[.09,.09,.08],skin);
- limb(body,[.34,armY,0],[.55,elbowY,.12],.105,shirtMat);limb(body,[.55,elbowY,.12],[.39,1.36,.34],.075,shirtMat);sphere(body,[.39,1.32,.35],[.09,.09,.08],skin);
+ // pivoted arms so the avatar can type and move naturally
+ const armY=1.93;
+ const leftArm=new THREE.Group();leftArm.position.set(-.34,armY,0);body.add(leftArm);
+ limb(leftArm,[0,0,0],[-.22,-.38,.12],.105,shirtMat);
+ const leftForearm=new THREE.Group();leftForearm.position.set(-.22,-.38,.12);leftArm.add(leftForearm);
+ limb(leftForearm,[0,0,0],[.13,-.20,.22],.075,shirtMat);sphere(leftForearm,[.13,-.24,.23],[.09,.09,.08],skin);
+ const rightArm=new THREE.Group();rightArm.position.set(.34,armY,0);body.add(rightArm);
+ limb(rightArm,[0,0,0],[.21,-.38,.12],.105,shirtMat);
+ const rightForearm=new THREE.Group();rightForearm.position.set(.21,-.38,.12);rightArm.add(rightForearm);
+ limb(rightForearm,[0,0,0],[-.16,-.19,.22],.075,shirtMat);sphere(rightForearm,[-.16,-.23,.23],[.09,.09,.08],skin);
+ body.userData={leftArm,rightArm,leftForearm,rightForearm,headBob:0};
  // legs and shoes
  limb(body,[-.15,.72,0],[-.17,.28,.04],.115,pants);limb(body,[-.17,.28,.04],[-.17,.12,.13],.075,pants);box(body,'left shoe',[-.17,.08,.22],[.22,.13,.38],shoe);
  limb(body,[.15,.72,0],[.18,.3,-.02],.115,pants);limb(body,[.18,.3,-.02],[.18,.12,.1],.075,pants);box(body,'right shoe',[.18,.08,.19],[.22,.13,.38],shoe);
@@ -117,7 +167,11 @@ function avatar(x,z,role,shirtMat,accent,pose=0){
  // role marker hologram
  const halo=new THREE.Mesh(new THREE.TorusGeometry(.45,.012,8,48),new THREE.MeshBasicMaterial({color:accent,transparent:true,opacity:.7}));halo.rotation.x=Math.PI/2;halo.position.y=.03;root.add(halo);
  const label=makeLabel(role,accent);label.position.set(0,3.25,0);root.add(label);
- root.userData={body,halo,role,baseY:0,phase:Math.random()*6.28};return root;
+ const head=new THREE.Group();head.position.set(0,2.55,.015);body.add(head);
+ // move facial/head meshes into the head pivot while keeping their world-like local positions
+ const headParts=body.children.filter(o=>o.position.y>=2.35);
+ headParts.forEach(o=>{body.remove(o);o.position.y-=2.55;head.add(o);});
+ root.userData={body,halo,role,baseY:0,phase:Math.random()*6.28,head,leftArm:body.userData.leftArm,rightArm:body.userData.rightArm,leftForearm:body.userData.leftForearm,rightForearm:body.userData.rightForearm};return root;
 }
 // desk stations laid out with generous space
 const stations=[
@@ -156,11 +210,54 @@ const logoCanvas=document.createElement('canvas');logoCanvas.width=512;logoCanva
 // floating subtle status dots
 const dots=[];for(let i=0;i<28;i++){const d=new THREE.Mesh(new THREE.SphereGeometry(.025,8,8),new THREE.MeshBasicMaterial({color:i%2?0x35dfff:0x3ce6a0}));d.position.set((Math.random()-.5)*18,1+Math.random()*5,(Math.random()-.5)*14);scene.add(d);dots.push(d)}
 const clock=new THREE.Clock();
-function animate(){requestAnimationFrame(animate);const t=clock.getElapsedTime();staff.forEach((a,i)=>{a.position.y=Math.sin(t*1.1+a.userData.phase)*.025;a.userData.halo.rotation.z=t*.25+i;a.userData.body.rotation.y=Math.sin(t*.32+i)*.035; // typing motion on arms
- a.userData.body.children.filter(o=>o.name==='CylinderGeometry').forEach(()=>{});
-});boss.position.y=Math.sin(t*.8)*.018;boss.userData.halo.rotation.z=t*.22;dots.forEach((d,i)=>{d.position.y+=Math.sin(t*.7+i)*.0015;d.material.opacity=.45+.45*Math.sin(t*2+i);});controls.update();renderer.render(scene,camera)}
+function animate(){requestAnimationFrame(animate);const t=clock.getElapsedTime();staff.forEach((a,i)=>{
+ const phase=t*3.2+a.userData.phase;
+ a.position.y=Math.sin(t*1.1+a.userData.phase)*.035;
+ a.userData.halo.rotation.z=t*.25+i;
+ a.userData.body.rotation.y=Math.sin(t*.55+i)*.055;
+ a.userData.leftArm.rotation.x=Math.sin(phase)*.22-.10;
+ a.userData.rightArm.rotation.x=Math.sin(phase+1.4)*.22-.10;
+ a.userData.leftArm.rotation.z=Math.sin(phase*.7)*.10-.04;
+ a.userData.rightArm.rotation.z=-Math.sin(phase*.7+1)*.10+.04;
+ a.userData.leftForearm.rotation.x=.12+Math.sin(phase+1)*.18;
+ a.userData.rightForearm.rotation.x=.12+Math.sin(phase+2)*.18;
+ a.userData.head.rotation.x=Math.sin(t*1.5+i)*.045;
+ });boss.position.y=Math.sin(t*.8)*.025;boss.userData.halo.rotation.z=t*.22;
+ boss.userData.leftArm.rotation.x=Math.sin(t*1.8)*.09-.04;boss.userData.rightArm.rotation.x=Math.sin(t*1.8+1)*.09-.04;
+ dots.forEach((d,i)=>{d.position.y+=Math.sin(t*.7+i)*.0015;d.material.opacity=.45+.45*Math.sin(t*2+i);});controls.update();renderer.render(scene,camera)}
 animate();document.querySelector('#loading').style.display='none';
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.8))});
 </script>
+
+<script>
+(() => {
+ const toggle=document.getElementById('menuToggle');
+ const drawer=document.getElementById('menuDrawer');
+ const panel=document.getElementById('infoPanel');
+ const title=document.getElementById('panelTitle');
+ const content=document.getElementById('panelContent');
+ const original=content.innerHTML;
+ const views={
+  office:['RINGKASAN KANTOR',original],
+  market:['MARKET', '<div class="coin"><div class="coinicon">₿</div><div><b>BTCUSDT</b><small>Contoh tampilan market · belum terhubung ke data live</small></div></div><div class="coin"><div class="coinicon" style="background:#6578df;color:white">Ξ</div><div><b>ETHUSDT</b><small>Menunggu integrasi data market</small></div></div><div class="coin"><div class="coinicon" style="background:#8b6cff;color:white">◎</div><div><b>SOLUSDT</b><small>Menunggu integrasi data market</small></div></div>'],
+  trading:['TRADING', '<div class="coin"><div><b>Status trading</b><small>Mode simulasi. Belum mengirim order ke Binance.</small></div></div><div class="coin"><div><b>Batas risiko</b><small>Maksimal 5 USDT per SL · maksimal 2 trade per hari</small></div></div>'],
+  reports:['LAPORAN & AKTIVITAS', original],
+  staff:['KARYAWAN AI', '<div class="coin"><div><b>Market Analyst</b><small>Memindai kandidat coin (simulasi)</small></div><div class="tag">DEMO</div></div><div class="coin"><div><b>Neurobro</b><small>Analisis setup (belum terhubung)</small></div><div class="tag">DEMO</div></div><div class="coin"><div><b>Risk Manager</b><small>Validasi batas risiko</small></div><div class="tag">DEMO</div></div>'],
+  settings:['PENGATURAN', '<div class="coin"><div><b>Mode</b><small>Visual simulasi — belum ada eksekusi trading otomatis.</small></div></div><div class="coin"><div><b>Pengamanan</b><small>Jangan masukkan API key Binance ke halaman ini.</small></div></div>']
+ };
+ toggle.addEventListener('click',()=>{
+  const opening=drawer.hidden;
+  drawer.hidden=!opening;
+  toggle.setAttribute('aria-expanded',String(opening));
+ });
+ drawer.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{
+  drawer.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b===btn));
+  const v=views[btn.dataset.view]||views.office;
+  title.textContent=v[0];content.innerHTML=v[1];panel.hidden=false;drawer.hidden=true;toggle.setAttribute('aria-expanded','false');
+ }));
+ document.getElementById('panelClose').addEventListener('click',()=>panel.hidden=true);
+})();
+</script>
+
 </body>
 </html>
