@@ -267,5 +267,21 @@ addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updat
 })();
 </script>
 
+<script>
+window.addEventListener('error', function(e) {
+  if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) return;
+  const el = document.querySelector('#loading');
+  if (el && el.style.display !== 'none') {
+    el.innerHTML = '<div>GAGAL MEMUAT KANTOR 3D<span>Modul 3D gagal dimuat. Periksa koneksi internet lalu muat ulang.</span></div>';
+  }
+});
+window.addEventListener('unhandledrejection', function(e) {
+  const el = document.querySelector('#loading');
+  if (el) {
+    el.style.display = 'grid';
+    el.innerHTML = '<div>GAGAL MEMUAT KANTOR 3D<span>Modul 3D gagal dimuat. Periksa koneksi internet lalu muat ulang.</span></div>';
+  }
+});
+</script>
 </body>
 </html>
