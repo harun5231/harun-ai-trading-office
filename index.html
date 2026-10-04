@@ -19,6 +19,14 @@
 #loading{position:absolute;inset:0;display:grid;place-items:center;background:#050a12;z-index:5;color:#d7eaff;text-align:center}#loading span{display:block;color:var(--cyan);font-size:12px;margin-top:8px}
 @media(max-width:700px){.top{left:9px;right:9px;top:9px;gap:6px}.brand{padding:7px 9px;gap:7px}.logo{width:32px;height:32px;font-size:17px}.brand small{font-size:9px}.stats{gap:5px}.stat{min-width:0;padding:7px 8px}.stat span{font-size:8px}.stat b{font-size:12px}.stats .stat:nth-child(2){display:none}.leftnav{left:9px;top:92px;gap:6px}.nav{width:49px;padding:9px 3px;font-size:9px}.nav i{font-size:17px}.panel{bottom:9px;padding:10px;border-radius:14px}.position{left:9px;width:calc(50vw - 14px)}.activity{right:9px;width:calc(50vw - 14px)}.panel h3{font-size:10px}.coin{gap:5px;padding:6px 0}.coinicon{width:22px;height:22px;font-size:10px}.coin b{font-size:10px}.coin small{font-size:8px}.tag{font-size:8px}.event{grid-template-columns:30px 1fr;gap:3px;font-size:8px}.event .msg{grid-column:2}.event .role{display:none}.bottomhint{bottom:144px;font-size:9px;max-width:88vw;overflow:hidden;text-overflow:ellipsis}}
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
 <div id="scene"></div>
@@ -38,7 +46,7 @@
 <div class="bottomhint">🖱️ Geser untuk memutar · Scroll/cubit untuk zoom · Avatar bekerja otomatis</div>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-import { OrbitControls } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const container=document.querySelector('#scene');
 window.addEventListener('error',e=>{const l=document.querySelector('#loading');if(l){l.style.display='grid';document.querySelector('#loadtitle').textContent='KANTOR 3D GAGAL DIMUAT';document.querySelector('#loadmsg').textContent='Kesalahan: '+(e.message||'WebGL atau modul 3D tidak tersedia');}});
 window.addEventListener('unhandledrejection',e=>{const l=document.querySelector('#loading');if(l){l.style.display='grid';document.querySelector('#loadtitle').textContent='KANTOR 3D GAGAL DIMUAT';document.querySelector('#loadmsg').textContent='Modul 3D gagal diunduh. Coba muat ulang saat koneksi stabil.';}});
