@@ -93,12 +93,12 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const container=document.querySelector('#scene');
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x070d18);scene.fog=new THREE.Fog(0x070d18,22,52);
 const camera=new THREE.PerspectiveCamera(43,innerWidth/innerHeight,.1,100);camera.position.set(13,12,19);
-const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.42;container.appendChild(renderer.domElement);
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});renderer.setPixelRatio(Math.min(devicePixelRatio,1.8));renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.58;container.appendChild(renderer.domElement);
 const controls=new OrbitControls(camera,renderer.domElement);controls.target.set(0,1.1,0);controls.enableDamping=true;controls.dampingFactor=.06;controls.minDistance=8;controls.maxDistance=31;controls.maxPolarAngle=Math.PI*.49;
-scene.add(new THREE.HemisphereLight(0xc6e4ff,0x35435b,3.0));
-const key=new THREE.DirectionalLight(0xfff1d8,4.2);key.position.set(7,15,9);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-18;key.shadow.camera.right=18;key.shadow.camera.top=18;key.shadow.camera.bottom=-18;scene.add(key);
+scene.add(new THREE.HemisphereLight(0xe5f3ff,0x66758c,4.0));
+const key=new THREE.DirectionalLight(0xfff5e6,5.0);key.position.set(7,15,9);key.castShadow=true;key.shadow.mapSize.set(2048,2048);key.shadow.camera.left=-18;key.shadow.camera.right=18;key.shadow.camera.top=18;key.shadow.camera.bottom=-18;scene.add(key);
 function area(color,intensity,pos){const l=new THREE.PointLight(color,intensity,18,2);l.position.set(...pos);scene.add(l)}
-area(0x16baff,58,[-7,6,-3]);area(0x4f8dff,42,[6,5,-5]);area(0xffc477,48,[0,6,7]);area(0xd9ecff,30,[0,7,0]);
+area(0x16baff,72,[-7,6,-3]);area(0x4f8dff,58,[6,5,-5]);area(0xffd49a,62,[0,6,7]);area(0xe6f4ff,48,[0,7,0]);
 const mat=(color,rough=.65,metal=0)=>new THREE.MeshStandardMaterial({color,roughness:rough,metalness:metal});
 const floorMat=mat(0x182335,.82),wallMat=mat(0x18263a),dark=mat(0x0b1220),metal=mat(0x586a80,.3,.8),wood=mat(0x64432f,.45),wood2=mat(0x8b6341,.5),glass=new THREE.MeshPhysicalMaterial({color:0x6bb9e7,transparent:true,opacity:.16,roughness:.12,metalness:.35});
 function box(parent,name,pos,size,material,cast=true){const m=new THREE.Mesh(new THREE.BoxGeometry(...size),material);m.name=name;m.position.set(...pos);m.castShadow=cast;m.receiveShadow=true;parent.add(m);return m}
@@ -167,9 +167,15 @@ function avatar(x,z,role,shirtMat,accent,pose=0){
  const rightForearm=new THREE.Group();rightForearm.position.set(.21,-.38,.12);rightArm.add(rightForearm);
  limb(rightForearm,[0,0,0],[-.16,-.19,.22],.075,shirtMat);sphere(rightForearm,[-.16,-.23,.23],[.09,.09,.08],skin);
  body.userData={leftArm,rightArm,leftForearm,rightForearm,headBob:0};
- // legs and shoes
- limb(body,[-.15,.72,0],[-.17,.28,.04],.115,pants);limb(body,[-.17,.28,.04],[-.17,.12,.13],.075,pants);box(body,'left shoe',[-.17,.08,.22],[.22,.13,.38],shoe);
- limb(body,[.15,.72,0],[.18,.3,-.02],.115,pants);limb(body,[.18,.3,-.02],[.18,.12,.1],.075,pants);box(body,'right shoe',[.18,.08,.19],[.22,.13,.38],shoe);
+ // articulated legs and shoes for visible walking cycles
+ const leftLeg=new THREE.Group();leftLeg.position.set(-.15,.92,0);body.add(leftLeg);
+ limb(leftLeg,[0,0,0],[0,-.34,0],.115,pants);
+ const leftKnee=new THREE.Group();leftKnee.position.set(0,-.34,0);leftLeg.add(leftKnee);
+ limb(leftKnee,[0,0,0],[0,-.34,.035],.078,pants);box(leftKnee,'left shoe',[0,-.39,.14],[.22,.13,.34],shoe);
+ const rightLeg=new THREE.Group();rightLeg.position.set(.15,.92,0);body.add(rightLeg);
+ limb(rightLeg,[0,0,0],[0,-.34,0],.115,pants);
+ const rightKnee=new THREE.Group();rightKnee.position.set(0,-.34,0);rightLeg.add(rightKnee);
+ limb(rightKnee,[0,0,0],[0,-.34,.035],.078,pants);box(rightKnee,'right shoe',[0,-.39,.14],[.22,.13,.34],shoe);
  // ID badge
  box(body,'staff badge',[.2,1.87,.18],[.12,.16,.025],mat(0x0e1827));box(body,'badge light',[.2,1.9,.198],[.055,.025,.009],new THREE.MeshBasicMaterial({color:accent}),false);
  // role marker hologram
@@ -177,9 +183,10 @@ function avatar(x,z,role,shirtMat,accent,pose=0){
  const label=makeLabel(role,accent);label.position.set(0,3.25,0);root.add(label);
  const head=new THREE.Group();head.position.set(0,2.55,.015);body.add(head);
  // move facial/head meshes into the head pivot while keeping their world-like local positions
- const headParts=body.children.filter(o=>o.position.y>=2.35);
+ const headParts=body.children.filter(o=>o!==head && o.position.y>=2.35);
  headParts.forEach(o=>{body.remove(o);o.position.y-=2.55;head.add(o);});
- root.userData={body,halo,role,baseY:0,phase:Math.random()*6.28,head,leftArm:body.userData.leftArm,rightArm:body.userData.rightArm,leftForearm:body.userData.leftForearm,rightForearm:body.userData.rightForearm};return root;
+ root.rotation.y=Math.PI; // avatar menghadap monitor yang berada di sisi -Z
+ root.userData={body,halo,role,baseY:0,phase:Math.random()*6.28,head,leftArm:body.userData.leftArm,rightArm:body.userData.rightArm,leftForearm:body.userData.leftForearm,rightForearm:body.userData.rightForearm,leftLeg,rightLeg,leftKnee,rightKnee,homeX:x,homeZ:z,phase:Math.random()*6.28};return root;
 }
 // desk stations laid out with generous space
 const stations=[
@@ -202,6 +209,13 @@ const staff=[
 // boss desk in foreground and boss avatar
 const bossDesk=desk(0,6.4,'BOSS · HARUN',0xffc65c,0);
 const boss=avatar(0,7.8,'BOSS · HARUN',shirtBlue,0xffc65c);
+// Each staff member periodically walks along clear aisles to inspect another station, then returns to their own desk.
+const walkRoutes = staff.map((a,i)=>({avatar:a, home:new THREE.Vector3(a.userData.homeX,0,a.userData.homeZ), points:[
+ new THREE.Vector3(a.userData.homeX,0,a.userData.homeZ),
+ new THREE.Vector3([-7,-2,7,-6,2,7][i],0,[-.4,-.2,-.4,1.2,1.4,1.1][i]),
+ new THREE.Vector3([-3,2,4,-2,4,3][i],0,[1.8,-.2,1.7,2.2,2.1,2.3][i]),
+ new THREE.Vector3([-5,0,5,-4,1,5][i],0,[-1.2,-1.0,-1.2,3.8,3.7,3.8][i]),
+ new THREE.Vector3(a.userData.homeX,0,a.userData.homeZ)] , segment:0, progress:0, pause:2+i*.8}));
 // bookshelves
 function shelf(x,z){box(scene,'bookshelf',[x,1.8,z],[.5,3.6,.55],wood);for(let y=.65;y<3.5;y+=.85){box(scene,'shelf board',[x,y,z],[.62,.07,.7],wood2);for(let i=0;i<4;i++){let b=box(scene,'book',[x-.2+i*.12,y+.2,z+.02],[.075,.32+Math.random()*.22,.22],mat([0x285c82,0x8c3949,0x2f785b,0xb37a36][i]),false);b.rotation.z=(Math.random()-.5)*.12}}}
 shelf(-9,-5);shelf(9,-5);shelf(-9,4);shelf(9,4);
@@ -218,21 +232,45 @@ const logoCanvas=document.createElement('canvas');logoCanvas.width=512;logoCanva
 // floating subtle status dots
 const dots=[];for(let i=0;i<28;i++){const d=new THREE.Mesh(new THREE.SphereGeometry(.025,8,8),new THREE.MeshBasicMaterial({color:i%2?0x35dfff:0x3ce6a0}));d.position.set((Math.random()-.5)*18,1+Math.random()*5,(Math.random()-.5)*14);scene.add(d);dots.push(d)}
 const clock=new THREE.Clock();
-function animate(){requestAnimationFrame(animate);const t=clock.getElapsedTime();staff.forEach((a,i)=>{
- const phase=t*3.2+a.userData.phase;
- a.position.y=Math.sin(t*1.1+a.userData.phase)*.035;
- a.userData.halo.rotation.z=t*.25+i;
- a.userData.body.rotation.y=Math.sin(t*.55+i)*.055;
- a.userData.leftArm.rotation.x=Math.sin(phase)*.22-.10;
- a.userData.rightArm.rotation.x=Math.sin(phase+1.4)*.22-.10;
- a.userData.leftArm.rotation.z=Math.sin(phase*.7)*.10-.04;
- a.userData.rightArm.rotation.z=-Math.sin(phase*.7+1)*.10+.04;
- a.userData.leftForearm.rotation.x=.12+Math.sin(phase+1)*.18;
- a.userData.rightForearm.rotation.x=.12+Math.sin(phase+2)*.18;
- a.userData.head.rotation.x=Math.sin(t*1.5+i)*.045;
- });boss.position.y=Math.sin(t*.8)*.025;boss.userData.halo.rotation.z=t*.22;
- boss.userData.leftArm.rotation.x=Math.sin(t*1.8)*.09-.04;boss.userData.rightArm.rotation.x=Math.sin(t*1.8+1)*.09-.04;
- dots.forEach((d,i)=>{d.position.y+=Math.sin(t*.7+i)*.0015;d.material.opacity=.45+.45*Math.sin(t*2+i);});controls.update();renderer.render(scene,camera)}
+function animate(){requestAnimationFrame(animate);const dt=Math.min(clock.getDelta(),.05);const t=clock.elapsedTime;
+ walkRoutes.forEach((w,i)=>{
+  const a=w.avatar; const phase=t*8+a.userData.phase;
+  if(w.pause>0){
+   // At a workstation: seated posture, eyes toward the monitors, hands actively typing.
+   w.pause-=dt; a.position.y=0; a.rotation.y=Math.PI;
+   a.userData.body.rotation.x=-.035+Math.sin(t*1.3+i)*.012;
+   a.userData.leftArm.rotation.x=-.78+Math.sin(phase*2.1)*.055;
+   a.userData.rightArm.rotation.x=-.78+Math.sin(phase*2.1+1.1)*.055;
+   a.userData.leftArm.rotation.z=-.10+Math.sin(phase*1.7)*.035;
+   a.userData.rightArm.rotation.z=.10+Math.sin(phase*1.7+1)*.035;
+   a.userData.leftForearm.rotation.x=-.28+Math.sin(phase*2.7)*.12;
+   a.userData.rightForearm.rotation.x=-.28+Math.sin(phase*2.7+1.4)*.12;
+   // Legs bend forward like sitting in the chair; knees bend down toward the floor.
+   a.userData.leftLeg.rotation.x=1.08; a.userData.rightLeg.rotation.x=1.08;
+   a.userData.leftKnee.rotation.x=-.72+Math.sin(t*1.2+i)*.025;
+   a.userData.rightKnee.rotation.x=-.72+Math.sin(t*1.2+i+1)*.025;
+   a.userData.head.rotation.x=Math.sin(t*1.2+i)*.035;
+   a.userData.head.rotation.y=Math.sin(t*.8+i)*.045;
+   a.userData.halo.rotation.z=t*.25+i;
+   return;
+  }
+  const target=w.points[w.segment+1]; const dx=target.x-a.position.x,dz=target.z-a.position.z; const dist=Math.hypot(dx,dz); const speed=1.25;
+  if(dist<.12){w.segment++; if(w.segment>=w.points.length-1){w.segment=0;w.pause=4+i*.65;} return;}
+  const step=Math.min(dist,speed*dt);a.position.x+=dx/dist*step;a.position.z+=dz/dist*step;
+  // Face the direction of travel; head and arms react naturally while walking.
+  a.rotation.y=Math.atan2(-dx,-dz);a.position.y=Math.abs(Math.sin(phase))*0.07;
+  a.userData.leftArm.rotation.x=Math.sin(phase)*.62-.08;a.userData.rightArm.rotation.x=-Math.sin(phase)*.62-.08;
+  a.userData.leftArm.rotation.z=Math.sin(phase)*.08;a.userData.rightArm.rotation.z=-Math.sin(phase)*.08;
+  a.userData.leftForearm.rotation.x=.08+Math.sin(phase+1)*.12;a.userData.rightForearm.rotation.x=.08+Math.sin(phase+2)*.12;
+  a.userData.leftLeg.rotation.x=Math.sin(phase)*.62;a.userData.rightLeg.rotation.x=-Math.sin(phase)*.62;
+  a.userData.leftKnee.rotation.x=Math.max(0,-Math.sin(phase))*.55;a.userData.rightKnee.rotation.x=Math.max(0,Math.sin(phase))*.55;
+  a.userData.head.rotation.x=Math.sin(t*1.8+i)*.045; a.userData.head.rotation.y=Math.sin(t*1.5+i)*.08;
+  a.userData.halo.rotation.z=t*.25+i;
+ });
+ boss.position.y=0;boss.userData.halo.rotation.z=t*.22;boss.rotation.y=Math.PI;
+ boss.userData.leftArm.rotation.x=-.76+Math.sin(t*4.2)*.055;boss.userData.rightArm.rotation.x=-.76+Math.sin(t*4.2+1)*.055;
+ boss.userData.leftForearm.rotation.x=-.25+Math.sin(t*5.2)*.10;boss.userData.rightForearm.rotation.x=-.25+Math.sin(t*5.2+1.2)*.10;boss.userData.head.rotation.x=Math.sin(t*1.1)*.025;boss.userData.head.rotation.y=Math.sin(t*.7)*.035;
+ dots.forEach((d,i)=>{d.position.y+=Math.sin(t*.7+i)*.0015*dt;d.material.opacity=.45+.45*Math.sin(t*2+i);});controls.update();renderer.render(scene,camera)}
 animate();document.querySelector('#loading').style.display='none';
 addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);renderer.setPixelRatio(Math.min(devicePixelRatio,1.8))});
 </script>
