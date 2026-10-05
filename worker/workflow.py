@@ -8,6 +8,7 @@ from .core import Review,Locked,day,risk_check
 from .neuroapi import SCREEN_SCHEMA,SETUP_SCHEMA,selections,setup
 from .prompts import SCREENING,ANALYSIS
 from .monitor import PaperMonitor
+from .analysis import analysis_context
 from .diagnostics import safe_code,validation_code
 
 SOURCE='NEUROAPI_DRY_RUN'
@@ -46,7 +47,7 @@ class Workflow:
                 if self.ledger.count()>=2:raise Locked('DAILY_LIMIT')
                 try:
                     self.event('MARKET_DATA',symbol+' / 1h + 15m')
-                    data=self.market.data(symbol);self.market.fresh(data,symbol)
+                    data,_=analysis_context(self.market,symbol)
                     self.event('ANALYZING_COIN_'+str(index),symbol+' / smart')
                     value=self.neuro.ask(today+':analysis:'+symbol,ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,symbol),data)
                     self.market.fresh(data,symbol)

@@ -12,7 +12,8 @@ from .workflow import Workflow
 
 def main():
     os.umask(0o077)
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics','screening-once']);p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics','screening-once','analysis-once']);p.add_argument('symbols',nargs='*');p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    if (a.command=='analysis-once' and len(a.symbols)!=2) or (a.command!='analysis-once' and a.symbols):p.error('analysis-once requires exactly two symbols; other commands take none')
     if a.command=='diagnostics':
         from .diagnostics import read_records
         try:print(json.dumps(read_records(a.data_dir)));return 0
@@ -23,6 +24,10 @@ def main():
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             ledger=Ledger(d/'ledger.sqlite3');client=NeuroAPI(ledger)
             try:
+                if a.command=='analysis-once':
+                    from .analysis import analysis_once
+                    result=analysis_once(ledger,client,Market(int(os.getenv('OFFICE_CANDLE_LOOKBACK','100')),int(os.getenv('OFFICE_MARKET_MAX_AGE','180'))),a.symbols)
+                    print(json.dumps(result));return 0
                 if a.command=='screening-once':
                     catalog=Market().catalog() # Public exchangeInfo before any paid request.
                     value=client.ask(day()+':manual-screening:v2',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,catalog),catalog=catalog)

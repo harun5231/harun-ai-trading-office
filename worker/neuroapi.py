@@ -13,9 +13,10 @@ BASE='https://api.neurobro.ai/api/v1'
 SYMBOL_PATTERN=r'^[A-Z0-9]{2,18}USDT$'
 SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','description':'Exactly two distinct active Binance USD-M Futures trading symbols.','items':{'type':'string','pattern':SYMBOL_PATTERN,'description':'Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation.'},'minItems':2,'maxItems':2,'uniqueItems':True}},'required':['symbols'],'additionalProperties':False}
 NUM={'type':'number','exclusiveMinimum':0}
+PRICE={**NUM,'description':'Price must conform exactly to Binance tickSize and applicable price limits supplied in context; do not round after generation.'}
 SETUP_SCHEMA={'type':'object','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT']},
- 'position_size':{**NUM,'description':'Quantity in base-asset units, not USDT notional or margin'},
- 'limit_entry':NUM,'take_profit':NUM,'stop_loss':NUM,
+ 'position_size':{**NUM,'description':'base-asset quantity that must conform exactly to Binance stepSize/minQty/maxQty supplied in context and whose loss from limit_entry to stop_loss must not exceed 5 USDT'},
+ 'limit_entry':PRICE,'take_profit':PRICE,'stop_loss':PRICE,
  'risk_reward':{**NUM,'description':'Reward divided by risk; 2 means risk:reward 1:2'}},
  'required':['symbol','side','position_size','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}
 
