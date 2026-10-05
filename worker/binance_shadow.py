@@ -4,6 +4,8 @@ import hashlib
 import json
 import re
 import time
+from decimal import Context,ROUND_HALF_EVEN
+from fractions import Fraction
 from pathlib import Path
 from .core import D,Ledger,Review,day,number,preflight
 from .market import Market
@@ -29,12 +31,40 @@ def identity(plan,business_day):
     return hashlib.sha256(json.dumps(values,separators=(',',':')).encode()).hexdigest()
 def ids(key):return {leg:'ho-'+key[:28]+'-'+suffix for leg,suffix in (('ENTRY','e'),('TP','t'),('SL','s'))}
 
+def verified_rr(plan):
+    """Derived values are not order inputs. Verify exact levels, never resize/reprice.
+
+    analysis-v6 persisted Decimal division at precision 160 / HALF_EVEN. Accept
+    either the exact rational or that precisely rounded representation, not an
+    arbitrary tolerance or rounding at the number of digits supplied by a caller.
+    Fixed context keeps verification independent of ambient Decimal settings.
+    """
+    try:
+        entry,tp,sl=(Fraction(number(plan[k])) for k in ('entry','tp','sl'))
+        distance=abs(entry-sl)
+        if not distance:raise ValueError
+        ratio=abs(tp-entry)/distance
+        if ratio<2:raise ValueError
+        value=plan['rr']
+        if isinstance(value,bool) or not isinstance(value,(str,int,D)):raise ValueError
+        text=str(value)
+        # Separate bounded parser for worker-derived ratios; core.number unchanged.
+        if len(text)>256 or not re.fullmatch(r'\d+(?:\.\d+)?(?:E[+-]?\d{1,3})?',text):raise ValueError
+        saved=D(text)
+        if not saved.is_finite() or saved<=0 or abs(saved.as_tuple().exponent)>256:raise ValueError
+        rounded=Context(prec=160,rounding=ROUND_HALF_EVEN).divide(D(ratio.numerator),D(ratio.denominator))
+        if Fraction(saved)!=ratio and saved!=rounded:raise ValueError
+        return ratio
+    except Exception:fail('SHADOW_SETUP_CHANGED')
+
+
 def plan_payload(plan,business_day):
     symbol=plan['symbol'];side=plan['side']
     if side=='HOLD':return None
     if not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol) or side not in ('LONG','SHORT'):fail('SHADOW_DATA_INVALID')
     if plan.get('mode')!='DRY_RUN' or plan.get('margin_mode')!='CROSS' or plan.get('leverage')!=75 or plan.get('order_type')!='LIMIT':fail('SHADOW_DATA_INVALID')
-    for field in ('entry','tp','sl','quantity','execution_quantity','risk','rr'):number(plan[field])
+    for field in ('entry','tp','sl','quantity','execution_quantity','risk'):number(plan[field])
+    verified_rr(plan)
     if D(plan['quantity'])!=D(plan['execution_quantity']):fail('SHADOW_SETUP_CHANGED')
     key=identity(plan,business_day);client_ids=ids(key)
     entry_side='BUY' if side=='LONG' else 'SELL';exit_side='SELL' if side=='LONG' else 'BUY'
@@ -97,6 +127,7 @@ def load_candidates(ledger,today):
             if eligible:
                 try:
                     if not plan_payload(p,today) or 'neurobro_position_size' not in p:raise ValueError
+                except ShadowError:raise
                 except Exception:fail('SHADOW_SOURCE_UNVERIFIED')
                 items.append((p,operation,True))
     if 'analysis_checks' in names:
@@ -111,10 +142,11 @@ def load_candidates(ledger,today):
             if result.get('mode')!='DRY_RUN' or not result.get('execution_quantity'):fail('SHADOW_SOURCE_UNVERIFIED')
             try:
                 p=dict(symbol=result['symbol'],side=result['side'],entry=result['entry'],tp=result['TP'],sl=result['SL'],
-                    quantity=result['execution_quantity'],execution_quantity=result['execution_quantity'],risk=result['calculated_risk'],rr=result['actual_RR'],
+                    quantity=result['execution_quantity'],execution_quantity=result['execution_quantity'],risk=result['calculated_risk'],rr=result.get('actual_RR'),
                     neurobro_position_size=result['neurobro_position_size'],
                     margin_mode='CROSS',leverage=75,order_type='LIMIT',mode='DRY_RUN')
                 plan_payload(p,today)
+            except ShadowError:raise
             except Exception:fail('SHADOW_SOURCE_UNVERIFIED')
             items.append((p,row['operation'],False))
     if not items:fail('NO_PERSISTED_SETUP')
@@ -142,8 +174,7 @@ def symbol_preflight(client,market,plan,account):
     rules=market.rules(symbol)
     try:
         preflight(plan,rules)
-        rr=abs(number(plan['tp'])-number(plan['entry']))/abs(number(plan['entry'])-number(plan['sl']))
-        if rr!=number(plan['rr']):fail('SHADOW_SETUP_CHANGED')
+        verified_rr(plan)
     except Review:fail('SHADOW_RULES_REJECTED')
     mark=number(market.mark(symbol)['price'])
     if not min(number(plan['tp']),number(plan['sl']))<mark<max(number(plan['tp']),number(plan['sl'])):fail('SHADOW_LEVELS_ALREADY_CROSSED')

@@ -110,7 +110,7 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_RULES_REJECTED')
     def test_actual_rr_mismatch_cannot_fake_shadow_ok(self):
         p=self.seed();p['rr']='1.9';stamp(self.ledger.db,p,day()+':analysis:BTCUSDT');self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
-        self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_SETUP_CHANGED')
+        with self.assertRaisesRegex(ShadowError,'SHADOW_SETUP_CHANGED'):self.go()
     def test_existing_position_blocks_closeall_plan(self):
         self.seed();self.client.position=[dict(symbol='BTCUSDT',positionSide='BOTH',positionAmt='0.01')]
         self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_EXISTING_EXPOSURE')
@@ -186,7 +186,7 @@ class ShadowTests(unittest.TestCase):
         self.ledger.db.execute('UPDATE shadow_plans SET model=?',(json.dumps(model.data()),))
         with self.assertRaisesRegex(ShadowError,'SHADOW_PROTECTION_INCOMPLETE'):self.go()
     def test_changed_plan_cannot_reuse_day_symbol_identity(self):
-        p=self.seed();self.go();value=plan_payload({**p,'tp':'106'},day())
+        p=self.seed();self.go();value=plan_payload({**p,'tp':'106','rr':'3'},day())
         with self.assertRaisesRegex(ShadowError,'SHADOW_IDENTITY_CONFLICT'):ShadowStore(self.ledger.db).save(value)
     def test_concurrent_ledger_change_invalidates_preflight(self):
         self.seed();old=self.market.mark
