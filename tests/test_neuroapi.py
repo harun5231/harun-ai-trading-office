@@ -11,7 +11,7 @@ from worker.neuroapi import NeuroAPI,SCREEN_SCHEMA,SETUP_SCHEMA,selections,setup
 from worker.prompts import SCREENING,ANALYSIS
 from worker.workflow import Workflow
 
-GOOD={'symbol':'BTCUSDT','side':'LONG','position_size':'2','limit_entry':'100','take_profit':'104','stop_loss':'98','risk_reward':'2'}
+GOOD={'symbol':'BTCUSDT','side':'LONG','position_size':2,'limit_entry':100,'take_profit':104,'stop_loss':98,'risk_reward':2}
 RULES=lambda:Rules(D('.001'),D('.001'),D('1000'),D('.01'),D('5'),time.time())
 def row(symbol):return {'symbol':symbol,'status':'TRADING','contractType':'PERPETUAL','quoteAsset':'USDT','marginAsset':'USDT','orderTypes':['LIMIT'],'filters':[
  {'filterType':'LOT_SIZE','stepSize':'0.001','minQty':'0.001','maxQty':'1000'},
@@ -84,17 +84,17 @@ class APITests(unittest.TestCase):
         for value in ({'symbols':['BTCUSDT']},{'symbols':['BTCUSDT','BTCUSDT']},{'symbols':['BTC','ETH']},{'symbols':['BTCUSDT','SOLUSDT']},{'symbols':['BTCUSDT','ETHUSDT'],'extra':1}):
             with self.subTest(value=value),self.assertRaises(Review):selections(value,{'BTCUSDT':{},'ETHUSDT':{}})
     def test_strict_structured_setup(self):
-        for value in ('ENTRY: 100',{**GOOD,'extra':1},{k:v for k,v in GOOD.items() if k!='position_size'},{**GOOD,'symbol':'ETHUSDT'},{**GOOD,'side':'BUY'},{**GOOD,'limit_entry':'99-100'},{**GOOD,'position_size':2}):
+        for value in ('ENTRY: 100',{**GOOD,'extra':1},{k:v for k,v in GOOD.items() if k!='position_size'},{**GOOD,'symbol':'ETHUSDT'},{**GOOD,'side':'BUY'},{**GOOD,'limit_entry':'99-100'},{**GOOD,'position_size':'2'}):
             with self.subTest(value=value),self.assertRaises(Review):setup(value,'BTCUSDT')
-    def test_rr_claim_must_match_prices(self):
-        for rr in ('1','3','1:2'):
+    def test_rr_declaration_must_be_positive_numeric(self):
+        for rr in (0,'3','1:2'):
             with self.assertRaises(Review):setup({**GOOD,'risk_reward':rr},'BTCUSDT')
     def test_overrisk_is_rejected_not_resized(self):
-        signal=setup({**GOOD,'position_size':'10'},'BTCUSDT')
+        signal=setup({**GOOD,'position_size':10},'BTCUSDT')
         with self.assertRaises(Review):risk_check(signal,RULES())
         self.assertEqual(signal.quantity,D('10'))
     def test_long_and_short_exact_plan(self):
-        for output in (GOOD,{**GOOD,'side':'SHORT','take_profit':'96','stop_loss':'102'}):
+        for output in (GOOD,{**GOOD,'side':'SHORT','take_profit':96,'stop_loss':102}):
             p=risk_check(setup(output,'BTCUSDT'),RULES());self.assertEqual(p['quantity'],'2');self.assertEqual(p['entry'],'100');self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS');self.assertEqual(p['mode'],'DRY_RUN')
     def test_workflow_end_to_end_two_plans_and_no_duplicate(self):
         m=FakeMarket();flow=Workflow(self.ledger,self.client(),m,self.path/'snapshot.json');s=flow.run()

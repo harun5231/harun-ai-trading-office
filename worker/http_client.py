@@ -1,5 +1,6 @@
 """Fixed-origin HTTPS transport. No redirects, response-body logs or raw exceptions."""
 import json
+from decimal import Decimal
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.error import HTTPError
 from .core import Review
@@ -26,6 +27,9 @@ def request(method,url,headers=None,body=None,timeout=60):
             if code!=200:return code,{'retry-after':hint},None
             data=res.read(4_000_001)
             if len(data)>4_000_000:raise ValueError('SIZE')
-            parsed=json.loads(data,parse_float=str,object_pairs_hook=unique)
+            try:
+                parsed=json.loads(data,parse_float=Decimal if url.startswith('https://api.neurobro.ai/api/v1/') else str,object_pairs_hook=unique)
+            except (ValueError,TypeError):raise Review('INVALID_RESPONSE_ENVELOPE') from None
             return code,{},parsed
+    except Review:raise
     except Exception:raise Review('HTTP_RESULT_UNCERTAIN') from None

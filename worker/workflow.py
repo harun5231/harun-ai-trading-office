@@ -8,6 +8,7 @@ from .core import Review,Locked,day,risk_check
 from .neuroapi import SCREEN_SCHEMA,SETUP_SCHEMA,selections,setup
 from .prompts import SCREENING,ANALYSIS
 from .monitor import PaperMonitor
+from .diagnostics import safe_code,validation_code
 
 SOURCE='NEUROAPI_DRY_RUN'
 def export(ledger,path,connected=False):
@@ -51,15 +52,20 @@ class Workflow:
                     self.market.fresh(data,symbol)
                     self.event('VALIDATING',symbol+' / ACCEPT atau REJECT; angka tidak diubah')
                     signal=setup(value,symbol);rules=self.market.rules(symbol)
-                    plan=risk_check(signal,rules)
+                    try:plan=risk_check(signal,rules)
+                    except Review as error:
+                        self.neuro.record_validation(today+':analysis:'+symbol,error)
+                        raise
                     plan['protective_plan']={'activation':'AFTER_CONFIRMED_FILL','take_profit':plan['tp'],'stop_loss':plan['sl'],
                         'exit_side':'SELL' if plan['side']=='LONG' else 'BUY','reduce_only':True,
                         'failure_policy':'LIVE_UNIMPLEMENTED_REQUIRES_SEPARATE_REVIEW','simulated':True}
                     if day()!=today:raise Review('CYCLE_DAY_CHANGED')
                     self.ledger.reserve(plan,SOURCE,rules)
                     self.event('DRY_RUN_READY',symbol+' / ACCEPT / LIMIT + protective TP/SL plan; no submission')
-                except Review:
-                    self.event('REJECTED',symbol+' / setup/data/API tidak lolos; tanpa perubahan angka atau order')
+                except Review as error:
+                    diagnostic=self.ledger.db.execute('SELECT failure_code FROM api_requests WHERE operation=?',(today+':analysis:'+symbol,)).fetchone()
+                    reason=safe_code(diagnostic[0]) if diagnostic and diagnostic[0] else validation_code(error)
+                    self.event('REJECTED',symbol+' / '+reason+' / tanpa perubahan angka atau order')
             self.ledger.db.execute("UPDATE cycles SET state='COMPLETE' WHERE day=?",(today,))
         except Exception as exc:
             if claimed:self.ledger.db.execute("UPDATE cycles SET state='NEEDS_REVIEW' WHERE day=?",(today,))

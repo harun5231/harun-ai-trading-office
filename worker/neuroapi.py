@@ -5,12 +5,13 @@ import os
 import re
 import time
 from pathlib import Path
-from .core import Review,number,Signal
+from .core import Review,number,Signal,D
+from .diagnostics import safe_code,validation_code
 from .http_client import request
 
 BASE='https://api.neurobro.ai/api/v1'
 SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','items':{'type':'string'},'minItems':2,'maxItems':2,'uniqueItems':True}},'required':['symbols'],'additionalProperties':False}
-NUM={'type':'string','pattern':r'^\d+(\.\d+)?$'}
+NUM={'type':'number','exclusiveMinimum':0}
 SETUP_SCHEMA={'type':'object','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT']},
  'position_size':{**NUM,'description':'Quantity in base-asset units, not USDT notional or margin'},
  'limit_entry':NUM,'take_profit':NUM,'stop_loss':NUM,
@@ -32,19 +33,48 @@ def selections(output,catalog):
     if any(not re.fullmatch(r'[A-Z0-9]{2,18}USDT',v) or v not in catalog for v in values):raise Review('INVALID_SCREENING_SYMBOL')
     return values
 
+NUMERIC_FIELDS=('position_size','limit_entry','take_profit','stop_loss','risk_reward')
+def setup_number(value):
+    # Real transport parses JSON decimals directly into Decimal, never binary float.
+    if isinstance(value,bool) or not isinstance(value,(int,D)):raise Review('INVALID_NUMERIC_TYPE')
+    value=D(value)
+    if not value.is_finite() or value<=0 or abs(value.adjusted())>63:raise Review('INVALID_NUMERIC_VALUE')
+    try:return number(format(value,'f'))
+    except Review:raise Review('INVALID_NUMERIC_VALUE') from None
+
 def setup(output,expected):
     if not isinstance(output,dict) or set(output)!=set(SETUP_SCHEMA['required']):raise Review('INVALID_SETUP_SCHEMA')
-    if output['symbol']!=expected or output['side'] not in ('LONG','SHORT'):raise Review('INVALID_SETUP_SYMBOL_SIDE')
-    for k in ('position_size','limit_entry','take_profit','stop_loss','risk_reward'):
-        if not isinstance(output[k],str):raise Review('INVALID_SETUP_SCHEMA')
-    q,e,tp,sl,rr=[number(output[k]) for k in ('position_size','limit_entry','take_profit','stop_loss','risk_reward')]
-    if e==sl or rr!=abs(tp-e)/abs(e-sl) or rr<2:raise Review('REJECT_RISK_REWARD')
+    if output['symbol']!=expected or not isinstance(expected,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',expected) or output['side'] not in ('LONG','SHORT'):raise Review('INVALID_SETUP_SYMBOL_SIDE')
+    q,e,tp,sl,rr=[setup_number(output[k]) for k in NUMERIC_FIELDS]
+    if not (sl<e<tp if output['side']=='LONG' else tp<e<sl):raise Review('INVALID_ENTRY_TP_SL')
+    # Compare distances exactly; no rounding/equality assumption for declared RR.
+    if abs(tp-e)<2*abs(e-sl):raise Review('RISK_REWARD_BELOW_2')
     return Signal(expected,output['side'],e,tp,sl,q)
+
+def canonical_output(value,schema):
+    # Cache only reconstructed validated fields, never provider envelope/prose.
+    if schema==SCREEN_SCHEMA:
+        symbols=selections(value,{v:None for v in value.get('symbols',[]) if isinstance(v,str)} if isinstance(value,dict) and isinstance(value.get('symbols'),list) else {})
+        return json.dumps({'symbols':list(symbols)})
+    if schema==SETUP_SCHEMA:
+        signal=setup(value,value.get('symbol'))
+        fields={'symbol':signal.symbol,'side':signal.side,**{k:setup_number(value[k]) for k in NUMERIC_FIELDS}}
+        return '{'+','.join(json.dumps(k)+':'+(format(v,'f') if isinstance(v,D) else json.dumps(v)) for k,v in fields.items())+'}'
+    raise Review('INVALID_OUTPUT_SCHEMA')
 
 class NeuroAPI:
     def __init__(self,ledger,key=None,transport=request,sleep=time.sleep):
         self.db=ledger.db;self._key=api_key() if key is None else key;self.transport=transport;self.sleep=sleep
         self.db.execute('CREATE TABLE IF NOT EXISTS api_requests(operation TEXT PRIMARY KEY, idempotency TEXT, body_hash TEXT, state TEXT, created REAL, attempts INTEGER, output TEXT)')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if 'failure_code' not in {r[1] for r in self.db.execute('PRAGMA table_info(api_requests)')}:
+                self.db.execute('ALTER TABLE api_requests ADD COLUMN failure_code TEXT')
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+    def record_validation(self,operation,error):
+        self.db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",(validation_code(error),operation))
+
     def require_key(self):
         if not self._key:raise Review('NEUROAPI_NOT_CONFIGURED')
     def _headers(self,json_body=False):
@@ -68,20 +98,29 @@ class NeuroAPI:
             old=self.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone()
             if old:
                 if old['body_hash']!=digest or old['state']!='COMPLETE':raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW')
-                value=json.loads(old['output']);validate(value);self.db.execute('COMMIT');return value
+                value=json.loads(old['output'],parse_float=D);validate(value);self.db.execute('COMMIT');return value
             # Retain the legacy nullable column without relying on provider replay.
             idem=None
-            self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?)',(operation,idem,digest,'PENDING',time.time(),0,None))
+            self.db.execute('INSERT INTO api_requests(operation,idempotency,body_hash,state,created,attempts,output) VALUES(?,?,?,?,?,?,?)',(operation,idem,digest,'PENDING',time.time(),0,None))
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
+        failure='LOCAL_PROCESSING_FAILED'
         try:
             for attempt in range(3):
                 self.db.execute('UPDATE api_requests SET attempts=attempts+1 WHERE operation=?',(operation,))
+                failure='NETWORK_UNCERTAIN'
                 code,headers,data=self.transport('POST',BASE+'/agent/ask',self._headers(json_body=True),body,timeout=90)
+                failure='HTTP_'+str(code) if type(code) is int and 100<=code<=599 else 'INVALID_RESPONSE_ENVELOPE'
                 if code==200:
-                    if not isinstance(data,dict) or data.get('mode')!='smart' or data.get('answer') is not None or not isinstance(data.get('output'),dict):raise Review('INVALID_NEUROAPI_RESPONSE')
-                    value=data['output'];validate(value) # Never persist raw prose, errors or key prefixes.
-                    self.db.execute("UPDATE api_requests SET state='COMPLETE',output=? WHERE operation=?",(json.dumps(value),operation))
+                    failure='INVALID_RESPONSE_ENVELOPE'
+                    if not isinstance(data,dict) or data.get('mode')!='smart' or 'answer' not in data or data['answer'] is not None:raise Review(failure)
+                    failure='INVALID_OUTPUT_SCHEMA'
+                    if not isinstance(data.get('output'),dict):raise Review(failure)
+                    value=data['output'];failure='VALIDATION_REJECTED'
+                    validate(value)
+                    cached=canonical_output(value,schema)
+                    failure='LOCAL_PROCESSING_FAILED'
+                    self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=?",(cached,operation))
                     return value
                 if code not in (429,503) or attempt==2:raise Review('NEUROAPI_REQUEST_FAILED')
                 hinted=headers.get('retry-after','').strip()
@@ -90,6 +129,9 @@ class NeuroAPI:
                 delay=int(hinted) if hinted else 2**attempt
                 if delay>30:raise Review('NEUROAPI_RETRY_DEFERRED')
                 self.sleep(max(1,delay))
-        except Exception:
-            self.db.execute("UPDATE api_requests SET state='NEEDS_REVIEW' WHERE operation=?",(operation,))
-            raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW') from None
+        except Exception as exc:
+            if failure=='VALIDATION_REJECTED':failure=validation_code(exc)
+            elif failure=='NETWORK_UNCERTAIN' and isinstance(exc,Review) and str(exc)=='INVALID_RESPONSE_ENVELOPE':failure='INVALID_RESPONSE_ENVELOPE'
+            failure=safe_code(failure)
+            self.db.execute("UPDATE api_requests SET state='NEEDS_REVIEW',failure_code=? WHERE operation=?",(failure,operation))
+            raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW' if failure=='NETWORK_UNCERTAIN' else failure) from None

@@ -11,7 +11,11 @@ from .workflow import Workflow
 
 def main():
     os.umask(0o077)
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run']);p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics']);p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    if a.command=='diagnostics':
+        from .diagnostics import read_records
+        try:print(json.dumps(read_records(a.data_dir)));return 0
+        except Exception:print(json.dumps({'status':'DIAGNOSTICS_UNAVAILABLE'}));return 1
     d=directory(a.data_dir)
     with (d/'cycle.lock').open('a') as lock:
         try:
