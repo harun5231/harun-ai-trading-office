@@ -38,3 +38,5 @@ selector-report*.json
 browser.json
 
 selector-discovery.json
+
+selector-discovery-diagnostic.json

@@ -161,3 +161,47 @@ docker exec "$(docker ps -q --filter label=com.docker.compose.project=harun-offi
 Local tests use synthetic HTML, not the user's VPS or real Neurobro DOM. Readiness
 is not a claim that real selectors were verified. No login repeat is requested;
 only a genuinely observed LOGIN_REQUIRED warrants manual login.
+
+## Phase 3 safe diagnostics / preflight
+
+Phase 3 now reports a fixed stage and reason instead of reflecting exception text.
+Stages: PRIVATE_CONFIG_CHECK, SERVICE_LOCK_ACQUIRE, PROFILE_OWNER_ACQUIRE,
+STALE_SINGLETON_RECOVERY, PROFILE_RELEASE_CHECK, PLAYWRIGHT_START,
+PERSISTENT_CONTEXT_OPEN, NEUROBRO_NAVIGATION, DOM_DISCOVERY, EVIDENCE_SANITIZE,
+EVIDENCE_WRITE, CONFIG_COMMIT. BROWSER_CLOSE separately identifies failed shutdown.
+
+Before any Chromium launch, the host checks that the main worker container has
+stopped. The job requires an existing profile, safe/readable private JSON, an
+actual temporary write/fsync/owner test, session-service + worker + office-owner
+locks, and the existing conservative process/stale-Singleton proof. Failure stops
+before browser launch or config mutation. The ordinary worker's `/private` bind
+remains **read-only**; only the temporary discovery job mounts that directory RW.
+The Docker host stop check and profile locks complement one another; locks cannot
+prove container state across unrelated hosts or copies of the profile volume.
+
+If a later stage fails, `/private/selector-discovery-diagnostic.json` is written
+atomically with mode 0600 and the config owner, if preflight proved the destination
+safe. Existing selector-discovery.json is never replaced with an error. Unsafe or
+unwritable destinations cannot receive diagnostics; terminal `diagnostic_saved`
+reports this explicitly. A completed run replaces an earlier diagnostic with
+reason COMPLETED; this does not mean selectors were verified.
+
+Diagnostic fields are limited to stage/reason enums, UTC timestamp, singleton
+count, lock-file presence, browser-process proof and cleanup-failure boolean.
+Lock-file presence does not claim that a lock is held. `browser_process_detected`
+is false only after a successful quiet proof and otherwise null (unknown): a
+failed /proc inspection is not proof of an active browser. Counts describe the
+profile after cleanup. Exceptions, process command lines, URLs, DOM and account
+content are never printed or serialized. Existing evidence uses its independent
+closed-schema sanitizer. Failed browser cleanup does not hand off to a workflow;
+the one-shot container exits before the host restores the worker.
+
+After reconnect, read only the short persisted diagnostic:
+
+```sh
+docker exec "$(docker ps -q --filter label=com.docker.compose.project=harun-office --filter label=com.docker.compose.service=worker | head -n 1)" python -m worker.selector_diagnostic
+```
+
+Continue to use the offline overlay and systemd-run command above. No MCR download
+is required. Nothing in this diagnostic path requests login, sends a message,
+uploads a file, invokes screening or trading, or deletes a profile/volume.

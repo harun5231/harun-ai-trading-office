@@ -47,7 +47,13 @@ def sanitize(data, depth=0):
 
 def save(config_path, result):
     data = sanitize(result)
-    config = Path(config_path); path = config.with_name('selector-discovery.json')
+    return write_private(config_path, 'selector-discovery.json', data)
+
+
+def write_private(config_path, filename, data):
+    # Callers must validate their closed schema before this shared atomic writer.
+    if filename not in ('selector-discovery.json','selector-discovery-diagnostic.json'): raise ValueError('PRIVATE_PATH_REQUIRED')
+    config = Path(config_path); path = config.with_name(filename)
     repo = Path(__file__).resolve().parent.parent
     if config.is_symlink() or path.is_symlink() or repo in path.resolve().parents: raise ValueError('PRIVATE_PATH_REQUIRED')
     owner = config.stat()

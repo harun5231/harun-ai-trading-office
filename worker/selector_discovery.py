@@ -125,6 +125,9 @@ def main():
     parser=argparse.ArgumentParser(description='Read-only DOM discovery; no messages, uploads or trading')
     parser.add_argument('--phase3',action='store_true');parser.add_argument('--phase2',action='store_true');parser.add_argument('--config',required=True);parser.add_argument('--data-dir',required=True)
     args=parser.parse_args();browser=None;service=None
+    if args.phase3:
+        from .discovery_preflight import DiscoveryJob
+        return DiscoveryJob(args.config,args.data_dir).run()
     try:
         config_path=Path(args.config).resolve();original=json.loads(config_path.read_text())
         directory=private_profile(Path(args.data_dir)/'browser')
@@ -135,25 +138,13 @@ def main():
         import time
         deadline=time.monotonic()+20
         while True:
-            if args.phase3:
-                from .structural_discovery import discover_phase3
-                result=discover_phase3(browser.page)
-            elif args.phase2:
+            if args.phase2:
                 from .semantic_inventory import discover_phase2
                 result=discover_phase2(browser.page)
             else:result=discover(browser.page)
             if result['state'] in ('AUTHENTICATED','LOGIN_REQUIRED','CLOUDFLARE_REQUIRED') or time.monotonic()>=deadline:break
             time.sleep(.5)
         browser.close();browser=None
-        if args.phase3:
-            from .selector_evidence import save
-            evidence_path=save(config_path,result)  # Must succeed BEFORE config mutation.
-            written=commit_session_verified(config_path,result,original)
-            print(json.dumps({'state':result['state'],'config_updated':written,
-                'evidence_saved':True,'evidence_path':evidence_path,
-                'session_check_ready':result['session_check_ready'],'screening_ready':result['screening_ready'],
-                'selectors':{k:(v+' ('+str(len(result['evidence'][k]['candidates']))+' candidates)' if v=='AMBIGUOUS' else v) for k,v in result['status'].items()},'mode':'DRY_RUN'},sort_keys=True))
-            return 0 if written else 2
         written=commit_verified(config_path,result,original)
         if args.phase2:
             print(json.dumps({'version':result['version'],'inventory':result['inventory'],'truncated':result['truncated'],'evidence':result['evidence']},sort_keys=True))

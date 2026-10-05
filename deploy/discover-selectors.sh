@@ -25,7 +25,14 @@ restore() {
 }
 trap restore EXIT
 docker compose stop -t 90 worker
+# The host confirms the main container has stopped; in-container flock/process
+# preflight additionally rejects another session/profile owner before Chromium.
+[ "$(docker inspect --format '{{.State.Running}}' "$cid")" = false ] || {
+  echo '{"state":"ERROR","stage":"SERVICE_LOCK_ACQUIRE","reason":"WORKER_BUSY"}'
+  exit 1
+}
 set +e
+# Runtime /private stays RO in compose.yaml. Only this one-shot job gets RW.
 docker run --rm --init --pull never --hostname "$hostname" --user 10001:10001 --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true --shm-size 1gb \
   --tmpfs /tmp:rw,mode=1777 --tmpfs /home/office:rw,uid=10001,gid=10001,mode=0700 \
