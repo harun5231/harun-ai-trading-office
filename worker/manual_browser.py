@@ -6,6 +6,7 @@ import sys
 import time
 from pathlib import Path
 from .desktop import dimensions
+from .process_safety import prove_quiet
 
 
 def chromium_executable():
@@ -19,7 +20,7 @@ def chromium_executable():
 
 
 class ManualBrowser:
-    def __init__(self, profile):self.profile=Path(profile);self.process=None
+    def __init__(self, profile):self.profile=Path(profile);self.process=None;self.session_id=None
     def active(self):return self.process is not None and self.process.poll() is None
     def start(self, owner_fds):
         if self.active():return
@@ -34,7 +35,8 @@ class ManualBrowser:
         if os.environ.get('OFFICE_MANAGED')=='1':command.insert(1,'--no-sandbox')
         # Inherited locks protect the profile even if the controller unexpectedly dies.
         self.process=subprocess.Popen([sys.executable,'-m','worker.manual_browser','--guard',*command],stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,pass_fds=tuple(owner_fds))
+            stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,pass_fds=tuple(owner_fds),start_new_session=True)
+        self.session_id=self.process.pid
         time.sleep(.5)
         if not self.active():raise RuntimeError('MANUAL_BROWSER_EXITED')
     def stop(self):
@@ -44,6 +46,7 @@ class ManualBrowser:
             self.process.terminate()
             try:self.process.wait(timeout=20)
             except subprocess.TimeoutExpired:raise RuntimeError('MANUAL_BROWSER_NOT_STOPPED') from None
+        prove_quiet(self.profile,self.session_id)
         self.process=None
 
 

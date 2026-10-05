@@ -36,12 +36,12 @@ class SessionBrowser:
         self.profile=private_profile(self.directory/'browser-profile')
         self.config=config;self.page=None;self.context=None;self.pw=None;self.lock=None
         self.owner=ProfileOwner(self.profile);self.manual=ManualBrowser(self.profile)
-    def acquire(self):
+    def acquire(self, *, allow_stale=False):
         if self.lock is not None:return
         self.lock=(self.directory/'worker.lock').open('a')
         try:
             fcntl.flock(self.lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-            self.owner.acquire()
+            self.owner.acquire(allow_stale=allow_stale)
         except Exception:
             self.lock.close();self.lock=None
             raise RuntimeError('WORKER_BUSY') from None
@@ -53,8 +53,9 @@ class SessionBrowser:
     def desktop_active(self):return self.manual.active()
     def prepare_check(self):
         # Keep BOTH ownership locks throughout handoff; no scheduler can race us.
-        self.acquire()
+        self.acquire(allow_stale=True)
         self.manual.stop()
+        self.owner.recover_stale(self.lock,self.manual.session_id)
         self.owner.wait_released()
     def open(self):
         if self.manual.active():raise RuntimeError('WORKER_BUSY')
@@ -110,6 +111,7 @@ class SessionBrowser:
         if self.pw:self.pw.stop()
         self.pw=None
         if self.owner.file is not None:
+            self.owner.recover_stale(self.lock,self.manual.session_id)
             self.owner.wait_released()
             self.owner.close()
         if self.lock:self.lock.close();self.lock=None

@@ -282,3 +282,33 @@ belum diverifikasi di VPS pengguna. Binance tetap DRY RUN.
 Pembaruan memakai blok update worker di bagian sebelumnya: rebuild worker,
 restart proxy, tanpa mengubah `.env`, secret, volume/profile, atau konfigurasi
 keamanan. Setelah update, tutup/buka ulang tab noVNC agar toolbar terbaru dimuat.
+
+## Pemulihan Singleton usang saat CEK SESI
+
+CEK SESI kini dapat memulihkan `SingletonLock`, `SingletonSocket`, dan
+`SingletonCookie` yang tertinggal setelah Chromium berhenti. Hanya ketiga symlink
+tersebut yang dapat dihapus, bukan target symlink, folder profil, database Cookies,
+Local Storage atau sesi Neurobro. Tidak ada ekspor/impor cookie.
+
+Browser manual dan proses penjaganya ditempatkan dalam satu sesi proses Linux.
+Penutupan tetap SIGTERM graceful; proses turunan yang masih hidup menggagalkan
+handoff. Session service harus memegang `worker.lock` dan `.office-owner.lock`
+dengan inode yang sesuai sebelum recovery. Pemeriksaan `/proc` dilakukan ulang:
+proses pengguna profil, proses dalam sesi manual, atau Chromium lain yang masih
+hidup menyebabkan `PROFILE_NOT_RELEASED`. Chromium lain juga ditolak secara
+konservatif karena proses anak tidak selalu membawa argumen profil.
+
+Target SingletonLock harus menunjuk hostname container yang sama dan PID yang
+sudah tidak hidup. Berkas biasa, hostname asing, PID yang dipakai ulang, inode
+lock berubah, symlink berubah selama pemeriksaan, atau visibilitas proses yang
+tidak lengkap tetap ditolak. Singleton tidak dihapus pada jalur acquire biasa;
+recovery hanya dalam handoff/penutupan session service yang terkunci. Setelah
+restart, CEK SESI dapat melakukan pemeriksaan yang sama tanpa membuka login baru.
+Konfigurasi sekarang memakai hostname container tetap `harun-worker`; jangan
+berbagi volume profil dengan container/browser yang tidak mengikuti ownership ini.
+
+Setelah update worker, tekan **SELESAI LOGIN / CEK SESI** pada dashboard. Jangan
+login ulang kecuali hasil pemeriksaan benar-benar LOGIN REQUIRED. Sesi yang sudah
+tersimpan tetap dipertahankan; pengujian lokal menggunakan data sesi sintetis,
+bukan akun Neurobro pengguna. Tidak ada perubahan noVNC, portrait, keamanan Docker,
+prompt, Risk Manager atau Binance DRY RUN.
