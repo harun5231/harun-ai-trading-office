@@ -1,0 +1,5 @@
+# Offline overlay of the existing, already installed worker image. No downloads.
+ARG OFFICE_BASE_IMAGE=harun-office-base:local
+FROM ${OFFICE_BASE_IMAGE}
+COPY worker /app/worker
+RUN python -m compileall -q /app/worker

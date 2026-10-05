@@ -33,3 +33,6 @@ ACCESS.txt
 secrets/
 *.secret
 runner-attempts/
+selector-report*.json
+.selector-*
+browser.json
