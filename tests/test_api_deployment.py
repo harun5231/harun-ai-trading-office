@@ -75,6 +75,19 @@ class HTTPTests(unittest.TestCase):
         try:r=urlopen(req,timeout=2)
         except HTTPError as e:r=e
         with r:return r.status,json.load(r)
+    def test_options_is_empty_valid_204_with_cors(self):
+        req=Request('http://127.0.0.1:'+str(self.server.server_port)+'/robot/status',method='OPTIONS',headers={
+            'Origin':self.origin,
+            'Access-Control-Request-Method':'GET',
+            'Access-Control-Request-Headers':'authorization',
+        })
+        with urlopen(req,timeout=2) as r:
+            self.assertEqual(r.status,204)
+            self.assertIsNone(r.headers.get('Content-Length'))
+            self.assertEqual(r.headers.get('Access-Control-Allow-Origin'),self.origin)
+            self.assertIn('Authorization',r.headers.get('Access-Control-Allow-Headers',''))
+            self.assertEqual(r.read(),b'')
+
     def test_no_unauthenticated_health(self):self.assertEqual(self.call('/health')[0],403)
     def test_online_read_token(self):
         code,data=self.call('/health',self.read);self.assertEqual(code,200);self.assertEqual(data['status'],'ONLINE');self.assertFalse(data['live_enabled'])
