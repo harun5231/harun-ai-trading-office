@@ -8,4 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 COPY worker /app/worker
 COPY deploy/container_boot.py deploy/supervise.py /app/deploy/
+COPY deploy/install_novnc.py /app/deploy/install_novnc.py
+COPY deploy/novnc /app/deploy/novnc
+RUN python /app/deploy/install_novnc.py /usr/share/novnc
 ENTRYPOINT ["python", "/app/deploy/container_boot.py"]

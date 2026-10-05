@@ -243,3 +243,42 @@ Jangan menjalankan `down -v` atau menghapus volume/profile. Pembaruan ini tidak
 mengubah `.env`, resolusi portrait 430×932, URL noVNC, prompt, risk maupun DRY RUN.
 Tes proses memakai executable lokal sintetis dan browser offline, bukan login
 Neurobro nyata. Login melalui noVNC dan penerimaan Cloudflare perlu diuji di VPS.
+
+## Mobile Manual Login Mode (portrait responsif, tanpa identitas Android)
+
+Hanya launcher Chromium manual menambahkan `--start-fullscreen`,
+`--force-device-scale-factor=1`, dan `--new-window`. Browser menggunakan seluruh
+ruang layar Xvfb portrait (default 430×932), tanpa tab/toolbar desktop mengambil
+ruang. Pengaturan ini bukan emulasi Android: User-Agent, Client Hints, platform,
+maxTouchPoints dan identitas browser tidak diubah. Tidak ada CDP atau Playwright
+selama login manual. Profil/locking dan cara CEK SESI tetap sama.
+
+Viewer noVNC tetap pada URL/path yang sama. Saat image dibangun,
+`deploy/install_novnc.py` menambahkan toolbar lokal ke paket noVNC yang sudah ada;
+perubahan API noVNC yang tidak cocok menghentikan build. Toolbar mempunyai:
+
+- **KEYBOARD**: memanggil keyboard virtual melalui mekanisme bawaan noVNC.
+- **Tab / Enter / ⌫**: tombol navigasi berukuran sentuh, dikirim melalui koneksi RFB
+  yang sudah ada. Enter hanya dikirim ketika pengguna menekan tombolnya.
+- **Bilah browser**: F11 pada Chromium server, agar pengguna dapat melihat alamat
+  situs sebelum memasukkan kredensial, lalu kembali ke layar penuh.
+- **Pas layar**: scaling lokal tanpa mengubah resolusi sesi server.
+
+Di iPhone: ketuk kolom login pada gambar browser server, lalu KEYBOARD pada toolbar
+atas. Tidak perlu Inspect/DevTools. Gestur sentuh memakai konversi mouse bawaan
+noVNC, bukan touch/fingerprint emulation di Chromium. Toolbar mengikuti lebar layar
+dan safe area, menjaga ukuran tombol minimal 44px dan menggunakan input keyboard
+noVNC yang asli (tanpa form kredensial tambahan, clipboard, logging atau storage).
+
+**Batasan:** Chromium tetap browser Linux. Situs yang memilih layout berdasarkan
+identitas perangkat masih dapat menyajikan versi desktop. Fullscreen portrait
+memungkinkan CSS responsif mengikuti ruang yang tersedia, tetapi tidak memaksa
+Google/Neurobro memilih versi Android dan tidak menjamin verifikasi berhasil.
+Popup milik situs juga dapat mempunyai ukuran sendiri. Gunakan Bilah browser untuk
+melihat alamat/berpindah tab. Tes offline memverifikasi launcher, toolbar dan
+transport tiruan; keyboard native iOS, viewport Google/Neurobro dan login nyata
+belum diverifikasi di VPS pengguna. Binance tetap DRY RUN.
+
+Pembaruan memakai blok update worker di bagian sebelumnya: rebuild worker,
+restart proxy, tanpa mengubah `.env`, secret, volume/profile, atau konfigurasi
+keamanan. Setelah update, tutup/buka ulang tab noVNC agar toolbar terbaru dimuat.

@@ -26,6 +26,8 @@ class ManualBrowser:
         width,height=dimensions()
         command=[chromium_executable(),f'--user-data-dir={self.profile}',
                  f'--window-size={width},{height}','--window-position=0,0',
+                 # Display controls only: no mobile identity or touch-point emulation.
+                 '--start-fullscreen','--force-device-scale-factor=1','--new-window',
                  '--no-first-run','--no-default-browser-check','https://app.neurobro.ai/']
         # Match the existing container's browser sandbox configuration; never add
         # stealth flags, automation overrides or change the browser identity.
