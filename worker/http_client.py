@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 from urllib.request import Request, build_opener, HTTPRedirectHandler, ProxyHandler
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from .core import Review
 
 class NoRedirect(HTTPRedirectHandler):
@@ -16,6 +17,10 @@ def unique(pairs):
     return out
 
 def request(method,url,headers=None,body=None,timeout=60):
+    parts=urlsplit(url)
+    if parts.hostname=='fapi.binance.com':
+        if parts.scheme!='https' or parts.netloc!='fapi.binance.com' or parts.fragment or method!='GET' or body is not None or parts.path not in ('/fapi/v1/exchangeInfo','/fapi/v1/klines','/fapi/v1/premiumIndex','/fapi/v1/time'):
+            raise Review('BINANCE_ENDPOINT_DENIED')
     payload=None if body is None else json.dumps(body,separators=(',',':')).encode()
     req=Request(url,data=payload,method=method,headers=headers or {})
     try:

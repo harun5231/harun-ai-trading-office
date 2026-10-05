@@ -14,6 +14,11 @@ def main():
     # Empty secret is permitted: API reports NOT_CONFIGURED, not a boot crash.
     p=Path('/run/office/neuroapi_key');p.write_bytes(Path('/run/secrets/neuroapi_key').read_bytes());p.chmod(0o600);os.chown(p,10001,10001)
     os.environ['NEUROBRO_API_KEY_FILE']=str(p)
+    for name,env in [('binance_api_key','BINANCE_API_KEY_FILE'),('binance_api_secret','BINANCE_API_SECRET_FILE')]:
+        try:
+            p=Path('/run/office')/name;p.write_bytes((Path('/run/secrets')/name).read_bytes());p.chmod(0o600);os.chown(p,10001,10001)
+            os.environ[env]=str(p)
+        except Exception:raise SystemExit('BINANCE_SECRET_STORAGE_FAILED') from None
     os.setgroups([]);os.setgid(10001);os.setuid(10001)
     os.execvp('python',['python','-m','worker.api_service'])
 if __name__=='__main__':main()

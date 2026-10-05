@@ -12,8 +12,12 @@ from .workflow import Workflow
 
 def main():
     os.umask(0o077)
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics','screening-once','analysis-once']);p.add_argument('symbols',nargs='*');p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['binance-check','api-check','api-dry-run','diagnostics','screening-once','analysis-once']);p.add_argument('symbols',nargs='*');p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
     if (a.command=='analysis-once' and len(a.symbols)!=2) or (a.command!='analysis-once' and a.symbols):p.error('analysis-once requires exactly two symbols; other commands take none')
+    if a.command=='binance-check':
+        from .binance_private import check
+        result=check();print(json.dumps(result))
+        return 0 if result['status']=='BINANCE_CONNECTED' else 1
     if a.command=='diagnostics':
         from .diagnostics import read_records
         try:print(json.dumps(read_records(a.data_dir)));return 0

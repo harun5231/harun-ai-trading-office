@@ -17,3 +17,4 @@ secrets/
 *.secret
 *api_key*
 runner-attempts/
+binance_api_secret

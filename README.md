@@ -1,8 +1,8 @@
 # HARUN AI TRADING OFFICE
 
 Kantor 3D + worker privat NeuroAPI Starter (`smart`) dan Binance Futures public
-market data. **DRY RUN ONLY**: tidak ada eksekutor, signing key, atau route order
-Binance. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
+market data. **DRY RUN ONLY**: tidak ada eksekutor atau route order Binance.
+Autentikasi private Binance tersedia hanya untuk preflight GET read-only. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
 
 Alur: prompt screening literal → tepat dua kontrak USDT perpetual aktif → OHLCV
 1h + 15m termasuk candle current → prompt analisis literal + JSON data terpisah
@@ -81,3 +81,7 @@ binary. Without that environment opt-in the two UI tests are skipped. Three.js
 assets use the same CDN as the office, or a local `test-assets` cache when present.
 
 Audit pre-deployment: [deploy/NEUROAPI_AUDIT.md](deploy/NEUROAPI_AUDIT.md).
+
+Preflight Binance privat: [deploy/BINANCE_PREFLIGHT.md](deploy/BINANCE_PREFLIGHT.md).
+`python -m worker binance-check` membaca akun/configuration, tidak menyimpan data
+akun di dashboard/ledger dan tidak mengaktifkan live execution.
