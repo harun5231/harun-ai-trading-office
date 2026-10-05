@@ -2,19 +2,19 @@
 (() => {
  'use strict';
  let snapshot=null, endpoint='', token='', timer=null, busy=false, connected=false, message='Worker belum terhubung. Angka akun belum tersedia.';
- const allowedStates=new Set(['IDLE','SCREENING_NEUROBRO','OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE','PAUSED_NEEDS_LOGIN','COINS_SELECTED','CAPTURE_1H','CAPTURE_15M','NEUROBRO_ANALYSIS','SIGNAL_RECEIVED','RISK_CHECK','BINANCE_SETUP','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','ERROR']);
+ const allowedStates=new Set(['IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR']);
  const panel=document.getElementById('infoPanel'), content=document.getElementById('panelContent'),title=document.getElementById('panelTitle');
  const button=document.createElement('button');button.id='workflowMenu';button.className='menu-item';button.textContent='◇ Workflow DRY RUN';
  document.getElementById('menuDrawer').insertBefore(button,document.querySelector('.drawer-note'));
  const esc=value=>String(value??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
  const fmt=value=>value===null||value===undefined?'—':Number(value).toLocaleString('en-US',{maximumFractionDigits:4});
  function validate(data){
-  if(!data||data.schema_version!==1||data.mode!=='DRY_RUN'||data.live_enabled!==false||!['FIXTURE','BROWSER_DRY_RUN'].includes(data.source)||!allowedStates.has(data.status))throw Error('Snapshot tidak sesuai skema DRY RUN.');
-  if(!Number.isInteger(data.trades_today)||data.trades_today<0||data.trades_today>2||!Number.isInteger(data.active_positions)||data.active_positions<0||data.active_positions>2)throw Error('Jumlah trade/posisi tidak valid.');
+  if(!data||data.schema_version!==1||data.mode!=='DRY_RUN'||data.live_enabled!==false||!['NEUROAPI_DRY_RUN'].includes(data.source)||!allowedStates.has(data.status))throw Error('Snapshot tidak sesuai skema DRY RUN.');
+  if(!Number.isInteger(data.trades_today)||data.trades_today<0||data.trades_today>2||!Number.isInteger(data.active_positions)||data.active_positions<0)throw Error('Jumlah trade/posisi tidak valid.');
   if(!Array.isArray(data.trades)||!Array.isArray(data.events)||data.events.length>100||data.trades.length>10000)throw Error('Laporan tidak valid/terlalu besar.');
   if(!Number.isFinite(Date.parse(data.generated_at))||Date.parse(data.generated_at)>Date.now()+60000)throw Error('Timestamp tidak valid.');
   for(const field of ['balance','pnl_today'])if(data[field]!==null&&!Number.isFinite(Number(data[field])))throw Error('Nilai statistik tidak valid.');
-  if(data.events.some(e=>!allowedStates.has(e.state)||typeof e.message!=='string'||typeof e.agent!=='string'))throw Error('Activity log tidak valid.');
+  if(data.events.some(e=>typeof e.state!=='string'||typeof e.message!=='string'||typeof e.agent!=='string'))throw Error('Activity log tidak valid.');
   for(const t of data.trades)if(!t.plan||t.plan.mode!=='DRY_RUN'||!['ORDER_READY','POSITION_OPEN','CLOSED'].includes(t.state)||typeof t.plan.symbol!=='string')throw Error('Trade tidak valid.');
   return data;
  }
@@ -22,7 +22,7 @@
   const values=document.querySelectorAll('.stats .stat b');
   [snapshot?fmt(snapshot.balance):'—',snapshot?fmt(snapshot.pnl_today):'—',`${snapshot?.trades_today??0} / 2`,snapshot?String(snapshot.active_positions):'—'].forEach((v,i)=>{values[i].textContent=v;});
   values[1].classList.toggle('positive',!!snapshot&&Number(snapshot.pnl_today)>=0);
-  document.querySelector('.brand small').textContent=snapshot?`● DRY RUN · ${snapshot.source==='FIXTURE'?'DATA UJI':snapshot.status}${snapshot.locked?' · LOCKED':''}`:'● VISUAL SIMULASI · WORKER BELUM TERHUBUNG';
+  document.querySelector('.brand small').textContent=snapshot?`● DRY RUN · ${snapshot.status}${snapshot.locked?' · LOCKED':''}`:'● VISUAL SIMULASI · WORKER BELUM TERHUBUNG';
  }
  function render(){
   if(title.dataset.workflow!=='true')return;
@@ -64,5 +64,6 @@
   }
  }));
  document.addEventListener('visibilitychange',()=>{if(!document.hidden&&connected)poll();});
+ window.addEventListener('workerSnapshot',e=>{try{snapshot=validate(e.detail);message='Terhubung ke worker API privat.';updateStats();render();}catch(_){message='Snapshot ditolak.';}});
  updateStats();
 })();

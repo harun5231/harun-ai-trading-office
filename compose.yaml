@@ -2,45 +2,33 @@ name: harun-office
 services:
   worker:
     build: .
-    hostname: harun-worker
     init: true
     restart: unless-stopped
-    stop_grace_period: 90s
-    shm_size: 1gb
+    stop_grace_period: 120s
     read_only: true
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
     security_opt: [no-new-privileges:true]
     tmpfs:
-      - /tmp:size=512m,mode=1777
-      - /run/office:size=16m,mode=0700
-      - /home/office:size=32m,uid=10001,gid=10001,mode=0700
+      - /tmp:size=64m,mode=1777
+      - /run/office:size=4m,mode=0700
     environment:
-      OFFICE_WORKER_ORIGIN: https://${OFFICE_WORKER_HOST:?Run setup first}
+      OFFICE_DATA_DIR: /data
+      NEUROBRO_API_KEY_FILE: /run/office/neuroapi_key
       OFFICE_DASHBOARD_ORIGIN: ${OFFICE_DASHBOARD_ORIGIN:-https://harun5231.github.io}
       OFFICE_AUTO_DRY_RUN: ${OFFICE_AUTO_DRY_RUN:-false}
       OFFICE_RUN_AT: ${OFFICE_RUN_AT:-08:00}
-      OFFICE_MANAGED: "1"
-      OFFICE_DATA_DIR: /data
-      OFFICE_RUNTIME_DIR: /run/office
-      OFFICE_CONFIG: /private/browser.json
-      OFFICE_DESKTOP_WIDTH: ${OFFICE_DESKTOP_WIDTH:-430}
-      OFFICE_DESKTOP_HEIGHT: ${OFFICE_DESKTOP_HEIGHT:-932}
-      DISPLAY: :99
-      XAUTHORITY: /run/office/Xauthority
-    secrets: [read_token, control_token]
+      OFFICE_CANDLE_LOOKBACK: ${OFFICE_CANDLE_LOOKBACK:-100}
+      OFFICE_MARKET_MAX_AGE: ${OFFICE_MARKET_MAX_AGE:-180}
+    secrets: [read_token, control_token, neuroapi_key]
     volumes:
       - worker_data:/data
-      - type: bind
-        source: ${OFFICE_PRIVATE_DIR:?Run setup first}/config
-        target: /private
-        read_only: true
     networks: [office]
     healthcheck:
-      test: [CMD, gosu, office, python, -m, worker.health, --check]
+      test: [CMD, python, -m, worker.health]
       interval: 30s
-      timeout: 10s
-      start_period: 120s
+      timeout: 8s
+      start_period: 30s
       retries: 3
     logging:
       driver: json-file
@@ -50,16 +38,11 @@ services:
     restart: unless-stopped
     depends_on:
       worker: {condition: service_started}
-    ports: ["80:80", "443:443", "443:443/udp"]
+    ports: ["80:80", "443:443/udp", "443:443"]
     environment:
-      OFFICE_WORKER_HOST: ${OFFICE_WORKER_HOST:?Run setup first}
-      OFFICE_WORKER_ORIGIN: https://${OFFICE_WORKER_HOST}
-      OFFICE_DESKTOP_USER: ${OFFICE_DESKTOP_USER:-harun}
-    secrets: [desktop_hash]
-    entrypoint: [/bin/sh, /etc/caddy/start.sh]
+      OFFICE_WORKER_HOST: ${OFFICE_WORKER_HOST:?Configure worker domain}
     volumes:
       - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
-      - ./deploy/proxy-start.sh:/etc/caddy/start.sh:ro
       - caddy_data:/data
       - caddy_config:/config
     networks: [office]
@@ -68,9 +51,6 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-    logging:
-      driver: json-file
-      options: {max-size: 10m, max-file: "3"}
 networks:
   office: {}
 volumes:
@@ -82,5 +62,5 @@ secrets:
     file: ${OFFICE_PRIVATE_DIR}/secrets/read_token
   control_token:
     file: ${OFFICE_PRIVATE_DIR}/secrets/control_token
-  desktop_hash:
-    file: ${OFFICE_PRIVATE_DIR}/secrets/desktop_hash
+  neuroapi_key:
+    file: ${OFFICE_PRIVATE_DIR}/secrets/neuroapi_key

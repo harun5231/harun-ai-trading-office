@@ -1,127 +1,78 @@
-from dataclasses import dataclass
-from pathlib import Path
-from decimal import Decimal as D
-import hashlib
+"""One durable cycle/day: official research API -> public data -> immutable paper plan."""
 import json
 import os
 import time
-import uuid
-from .core import Review, Locked, Rules, Ledger, coins, parse_signal, risk_check, now
-from .prompts import SCREENING, ANALYSIS
+import tempfile
+from pathlib import Path
+from .core import Review,Locked,day,risk_check
+from .neuroapi import SCREEN_SCHEMA,SETUP_SCHEMA,selections,setup
+from .prompts import SCREENING,ANALYSIS
+from .monitor import PaperMonitor
 
-@dataclass(frozen=True)
-class Capture:
-    symbol: str
-    timeframe: str
-    path: str
-    sha256: str
-    captured_at: float
-    source: str
-    def verify(self,symbol,timeframe,source):
-        if self.symbol!=symbol or self.timeframe!=timeframe or self.source!=source:
-            raise Review('NEEDS_REVIEW: symbol/timeframe/sumber screenshot tidak cocok')
-        if not 0<=time.time()-self.captured_at<=600:
-            raise Review('NEEDS_REVIEW: screenshot kedaluwarsa')
-        if hashlib.sha256(Path(self.path).read_bytes()).hexdigest()!=self.sha256:
-            raise Review('NEEDS_REVIEW: screenshot berubah setelah verifikasi')
-
-AGENT={'SCREENING_NEUROBRO':'Neurobro','COINS_SELECTED':'Market Analyst','CAPTURE_1H':'Market Analyst',
-'CAPTURE_15M':'Market Analyst','NEUROBRO_ANALYSIS':'Neurobro','SIGNAL_RECEIVED':'Neurobro',
-'RISK_CHECK':'Risk Manager','BINANCE_SETUP':'Trading Agent','ORDER_READY':'Trading Agent',
-'POSITION_OPEN':'Position Monitor','MONITORING':'Position Monitor','CLOSED':'Trade Reviewer',
-'IDLE':'Coordinator','ERROR':'Risk Manager'}
-AGENT.update({state:'Neurobro' for state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE','PAUSED_NEEDS_LOGIN')})
-ALLOWED={
- 'IDLE':{'SCREENING_NEUROBRO','MONITORING'},'SCREENING_NEUROBRO':{'COINS_SELECTED','OPENING_NEUROBRO'},
- 'OPENING_NEUROBRO':{'WAITING_NEUROBRO'},'WAITING_NEUROBRO':{'SCREENING_SENT'},
- 'SCREENING_SENT':{'WAITING_RESPONSE'},'WAITING_RESPONSE':{'COINS_SELECTED'},
- 'COINS_SELECTED':{'CAPTURE_1H'},'CAPTURE_1H':{'CAPTURE_15M'},
- 'CAPTURE_15M':{'CAPTURE_1H','NEUROBRO_ANALYSIS'},'NEUROBRO_ANALYSIS':{'SIGNAL_RECEIVED'},
- 'SIGNAL_RECEIVED':{'RISK_CHECK'},'RISK_CHECK':{'BINANCE_SETUP'},'BINANCE_SETUP':{'ORDER_READY'},
- 'ORDER_READY':{'NEUROBRO_ANALYSIS','POSITION_OPEN','MONITORING'},
- 'POSITION_OPEN':{'MONITORING'},'MONITORING':{'POSITION_OPEN','CLOSED'},
- 'CLOSED':{'POSITION_OPEN','MONITORING'},'ERROR':set()}
-
-for _state in ('OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE'):
-    ALLOWED[_state].add('PAUSED_NEEDS_LOGIN')
-ALLOWED['PAUSED_NEEDS_LOGIN']={'WAITING_NEUROBRO','WAITING_RESPONSE'}
+SOURCE='NEUROAPI_DRY_RUN'
+def export(ledger,path,connected=False):
+    data=ledger.snapshot(SOURCE,connected);p=Path(path);p.parent.mkdir(parents=True,exist_ok=True)
+    with tempfile.NamedTemporaryFile('w',dir=p.parent,prefix='.snapshot-',delete=False) as f:
+        tmp=f.name;json.dump(data,f);f.flush();os.fsync(f.fileno())
+    try:os.replace(tmp,p)
+    finally:Path(tmp).unlink(missing_ok=True)
+    return data
 
 class Workflow:
-    def __init__(self,ledger,adapter,snapshot_path):
-        self.ledger,self.adapter,self.output=ledger,adapter,Path(snapshot_path)
-        self.state='IDLE'
-        if hasattr(adapter,'progress'): adapter.progress=self.go
-        self.ledger.event('IDLE','Coordinator','Worker DRY RUN siap; '+adapter.source)
-    def export(self):
-        data=self.ledger.snapshot(self.adapter.source,getattr(self.adapter,'connected',False))
-        self.output.parent.mkdir(parents=True,exist_ok=True)
-        tmp=self.output.with_suffix('.tmp');tmp.write_text(json.dumps(data,indent=2));os.replace(tmp,self.output)
-        return data
-    def go(self,state,message):
-        if state!='ERROR' and state not in ALLOWED.get(self.state,set()): raise Review('NEEDS_REVIEW: transisi state tidak valid')
-        self.state=state;self.ledger.event(state,AGENT[state],message);self.export()
-    def run(self,screening_only=False):
+    def __init__(self,ledger,neuro,market,snapshot_path):
+        self.ledger=ledger;self.neuro=neuro;self.market=market;self.output=snapshot_path
+        ledger.db.execute('CREATE TABLE IF NOT EXISTS cycles(day TEXT PRIMARY KEY,state TEXT,created REAL)')
+    def event(self,state,message):
+        agent='Neurobro' if state in ('SCREENING','ANALYZING_COIN_1','ANALYZING_COIN_2') else 'Risk Manager' if state in ('VALIDATING','REJECTED') else 'Coordinator'
+        self.ledger.event(state,agent,message);return export(self.ledger,self.output)
+    def run(self):
+        claimed=False
         try:
-            if self.ledger.count()>=2: raise Locked('LOCKED: batas harian tercapai')
-            self.go('SCREENING_NEUROBRO','Mengirim prompt screening persis; '+self.adapter.source)
-            selected=coins(self.adapter.screen(SCREENING))
-            self.go('COINS_SELECTED',', '.join(selected))
-            if screening_only: return self.export()
-            captures={}
-            for symbol in selected:
-                captures[symbol]=[]
-                for tf,state in [('1h','CAPTURE_1H'),('15m','CAPTURE_15M')]:
-                    self.go(state,f'{symbol} / {tf}')
-                    cap=self.adapter.capture(symbol,tf)
-                    cap.verify(symbol,tf,self.adapter.source);captures[symbol].append(cap)
-            for symbol in selected:
-                if self.ledger.count()>=2: raise Locked('LOCKED: slot harian habis; coin berikutnya tidak diproses')
-                self.go('NEUROBRO_ANALYSIS',symbol+' / dua screenshot terverifikasi')
-                for cap,tf in zip(captures[symbol],('1h','15m')): cap.verify(symbol,tf,self.adapter.source)
-                answer=self.adapter.analyze(symbol,captures[symbol],ANALYSIS)
-                signal=parse_signal(answer,symbol)
-                self.go('SIGNAL_RECEIVED',symbol+' / field lengkap')
-                self.go('RISK_CHECK',symbol+' / risiko harga maksimum 5 USDT')
-                rules=self.adapter.rules(symbol)
-                plan=risk_check(signal,rules)
-                self.go('BINANCE_SETUP',symbol+' / rencana paper LIMIT, CROSS, 75x; tidak mengubah akun Binance')
-                trade_id=self.ledger.reserve(plan,self.adapter.source,rules)
-                self.go('ORDER_READY',symbol+' / paper order '+trade_id)
-            if self.adapter.source=='FIXTURE':
-                self.monitor_fixture()
-            # Browser dry run stops at verified paper plans: no pretend fill or real submit.
-            return self.export()
+            self.neuro.require_key()
+            if self.ledger.count()>=2:raise Locked('DAILY_LIMIT')
+            today=day()
+            # Durable claim BEFORE any paid request; an interrupted cycle is never
+            # implicitly recreated under a new operation/idempotency key.
+            inserted=self.ledger.db.execute('INSERT OR IGNORE INTO cycles VALUES(?,?,?)',(today,'PENDING',time.time())).rowcount
+            if not inserted:raise Review('CYCLE_ALREADY_RECORDED')
+            claimed=True
+            catalog=self.market.catalog()
+            self.event('SCREENING','Prompt literal / smart')
+            coins=self.neuro.ask(today+':screening',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,catalog))
+            selected=selections(coins,catalog);self.event('COINS_SELECTED',', '.join(selected))
+            for index,symbol in enumerate(selected,1):
+                if day()!=today:raise Review('CYCLE_DAY_CHANGED')
+                if self.ledger.count()>=2:raise Locked('DAILY_LIMIT')
+                try:
+                    self.event('MARKET_DATA',symbol+' / 1h + 15m')
+                    data=self.market.data(symbol);self.market.fresh(data,symbol)
+                    self.event('ANALYZING_COIN_'+str(index),symbol+' / smart')
+                    value=self.neuro.ask(today+':analysis:'+symbol,ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,symbol),data)
+                    self.market.fresh(data,symbol)
+                    self.event('VALIDATING',symbol+' / ACCEPT atau REJECT; angka tidak diubah')
+                    signal=setup(value,symbol);rules=self.market.rules(symbol)
+                    plan=risk_check(signal,rules)
+                    plan['protective_plan']={'activation':'AFTER_CONFIRMED_FILL','take_profit':plan['tp'],'stop_loss':plan['sl'],
+                        'exit_side':'SELL' if plan['side']=='LONG' else 'BUY','reduce_only':True,
+                        'failure_policy':'LIVE_UNIMPLEMENTED_REQUIRES_SEPARATE_REVIEW','simulated':True}
+                    if day()!=today:raise Review('CYCLE_DAY_CHANGED')
+                    self.ledger.reserve(plan,SOURCE,rules)
+                    self.event('DRY_RUN_READY',symbol+' / ACCEPT / LIMIT + protective TP/SL plan; no submission')
+                except Review:
+                    self.event('REJECTED',symbol+' / setup/data/API tidak lolos; tanpa perubahan angka atau order')
+            self.ledger.db.execute("UPDATE cycles SET state='COMPLETE' WHERE day=?",(today,))
         except Exception as exc:
-            from .screening import PausedNeedsLogin
-            if isinstance(exc,PausedNeedsLogin):
-                if self.state!='PAUSED_NEEDS_LOGIN': self.go('PAUSED_NEEDS_LOGIN',str(exc))
-                return self.export()
-            message=str(exc) if isinstance(exc,Review) else 'ERROR: langkah worker gagal; periksa log lokal tanpa melanjutkan order'
-            self.go('ERROR',message)
-            return self.export()
-    def monitor_fixture(self):
-        for row in self.ledger.db.execute("SELECT * FROM trades WHERE state='ORDER_READY' ORDER BY created").fetchall():
-            p=json.loads(row['plan'])
-            from .monitor import PaperMonitor
-            monitor=PaperMonitor(self.ledger)
-            sign=D('1') if p['side']=='LONG' else D('-1')
-            for quote in [D(p['entry'])+sign,D(p['entry']),D(p['entry'])+sign,D(p['tp'])]:
-                for state in monitor.quote(row['id'],p['symbol'],str(quote),'FIXTURE'):
-                    self.go(state,p['symbol']+' / quote FIXTURE; tidak ada order Binance')
-
-class FixtureAdapter:
-    source='FIXTURE'
-    connected=False
-    def __init__(self,directory): self.directory=Path(directory);self.directory.mkdir(parents=True,exist_ok=True)
-    def screen(self,prompt):
-        assert prompt==SCREENING
-        return 'BTCUSDT\nETHUSDT'
-    def capture(self,symbol,timeframe):
-        # Test artifact, intentionally NOT a counterfeit Binance chart image.
-        p=self.directory/(uuid.uuid4().hex+'.fixture.txt')
-        p.write_text(f'FIXTURE ONLY: {symbol} {timeframe}; no real chart')
-        return Capture(symbol,timeframe,str(p),hashlib.sha256(p.read_bytes()).hexdigest(),time.time(),self.source)
-    def analyze(self,symbol,captures,prompt):
-        assert prompt==ANALYSIS
-        return json.dumps({'symbol':symbol,'side':'LONG','entry':'100','tp':'104','sl':'98','quantity':'10','quantity_unit':symbol[:-4]})
-    def rules(self,symbol): return Rules(D('.001'),D('.001'),D('10000'),D('.01'),D('5'),time.time())
+            if claimed:self.ledger.db.execute("UPDATE cycles SET state='NEEDS_REVIEW' WHERE day=?",(today,))
+            state='NEUROAPI_NOT_CONFIGURED' if isinstance(exc,Review) and str(exc)=='NEUROAPI_NOT_CONFIGURED' else 'LOCKED' if isinstance(exc,Locked) else 'ERROR'
+            self.event(state,state if state!='ERROR' else 'CYCLE_STOPPED_NEEDS_REVIEW')
+        return export(self.ledger,self.output)
+    def monitor(self):
+        monitor=PaperMonitor(self.ledger)
+        rows=self.ledger.db.execute("SELECT * FROM trades WHERE source=? AND state IN ('ORDER_READY','POSITION_OPEN')",(SOURCE,)).fetchall()
+        for row in rows:
+            symbol=json.loads(row['plan'])['symbol']
+            try:
+                mark=self.market.mark(symbol)
+                for state in monitor.quote(row['id'],symbol,mark['price'],SOURCE):self.event(state,symbol+' / sampled mark-price paper simulation')
+            except Exception: self.event('ERROR','PAPER_QUOTE_UNAVAILABLE')
+        return export(self.ledger,self.output)

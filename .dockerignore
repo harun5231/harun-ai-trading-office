@@ -1,12 +1,6 @@
-# Allowlist: no .env, config, profile, credentials, tests, logs or private artifacts.
 **
 !Dockerfile
 !worker
 !worker/*.py
 !deploy
 !deploy/container_boot.py
-!deploy/supervise.py
-!deploy/install_novnc.py
-!deploy/novnc
-!deploy/novnc/*.js
-!deploy/novnc/*.css

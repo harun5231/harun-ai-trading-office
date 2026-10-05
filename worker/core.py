@@ -1,7 +1,7 @@
 """Fail-closed USDⓈ-M linear-contract risk checks and persistent dry-run ledger."""
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, getcontext, DefaultContext
 from zoneinfo import ZoneInfo
 import hashlib
 import json
@@ -9,12 +9,12 @@ import re
 import sqlite3
 import time
 
+DefaultContext.prec = 160
+getcontext().prec = 160
 D = Decimal
 TZ = ZoneInfo('Asia/Bangkok')
 RISK = D('5')
-STATES = ('IDLE','SCREENING_NEUROBRO','OPENING_NEUROBRO','WAITING_NEUROBRO','SCREENING_SENT','WAITING_RESPONSE','PAUSED_NEEDS_LOGIN','COINS_SELECTED','CAPTURE_1H','CAPTURE_15M',
-          'NEUROBRO_ANALYSIS','SIGNAL_RECEIVED','RISK_CHECK','BINANCE_SETUP','ORDER_READY',
-          'POSITION_OPEN','MONITORING','CLOSED','ERROR')
+STATES = ('IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR')
 class Review(Exception): pass
 class Locked(Review): pass
 
@@ -24,24 +24,13 @@ def number(value):
     if not isinstance(value, (str,int,Decimal)) or isinstance(value,bool):
         raise Review('NEEDS_REVIEW: nilai numerik harus eksplisit')
     text = str(value).strip()
+    if len(text)>64:raise Review('INVALID_NUMBER_SIZE')
     if not re.fullmatch(r'\d+(?:\.\d+)?',text):
         raise Review('NEEDS_REVIEW: angka ambigu / rentang / pemisah ribuan')
     try: value = D(text)
     except InvalidOperation: raise Review('NEEDS_REVIEW: angka tidak valid')
     if not value.is_finite() or value <= 0: raise Review('NEEDS_REVIEW: angka harus positif')
     return value
-
-def coins(text):
-    # Only an explicit two-item list; mentions in advice/refusals are not selections.
-    symbols=[]
-    for line in text.strip().splitlines():
-        value=re.sub(r'^\s*(?:[-*]|[12][.)])?\s*','',line).replace('**','').strip()
-        if not re.fullmatch(r'[A-Z0-9]{2,18}USDT',value):
-            raise Review('NEEDS_REVIEW: screening harus berupa dua pilihan symbol eksplisit tanpa ambiguitas')
-        symbols.append(value)
-    if len(symbols)!=2 or len(set(symbols))!=2:
-        raise Review('NEEDS_REVIEW: screening harus memilih tepat dua symbol USDT eksplisit')
-    return symbols
 
 @dataclass(frozen=True)
 class Signal:
@@ -53,58 +42,6 @@ class Signal:
     quantity: Decimal | None = None
 
 
-def parse_signal(text, expected):
-    # Only clear labeled fields / one JSON object; prose, ranges and multiple TPs are rejected.
-    raw=text.strip()
-    if raw.startswith('```'):
-        raw=re.sub(r'^```(?:json)?\s*|\s*```$', '', raw)
-    if raw.startswith('{'):
-        def unique(pairs):
-            out={}
-            for key,value in pairs:
-                if key in out: raise Review('NEEDS_REVIEW: field duplikat')
-                out[key]=value
-            return out
-        try: fields=json.loads(raw,parse_float=str,object_pairs_hook=unique)
-        except (ValueError,TypeError): raise Review('NEEDS_REVIEW: JSON tidak valid')
-        allowed={'symbol','side','entry','tp','sl','quantity','quantity_unit'}
-        if set(fields)-allowed: raise Review('NEEDS_REVIEW: field JSON tidak dikenal')
-    else:
-        fields={}
-        aliases={'coin':'symbol','symbol':'symbol','pair':'symbol','arah':'side','side':'side',
-                 'entry':'entry','tp':'tp','sl':'sl','ukuran posisi':'quantity','quantity':'quantity'}
-        for line in raw.splitlines():
-            line=line.replace('**','').strip().lstrip('- ').strip()
-            match=re.fullmatch(r'([^:]+):\s*(.+)',line)
-            if not match:
-                if line: raise Review('NEEDS_REVIEW: format signal perlu diperiksa')
-                continue
-            label=match[1].strip().lower()
-            if re.match(r'^(tp|entry|sl)\s*\d',label): raise Review('NEEDS_REVIEW: level alternatif')
-            if label in aliases:
-                key=aliases[label]
-                if key in fields: raise Review('NEEDS_REVIEW: field duplikat')
-                fields[key]=match[2].strip()
-            else: raise Review('NEEDS_REVIEW: field/penjelasan signal ambigu')
-        if 'quantity' in fields:
-            m=re.fullmatch(r'(\d+(?:\.\d+)?)\s+([A-Z0-9]+)',fields['quantity'])
-            if not m: raise Review('NEEDS_REVIEW: unit ukuran posisi tidak jelas')
-            fields['quantity'],fields['quantity_unit']=m.groups()
-    if not {'symbol','side','entry','tp','sl'} <= fields.keys():
-        raise Review('NEEDS_REVIEW: signal belum lengkap')
-    symbol=str(fields['symbol']).upper().strip()
-    side=str(fields['side']).upper().strip()
-    if symbol!=expected or side not in ('LONG','SHORT'):
-        raise Review('NEEDS_REVIEW: symbol/arah tidak cocok')
-    entry,tp,sl=[number(fields[k]) for k in ('entry','tp','sl')]
-    qty=None
-    if 'quantity' in fields:
-        qty=number(fields['quantity']);unit=fields.get('quantity_unit')
-        if unit=='USDT': qty/=entry
-        elif unit!=expected[:-4]: raise Review('NEEDS_REVIEW: unit quantity tidak diketahui')
-    elif 'quantity_unit' in fields: raise Review('NEEDS_REVIEW: quantity hilang')
-    return Signal(symbol,side,entry,tp,sl,qty)
-
 @dataclass(frozen=True)
 class Rules:
     step: Decimal
@@ -115,11 +52,17 @@ class Rules:
     observed_at: float
     min_price: Decimal = D('0')
     max_price: Decimal = D('1000000000')
+    multiplier_up: Decimal | None = None
+    multiplier_down: Decimal | None = None
+    mark_price: Decimal | None = None
 
 
 def risk_check(signal, rules):
     if not 0 <= time.time()-rules.observed_at <= 300: raise Review('NEEDS_REVIEW: filter pasar kedaluwarsa')
-    for v in (rules.step,rules.minimum,rules.maximum,rules.tick,rules.min_notional): number(v)
+    for v in (rules.step,rules.minimum,rules.maximum,rules.tick): number(v)
+    if rules.min_notional < 0: raise Review('INVALID_RULES')
+    if signal.side not in ('LONG','SHORT'): raise Review('INVALID_SIDE')
+    for v in (signal.entry,signal.tp,signal.sl):number(v)
     if signal.side=='LONG': valid=signal.sl<signal.entry<signal.tp
     else: valid=signal.tp<signal.entry<signal.sl
     if not valid: raise Review('NEEDS_REVIEW: susunan ENTRY/TP/SL salah')
@@ -129,11 +72,15 @@ def risk_check(signal, rules):
     for price in (signal.entry,signal.tp,signal.sl):
         if not rules.min_price<=price<=rules.max_price or price % rules.tick:
             raise Review('NEEDS_REVIEW: harga tidak sesuai tick/rentang; level tidak diubah otomatis')
-    qty=min(RISK/distance,rules.maximum)
-    if signal.quantity is not None: qty=min(qty,signal.quantity)
-    qty=(qty/rules.step).to_integral_value(rounding=ROUND_FLOOR)*rules.step
-    if qty < rules.minimum or qty*signal.entry < rules.min_notional:
-        raise Review('NEEDS_REVIEW: quantity/notional minimum melebihi batas risiko')
+    qty=number(signal.quantity)
+    if qty % rules.step or not rules.minimum<=qty<=rules.maximum:
+        raise Review('REJECT_QUANTITY_PRECISION_OR_RANGE')
+    if qty*signal.entry < rules.min_notional:
+        raise Review('REJECT_MIN_NOTIONAL')
+    if rules.multiplier_up is not None:
+        if rules.mark_price is None or rules.multiplier_down is None:raise Review('INVALID_RULES')
+        if not rules.mark_price*rules.multiplier_down<=signal.entry<=rules.mark_price*rules.multiplier_up:
+            raise Review('REJECT_PERCENT_PRICE')
     risk=qty*distance
     if not D('0')<risk<=RISK: raise Review('NEEDS_REVIEW: risiko melampaui batas')
     return dict(symbol=signal.symbol,side=signal.side,entry=str(signal.entry),tp=str(signal.tp),sl=str(signal.sl),
@@ -204,7 +151,7 @@ class Ledger:
         pnl=sum((D(r['pnl']) for r in rows if r['closed_day']==day() and r['pnl'] is not None),D('0'))
         return dict(schema_version=1,mode='DRY_RUN',source=source,generated_at=now(),timezone='Asia/Bangkok',
                     status=events[-1]['state'] if events else 'IDLE',locked=self.count()>=2,
-                    browser_connected=connected,live_enabled=False,balance=None,pnl_today=str(pnl),
+                    api_connected=connected,live_enabled=False,balance=None,pnl_today=str(pnl),
                     trades_today=self.count(),active_positions=sum(r['state']=='POSITION_OPEN' for r in rows),
                     pending_orders=sum(r['state']=='ORDER_READY' for r in rows),trades=rows,events=events,
                     note='Semua order adalah paper trade. Balance akun tidak terhubung; fees/slippage tidak disimulasikan.')

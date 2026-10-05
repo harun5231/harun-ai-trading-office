@@ -1,4 +1,4 @@
-# Private worker state must NEVER be served by GitHub Pages or committed.
+# Private runtime data and credentials are never public assets.
 .env
 .env.*
 !.env.example
@@ -9,34 +9,11 @@ __pycache__/
 .venv/
 node_modules/
 worker-data/
-browser-profile/
 artifacts/
 snapshot.json
-browser-config.local.json
-storage-state*.json
-cookies*.json
-
-# Defense in depth; real profiles still MUST live outside this repository.
-screening-pending.json
-Singleton*
-Local State
-Default/
-# Private remote desktop and authentication material
-Xauthority
-*.vnc
-*.passwd
-session-service.lock
-session-state.json
 private-config/
-# Deployment runtime files; .env.example intentionally remains public.
 ACCESS.txt
 secrets/
 *.secret
+*api_key*
 runner-attempts/
-selector-report*.json
-.selector-*
-browser.json
-
-selector-discovery.json
-
-selector-discovery-diagnostic.json

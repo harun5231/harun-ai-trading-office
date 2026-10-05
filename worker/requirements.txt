@@ -1,2 +1,1 @@
-# Optional: only needed on the private browser worker, not GitHub Pages.
-playwright>=1.49,<2
+# Python standard library only. No third-party runtime packages.
