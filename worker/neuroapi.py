@@ -47,10 +47,14 @@ class NeuroAPI:
         self.db.execute('CREATE TABLE IF NOT EXISTS api_requests(operation TEXT PRIMARY KEY, idempotency TEXT, body_hash TEXT, state TEXT, created REAL, attempts INTEGER, output TEXT)')
     def require_key(self):
         if not self._key:raise Review('NEUROAPI_NOT_CONFIGURED')
+    def _headers(self,json_body=False):
+        headers={'X-API-Key':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'}
+        if json_body:headers['Content-Type']='application/json'
+        return headers
     def health(self):
         self.require_key()
         try:
-            code,_,data=self.transport('GET',BASE+'/health',{'X-API-Key':self._key},timeout=15)
+            code,_,data=self.transport('GET',BASE+'/health',self._headers(),timeout=15)
             if code!=200 or not isinstance(data,dict) or data.get('authenticated') is not True or data.get('status')!='healthy':raise Review('NEUROAPI_UNAVAILABLE')
             return 'NEUROAPI_CONNECTED'
         except Exception:raise Review('NEUROAPI_UNAVAILABLE') from None
@@ -73,7 +77,7 @@ class NeuroAPI:
         try:
             for attempt in range(3):
                 self.db.execute('UPDATE api_requests SET attempts=attempts+1 WHERE operation=?',(operation,))
-                code,headers,data=self.transport('POST',BASE+'/agent/ask',{'Content-Type':'application/json','X-API-Key':self._key},body,timeout=90)
+                code,headers,data=self.transport('POST',BASE+'/agent/ask',self._headers(json_body=True),body,timeout=90)
                 if code==200:
                     if not isinstance(data,dict) or data.get('mode')!='smart' or data.get('answer') is not None or not isinstance(data.get('output'),dict):raise Review('INVALID_NEUROAPI_RESPONSE')
                     value=data['output'];validate(value) # Never persist raw prose, errors or key prefixes.

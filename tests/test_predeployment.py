@@ -54,7 +54,7 @@ class FinalTests(unittest.TestCase):
             other=Ledger(self.path)
             try:self.assertEqual(other.db.execute('SELECT state FROM api_requests').fetchone()[0],'PENDING')
             finally:other.db.close()
-            self.assertEqual(set(args[2]),{'Content-Type','X-API-Key'})
+            self.assertEqual(set(args[2]),{'Content-Type','X-API-Key','Accept','User-Agent'})
             return 200,{},GOOD
         self.ask(self.client(transport))
     def test_timeout_after_received_retryable_response_stops_and_survives_restart(self):
