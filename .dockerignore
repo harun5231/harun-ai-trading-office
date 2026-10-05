@@ -4,3 +4,4 @@
 !worker/*.py
 !deploy
 !deploy/container_boot.py
+!deploy/runtime_permissions.py

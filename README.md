@@ -85,3 +85,7 @@ Audit pre-deployment: [deploy/NEUROAPI_AUDIT.md](deploy/NEUROAPI_AUDIT.md).
 Preflight Binance privat: [deploy/BINANCE_PREFLIGHT.md](deploy/BINANCE_PREFLIGHT.md).
 `python -m worker binance-check` membaca akun/configuration, tidak menyimpan data
 akun di dashboard/ledger dan tidak mengaktifkan live execution.
+
+Phase 1 shadow/preflight: [deploy/BINANCE_SHADOW.md](deploy/BINANCE_SHADOW.md).
+`python -m worker binance-shadow` memeriksa setup tersimpan dengan GET mainnet dan
+menampilkan rencana inert; tidak mengirim order atau menjalankan riset baru.

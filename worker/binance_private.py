@@ -12,7 +12,9 @@ from urllib.request import Request, build_opener, ProxyHandler
 from .http_client import NoRedirect, unique
 
 BASE='https://fapi.binance.com'
-PRIVATE_PATHS=frozenset(('/fapi/v3/account','/fapi/v1/accountConfig'))
+SYMBOL_PATHS=frozenset(('/fapi/v1/symbolConfig','/fapi/v3/positionRisk','/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v1/leverageBracket'))
+OPTIONAL_SYMBOL_PATHS=frozenset(('/fapi/v1/openOrders','/fapi/v1/openAlgoOrders'))
+PRIVATE_PATHS=frozenset(('/fapi/v3/account','/fapi/v1/accountConfig')) | SYMBOL_PATHS
 TIME_PATH='/fapi/v1/time'
 CODES=frozenset(('BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED',
     'BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'))
@@ -57,7 +59,9 @@ def read_only_get(url,headers):
         if parts.path==TIME_PATH:
             if parts.query or headers:raise ValueError()
         elif parts.path in PRIVATE_PATHS:
-            if not re.fullmatch(r'recvWindow=5000&timestamp=[0-9]{1,16}&signature=[0-9a-f]{64}',parts.query):raise ValueError()
+            scope=r'&symbol=[A-Z0-9]{2,18}USDT' if parts.path in SYMBOL_PATHS else ''
+            if parts.path in OPTIONAL_SYMBOL_PATHS:scope='(?:'+scope+')?'
+            if not re.fullmatch(r'recvWindow=5000&timestamp=[0-9]{1,16}'+scope+r'&signature=[0-9a-f]{64}',parts.query):raise ValueError()
             if set(headers)!={'X-MBX-APIKEY','Accept','User-Agent'}:raise ValueError()
         else:raise ValueError()
     except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
@@ -75,7 +79,7 @@ def read_only_get(url,headers):
             except (ValueError,TypeError):data=None
             if status!=200 or (isinstance(data,dict) and type(data.get('code')) is int and data['code']<0):
                 reason=failure(status,data)
-            elif isinstance(data,dict):return data
+            elif isinstance(data,(dict,list)):return data
     except Exception:pass
     # Never chain a URL-bearing urllib exception, provider message or raw response.
     raise BinanceCheckError(reason) from None
@@ -99,11 +103,14 @@ class BinanceReadOnly:
         # Advance trusted server time using monotonic elapsed time, not VPS wall clock.
         # Anchoring at receipt is conservative (at most measured RTT behind server).
         self._server=data['serverTime'];self._synced=end
-    def signed_get(self,path):
+    def signed_get(self,path,symbol=None):
         if path not in PRIVATE_PATHS:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED')
+        if (path in SYMBOL_PATHS and not (path in OPTIONAL_SYMBOL_PATHS and symbol is None) and (not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol))) or (path not in SYMBOL_PATHS and symbol is not None):raise BinanceCheckError('BINANCE_ENDPOINT_DENIED')
         elapsed=self._clock()-self._synced if self._synced is not None else None
         if elapsed is None or not 0<=elapsed<=30:raise BinanceCheckError('BINANCE_CLOCK_ERROR')
-        query=urlencode((('recvWindow',5000),('timestamp',self._server+int(elapsed*1000))))
+        params=[('recvWindow',5000),('timestamp',self._server+int(elapsed*1000))]
+        if symbol is not None:params.append(('symbol',symbol))
+        query=urlencode(params)
         return self._get(BASE+path+'?'+query+'&signature='+signature(self._secret,query),
             {'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'})
     def check(self):
