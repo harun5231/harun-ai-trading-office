@@ -21,7 +21,7 @@ class WorkerTests(unittest.TestCase):
  def plan(self): return risk_check(self.signal,self.rules)
  def test_exact_prompts(self):
   self.assertEqual(SCREENING,'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance')
-  self.assertEqual(ANALYSIS,'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\n Tentukan !\n Ukuran posisi\n ENTRY\n TP\n SL : yang tidak mudah terkena wick atau di jilat para bandar.\n aku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\n RISK REWARD 1:2')
+  self.assertEqual(ANALYSIS,'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nUkuran posisi\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar. \naku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\nRISK REWARD 1:2')
   self.assertNotIn('75',ANALYSIS)
  def test_risk_rejects_instead_of_shrinking(self):
   p=self.plan();self.assertEqual(D(p['quantity']),D('2.5'));self.assertEqual(D(p['risk']),D('5'))

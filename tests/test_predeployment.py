@@ -11,8 +11,8 @@ from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA
 from worker.prompts import SCREENING, ANALYSIS
 
 SCREEN_BYTES = b'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
-# Independent expected bytes include seven LF and one leading space per subsequent line.
-ANALYSIS_BYTES = b'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\n Tentukan !\n Ukuran posisi\n ENTRY\n TP\n SL : yang tidak mudah terkena wick atau di jilat para bandar.\n aku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\n RISK REWARD 1:2'
+# Independent expected bytes: seven LF, no leading spaces, one space after bandar.
+ANALYSIS_BYTES = b'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nUkuran posisi\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar. \naku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\nRISK REWARD 1:2'
 GOOD = {'mode':'smart','answer':None,'output':{'symbols':['BTCUSDT','ETHUSDT']}}
 
 class FinalTests(unittest.TestCase):
