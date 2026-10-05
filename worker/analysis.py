@@ -6,7 +6,7 @@ from .neuroapi import SETUP_SCHEMA,selections,setup
 from .prompts import ANALYSIS
 from .diagnostics import safe_code,validation_code
 
-SIZING_CONTRACT='Target loss at stop loss is 5 USDT. Choose the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
+SIZING_CONTRACT='Target loss at stop loss is 5 USDT. The worker Risk Manager independently computes the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
 
 def analysis_context(market,symbol):
     data=market.data(symbol)
@@ -36,7 +36,7 @@ def analysis_once(ledger,client,market,symbols):
     ledger.db.execute('CREATE TABLE IF NOT EXISTS analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
     results=[]
     for symbol in symbols:
-        operation=today+':analysis-v4:'+symbol
+        operation=today+':analysis-v5:'+symbol
         ledger.db.execute('BEGIN IMMEDIATE')
         try:
             old=ledger.db.execute('SELECT state,result FROM analysis_checks WHERE operation=?',(operation,)).fetchone()
@@ -46,7 +46,7 @@ def analysis_once(ledger,client,market,symbols):
                 results.append(json.loads(old['result']) if old['state']=='COMPLETE' and old['result'] else empty_result(symbol,'ANALYSIS_CHECK_NEEDS_REVIEW'))
                 continue
             if day()!=today:raise Review('CYCLE_DAY_CHANGED')
-            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':analysis-v4:%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
+            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':analysis-v5:%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
             ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',(operation,today,'PENDING',None))
             ledger.db.execute('COMMIT')
         except BaseException:ledger.db.execute('ROLLBACK');raise
@@ -55,14 +55,18 @@ def analysis_once(ledger,client,market,symbols):
             context,_=analysis_context(market,symbol)
             value=client.ask(operation,ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,symbol),context)
             signal=setup(value,symbol)
-            result.update(side=signal.side,position_size=str(signal.quantity),entry=str(signal.entry),TP=str(signal.tp),SL=str(signal.sl),
-                calculated_risk=str(signal.quantity*abs(signal.entry-signal.sl)),actual_RR=str(abs(signal.tp-signal.entry)/abs(signal.entry-signal.sl)))
-            market.fresh(context,symbol)
-            rules=market.rules(symbol) # Recheck fresh exchange rules; never adjust returned numbers.
-            try:risk_check(signal,rules)
-            except Review as error:
-                client.record_validation(operation,error);raise
-            result['status']='ACCEPT'
+            if signal.side=='HOLD':
+                result.update(status='HOLD',side='HOLD')
+            else:
+                result.update(side=signal.side,neurobro_position_size=str(signal.quantity) if signal.quantity is not None else None,
+                    entry=str(signal.entry),TP=str(signal.tp),SL=str(signal.sl),
+                    actual_RR=str(abs(signal.tp-signal.entry)/abs(signal.entry-signal.sl)))
+                market.fresh(context,symbol)
+                rules=market.rules(symbol)
+                try:plan=risk_check(signal,rules)
+                except Review as error:
+                    client.record_validation(operation,error);raise
+                result.update(status='ACCEPT',position_size=plan['quantity'],execution_quantity=plan['quantity'],calculated_risk=plan['risk'])
         except Exception as error:
             row=ledger.db.execute('SELECT failure_code FROM api_requests WHERE operation=?',(operation,)).fetchone()
             result['failure_code']=safe_code(row[0]) if row and row[0] else validation_code(error)
@@ -71,5 +75,5 @@ def analysis_once(ledger,client,market,symbols):
     return results
 
 def empty_result(symbol,reason):
-    return dict(status='REJECT',symbol=symbol,side=None,position_size=None,entry=None,TP=None,SL=None,
+    return dict(status='REJECT',symbol=symbol,side=None,position_size=None,execution_quantity=None,neurobro_position_size=None,entry=None,TP=None,SL=None,
         calculated_risk=None,actual_RR=None,failure_code=reason,mode='DRY_RUN')

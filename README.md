@@ -6,18 +6,23 @@ Binance. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
 
 Alur: prompt screening literal → tepat dua kontrak USDT perpetual aktif → OHLCV
 1h + 15m termasuk candle current → prompt analisis literal + JSON data terpisah
-→ output schema ketat → validator ACCEPT/REJECT → paper LIMIT/CROSS/75x + rencana
-TP/SL. Ukuran posisi menggunakan unit base asset. Tidak ada penggantian angka,
-pengecilan quantity, pembulatan, atau parsing prose sebagai setup.
+→ keputusan LONG/SHORT/HOLD → Risk Manager → validator ACCEPT/REJECT → paper
+LIMIT/CROSS/75x + rencana TP/SL. ENTRY/TP/SL dan keputusan Neurobro tidak diubah.
+Quantity Neurobro disimpan sebagai audit; execution_quantity dihitung worker sebagai
+quantity base asset legal terbesar dengan risiko SL ≤5 USDT (floor stepSize,
+minQty/maxQty/minNotional). Tidak ada parsing prose atau request perbaikan setup.
 
 Validator: harga/tick/rentang, quantity/step/min/max, min notional, percent-price
 jika filter tersedia, arah TP/SL, risiko harga ≤5 USDT dan reward/risk ≥2 serta
-kesesuaian rasio yang dinyatakan. Leverage tidak masuk rumus risiko.
+rasio aktual berdasarkan ENTRY/TP/SL sebagai sumber kebenaran. Leverage tidak masuk rumus risiko.
 
 State SQLite tetap privat/persisten: maksimal dua slot trade/hari total,
 Asia/Bangkok, termasuk order paper pending. Satu siklus riset per hari; jika
-terputus/ambigu, butuh review, tidak otomatis diulang. Penolakan satu coin tidak
-mengganti coin tersebut. Retry hanya respons HTTP 429/503, maksimal tiga attempt dengan body sama.
+terputus/ambigu, butuh review, tidak otomatis diulang. HOLD tidak memakai slot dan memicu replacement screening dengan prompt dua coin
+yang sama, maksimal tiga request screening replacement per cycle. Kandidat pertama
+yang eligible dan belum dianalisis dipilih. Technical REJECT/API failure tidak
+memicu replacement. Stop saat dua setup valid; kekurangan setelah HOLD dicatat
+INSUFFICIENT_ACTIONABLE_SETUPS. Cycle yang terputus tetap fail-closed tanpa replay. Retry hanya respons HTTP 429/503, maksimal tiga attempt dengan body sama.
 Retry-After dihormati; jika melebihi 30 detik atau tidak dapat diparse, berhenti.
 Tidak mengirim Idempotency-Key; deduplikasi menggunakan ledger lokal. Timeout/hasil tidak pasti berhenti;
 request COMPLETE dapat dibaca kembali lokal tanpa tagihan baru. Tidak ada replay

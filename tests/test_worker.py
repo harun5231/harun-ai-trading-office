@@ -23,16 +23,16 @@ class WorkerTests(unittest.TestCase):
   self.assertEqual(SCREENING,'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance')
   self.assertEqual(ANALYSIS,'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nUkuran posisi\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar. \naku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\nRISK REWARD 1:2')
   self.assertNotIn('75',ANALYSIS)
- def test_risk_rejects_instead_of_shrinking(self):
+ def test_execution_sizing_independent_of_provider(self):
   p=self.plan();self.assertEqual(D(p['quantity']),D('2.5'));self.assertEqual(D(p['risk']),D('5'))
-  with self.assertRaises(Review):risk_check(replace(self.signal,quantity=D('10')),self.rules)
+  self.assertEqual(D(risk_check(replace(self.signal,quantity=D('10')),self.rules)['risk']),D('5'))
   self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS')
-  with self.assertRaisesRegex(Review,'POSITION_SIZE_NOT_MAX_RISK'):risk_check(replace(self.signal,quantity=D('1')),self.rules)
+  self.assertEqual(D(risk_check(replace(self.signal,quantity=D('1')),self.rules)['risk']),D('5'))
  def test_precision_rejection_and_short(self):
   p=risk_check(Signal('BTCUSDT','SHORT',D('100'),D('94'),D('103'),D('1.666')),self.rules)
   self.assertEqual(p['quantity'],'1.666');self.assertEqual(D(p['risk']),D('4.998'))
-  with self.assertRaises(Review):risk_check(replace(self.signal,quantity=D('1.0001')),self.rules)
-  with self.assertRaises(Review):risk_check(replace(self.signal,quantity=None),self.rules)
+  self.assertEqual(D(risk_check(replace(self.signal,quantity=D('1.0001')),self.rules)['risk']),D('5'))
+  self.assertEqual(D(risk_check(replace(self.signal,quantity=None),self.rules)['risk']),D('5'))
  def test_bad_risk(self):
   for sig in [replace(self.signal,sl=D('100')),replace(self.signal,sl=D('101')),replace(self.signal,tp=D('103')),replace(self.signal,entry=D('100.001'))]:
    with self.assertRaises(Review):risk_check(sig,self.rules)

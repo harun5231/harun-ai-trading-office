@@ -52,15 +52,15 @@ class AnalysisContextTests(unittest.TestCase):
         self.assertEqual(second,list(reversed(first)));self.assertEqual(len(self.calls),2)
         self.assertEqual(self.ledger.count(),0)
         self.assertFalse(self.ledger.db.execute("SELECT name FROM sqlite_master WHERE name='cycles'").fetchone())
-        self.assertEqual(first[0]['position_size'],'2.5');self.assertEqual(first[0]['calculated_risk'],'5.0');self.assertEqual(first[0]['actual_RR'],'2')
-    def test_precision_rejected_without_mutation_or_repair_request(self):
+        self.assertEqual(D(first[0]['position_size']),D('2.5'));self.assertEqual(D(first[0]['calculated_risk']),D('5'));self.assertEqual(first[0]['actual_RR'],'2')
+    def test_provider_precision_audit_without_extra_request(self):
         result=analysis_once(self.ledger,self.client({**GOOD,'position_size':D('2.0001')}),self.market,['BTCUSDT','ETHUSDT'])
         self.assertEqual(len(self.calls),2)
-        self.assertTrue(all(r['failure_code']=='REJECT_QUANTITY_PRECISION_OR_RANGE' for r in result))
-        self.assertTrue(all(r['position_size']=='2.0001' for r in result))
-    def test_risk_above_five_rejected_without_resize(self):
+        self.assertTrue(all(r['status']=='ACCEPT' and D(r['execution_quantity'])==D('2.5') for r in result))
+        self.assertTrue(all(r['neurobro_position_size']=='2.0001' for r in result))
+    def test_provider_size_audit_and_safe_execution(self):
         result=analysis_once(self.ledger,self.client({**GOOD,'position_size':3}),self.market,['BTCUSDT','ETHUSDT'])
-        self.assertTrue(all(r['failure_code']=='RISK_ABOVE_5' and r['calculated_risk']=='6' and r['position_size']=='3' for r in result))
+        self.assertTrue(all(r['status']=='ACCEPT' and D(r['calculated_risk'])==D('5') and r['neurobro_position_size']=='3' for r in result))
         self.assertEqual(len(self.calls),2)
     def test_rr_below_two_rejected_without_repair_request(self):
         result=analysis_once(self.ledger,self.client({**GOOD,'take_profit':103}),self.market,['BTCUSDT','ETHUSDT'])
@@ -91,12 +91,12 @@ class AnalysisContextTests(unittest.TestCase):
         self.assertEqual(len(self.calls),2);self.assertEqual(result['trades_today'],2);self.assertFalse(result['live_enabled'])
     def test_schema_describes_contract_and_risk_without_changing_prompt(self):
         description=SETUP_SCHEMA['properties']['position_size']['description']
-        for word in ('base-asset','stepSize/minQty/maxQty','5 USDT'):self.assertIn(word,description)
+        for word in ('base-asset','Informational','Risk Manager'):self.assertIn(word,description)
         for field in ('limit_entry','take_profit','stop_loss'):self.assertIn('tickSize',SETUP_SCHEMA['properties'][field]['description'])
     def test_interrupted_check_is_not_replayed(self):
         client=self.client()
         self.ledger.db.execute('CREATE TABLE analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v4:BTCUSDT','2026-10-05','PENDING',NULL)")
+        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v5:BTCUSDT','2026-10-05','PENDING',NULL)")
         with patch('worker.analysis.day',return_value='2026-10-05'):
             result=analysis_once(self.ledger,client,self.market,['BTCUSDT','ETHUSDT'])
         self.assertEqual(result[0]['failure_code'],'ANALYSIS_CHECK_NEEDS_REVIEW');self.assertEqual(len(self.calls),1)

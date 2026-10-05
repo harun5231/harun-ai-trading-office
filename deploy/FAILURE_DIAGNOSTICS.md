@@ -42,8 +42,8 @@ ENTRY/TP/SL must have correct LONG/SHORT ordering. Actual reward distance must b
 at least twice stop distance, compared exactly without division rounding. Declared
 RR must be a positive numeric ratio, but need not equal the calculated ratio.
 It does not override actual level-based RR, including a rounded declaration 1.9999.
-Thus declared 2 with actual 2.0001 passes; actual 1.9999 never passes. No price or
-quantity is adjusted. Risk Manager independently retains the <=5 USDT price-risk
+Thus declared 2 with actual 2.0001 passes; actual 1.9999 never passes. Provider prices and audit quantity are preserved; execution quantity is separately
+computed by Risk Manager, retaining the <=5 USDT price-risk
 limit, contract filters, CROSS/75x paper plan and persistent two-slot daily cap.
 
 Prompts are unchanged byte-for-byte. Only public Binance GETs and DRY RUN remain.

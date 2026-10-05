@@ -49,7 +49,7 @@ class DiagnosticTests(unittest.TestCase):
             self.check_failure(self.envelope(value),'INVALID_SETUP_SYMBOL_SIDE',OP+str(i))
     def test_numeric_type_mismatch(self):
         for i,value in enumerate(('2',True,None,[],2.0)):
-            self.check_failure(self.envelope({**GOOD,'position_size':value}),'INVALID_NUMERIC_TYPE',OP+str(i))
+            self.check_failure(self.envelope({**GOOD,'limit_entry':value}),'INVALID_NUMERIC_TYPE',OP+str(i))
     def test_invalid_numeric_values(self):
         for i,value in enumerate((0,-1,D('NaN'),D('Infinity'),D('1e1000'))):
             self.check_failure(self.envelope({**GOOD,'position_size':value}),'INVALID_NUMERIC_VALUE',OP+str(i))
@@ -66,16 +66,17 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(signal.tp,D('104.0002'));self.assertEqual(signal.quantity,D('2.5'))
         from dataclasses import replace
         plan=risk_check(signal,replace(RULES(),tick=D('.0001')))
-        self.assertEqual(D(plan['rr']),D('2.0001'));self.assertEqual(plan['tp'],'104.0002');self.assertEqual(plan['quantity'],'2.5')
+        self.assertEqual(D(plan['rr']),D('2.0001'));self.assertEqual(plan['tp'],'104.0002');self.assertEqual(D(plan['quantity']),D('2.5'))
     def test_declared_rr_does_not_override_actual_under_two(self):
         with self.assertRaisesRegex(Review,'RISK_REWARD_BELOW_2'):setup({**GOOD,'take_profit':103,'risk_reward':100},'BTCUSDT')
     def test_risk_rejection_is_not_provider_failure(self):
         value={**GOOD,'position_size':10};client=self.client(self.envelope(value))
         output=client.ask(OP,'prompt',SETUP_SCHEMA,lambda v:setup(v,'BTCUSDT'))
-        with self.assertRaises(Review) as caught:risk_check(setup(output,'BTCUSDT'),RULES())
+        from dataclasses import replace
+        with self.assertRaises(Review) as caught:risk_check(setup(output,'BTCUSDT'),replace(RULES(),min_notional=D('1000')))
         client.record_validation(OP,caught.exception)
         row=read_records(self.root)[0]
-        self.assertEqual(row['state'],'COMPLETE');self.assertEqual(row['failure_code'],'RISK_ABOVE_5')
+        self.assertEqual(row['state'],'COMPLETE');self.assertEqual(row['failure_code'],'NO_LEGAL_MAX_RISK_QUANTITY')
         self.assertEqual(value['position_size'],10)
     def test_json_numbers_use_decimal_without_rounding(self):
         response=MagicMock();response.__enter__.return_value=response;response.code=200;response.headers={}
@@ -131,13 +132,13 @@ class DiagnosticTests(unittest.TestCase):
         def transport(method,url,headers=None,body=None,timeout=None):
             calls.append(body)
             if body['output_schema']==SCREEN_SCHEMA:value={'symbols':['BTCUSDT','ETHUSDT']}
-            else:value={**GOOD,'position_size':10,'symbol':json.loads(body['message_history'][0]['content'])['symbol']}
+            else:value={**GOOD,'limit_entry':D('100.001'),'take_profit':105,'symbol':json.loads(body['message_history'][0]['content'])['symbol']}
             return self.envelope(value)
         client=NeuroAPI(self.db,key='synthetic-private-marker',transport=transport)
         flow=Workflow(self.db,client,FakeMarket(),self.root/'snapshot.json')
         result=flow.run();self.assertEqual(result['trades_today'],0)
         rows=[r for r in read_records(self.root) if ':analysis:' in r['operation']]
-        self.assertEqual([r['failure_code'] for r in rows],['RISK_ABOVE_5']*2)
+        self.assertEqual([r['failure_code'] for r in rows],['INVALID_PRICE_FILTER']*2)
         self.assertEqual([r['state'] for r in rows],['COMPLETE']*2)
         flow.run();self.assertEqual(len(calls),3)
     def test_network_and_http_diagnostics_are_not_validation_rejections(self):
@@ -149,7 +150,7 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(columns.count('failure_code'),1)
     def test_setup_schema_uses_json_numbers(self):
         from worker.neuroapi import NUMERIC_FIELDS
-        for name in NUMERIC_FIELDS:self.assertEqual(SETUP_SCHEMA['properties'][name]['type'],'number')
+        for name in NUMERIC_FIELDS:self.assertEqual(SETUP_SCHEMA['properties'][name]['type'],['number','null'])
     def test_declared_rr_rounding_below_two_does_not_override_actual(self):
         signal=setup({**GOOD,'risk_reward':D('1.9999')},'BTCUSDT')
         self.assertEqual(risk_check(signal,RULES())['rr'],'2')

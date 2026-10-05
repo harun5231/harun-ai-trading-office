@@ -89,13 +89,13 @@ class APITests(unittest.TestCase):
     def test_rr_declaration_must_be_positive_numeric(self):
         for rr in (0,'3','1:2'):
             with self.assertRaises(Review):setup({**GOOD,'risk_reward':rr},'BTCUSDT')
-    def test_overrisk_is_rejected_not_resized(self):
+    def test_provider_overrisk_does_not_control_execution(self):
         signal=setup({**GOOD,'position_size':10},'BTCUSDT')
-        with self.assertRaises(Review):risk_check(signal,RULES())
+        self.assertEqual(D(risk_check(signal,RULES())['risk']),D('5'))
         self.assertEqual(signal.quantity,D('10'))
     def test_long_and_short_exact_plan(self):
         for output in (GOOD,{**GOOD,'side':'SHORT','take_profit':96,'stop_loss':102}):
-            p=risk_check(setup(output,'BTCUSDT'),RULES());self.assertEqual(p['quantity'],'2.5');self.assertEqual(p['entry'],'100');self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS');self.assertEqual(p['mode'],'DRY_RUN')
+            p=risk_check(setup(output,'BTCUSDT'),RULES());self.assertEqual(D(p['quantity']),D('2.5'));self.assertEqual(p['entry'],'100');self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS');self.assertEqual(p['mode'],'DRY_RUN')
     def test_workflow_end_to_end_two_plans_and_no_duplicate(self):
         m=FakeMarket();flow=Workflow(self.ledger,self.client(),m,self.path/'snapshot.json');s=flow.run()
         self.assertEqual(s['trades_today'],2);self.assertTrue(s['locked']);self.assertFalse(s['live_enabled']);self.assertEqual(s['status'],'DRY_RUN_READY')
@@ -172,7 +172,7 @@ class TransportSafetyTests(unittest.TestCase):
         self.assertEqual(str(error.exception),'HTTP_RESULT_UNCERTAIN')
     def test_decimal_precision_never_silently_rounds_quantity(self):
         signal=Signal('BTCUSDT','LONG',D('100'),D('104'),D('98'),D('2.5000000000000000000000000000001'))
-        with self.assertRaises(Review):risk_check(signal,RULES())
+        self.assertEqual(D(risk_check(signal,RULES())['risk']),D('5'))
     def test_percent_price_filter_rejects_without_reprice(self):
         from dataclasses import replace
         r=replace(RULES(),multiplier_up=D('1.1'),multiplier_down=D('.9'),mark_price=D('200'))

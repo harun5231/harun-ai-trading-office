@@ -2,7 +2,7 @@
 (() => {
  'use strict';
  let snapshot=null, endpoint='', token='', timer=null, busy=false, connected=false, message='Worker belum terhubung. Angka akun belum tersedia.';
- const allowedStates=new Set(['IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR']);
+ const allowedStates=new Set(['IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR','LONG','SHORT','HOLD','REPLACEMENT_SCREENING','REPLACEMENT_SELECTED','INSUFFICIENT_ACTIONABLE_SETUPS']);
  const panel=document.getElementById('infoPanel'), content=document.getElementById('panelContent'),title=document.getElementById('panelTitle');
  const button=document.createElement('button');button.id='workflowMenu';button.className='menu-item';button.textContent='◇ Workflow DRY RUN';
  document.getElementById('menuDrawer').insertBefore(button,document.querySelector('.drawer-note'));
@@ -27,7 +27,7 @@
  function render(){
   if(title.dataset.workflow!=='true')return;
   const s=snapshot,age=s?Math.max(0,Math.floor((Date.now()-Date.parse(s.generated_at))/1000)):null;
-  const rows=s?.trades.slice(-20).reverse().map(t=>`<div class="coin"><div><b>${esc(t.plan.symbol)} · ${esc(t.plan.side)} · ${esc(t.state)}</b><small>ENTRY ${esc(t.plan.entry)} · TP ${esc(t.plan.tp)} · SL ${esc(t.plan.sl)}<br>Qty ${esc(t.plan.quantity)} · Risiko ${esc(t.plan.risk)} USDT · CROSS / 75x (rencana paper)<br>PNL ${esc(t.pnl??'—')} · ${esc(t.source)}</small></div></div>`).join('')||'<p>Belum ada order paper.</p>';
+  const rows=s?.trades.slice(-20).reverse().map(t=>`<div class="coin"><div><b>${esc(t.plan.symbol)} · ${esc(t.plan.side)} · ${esc(t.state)}</b><small>ENTRY ${esc(t.plan.entry)} · TP ${esc(t.plan.tp)} · SL ${esc(t.plan.sl)}<br>Execution qty ${esc(t.plan.execution_quantity??t.plan.quantity)} · Neurobro qty (audit) ${esc(t.plan.neurobro_position_size)} · Risiko ${esc(t.plan.risk)} USDT · CROSS / 75x (rencana paper)<br>PNL ${esc(t.pnl??'—')} · ${esc(t.source)}</small></div></div>`).join('')||'<p>Belum ada order paper.</p>';
   content.innerHTML=`<div class="wf-note"><b>DRY RUN ONLY${s?.locked?' · LOCKED':''}</b><br>${esc(message)}${s?`<br>Status: ${esc(s.status)} · Sumber: ${esc(s.source)}<br>Snapshot ${esc(s.generated_at)} (${age}s lalu)${age>120?' · DATA LAMA':''}`:''}<br>Saldo nyata belum terhubung. Tidak ada tombol atau eksekusi order live.</div>
   <div class="wf-actions"><label class="wf-file">Buka snapshot JSON<input id="wfFile" type="file" accept=".json,application/json"></label><button id="wfExport" ${s?'':'disabled'}>Unduh laporan</button></div>
   <details><summary>Koneksi worker privat (baca saja)</summary><label>URL HTTPS /snapshot<input id="wfUrl" type="url" placeholder="https://worker-anda/snapshot"></label><label>Token baca sementara<input id="wfToken" type="password" autocomplete="off" placeholder="Tidak disimpan"></label><div class="wf-actions"><button id="wfConnect">Hubungkan</button><button id="wfDisconnect">Putuskan</button></div><small>Token hanya di memori tab. Jangan masukkan password Binance/Neurobro atau API key di sini. Worker harus sudah berjalan di server privat.</small></details>

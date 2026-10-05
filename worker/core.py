@@ -15,7 +15,7 @@ getcontext().prec = 160
 D = Decimal
 TZ = ZoneInfo('Asia/Bangkok')
 RISK = D('5')
-STATES = ('IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR')
+STATES = ('IDLE','NEUROAPI_NOT_CONFIGURED','NEUROAPI_CONNECTED','SCREENING','COINS_SELECTED','MARKET_DATA','ANALYZING_COIN_1','ANALYZING_COIN_2','VALIDATING','DRY_RUN_READY','REJECTED','ORDER_READY','POSITION_OPEN','MONITORING','CLOSED','LOCKED','ERROR','LONG','SHORT','HOLD','REPLACEMENT_SCREENING','REPLACEMENT_SELECTED','INSUFFICIENT_ACTIONABLE_SETUPS')
 class Review(Exception): pass
 class Locked(Review): pass
 
@@ -59,7 +59,7 @@ class Rules:
 
 
 def maximum_risk_quantity(entry,sl,rules):
-    """Independent exact comparator only; never modifies the provider's Signal."""
+    """Deterministic execution sizing; never modifies provider levels or audit quantity."""
     distance=abs(entry-sl)
     if distance<=0:raise Review('INVALID_ENTRY_TP_SL')
     # Integer floors on exact rationals avoid rounding a near-step quotient upward.
@@ -86,20 +86,15 @@ def risk_check(signal, rules):
     for price in (signal.entry,signal.tp,signal.sl):
         if not rules.min_price<=price<=rules.max_price or price % rules.tick:
             raise Review('NEEDS_REVIEW: harga tidak sesuai tick/rentang; level tidak diubah otomatis')
-    qty=number(signal.quantity)
-    if qty % rules.step or not rules.minimum<=qty<=rules.maximum:
-        raise Review('REJECT_QUANTITY_PRECISION_OR_RANGE')
-    if qty*signal.entry < rules.min_notional:
-        raise Review('REJECT_MIN_NOTIONAL')
+    qty=maximum_risk_quantity(signal.entry,signal.sl,rules)
     if rules.multiplier_up is not None:
         if rules.mark_price is None or rules.multiplier_down is None:raise Review('INVALID_RULES')
         if not rules.mark_price*rules.multiplier_down<=signal.entry<=rules.mark_price*rules.multiplier_up:
             raise Review('REJECT_PERCENT_PRICE')
     risk=qty*distance
     if not D('0')<risk<=RISK: raise Review('NEEDS_REVIEW: risiko melampaui batas')
-    if qty!=maximum_risk_quantity(signal.entry,signal.sl,rules):raise Review('POSITION_SIZE_NOT_MAX_RISK')
     return dict(symbol=signal.symbol,side=signal.side,entry=str(signal.entry),tp=str(signal.tp),sl=str(signal.sl),
-                quantity=str(qty),risk=str(risk),margin_mode='CROSS',leverage=75,order_type='LIMIT',
+                quantity=str(qty),execution_quantity=str(qty),neurobro_position_size=str(signal.quantity) if signal.quantity is not None else None,risk=str(risk),margin_mode='CROSS',leverage=75,order_type='LIMIT',
                 mode='DRY_RUN',rr=str(abs(signal.tp-signal.entry)/distance),rules_checked_at=rules.observed_at)
 
 
@@ -110,6 +105,7 @@ def preflight(plan, rules):
     sig=Signal(plan['symbol'],plan['side'],number(plan['entry']),number(plan['tp']),number(plan['sl']),number(plan['quantity']))
     if sig.side not in ('LONG','SHORT') or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',sig.symbol):
         raise Review('NEEDS_REVIEW: symbol/side tidak valid')
+    if 'execution_quantity' in plan and D(plan['execution_quantity'])!=D(plan['quantity']):raise Review('INVALID_EXECUTION_QUANTITY')
     verified=risk_check(sig,rules)
     if D(verified['quantity'])!=D(plan['quantity']) or D(verified['risk'])!=D(plan['risk']):
         raise Review('NEEDS_REVIEW: ukuran/risk berubah sebelum submit')

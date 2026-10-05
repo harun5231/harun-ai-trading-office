@@ -42,6 +42,10 @@ class OfficeUI(unittest.TestCase):
         data={'schema_version':1,'mode':'DRY_RUN','live_enabled':False,'source':'NEUROAPI_DRY_RUN','status':'IDLE','balance':None,'pnl_today':'0','trades_today':0,'active_positions':0,'trades':[],'events':[{'state':'IDLE','at':'2026-01-01T00:00:00Z','agent':'Coordinator','message':'<img src=x onerror="window.pwned=true">'}],'generated_at':'2026-01-01T00:00:00Z'}
         p.locator('#wfFile').set_input_files({'name':'snapshot.json','mimeType':'application/json','buffer':json.dumps(data).encode()})
         self.assertFalse(p.evaluate('!!window.pwned||!!document.querySelector("#panelContent img")'))
+        for state in ('LONG','SHORT','HOLD','REPLACEMENT_SCREENING','REPLACEMENT_SELECTED','INSUFFICIENT_ACTIONABLE_SETUPS'):
+            data['status']=state
+            p.locator('#wfFile').set_input_files({'name':'state.json','mimeType':'application/json','buffer':json.dumps(data).encode()})
+            p.wait_for_function('(state)=>document.querySelector("#panelContent").textContent.includes(state)',arg=state)
         data['live_enabled']=True;p.locator('#wfFile').set_input_files({'name':'bad.json','mimeType':'application/json','buffer':json.dumps(data).encode()})
         p.wait_for_function('document.querySelector("#panelContent").textContent.includes("tidak sesuai skema")')
         self.assertEqual(self.errors,[])
