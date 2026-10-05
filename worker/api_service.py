@@ -85,7 +85,15 @@ def handler(controller,read_token,control_token,origin):
         def authorized(self,control=False):
             value=self.headers.get('Authorization','')
             return hmac.compare_digest(value,'Bearer '+control_token) or (not control and hmac.compare_digest(value,'Bearer '+read_token))
-        def do_OPTIONS(self):self.reply(204,{})
+        def do_OPTIONS(self):
+            # A 204 response must not carry Content-Length or a body.  Sending
+            # JSON here breaks strict HTTP/2 clients during the CORS preflight.
+            self.send_response(204)
+            if self.headers.get('Origin')==origin:
+                self.send_header('Access-Control-Allow-Origin',origin);self.send_header('Vary','Origin')
+            self.send_header('Access-Control-Allow-Headers','Authorization, Content-Type')
+            self.send_header('Access-Control-Allow-Methods','GET, POST, OPTIONS')
+            self.end_headers()
         def do_GET(self):
             if not self.authorized():return self.reply(403,{'error':'FORBIDDEN'})
             if self.path=='/health':return self.reply(200,{'status':'ONLINE' if controller.thread.is_alive() else 'OFFLINE','mode':'DRY_RUN','live_enabled':False})
