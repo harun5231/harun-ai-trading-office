@@ -63,10 +63,10 @@ class DiagnosticTests(unittest.TestCase):
     def test_actual_rr_is_authority_and_levels_unchanged(self):
         value={**GOOD,'take_profit':D('104.0002')}
         signal=setup(value,'BTCUSDT')
-        self.assertEqual(signal.tp,D('104.0002'));self.assertEqual(signal.quantity,D('2'))
+        self.assertEqual(signal.tp,D('104.0002'));self.assertEqual(signal.quantity,D('2.5'))
         from dataclasses import replace
         plan=risk_check(signal,replace(RULES(),tick=D('.0001')))
-        self.assertEqual(D(plan['rr']),D('2.0001'));self.assertEqual(plan['tp'],'104.0002');self.assertEqual(plan['quantity'],'2')
+        self.assertEqual(D(plan['rr']),D('2.0001'));self.assertEqual(plan['tp'],'104.0002');self.assertEqual(plan['quantity'],'2.5')
     def test_declared_rr_does_not_override_actual_under_two(self):
         with self.assertRaisesRegex(Review,'RISK_REWARD_BELOW_2'):setup({**GOOD,'take_profit':103,'risk_reward':100},'BTCUSDT')
     def test_risk_rejection_is_not_provider_failure(self):

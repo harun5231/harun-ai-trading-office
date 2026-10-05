@@ -27,10 +27,10 @@ class WorkerTests(unittest.TestCase):
   p=self.plan();self.assertEqual(D(p['quantity']),D('2.5'));self.assertEqual(D(p['risk']),D('5'))
   with self.assertRaises(Review):risk_check(replace(self.signal,quantity=D('10')),self.rules)
   self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS')
-  self.assertEqual(D(risk_check(replace(self.signal,quantity=D('1')),self.rules)['quantity']),D('1'))
+  with self.assertRaisesRegex(Review,'POSITION_SIZE_NOT_MAX_RISK'):risk_check(replace(self.signal,quantity=D('1')),self.rules)
  def test_precision_rejection_and_short(self):
-  p=risk_check(Signal('BTCUSDT','SHORT',D('100'),D('94'),D('103'),D('1')),self.rules)
-  self.assertEqual(p['quantity'],'1');self.assertEqual(D(p['risk']),D('3'))
+  p=risk_check(Signal('BTCUSDT','SHORT',D('100'),D('94'),D('103'),D('1.666')),self.rules)
+  self.assertEqual(p['quantity'],'1.666');self.assertEqual(D(p['risk']),D('4.998'))
   with self.assertRaises(Review):risk_check(replace(self.signal,quantity=D('1.0001')),self.rules)
   with self.assertRaises(Review):risk_check(replace(self.signal,quantity=None),self.rules)
  def test_bad_risk(self):

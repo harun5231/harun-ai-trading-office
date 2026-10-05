@@ -7,7 +7,7 @@ from unittest.mock import patch
 from worker.core import Ledger, D, Review, risk_check
 from worker.neuroapi import NeuroAPI, SETUP_SCHEMA, setup
 from worker.prompts import ANALYSIS
-from worker.analysis import analysis_context, analysis_once
+from worker.analysis import analysis_context, analysis_once, SIZING_CONTRACT
 from worker.workflow import Workflow
 from test_neuroapi import FakeMarket, GOOD, RULES
 
@@ -30,7 +30,7 @@ class AnalysisContextTests(unittest.TestCase):
         c=context['contract_rules'];risk=context['risk_constraints']
         for field,value in {'stepSize':'0.001','minQty':'0.001','maxQty':'1000','tickSize':'0.01','minNotional':'5','minPrice':'0.01','maxPrice':'1000000'}.items():self.assertEqual(c[field],value)
         self.assertEqual(c['quantity_unit'],'base_asset')
-        self.assertEqual(risk,dict(quantity_unit='base_asset',margin_mode_target='CROSS',leverage_target=75,maximum_loss_at_sl_usdt='5',minimum_actual_reward_risk=2))
+        self.assertEqual(risk,dict(quantity_unit='base_asset',margin_mode_target='CROSS',leverage_target=75,maximum_loss_at_sl_usdt='5',minimum_actual_reward_risk=2,target_loss_at_sl_usdt='5',position_sizing_contract=SIZING_CONTRACT))
         self.assertEqual(context['source'],'Binance Futures');self.assertEqual(context['symbol'],'BTCUSDT')
         self.assertEqual(set(context['timeframes']),{'1h','15m'})
         for key in ('mark_price','fetched_at','server_time'):self.assertIn(key,context)
@@ -52,7 +52,7 @@ class AnalysisContextTests(unittest.TestCase):
         self.assertEqual(second,list(reversed(first)));self.assertEqual(len(self.calls),2)
         self.assertEqual(self.ledger.count(),0)
         self.assertFalse(self.ledger.db.execute("SELECT name FROM sqlite_master WHERE name='cycles'").fetchone())
-        self.assertEqual(first[0]['position_size'],'2');self.assertEqual(first[0]['calculated_risk'],'4');self.assertEqual(first[0]['actual_RR'],'2')
+        self.assertEqual(first[0]['position_size'],'2.5');self.assertEqual(first[0]['calculated_risk'],'5.0');self.assertEqual(first[0]['actual_RR'],'2')
     def test_precision_rejected_without_mutation_or_repair_request(self):
         result=analysis_once(self.ledger,self.client({**GOOD,'position_size':D('2.0001')}),self.market,['BTCUSDT','ETHUSDT'])
         self.assertEqual(len(self.calls),2)
@@ -96,7 +96,7 @@ class AnalysisContextTests(unittest.TestCase):
     def test_interrupted_check_is_not_replayed(self):
         client=self.client()
         self.ledger.db.execute('CREATE TABLE analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v3:BTCUSDT','2026-10-05','PENDING',NULL)")
+        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v4:BTCUSDT','2026-10-05','PENDING',NULL)")
         with patch('worker.analysis.day',return_value='2026-10-05'):
             result=analysis_once(self.ledger,client,self.market,['BTCUSDT','ETHUSDT'])
         self.assertEqual(result[0]['failure_code'],'ANALYSIS_CHECK_NEEDS_REVIEW');self.assertEqual(len(self.calls),1)

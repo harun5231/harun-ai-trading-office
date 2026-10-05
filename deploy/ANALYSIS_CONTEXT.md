@@ -17,8 +17,8 @@ even when rejected later for quantity precision or excess risk.
 
 `analysis-once` is analysis/validation only: no screening, paper trade reservation,
 cycle reset or live submission. It requires exactly two distinct active symbols.
-Each requested symbol has a durable daily `analysis-v3` operation and a claimed
-analysis_checks record before any paid call. Up to two checks per day; repeating
+Each requested symbol has a durable daily `analysis-v4` operation and a claimed
+analysis_checks record before any paid call. Up to two checks per day for this version; repeating
 or reversing the same command returns stored results, not new provider requests.
 Interrupted checks fail closed. HTTP retry policy remains only 429/503, bounded.
 Old cycles and API request records are untouched. Cached results are historical
@@ -34,3 +34,20 @@ This consumes up to two new logical analysis requests. Do not reset records to
 retry. No NeuroAPI key is requested, printed or stored in the repository. Tests
 use fixtures only and do not establish that the real provider will produce an
 acceptable setup; an invalid setup must still be rejected.
+
+## Maximum-risk sizing contract
+
+Target price loss at SL is 5 USDT. Context and quantity schema now explicitly ask
+for the largest legal base-asset quantity within that budget. The independent
+validator computes the number of complete stepSize increments allowed by both
+5 / abs(entry-SL) and maxQty, using exact integer/rational floor arithmetic.
+It checks minQty/minNotional and retains all price/range/percent-price checks.
+Only exact equality with this maximum legal quantity passes. There is no arbitrary
+percentage tolerance; a smaller risk is accepted only when the next step would
+exceed the budget or maxQty. Provider prices and quantity are never modified.
+Undersizing yields POSITION_SIZE_NOT_MAX_RISK; risk above 5 still yields RISK_ABOVE_5.
+RR is still based on actual levels and may exceed 2. Leverage does not alter risk.
+
+Version v4 permits one new pair of analysis-only checks without deleting old v3
+records. Repeating v4 that day returns its stored result; no new paid request.
+The trading ledger's maximum two positions/day remains unchanged across versions.

@@ -6,6 +6,8 @@ from .neuroapi import SETUP_SCHEMA,selections,setup
 from .prompts import ANALYSIS
 from .diagnostics import safe_code,validation_code
 
+SIZING_CONTRACT='Target loss at stop loss is 5 USDT. Choose the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
+
 def analysis_context(market,symbol):
     data=market.data(symbol)
     rules=market.rules(symbol) # Must complete before any paid analysis call.
@@ -25,7 +27,7 @@ def analysis_context(market,symbol):
             'max_entry_price':str(rules.mark_price*rules.multiplier_up)}
     return {**data,'contract_rules':contract,'risk_constraints':{'quantity_unit':'base_asset',
         'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(RISK),
-        'minimum_actual_reward_risk':2}},rules
+        'minimum_actual_reward_risk':2,'target_loss_at_sl_usdt':str(RISK),'position_sizing_contract':SIZING_CONTRACT}},rules
 
 def analysis_once(ledger,client,market,symbols):
     # Validate all supplied symbols before any analysis. No screening or substitutions.
@@ -34,7 +36,7 @@ def analysis_once(ledger,client,market,symbols):
     ledger.db.execute('CREATE TABLE IF NOT EXISTS analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
     results=[]
     for symbol in symbols:
-        operation=today+':analysis-v3:'+symbol
+        operation=today+':analysis-v4:'+symbol
         ledger.db.execute('BEGIN IMMEDIATE')
         try:
             old=ledger.db.execute('SELECT state,result FROM analysis_checks WHERE operation=?',(operation,)).fetchone()
@@ -44,7 +46,7 @@ def analysis_once(ledger,client,market,symbols):
                 results.append(json.loads(old['result']) if old['state']=='COMPLETE' and old['result'] else empty_result(symbol,'ANALYSIS_CHECK_NEEDS_REVIEW'))
                 continue
             if day()!=today:raise Review('CYCLE_DAY_CHANGED')
-            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=?',(today,)).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
+            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':analysis-v4:%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
             ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',(operation,today,'PENDING',None))
             ledger.db.execute('COMMIT')
         except BaseException:ledger.db.execute('ROLLBACK');raise

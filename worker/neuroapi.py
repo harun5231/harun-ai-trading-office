@@ -15,7 +15,7 @@ SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','descript
 NUM={'type':'number','exclusiveMinimum':0}
 PRICE={**NUM,'description':'Price must conform exactly to Binance tickSize and applicable price limits supplied in context; do not round after generation.'}
 SETUP_SCHEMA={'type':'object','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT']},
- 'position_size':{**NUM,'description':'base-asset quantity that must conform exactly to Binance stepSize/minQty/maxQty supplied in context and whose loss from limit_entry to stop_loss must not exceed 5 USDT'},
+ 'position_size':{**NUM,'description':'Largest valid base-asset quantity that must conform exactly to Binance stepSize/minQty/maxQty supplied in context and whose loss from limit_entry to stop_loss must be as close as possible to 5 USDT without exceeding 5 USDT, following the maximum-risk sizing contract in context'},
  'limit_entry':PRICE,'take_profit':PRICE,'stop_loss':PRICE,
  'risk_reward':{**NUM,'description':'Reward divided by risk; 2 means risk:reward 1:2'}},
  'required':['symbol','side','position_size','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}

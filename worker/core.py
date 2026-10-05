@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, getcontext, DefaultContext
 from zoneinfo import ZoneInfo
+from fractions import Fraction
 import hashlib
 import json
 import re
@@ -57,6 +58,19 @@ class Rules:
     mark_price: Decimal | None = None
 
 
+def maximum_risk_quantity(entry,sl,rules):
+    """Independent exact comparator only; never modifies the provider's Signal."""
+    distance=abs(entry-sl)
+    if distance<=0:raise Review('INVALID_ENTRY_TP_SL')
+    # Integer floors on exact rationals avoid rounding a near-step quotient upward.
+    steps=min(Fraction(RISK)//(Fraction(distance)*Fraction(rules.step)),
+              Fraction(rules.maximum)//Fraction(rules.step))
+    expected=D(steps)*rules.step
+    if expected<=0 or expected<rules.minimum or expected*entry<rules.min_notional:
+        raise Review('NO_LEGAL_MAX_RISK_QUANTITY')
+    return expected
+
+
 def risk_check(signal, rules):
     if not 0 <= time.time()-rules.observed_at <= 300: raise Review('NEEDS_REVIEW: filter pasar kedaluwarsa')
     for v in (rules.step,rules.minimum,rules.maximum,rules.tick): number(v)
@@ -83,6 +97,7 @@ def risk_check(signal, rules):
             raise Review('REJECT_PERCENT_PRICE')
     risk=qty*distance
     if not D('0')<risk<=RISK: raise Review('NEEDS_REVIEW: risiko melampaui batas')
+    if qty!=maximum_risk_quantity(signal.entry,signal.sl,rules):raise Review('POSITION_SIZE_NOT_MAX_RISK')
     return dict(symbol=signal.symbol,side=signal.side,entry=str(signal.entry),tp=str(signal.tp),sl=str(signal.sl),
                 quantity=str(qty),risk=str(risk),margin_mode='CROSS',leverage=75,order_type='LIMIT',
                 mode='DRY_RUN',rr=str(abs(signal.tp-signal.entry)/distance),rules_checked_at=rules.observed_at)

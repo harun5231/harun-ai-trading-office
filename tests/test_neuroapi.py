@@ -11,7 +11,7 @@ from worker.neuroapi import NeuroAPI,SCREEN_SCHEMA,SETUP_SCHEMA,selections,setup
 from worker.prompts import SCREENING,ANALYSIS
 from worker.workflow import Workflow
 
-GOOD={'symbol':'BTCUSDT','side':'LONG','position_size':2,'limit_entry':100,'take_profit':104,'stop_loss':98,'risk_reward':2}
+GOOD={'symbol':'BTCUSDT','side':'LONG','position_size':D('2.5'),'limit_entry':100,'take_profit':104,'stop_loss':98,'risk_reward':2}
 RULES=lambda:Rules(D('.001'),D('.001'),D('1000'),D('.01'),D('5'),time.time())
 def row(symbol):return {'symbol':symbol,'status':'TRADING','contractType':'PERPETUAL','quoteAsset':'USDT','marginAsset':'USDT','orderTypes':['LIMIT'],'filters':[
  {'filterType':'LOT_SIZE','stepSize':'0.001','minQty':'0.001','maxQty':'1000'},
@@ -95,7 +95,7 @@ class APITests(unittest.TestCase):
         self.assertEqual(signal.quantity,D('10'))
     def test_long_and_short_exact_plan(self):
         for output in (GOOD,{**GOOD,'side':'SHORT','take_profit':96,'stop_loss':102}):
-            p=risk_check(setup(output,'BTCUSDT'),RULES());self.assertEqual(p['quantity'],'2');self.assertEqual(p['entry'],'100');self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS');self.assertEqual(p['mode'],'DRY_RUN')
+            p=risk_check(setup(output,'BTCUSDT'),RULES());self.assertEqual(p['quantity'],'2.5');self.assertEqual(p['entry'],'100');self.assertEqual(p['leverage'],75);self.assertEqual(p['margin_mode'],'CROSS');self.assertEqual(p['mode'],'DRY_RUN')
     def test_workflow_end_to_end_two_plans_and_no_duplicate(self):
         m=FakeMarket();flow=Workflow(self.ledger,self.client(),m,self.path/'snapshot.json');s=flow.run()
         self.assertEqual(s['trades_today'],2);self.assertTrue(s['locked']);self.assertFalse(s['live_enabled']);self.assertEqual(s['status'],'DRY_RUN_READY')
@@ -123,7 +123,7 @@ class APITests(unittest.TestCase):
     def test_quote_monitor_is_paper_only(self):
         m=FakeMarket();f=Workflow(self.ledger,self.client(),m,self.path/'snapshot.json');f.run()
         m.mark=lambda symbol:{'price':'100','time':int(time.time()*1000)};s=f.monitor();self.assertEqual(s['active_positions'],2)
-        m.mark=lambda symbol:{'price':'104','time':int(time.time()*1000)};s=f.monitor();self.assertEqual(s['active_positions'],0);self.assertEqual(D(s['pnl_today']),D('16'))
+        m.mark=lambda symbol:{'price':'104','time':int(time.time()*1000)};s=f.monitor();self.assertEqual(s['active_positions'],0);self.assertEqual(D(s['pnl_today']),D('20'))
 
 class MarketTests(unittest.TestCase):
     def test_current_dual_frame_ohlcv(self):
