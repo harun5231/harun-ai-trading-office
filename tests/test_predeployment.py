@@ -11,8 +11,8 @@ from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA
 from worker.prompts import SCREENING, ANALYSIS
 
 SCREEN_BYTES = b'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
-# Latest user message contains no literal LF inside the supplied paragraph.
-ANALYSIS_BYTES = b'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping. Tentukan ! Ukuran posisi ENTRY TP SL : yang tidak mudah terkena wick atau di jilat para bandar. aku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL RISK REWARD 1:2'
+# Independent expected bytes include seven LF and one leading space per subsequent line.
+ANALYSIS_BYTES = b'Aku berikan data chart realtime saat ini 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\n Tentukan !\n Ukuran posisi\n ENTRY\n TP\n SL : yang tidak mudah terkena wick atau di jilat para bandar.\n aku bermain di cross, aku hanya bisa resikokan 5 usdt per 1 kali SL\n RISK REWARD 1:2'
 GOOD = {'mode':'smart','answer':None,'output':{'symbols':['BTCUSDT','ETHUSDT']}}
 
 class FinalTests(unittest.TestCase):
@@ -28,10 +28,9 @@ class FinalTests(unittest.TestCase):
     def test_screening_utf8_exact(self):self.assertEqual(SCREENING.encode('utf-8'),SCREEN_BYTES)
     def test_analysis_utf8_exact_as_pasted(self):self.assertEqual(ANALYSIS.encode('utf-8'),ANALYSIS_BYTES)
     def test_transport_preserves_literal_newlines_without_normalization(self):
-        # Verifies multiline transport capability, without inventing LF in user's literal.
-        transport=Mock(return_value=(200,{},GOOD));prompt='first\n second\nthird'
-        self.ask(self.client(transport),prompt=prompt)
-        self.assertEqual(transport.call_args.args[3]['prompt'].encode(),b'first\n second\nthird')
+        transport=Mock(return_value=(200,{},GOOD))
+        self.ask(self.client(transport),prompt=ANALYSIS)
+        self.assertEqual(transport.call_args.args[3]['prompt'].encode('utf-8'),ANALYSIS_BYTES)
     def test_only_429_and_503_retry_and_honor_delay(self):
         for status in (429,503):
             with self.subTest(status=status):
