@@ -1,7 +1,7 @@
 """Shared pre-analysis contract context and bounded, paper-only analysis checks."""
 import json
 import time
-from .core import Review,day,number,RISK,D,risk_check
+from .core import Review,day,number,RISK,D,risk_check,validated_risk_target
 from .neuroapi import SETUP_SCHEMA,selections,setup
 from .prompts import ANALYSIS
 from .diagnostics import safe_code,validation_code
@@ -9,7 +9,8 @@ from .provenance import ANALYSIS_VERSION,stamp
 
 SIZING_CONTRACT='Target loss at stop loss is 5 USDT. The worker Risk Manager independently computes the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
 
-def analysis_context(market,symbol):
+def analysis_context(market,symbol,risk_target=RISK):
+    risk_target=validated_risk_target(risk_target)
     data=market.data(symbol)
     rules=market.rules(symbol) # Must complete before any paid analysis call.
     market.fresh(data,symbol)
@@ -27,8 +28,8 @@ def analysis_context(market,symbol):
             'reference_mark_price':str(rules.mark_price),'min_entry_price':str(rules.mark_price*rules.multiplier_down),
             'max_entry_price':str(rules.mark_price*rules.multiplier_up)}
     return {**data,'contract_rules':contract,'risk_constraints':{'quantity_unit':'base_asset',
-        'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(RISK),
-        'minimum_actual_reward_risk':2,'target_loss_at_sl_usdt':str(RISK),'position_sizing_contract':SIZING_CONTRACT}},rules
+        'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(risk_target),
+        'minimum_actual_reward_risk':2,'target_loss_at_sl_usdt':str(risk_target),'position_sizing_contract':SIZING_CONTRACT.replace('5 USDT',str(risk_target)+' USDT')}},rules
 
 def analysis_once(ledger,client,market,symbols):
     # Validate all supplied symbols before any analysis. No screening or substitutions.

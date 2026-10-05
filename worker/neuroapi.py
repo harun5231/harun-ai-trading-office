@@ -13,6 +13,16 @@ from .http_client import request
 BASE='https://api.neurobro.ai/api/v1'
 SYMBOL_PATTERN=r'^[A-Z0-9]{2,18}USDT$'
 SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','description':'Exactly two distinct active Binance USD-M Futures trading symbols.','items':{'type':'string','pattern':SYMBOL_PATTERN,'description':'Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation.'},'minItems':2,'maxItems':2,'uniqueItems':True}},'required':['symbols'],'additionalProperties':False}
+# One-slot research uses a separate exact contract; legacy two-slot stays unchanged.
+import copy
+SCREEN_ONE_SCHEMA=copy.deepcopy(SCREEN_SCHEMA)
+SCREEN_ONE_SCHEMA['properties']['symbols'].update(minItems=1,maxItems=1,description='Exactly one active Binance USD-M Futures trading symbol.')
+
+def screening_count(schema):
+    if schema==SCREEN_SCHEMA:return 2
+    if schema==SCREEN_ONE_SCHEMA:return 1
+    return None
+
 NUM={'type':'number','exclusiveMinimum':0}
 PRICE={**NUM,'type':['number','null'],'description':'Price must conform exactly to Binance tickSize and applicable price limits supplied in context; do not round after generation.'}
 SETUP_SCHEMA={'type':'object','description':'LONG/SHORT require positive entry, TP, SL and declared reward/risk. HOLD requires all numeric fields null and creates no order.','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT','HOLD']},
@@ -29,10 +39,11 @@ def api_key():
         return key
     except OSError:return ''
 
-def selections(output,catalog):
+def selections(output,catalog,count=2):
+    if type(count) is not int or count not in (1,2):raise Review("INVALID_SCREENING_COUNT")
     if not isinstance(output,dict) or set(output)!={'symbols'}:raise Review('INVALID_SCREENING_SCHEMA')
     values=output['symbols']
-    if not isinstance(values,list) or len(values)!=2 or any(not isinstance(v,str) for v in values) or len(set(values))!=2:raise Review('INVALID_SCREENING_COUNT')
+    if not isinstance(values,list) or len(values)!=count or any(not isinstance(v,str) for v in values) or len(set(values))!=count:raise Review('INVALID_SCREENING_COUNT')
     if any(not re.fullmatch(SYMBOL_PATTERN,v) or v not in catalog for v in values):raise Review('INVALID_SCREENING_SYMBOL')
     return values
 
@@ -65,9 +76,9 @@ def setup(output,expected):
 
 def canonical_output(value,schema,catalog=None):
     # Cache only reconstructed validated fields, never provider envelope/prose.
-    if schema==SCREEN_SCHEMA:
+    if screening_count(schema) is not None:
         if not isinstance(catalog,dict) or not catalog:raise Review('SCREENING_CATALOG_REQUIRED')
-        symbols=selections(value,catalog)
+        symbols=selections(value,catalog,screening_count(schema))
         return json.dumps({'symbols':list(symbols)})
     if schema==SETUP_SCHEMA:
         signal=setup(value,value.get('symbol'))
@@ -103,7 +114,7 @@ class NeuroAPI:
         except Exception:raise Review('NEUROAPI_UNAVAILABLE') from None
     def ask(self,operation,prompt,schema,validate,context=None,*,catalog=None):
         self.require_key()
-        if schema==SCREEN_SCHEMA and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')
+        if screening_count(schema) is not None and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')
         body={'prompt':prompt,'mode':'smart','stream':False,'output_schema':schema}
         if context is not None:body['message_history']=[{'role':'user','content':json.dumps(context,separators=(',',':'))}]
         digest=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()

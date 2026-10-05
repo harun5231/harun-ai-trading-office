@@ -49,3 +49,30 @@ class OfficeUI(unittest.TestCase):
         data['live_enabled']=True;p.locator('#wfFile').set_input_files({'name':'bad.json','mimeType':'application/json','buffer':json.dumps(data).encode()})
         p.wait_for_function('document.querySelector("#panelContent").textContent.includes("tidak sesuai skema")')
         self.assertEqual(self.errors,[])
+    def test_robot_mobile_settings_and_approval_cards(self):
+        p=self.page;calls=[]
+        robot=dict(mode='DRY_RUN',live_enabled=False,live_execution=False,robot_on=False,risk_target_usdt='5',running_positions=1,bot_entries_today=0,available_slots=1,manual_exposure=['HYPEUSDT'],bot_status='SETUP_READY',setups=[dict(id='test',symbol='BTCUSDT',status='SETUP_READY',side='LONG',entry='100',tp='104',sl='98',execution_quantity='2.5',risk_target_usdt='5',risk='5',rr='2')])
+        def worker(route):
+            request=route.request;path=request.url.removeprefix('https://worker.test');calls.append((request.method,path,request.post_data))
+            data=dict(mode='DRY_RUN',live_enabled=False)
+            if path.startswith('/robot/'):
+                if request.method=='POST':
+                    body=json.loads(request.post_data)
+                    if path=='/robot/settings':robot.update(body)
+                    if path=='/robot/approval':robot['setups'][0]['status']=body['decision']
+                data=robot
+            elif path=='/health':data.update(status='ONLINE')
+            elif path=='/neuroapi/status':data.update(status='IDLE',busy=False)
+            elif path=='/snapshot':data.update(schema_version=1,source='NEUROAPI_DRY_RUN',status='IDLE',trades=[],events=[],pnl_today='0',trades_today=0,active_positions=0,generated_at='2026-01-01T00:00:00Z')
+            route.fulfill(content_type='application/json',body=json.dumps(data),headers={'Access-Control-Allow-Origin':'https://office.test','Access-Control-Allow-Headers':'Authorization, Content-Type'})
+        p.route('https://worker.test/**',worker)
+        p.click('#menuToggle');p.click('#robotMenu');self.assertTrue(p.locator('#robotToggle').is_disabled())
+        p.fill('#apiOrigin','https://worker.test');p.fill('#apiToken','C'*32);p.click('#apiConnect')
+        p.wait_for_function('!document.querySelector("#robotToggle").disabled')
+        self.assertIn('HYPEUSDT',p.locator('#robotStatus').inner_text())
+        p.click('#robotToggle');p.wait_for_function('document.querySelector("#robotToggle").textContent.includes(": ON")')
+        p.fill('#robotRisk','10');p.click('#robotRiskSave');p.wait_for_function('document.querySelector("#robotStatus").textContent.includes("RISK PER SL: 10")')
+        p.locator('#robotCards button').filter(has_text='OK').click();p.wait_for_function('document.querySelector("#robotCards").textContent.includes("APPROVED")')
+        self.assertFalse(p.evaluate('document.body.scrollWidth>innerWidth'));self.assertEqual(self.errors,[])
+        self.assertEqual(sum(m=='POST' and path=='/robot/approval' for m,path,_ in calls),1)
+        self.assertFalse(any('order' in path or 'execute' in path for _,path,_ in calls))

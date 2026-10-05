@@ -33,7 +33,7 @@ def read_records(root):
         rows=db.execute('SELECT operation,state,attempts,'+code+' FROM api_requests ORDER BY operation')
         result=[]
         for operation,state,attempts,failure in rows:
-            operation=operation if isinstance(operation,str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}:(screening|replacement-screening:[1-3]|manual-screening:v2|(?:analysis|analysis-v3|analysis-v4|analysis-v5|analysis-v6):[A-Z0-9]{2,18}USDT)',operation) else 'OPERATION_REDACTED'
+            operation=operation if isinstance(operation,str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}:(robot-v7:[0-2]:(?:screening:[0-3]:[12]|analysis-v7:[A-Z0-9]{2,18}USDT)|screening|replacement-screening:[1-3]|manual-screening:v2|(?:analysis|analysis-v3|analysis-v4|analysis-v5|analysis-v6):[A-Z0-9]{2,18}USDT)',operation) else 'OPERATION_REDACTED'
             state=state if state in ('PENDING','COMPLETE','NEEDS_REVIEW') else 'STATE_REDACTED'
             reason=safe_code(failure) if failure else ('LEGACY_REASON_UNAVAILABLE' if state=='NEEDS_REVIEW' else None)
             result.append(dict(operation=operation,state=state,attempts=attempts if type(attempts) is int and 0<=attempts<=1000000 else None,failure_code=reason))

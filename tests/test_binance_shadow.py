@@ -138,7 +138,9 @@ class ShadowTests(unittest.TestCase):
         db=Ledger(self.root/'ledger.sqlite3')
         try:self.assertEqual(shadow(db,self.client,self.market)['plans'][0]['client_ids'],client_ids)
         finally:db.db.close()
-        self.assertNotEqual(ids(identity(p,'2026-10-06')),client_ids)
+        from datetime import date,timedelta
+        next_day=(date.fromisoformat(day())+timedelta(days=1)).isoformat()
+        self.assertNotEqual(ids(identity(p,next_day)),client_ids)
         self.assertNotEqual(identity({**p,'entry':'101'},day()),identity(p,day()))
         self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM shadow_plans').fetchone()[0],1)
     def test_duplicate_and_daily_limit_fail_closed(self):

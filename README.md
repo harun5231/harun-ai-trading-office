@@ -4,29 +4,31 @@ Kantor 3D + worker privat NeuroAPI Starter (`smart`) dan Binance Futures public
 market data. **DRY RUN ONLY**: tidak ada eksekutor atau route order Binance.
 Autentikasi private Binance tersedia hanya untuk preflight GET read-only. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
 
-Alur: prompt screening literal → tepat dua kontrak USDT perpetual aktif → OHLCV
-1h + 15m termasuk candle current → prompt analisis literal + JSON data terpisah
-→ keputusan LONG/SHORT/HOLD → Risk Manager → validator ACCEPT/REJECT → paper
-LIMIT/CROSS/75x + rencana TP/SL. ENTRY/TP/SL dan keputusan Neurobro tidak diubah.
-Quantity Neurobro disimpan sebagai audit; execution_quantity dihitung worker sebagai
-quantity base asset legal terbesar dengan risiko SL ≤5 USDT (floor stepSize,
-minQty/maxQty/minNotional). Tidak ada parsing prose atau request perbaikan setup.
+Office kini memiliki **ROBOT TRADING ON/OFF**, risk target dan kartu approval.
+Default OFF; pilihan persistent. ON menjalankan coordinator riset setiap 45 detik,
+setelah membaca posisi Futures nyata melalui GET. Semua posisi manual termasuk
+HYPE memakai concurrent capacity, tetapi tidak dianggap bot entry.
 
-Validator: harga/tick/rentang, quantity/step/min/max, min notional, percent-price
-jika filter tersedia, arah TP/SL, risiko harga ≤5 USDT dan reward/risk ≥2 serta
-rasio aktual berdasarkan ENTRY/TP/SL sebagai sumber kebenaran. Leverage tidak masuk rumus risiko.
+Alur: kapasitas nyata (maksimal 2 posisi dan 2 bot entry/hari Asia/Bangkok) →
+screening literal 1 atau 2 coin sesuai slot → active USDT perpetual catalog →
+realtime 1h/15m + contract rules → ANALYSIS literal → LONG/SHORT/HOLD → deterministic
+Risk Manager → SETUP_READY → OK/APPROVED atau TIDAK/USER_REJECTED. **OK tidak mengirim
+order.** HOLD/TIDAK dapat mencari replacement sesuai slot tersisa, maksimal tiga
+screening replacement/cycle. Technical failure tidak memicu replacement.
 
-State SQLite tetap privat/persisten: maksimal dua slot trade/hari total,
-Asia/Bangkok, termasuk order paper pending. Satu siklus riset per hari; jika
-terputus/ambigu, butuh review, tidak otomatis diulang. HOLD tidak memakai slot dan memicu replacement screening dengan prompt dua coin
-yang sama, maksimal tiga request screening replacement per cycle. Kandidat pertama
-yang eligible dan belum dianalisis dipilih. Technical REJECT/API failure tidak
-memicu replacement. Stop saat dua setup valid; kekurangan setelah HOLD dicatat
-INSUFFICIENT_ACTIONABLE_SETUPS. Cycle yang terputus tetap fail-closed tanpa replay. Retry hanya respons HTTP 429/503, maksimal tiga attempt dengan body sama.
-Retry-After dihormati; jika melebihi 30 detik atau tidak dapat diparse, berhenti.
-Tidak mengirim Idempotency-Key; deduplikasi menggunakan ledger lokal. Timeout/hasil tidak pasti berhenti;
-request COMPLETE dapat dibaca kembali lokal tanpa tagihan baru. Tidak ada replay
-otomatis setelah restart atau berdasarkan asumsi idempotency provider.
+Risk target default 5 USDT, editable positif sampai 100. Worker memilih quantity
+legal terbesar dengan loss harga ke SL tidak melebihi target, memakai Decimal /
+rational floor dan seluruh filter kontrak. Quantity Neurobro audit-only; keputusan
+serta ENTRY/TP/SL tetap immutable, actual RR minimal 2, CROSS/75x target.
+
+Setup/approval v7 terpisah dari execution receipt dan tidak memakai live-entry
+counter. Cycle/request claim persistent mencegah polling/restart membayar request
+setara berulang. Unknown outcome fail-closed. Retry tetap hanya HTTP 429/503,
+bounded dan menghormati Retry-After; tidak mengandalkan Idempotency-Key. Legacy v6
+records, hashes, commands dan paper reports tidak dimigrasikan atau dihapus.
+
+Rincian state machine, provenance dan endpoint:
+[deploy/ROBOT_WORKFLOW.md](deploy/ROBOT_WORKFLOW.md).
 
 Default lookback 100 candle/frame, configurable 20–500; context freshness 180s
 (default, 30–300s), mark ≤60s, jam server diperiksa. Data diperoleh dari API publik
@@ -40,9 +42,9 @@ Fees/slippage tidak disimulasikan; gap SL dapat membuat paper PNL melampaui 5 US
 
 Baca [deploy/DOCKER.md](deploy/DOCKER.md). API key hanya di secret VPS; dashboard
 menerima token kontrol worker yang berbeda dan hanya menyimpannya di memori tab.
-CEK API memanggil health provider tanpa prompt; JALANKAN DRY RUN memulai siklus
-berbayar. Jadwal otomatis default mati; aktifkan OFFICE_AUTO_DRY_RUN=true hanya
-setelah koneksi dan satu siklus nyata ditinjau. Tidak ada opsi LIVE.
+CEK API memanggil health provider tanpa prompt. JALANKAN DRY RUN meminta evaluasi
+coordinator; ROBOT OFF tetap menghalangi riset. Aktifkan riset hanya lewat kontrol
+ROBOT pada Office. Flag jadwal lama tidak membypass OFF. Tidak ada opsi LIVE.
 
 ## Dokumentasi resmi yang diperiksa 2026-10-05
 
@@ -77,7 +79,7 @@ mencatat kebutuhan itu; tidak mengklaim order/proteksi live sudah berfungsi.
 Optional UI test setup (development only, not VPS image): install `playwright`,
 then its local test engine, and run `OFFICE_UI_TESTS=1 python -m unittest discover
 -s tests -v`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can select an already installed test
-binary. Without that environment opt-in the two UI tests are skipped. Three.js
+binary. Without that environment opt-in the UI tests are skipped. Three.js
 assets use the same CDN as the office, or a local `test-assets` cache when present.
 
 Audit pre-deployment: [deploy/NEUROAPI_AUDIT.md](deploy/NEUROAPI_AUDIT.md).
