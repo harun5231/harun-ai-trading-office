@@ -3,15 +3,16 @@ import argparse
 import fcntl
 import json
 import os
-from .core import Ledger,Review
+from .core import Ledger,Review,day
 from .market import Market
-from .neuroapi import NeuroAPI
+from .neuroapi import NeuroAPI,SCREEN_SCHEMA,selections
+from .prompts import SCREENING
 from .state import directory
 from .workflow import Workflow
 
 def main():
     os.umask(0o077)
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics']);p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['api-check','api-dry-run','diagnostics','screening-once']);p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
     if a.command=='diagnostics':
         from .diagnostics import read_records
         try:print(json.dumps(read_records(a.data_dir)));return 0
@@ -22,6 +23,10 @@ def main():
             fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             ledger=Ledger(d/'ledger.sqlite3');client=NeuroAPI(ledger)
             try:
+                if a.command=='screening-once':
+                    catalog=Market().catalog() # Public exchangeInfo before any paid request.
+                    value=client.ask(day()+':manual-screening:v2',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,catalog),catalog=catalog)
+                    print(json.dumps(selections(value,catalog)));return 0
                 if a.command=='api-check':result={'status':client.health()}
                 else:result=Workflow(ledger,client,Market(int(os.getenv('OFFICE_CANDLE_LOOKBACK','100')),int(os.getenv('OFFICE_MARKET_MAX_AGE','180'))),d/'snapshot.json').run()
                 print(json.dumps({k:result[k] for k in ('status','mode','locked') if k in result}))

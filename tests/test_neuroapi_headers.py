@@ -18,7 +18,7 @@ class HeaderTests(unittest.TestCase):
         self.client=NeuroAPI(self.ledger,key=self.key)
     def invoke(self,kind):
         if kind=='health':return self.client.health()
-        return self.client.ask('screen',SCREENING,SCREEN_SCHEMA,lambda value:None)
+        return self.client.ask('screen',SCREENING,SCREEN_SCHEMA,lambda value:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
     def verify_request(self,kind):
         response=MagicMock();response.__enter__.return_value=response
         response.code=200;response.headers={}

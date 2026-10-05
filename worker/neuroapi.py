@@ -10,7 +10,8 @@ from .diagnostics import safe_code,validation_code
 from .http_client import request
 
 BASE='https://api.neurobro.ai/api/v1'
-SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','items':{'type':'string'},'minItems':2,'maxItems':2,'uniqueItems':True}},'required':['symbols'],'additionalProperties':False}
+SYMBOL_PATTERN=r'^[A-Z0-9]{2,18}USDT$'
+SCREEN_SCHEMA={'type':'object','properties':{'symbols':{'type':'array','description':'Exactly two distinct active Binance USD-M Futures trading symbols.','items':{'type':'string','pattern':SYMBOL_PATTERN,'description':'Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation.'},'minItems':2,'maxItems':2,'uniqueItems':True}},'required':['symbols'],'additionalProperties':False}
 NUM={'type':'number','exclusiveMinimum':0}
 SETUP_SCHEMA={'type':'object','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT']},
  'position_size':{**NUM,'description':'Quantity in base-asset units, not USDT notional or margin'},
@@ -30,7 +31,7 @@ def selections(output,catalog):
     if not isinstance(output,dict) or set(output)!={'symbols'}:raise Review('INVALID_SCREENING_SCHEMA')
     values=output['symbols']
     if not isinstance(values,list) or len(values)!=2 or any(not isinstance(v,str) for v in values) or len(set(values))!=2:raise Review('INVALID_SCREENING_COUNT')
-    if any(not re.fullmatch(r'[A-Z0-9]{2,18}USDT',v) or v not in catalog for v in values):raise Review('INVALID_SCREENING_SYMBOL')
+    if any(not re.fullmatch(SYMBOL_PATTERN,v) or v not in catalog for v in values):raise Review('INVALID_SCREENING_SYMBOL')
     return values
 
 NUMERIC_FIELDS=('position_size','limit_entry','take_profit','stop_loss','risk_reward')
@@ -51,10 +52,11 @@ def setup(output,expected):
     if abs(tp-e)<2*abs(e-sl):raise Review('RISK_REWARD_BELOW_2')
     return Signal(expected,output['side'],e,tp,sl,q)
 
-def canonical_output(value,schema):
+def canonical_output(value,schema,catalog=None):
     # Cache only reconstructed validated fields, never provider envelope/prose.
     if schema==SCREEN_SCHEMA:
-        symbols=selections(value,{v:None for v in value.get('symbols',[]) if isinstance(v,str)} if isinstance(value,dict) and isinstance(value.get('symbols'),list) else {})
+        if not isinstance(catalog,dict) or not catalog:raise Review('SCREENING_CATALOG_REQUIRED')
+        symbols=selections(value,catalog)
         return json.dumps({'symbols':list(symbols)})
     if schema==SETUP_SCHEMA:
         signal=setup(value,value.get('symbol'))
@@ -88,8 +90,9 @@ class NeuroAPI:
             if code!=200 or not isinstance(data,dict) or data.get('authenticated') is not True or data.get('status')!='healthy':raise Review('NEUROAPI_UNAVAILABLE')
             return 'NEUROAPI_CONNECTED'
         except Exception:raise Review('NEUROAPI_UNAVAILABLE') from None
-    def ask(self,operation,prompt,schema,validate,context=None):
+    def ask(self,operation,prompt,schema,validate,context=None,*,catalog=None):
         self.require_key()
+        if schema==SCREEN_SCHEMA and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')
         body={'prompt':prompt,'mode':'smart','stream':False,'output_schema':schema}
         if context is not None:body['message_history']=[{'role':'user','content':json.dumps(context,separators=(',',':'))}]
         digest=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()
@@ -98,7 +101,7 @@ class NeuroAPI:
             old=self.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone()
             if old:
                 if old['body_hash']!=digest or old['state']!='COMPLETE':raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW')
-                value=json.loads(old['output'],parse_float=D);validate(value);self.db.execute('COMMIT');return value
+                value=json.loads(old['output'],parse_float=D);validate(value);canonical_output(value,schema,catalog);self.db.execute('COMMIT');return value
             # Retain the legacy nullable column without relying on provider replay.
             idem=None
             self.db.execute('INSERT INTO api_requests(operation,idempotency,body_hash,state,created,attempts,output) VALUES(?,?,?,?,?,?,?)',(operation,idem,digest,'PENDING',time.time(),0,None))
@@ -118,7 +121,7 @@ class NeuroAPI:
                     if not isinstance(data.get('output'),dict):raise Review(failure)
                     value=data['output'];failure='VALIDATION_REJECTED'
                     validate(value)
-                    cached=canonical_output(value,schema)
+                    cached=canonical_output(value,schema,catalog)
                     failure='LOCAL_PROCESSING_FAILED'
                     self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=?",(cached,operation))
                     return value

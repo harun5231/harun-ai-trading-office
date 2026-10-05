@@ -39,7 +39,7 @@ class APITests(unittest.TestCase):
         return 200,{}, {'mode':'smart','answer':None,'output':output}
     def client(self,transport=None):return NeuroAPI(self.ledger,key=self.key,transport=transport or self.transport,sleep=lambda _:None)
     def test_screen_prompt_schema_auth_mode_literal(self):
-        n=self.client();n.ask('screen',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,{'BTCUSDT':{},'ETHUSDT':{}}))
+        n=self.client();n.ask('screen',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,{'BTCUSDT':{},'ETHUSDT':{}}),catalog={'BTCUSDT':{},'ETHUSDT':{}})
         m,u,h,b=self.calls[0];self.assertEqual(m,'POST');self.assertEqual(u,'https://api.neurobro.ai/api/v1/agent/ask')
         self.assertEqual(h['X-API-Key'],self.key);self.assertNotIn('Idempotency-Key',h)
         self.assertEqual(b['prompt'],'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance');self.assertEqual(b['mode'],'smart');self.assertFalse(b['stream']);self.assertNotIn('system_prompt',b)
@@ -49,36 +49,36 @@ class APITests(unittest.TestCase):
     def test_key_missing_fails_without_network(self):
         n=NeuroAPI(self.ledger,key='',transport=self.transport)
         with self.assertRaisesRegex(Review,'NEUROAPI_NOT_CONFIGURED'):n.health()
-        with self.assertRaises(Review):n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None)
+        with self.assertRaises(Review):n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         self.assertEqual(self.calls,[])
     def test_health_does_not_send_prompt_or_expose_prefix(self):
         self.assertEqual(self.client().health(),'NEUROAPI_CONNECTED');self.assertEqual(self.calls[0][0],'GET');self.assertIsNone(self.calls[0][3])
     def test_unknown_timeout_no_retry_or_secret_leak(self):
         def fail(*a,**k):raise RuntimeError(self.key+' private raw response')
         n=self.client(fail)
-        with self.assertRaises(Review) as c:n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None)
+        with self.assertRaises(Review) as c:n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         self.assertNotIn(self.key,str(c.exception));self.assertNotIn(self.key,str(list(self.ledger.db.execute('SELECT * FROM api_requests'))))
         self.assertEqual(self.ledger.db.execute('SELECT attempts FROM api_requests').fetchone()[0],1)
-        with self.assertRaises(Review):self.client().ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None)
+        with self.assertRaises(Review):self.client().ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         self.assertEqual(self.calls,[])
     def test_bounded_documented_retry_same_body_without_idempotency_header(self):
         calls=[]
         def transient(*a,**k):calls.append(a);return (503,{'retry-after':'0'},None) if len(calls)<3 else self.transport(*a,**k)
-        self.client(transient).ask('x',SCREENING,SCREEN_SCHEMA,lambda x:selections(x,{'BTCUSDT':{},'ETHUSDT':{}}))
+        self.client(transient).ask('x',SCREENING,SCREEN_SCHEMA,lambda x:selections(x,{'BTCUSDT':{},'ETHUSDT':{}}),catalog={'BTCUSDT':{},'ETHUSDT':{}})
         self.assertEqual(len(calls),3);self.assertTrue(all('Idempotency-Key' not in a[2] for a in calls))
         self.assertEqual(calls[0][3],calls[-1][3])
     def test_large_retry_after_stops_without_early_retry(self):
         n=self.client(lambda *a,**k:(429,{'retry-after':'999'},None))
-        with self.assertRaises(Review):n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None)
+        with self.assertRaises(Review):n.ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         self.assertEqual(self.ledger.db.execute('SELECT attempts FROM api_requests').fetchone()[0],1)
     def test_complete_restart_reuses_validated_output(self):
         validate=lambda x:selections(x,{'BTCUSDT':{},'ETHUSDT':{}})
-        expected=self.client().ask('x',SCREENING,SCREEN_SCHEMA,validate)
+        expected=self.client().ask('x',SCREENING,SCREEN_SCHEMA,validate,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         second=Ledger(self.path/'ledger.sqlite3')
         try:
             n=NeuroAPI(second,key=self.key,transport=lambda *a,**k:self.fail('Network replay'))
-            self.assertEqual(n.ask('x',SCREENING,SCREEN_SCHEMA,validate),expected)
-            with self.assertRaises(Review):n.ask('x','different',SCREEN_SCHEMA,validate)
+            self.assertEqual(n.ask('x',SCREENING,SCREEN_SCHEMA,validate,catalog={'BTCUSDT':{},'ETHUSDT':{}}),expected)
+            with self.assertRaises(Review):n.ask('x','different',SCREEN_SCHEMA,validate,catalog={'BTCUSDT':{},'ETHUSDT':{}})
         finally:second.db.close()
     def test_exact_two_active_symbols_no_fuzzy_mapping(self):
         for value in ({'symbols':['BTCUSDT']},{'symbols':['BTCUSDT','BTCUSDT']},{'symbols':['BTC','ETH']},{'symbols':['BTCUSDT','SOLUSDT']},{'symbols':['BTCUSDT','ETHUSDT'],'extra':1}):

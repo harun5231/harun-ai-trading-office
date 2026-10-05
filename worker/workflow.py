@@ -39,7 +39,7 @@ class Workflow:
             claimed=True
             catalog=self.market.catalog()
             self.event('SCREENING','Prompt literal / smart')
-            coins=self.neuro.ask(today+':screening',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,catalog))
+            coins=self.neuro.ask(today+':screening',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,catalog),catalog=catalog)
             selected=selections(coins,catalog);self.event('COINS_SELECTED',', '.join(selected))
             for index,symbol in enumerate(selected,1):
                 if day()!=today:raise Review('CYCLE_DAY_CHANGED')

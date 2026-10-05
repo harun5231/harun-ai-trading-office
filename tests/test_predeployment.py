@@ -24,7 +24,7 @@ class FinalTests(unittest.TestCase):
     def client(self,transport):
         return NeuroAPI(self.ledger,key='synthetic-test-placeholder',transport=transport,sleep=self.sleep)
     def ask(self,client,operation='test',prompt=SCREENING):
-        return client.ask(operation,prompt,SCREEN_SCHEMA,lambda x:None)
+        return client.ask(operation,prompt,SCREEN_SCHEMA,lambda x:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
     def test_screening_utf8_exact(self):self.assertEqual(SCREENING.encode('utf-8'),SCREEN_BYTES)
     def test_analysis_utf8_exact_as_pasted(self):self.assertEqual(ANALYSIS.encode('utf-8'),ANALYSIS_BYTES)
     def test_transport_preserves_literal_newlines_without_normalization(self):
