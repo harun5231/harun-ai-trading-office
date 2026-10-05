@@ -41,7 +41,7 @@ class APITests(unittest.TestCase):
     def test_screen_prompt_schema_auth_mode_literal(self):
         n=self.client();n.ask('screen',SCREENING,SCREEN_SCHEMA,lambda v:selections(v,{'BTCUSDT':{},'ETHUSDT':{}}))
         m,u,h,b=self.calls[0];self.assertEqual(m,'POST');self.assertEqual(u,'https://api.neurobro.ai/api/v1/agent/ask')
-        self.assertEqual(h['X-API-Key'],self.key);self.assertIn('Idempotency-Key',h)
+        self.assertEqual(h['X-API-Key'],self.key);self.assertNotIn('Idempotency-Key',h)
         self.assertEqual(b['prompt'],'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance');self.assertEqual(b['mode'],'smart');self.assertFalse(b['stream']);self.assertNotIn('system_prompt',b)
     def test_literal_analysis_separate_json_context(self):
         n=self.client();data=FakeMarket().data('BTCUSDT');n.ask('analysis',ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,'BTCUSDT'),data)
@@ -61,11 +61,11 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.ledger.db.execute('SELECT attempts FROM api_requests').fetchone()[0],1)
         with self.assertRaises(Review):self.client().ask('x',SCREENING,SCREEN_SCHEMA,lambda x:None)
         self.assertEqual(self.calls,[])
-    def test_bounded_documented_retry_same_key_and_body(self):
+    def test_bounded_documented_retry_same_body_without_idempotency_header(self):
         calls=[]
         def transient(*a,**k):calls.append(a);return (503,{'retry-after':'0'},None) if len(calls)<3 else self.transport(*a,**k)
         self.client(transient).ask('x',SCREENING,SCREEN_SCHEMA,lambda x:selections(x,{'BTCUSDT':{},'ETHUSDT':{}}))
-        self.assertEqual(len(calls),3);self.assertEqual(len({a[2]['Idempotency-Key'] for a in calls}),1)
+        self.assertEqual(len(calls),3);self.assertTrue(all('Idempotency-Key' not in a[2] for a in calls))
         self.assertEqual(calls[0][3],calls[-1][3])
     def test_large_retry_after_stops_without_early_retry(self):
         n=self.client(lambda *a,**k:(429,{'retry-after':'999'},None))

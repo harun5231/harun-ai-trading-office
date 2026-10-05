@@ -4,7 +4,6 @@ import json
 import os
 import re
 import time
-import uuid
 from pathlib import Path
 from .core import Review,number,Signal
 from .http_client import request
@@ -66,22 +65,25 @@ class NeuroAPI:
             if old:
                 if old['body_hash']!=digest or old['state']!='COMPLETE':raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW')
                 value=json.loads(old['output']);validate(value);self.db.execute('COMMIT');return value
-            idem=str(uuid.uuid4())
+            # Retain the legacy nullable column without relying on provider replay.
+            idem=None
             self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?)',(operation,idem,digest,'PENDING',time.time(),0,None))
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
         try:
             for attempt in range(3):
                 self.db.execute('UPDATE api_requests SET attempts=attempts+1 WHERE operation=?',(operation,))
-                code,headers,data=self.transport('POST',BASE+'/agent/ask',{'Content-Type':'application/json','X-API-Key':self._key,'Idempotency-Key':idem},body,timeout=90)
+                code,headers,data=self.transport('POST',BASE+'/agent/ask',{'Content-Type':'application/json','X-API-Key':self._key},body,timeout=90)
                 if code==200:
                     if not isinstance(data,dict) or data.get('mode')!='smart' or data.get('answer') is not None or not isinstance(data.get('output'),dict):raise Review('INVALID_NEUROAPI_RESPONSE')
                     value=data['output'];validate(value) # Never persist raw prose, errors or key prefixes.
                     self.db.execute("UPDATE api_requests SET state='COMPLETE',output=? WHERE operation=?",(json.dumps(value),operation))
                     return value
-                if code not in (409,429,503) or attempt==2:raise Review('NEUROAPI_REQUEST_FAILED')
-                hinted=headers.get('retry-after','')
-                delay=int(hinted) if re.fullmatch(r'\d{1,6}',hinted) else 2**attempt
+                if code not in (429,503) or attempt==2:raise Review('NEUROAPI_REQUEST_FAILED')
+                hinted=headers.get('retry-after','').strip()
+                # Do not retry early when a present header cannot be interpreted safely.
+                if hinted and not re.fullmatch(r'\d{1,6}',hinted):raise Review('NEUROAPI_RETRY_DEFERRED')
+                delay=int(hinted) if hinted else 2**attempt
                 if delay>30:raise Review('NEUROAPI_RETRY_DEFERRED')
                 self.sleep(max(1,delay))
         except Exception:

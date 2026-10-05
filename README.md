@@ -17,10 +17,11 @@ kesesuaian rasio yang dinyatakan. Leverage tidak masuk rumus risiko.
 State SQLite tetap privat/persisten: maksimal dua slot trade/hari total,
 Asia/Bangkok, termasuk order paper pending. Satu siklus riset per hari; jika
 terputus/ambigu, butuh review, tidak otomatis diulang. Penolakan satu coin tidak
-mengganti coin tersebut. Retry hanya 409/429/503, maksimal tiga attempt dengan
-idempotency key/body sama, delay bounded. Timeout/hasil tidak pasti berhenti;
+mengganti coin tersebut. Retry hanya respons HTTP 429/503, maksimal tiga attempt dengan body sama.
+Retry-After dihormati; jika melebihi 30 detik atau tidak dapat diparse, berhenti.
+Tidak mengirim Idempotency-Key; deduplikasi menggunakan ledger lokal. Timeout/hasil tidak pasti berhenti;
 request COMPLETE dapat dibaca kembali lokal tanpa tagihan baru. Tidak ada replay
-otomatis setelah restart atau setelah jendela idempotency provider habis.
+otomatis setelah restart atau berdasarkan asumsi idempotency provider.
 
 Default lookback 100 candle/frame, configurable 20–500; context freshness 180s
 (default, 30–300s), mark ≤60s, jam server diperiksa. Data diperoleh dari API publik
@@ -73,3 +74,5 @@ then its local test engine, and run `OFFICE_UI_TESTS=1 python -m unittest discov
 -s tests -v`. `PLAYWRIGHT_CHROMIUM_EXECUTABLE` can select an already installed test
 binary. Without that environment opt-in the two UI tests are skipped. Three.js
 assets use the same CDN as the office, or a local `test-assets` cache when present.
+
+Audit pre-deployment: [deploy/NEUROAPI_AUDIT.md](deploy/NEUROAPI_AUDIT.md).
