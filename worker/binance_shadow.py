@@ -217,18 +217,27 @@ def shadow(ledger,client,market):
     if account.get('multi_assets_margin') is not False:fail('BINANCE_MULTI_ASSET_UNSUPPORTED')
     if store.blocked():fail('SHADOW_PROTECTION_INCOMPLETE')
     plans=load_candidates(ledger,today);output=[];total_margin=D(0)
-    # Unknown/manual exposure cannot be presumed protected. Inspect the whole account.
+    # Unrelated manual symbols are informational; candidate symbols remain exclusive.
+    candidate_symbols={p['symbol'] for p in plans};manual_symbols=set()
     client.sync_time();positions=client.signed_get('/fapi/v3/account').get('positions')
     if not isinstance(positions,list):fail('SHADOW_ACCOUNT_AMBIGUOUS')
     for row in positions:
         if not isinstance(row,dict) or row.get('positionSide')!='BOTH':fail('SHADOW_ACCOUNT_AMBIGUOUS')
         amount=row.get('positionAmt')
         if not isinstance(amount,str) or len(amount)>64 or not re.fullmatch(r'-?\d+(?:\.\d+)?',amount):fail('SHADOW_ACCOUNT_AMBIGUOUS')
-        if D(amount)!=0:fail('SHADOW_EXISTING_EXPOSURE')
+        if D(amount)!=0:
+            symbol=row.get('symbol')
+            if not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol):fail('SHADOW_ACCOUNT_AMBIGUOUS')
+            if symbol in candidate_symbols:fail('SHADOW_EXISTING_EXPOSURE')
+            manual_symbols.add(symbol)
     for path in ('/fapi/v1/openOrders','/fapi/v1/openAlgoOrders'):
         client.sync_time();orders=client.signed_get(path)
         if not isinstance(orders,list):fail('SHADOW_ACCOUNT_AMBIGUOUS')
-        if orders:fail('SHADOW_EXISTING_ORDERS')
+        for order in orders:
+            symbol=order.get('symbol') if isinstance(order,dict) else None
+            if not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol):fail('SHADOW_ACCOUNT_AMBIGUOUS')
+            if symbol in candidate_symbols:fail('SHADOW_EXISTING_ORDERS')
+            manual_symbols.add(symbol)
     for plan in plans:
         value=plan_payload(plan,today)
         try:
@@ -251,7 +260,7 @@ def shadow(ledger,client,market):
         ledger.db.execute('COMMIT')
     except BaseException:ledger.db.execute('ROLLBACK');raise
     return dict(status='SHADOW_PREFLIGHT_OK' if all(v['status']=='SHADOW_PREFLIGHT_OK' for v in output) else 'NEEDS_REVIEW',
-        plans=output,would_submit=False,live_execution=False,mode='DRY_RUN')
+        manual_exposure_symbols=sorted(manual_symbols),plans=output,would_submit=False,live_execution=False,mode='DRY_RUN')
 
 
 def run(root):

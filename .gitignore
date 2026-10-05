@@ -18,3 +18,9 @@ secrets/
 *api_key*
 runner-attempts/
 binance_api_secret
+
+live-arm.json
+live-boot.json
+live-scheduler.json
+live-run.json
+live-status.json

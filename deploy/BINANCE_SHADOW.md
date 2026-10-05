@@ -1,5 +1,9 @@
 # Phase 1: shadow preflight only
 
+This document describes the GET-only shadow module. The preserved offline lifecycle
+model is documented in [BINANCE_LIVE.md](BINANCE_LIVE.md); real submission is hard
+DISABLED and cannot be armed.
+
 Verified 2026-10-05 against Binance's current USD-M REST reference and official
 Python SDK `trade_api.py`. No SDK execution code/dependency is installed.
 
@@ -35,7 +39,7 @@ checks. Public exchangeInfo/mark-price GETs refresh contract checks. No paid
 NeuroAPI request or candlestick/analysis regeneration occurs.
 
 Reject Hedge Mode, disabled canTrade, multi-asset mode, ambiguous responses,
-existing exposure/orders (including other symbols), unsupported 75x bracket,
+existing candidate-symbol exposure/orders, unsupported 75x bracket,
 insufficient estimated initial margin, changed provider levels, incompatible
 rules/quantity/risk/RR, crossed TP/SL, stale day, duplicate symbols/identities, or
 more than two daily slots. Required margin/leverage changes are listed but never

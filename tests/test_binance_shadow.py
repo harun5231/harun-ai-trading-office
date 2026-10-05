@@ -175,11 +175,11 @@ class ShadowTests(unittest.TestCase):
         with patch('sys.argv',['worker','binance-shadow']),patch('worker.binance_shadow.run',return_value=result),patch('worker.__main__.NeuroAPI',side_effect=AssertionError('API')),contextlib.redirect_stdout(out):self.assertEqual(main(),0)
         self.assertEqual(json.loads(out.getvalue()),result)
 
-    def test_global_other_symbol_exposure_and_orders_block(self):
+    def test_unrelated_manual_exposure_and_orders_are_informational(self):
         self.seed();self.client.global_positions=[dict(symbol='SOLUSDT',positionSide='BOTH',positionAmt='1')]
-        with self.assertRaisesRegex(ShadowError,'SHADOW_EXISTING_EXPOSURE'):self.go()
+        self.assertEqual(self.go()['manual_exposure_symbols'],['SOLUSDT'])
         self.client.global_positions=[];self.client.global_orders=[dict(symbol='SOLUSDT')]
-        with self.assertRaisesRegex(ShadowError,'SHADOW_EXISTING_ORDERS'):self.go()
+        self.assertEqual(self.go()['status'],'SHADOW_PREFLIGHT_OK')
     def test_persisted_incomplete_protection_blocks_next(self):
         self.seed();self.go()
         model=ExecutionModel().step('ENTRY_ACK').step('CONFIRMED_FULL_FILL').step('PROTECTION_FAILED')

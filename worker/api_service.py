@@ -79,6 +79,11 @@ def handler(controller,read_token,control_token,origin):
             if not self.authorized():return self.reply(403,{'error':'FORBIDDEN'})
             if self.path=='/health':return self.reply(200,{'status':'ONLINE' if controller.thread.is_alive() else 'OFFLINE','mode':'DRY_RUN','live_enabled':False})
             if self.path=='/neuroapi/status':return self.reply(200,controller.snapshot())
+            if self.path=='/binance/status':
+                try:data=json.loads((controller.directory/'live-status.json').read_text())
+                except Exception:data={'status':'LIVE_EXECUTION_DISARMED','live_execution':False,'scheduler_enabled':False}
+                data.update(live_execution=False,scheduler_enabled=False,status='LIVE_EXECUTION_DISARMED')
+                return self.reply(200,data)
             if self.path=='/snapshot':
                 try:data=json.loads((controller.directory/'snapshot.json').read_text())
                 except Exception:return self.reply(503,{'error':'SNAPSHOT_UNAVAILABLE'})
@@ -94,6 +99,8 @@ def handler(controller,read_token,control_token,origin):
 
 def main():
     os.umask(0o077)
+    from .live_arm import new_boot
+    new_boot() # Restart always revokes local live authorization.
     c=Controller(os.getenv('OFFICE_DATA_DIR','/data'))
     server=ThreadingHTTPServer(('0.0.0.0',8787),handler(c,os.environ['OFFICE_READ_TOKEN'],os.environ['OFFICE_CONTROL_TOKEN'],os.getenv('OFFICE_DASHBOARD_ORIGIN','https://harun5231.github.io')))
     def stop(*args):c.stopping.set();threading.Thread(target=server.shutdown,daemon=True).start()

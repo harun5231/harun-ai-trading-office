@@ -12,8 +12,12 @@ from .workflow import Workflow
 
 def main():
     os.umask(0o077)
-    p=argparse.ArgumentParser();p.add_argument('command',choices=['binance-shadow','binance-check','api-check','api-dry-run','diagnostics','screening-once','analysis-once']);p.add_argument('symbols',nargs='*');p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('command',choices=['binance-live-preflight','binance-arm','binance-execute','binance-scheduler','binance-shadow','binance-check','api-check','api-dry-run','diagnostics','screening-once','analysis-once']);p.add_argument('symbols',nargs='*');p.add_argument('--data-dir',default=os.getenv('OFFICE_DATA_DIR','/data'));a=p.parse_args()
     if (a.command=='analysis-once' and len(a.symbols)!=2) or (a.command!='analysis-once' and a.symbols):p.error('analysis-once requires exactly two symbols; other commands take none')
+    if a.command in ('binance-live-preflight','binance-arm','binance-execute','binance-scheduler'):
+        from .binance_live import run
+        result=run(a.data_dir,a.command);print(json.dumps(result))
+        return 0 if result['status'] in ('LIVE_PREFLIGHT_READY','LIVE_ARMED','LIVE_EXECUTION_REQUESTED','MONITORING','CLOSED','ENTRY_PENDING','POSITION_PROTECTED','SCHEDULER_OFF') else 1
     if a.command=='binance-shadow':
         from .binance_shadow import run
         result=run(a.data_dir);print(json.dumps(result))

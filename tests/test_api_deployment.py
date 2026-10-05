@@ -88,3 +88,8 @@ class HTTPTests(unittest.TestCase):
         self.c.submit.assert_not_called()
     def test_check_is_queued_not_prompt(self):
         code,data=self.call('/neuroapi/check',self.control,'POST',self.origin);self.assertEqual(code,202);self.c.submit.assert_called_once_with('check');self.assertNotIn(self.control,json.dumps(data))
+
+    def test_http_cannot_arm_execute_or_enable_scheduler(self):
+        for path in ('/binance/arm','/binance/execute','/binance/scheduler','/binance-arm','/neuroapi/run?live=true'):
+            self.assertEqual(self.call(path,self.control,'POST',self.origin)[0],404)
+        self.c.submit.assert_not_called()

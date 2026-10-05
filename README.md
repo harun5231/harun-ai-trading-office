@@ -89,3 +89,5 @@ akun di dashboard/ledger dan tidak mengaktifkan live execution.
 Phase 1 shadow/preflight: [deploy/BINANCE_SHADOW.md](deploy/BINANCE_SHADOW.md).
 `python -m worker binance-shadow` memeriksa setup tersimpan dengan GET mainnet dan
 menampilkan rencana inert; tidak mengirim order atau menjalankan riset baru.
+
+Shadow/preflight implementation (live submission hard DISABLED, scheduler OFF): [deploy/BINANCE_LIVE.md](deploy/BINANCE_LIVE.md). No command or configuration can enable real order submission.
