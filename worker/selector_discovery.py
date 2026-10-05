@@ -104,13 +104,26 @@ def commit_verified(path,result,original):
     atomic_private(path,updated);return True
 
 
+def commit_session_verified(path,result,original):
+    from .structural_discovery import VERSION as V3
+    if result.get('version')!=V3 or not result.get('session_check_ready') or result['state']!='AUTHENTICATED' or any(result['status'][k]!='VERIFIED' for k in REQUIRED): return False
+    current=json.loads(Path(path).read_text())
+    if current!=original: raise ValueError('CONFIG_CHANGED')
+    updated=json.loads(json.dumps(original));updated.setdefault('neurobro',{})
+    for key in REQUIRED+OPTIONAL: updated['neurobro'][key]=result['selectors'].get(key,'') if result['status'][key]=='VERIFIED' else ''
+    updated['session_selector_verification']={'version':V3,'session_check_ready':True,
+        'screening_ready':bool(result['screening_ready']), 'verified_on':datetime.now(timezone.utc).isoformat()}
+    updated['selectors_verified_on']=datetime.now(timezone.utc).isoformat()+'/'+V3 if result['screening_ready'] else None
+    atomic_private(path,updated);return True
+
+
 def main():
     import argparse,fcntl
     from .session_service import SessionBrowser
     from .screening import private_profile
     os.umask(0o077)
     parser=argparse.ArgumentParser(description='Read-only DOM discovery; no messages, uploads or trading')
-    parser.add_argument('--phase2',action='store_true');parser.add_argument('--config',required=True);parser.add_argument('--data-dir',required=True)
+    parser.add_argument('--phase3',action='store_true');parser.add_argument('--phase2',action='store_true');parser.add_argument('--config',required=True);parser.add_argument('--data-dir',required=True)
     args=parser.parse_args();browser=None;service=None
     try:
         config_path=Path(args.config).resolve();original=json.loads(config_path.read_text())
@@ -122,13 +135,25 @@ def main():
         import time
         deadline=time.monotonic()+20
         while True:
-            if args.phase2:
+            if args.phase3:
+                from .structural_discovery import discover_phase3
+                result=discover_phase3(browser.page)
+            elif args.phase2:
                 from .semantic_inventory import discover_phase2
                 result=discover_phase2(browser.page)
             else:result=discover(browser.page)
             if result['state'] in ('AUTHENTICATED','LOGIN_REQUIRED','CLOUDFLARE_REQUIRED') or time.monotonic()>=deadline:break
             time.sleep(.5)
         browser.close();browser=None
+        if args.phase3:
+            from .selector_evidence import save
+            evidence_path=save(config_path,result)  # Must succeed BEFORE config mutation.
+            written=commit_session_verified(config_path,result,original)
+            print(json.dumps({'state':result['state'],'config_updated':written,
+                'evidence_saved':True,'evidence_path':evidence_path,
+                'session_check_ready':result['session_check_ready'],'screening_ready':result['screening_ready'],
+                'selectors':{k:(v+' ('+str(len(result['evidence'][k]['candidates']))+' candidates)' if v=='AMBIGUOUS' else v) for k,v in result['status'].items()},'mode':'DRY_RUN'},sort_keys=True))
+            return 0 if written else 2
         written=commit_verified(config_path,result,original)
         if args.phase2:
             print(json.dumps({'version':result['version'],'inventory':result['inventory'],'truncated':result['truncated'],'evidence':result['evidence']},sort_keys=True))

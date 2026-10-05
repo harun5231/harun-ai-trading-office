@@ -36,3 +36,5 @@ runner-attempts/
 selector-report*.json
 .selector-*
 browser.json
+
+selector-discovery.json

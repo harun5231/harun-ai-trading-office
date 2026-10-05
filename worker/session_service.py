@@ -96,6 +96,15 @@ class SessionBrowser:
         if u.scheme!='https' or u.hostname!='app.neurobro.ai':return 'LOGIN_IN_PROGRESS'
         if self.visible(n.get('login_required')):return 'LOGIN_REQUIRED'
         required=('authenticated','login_required','captcha','loading','composer')
+        proof=self.config.get('session_selector_verification',{})
+        if proof.get('version')=='structural-readonly-v3' and proof.get('session_check_ready'):
+            # Re-prove structural relationships on the current page, not just a
+            # saved boolean or a matching generic application element.
+            from .structural_discovery import discover_phase3
+            result=discover_phase3(self.page)
+            if result['session_check_ready']:return 'CONNECTED'
+            return {'LOGIN_REQUIRED':'LOGIN_REQUIRED','CLOUDFLARE_REQUIRED':'CLOUDFLARE_REQUIRED',
+                    'LOADING':'LOGIN_IN_PROGRESS'}.get(result['state'],'DISCONNECTED')
         if not self.config.get('selectors_verified_on') or not all(n.get(k) for k in required):
             return 'DISCONNECTED'  # No guessed login selector, no pretend success.
         if self.visible(n['loading']):return 'LOGIN_IN_PROGRESS'

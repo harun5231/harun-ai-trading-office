@@ -106,3 +106,58 @@ memuat screenshot. Tes memakai DOM sintetis adversarial, bukan DOM/sesi VPS nyat
 Setelah menjalankan script, kirim **kedua JSON yang disanitasi** dari terminal
 untuk audit berikutnya. UNVERIFIED bukan bukti sesi hilang. Jangan mengirim config
 privat, cookie, HTML mentah, token atau kredensial.
+
+## Phase 3: persistent evidence and structural proof
+
+Run the existing offline overlay script; it now selects Phase 3 (`--phase3`
+ takes precedence over the retained compatibility flag `--phase2`). It uses the
+running worker image, never downloads MCR, stops the existing owner gracefully,
+retains the identical named profile volume, and restores worker/proxy on exit.
+No DOM content, messages, storage, credentials, prompts, clicks or uploads are read
+or performed. DOM observations are bounded and must agree twice.
+
+Evidence is saved atomically to `/private/selector-discovery.json`, owner copied
+from browser.json, mode 0600, with file and directory fsync. Save must succeed
+before any config update. A closed-schema second privacy filter rejects unknown
+keys or strings. The server-side viewer revalidates the file before printing it.
+Evidence survives browser/container/SSH closure; use a systemd transient service
+below so discovery and worker restoration also survive Termius disconnection.
+
+Structural rules require all invariants, never a highest-score tie breaker:
+visible, editable, enabled chat-semantic input; semantic form/container;
+application shell; related send control(s), with send separately requiring exactly one. Multiple qualified inputs
+remain AMBIGUOUS. Send and upload are restricted to that same container, and
+selectors must still be globally unique. No nth-child, coordinates or DOM order.
+Inventory includes generic ancestors, parent/container references, sibling control
+counts and per-composer structural proof. Generic guest chat is not authentication.
+An explicit authenticated shell marker, or chat-semantic application shell plus
+independent conversation log and new-chat control, supplies additional positive
+proof. Visible login/challenge/loading blocks auth. Known challenge-provider
+definitions can be VERIFIED with zero current matches; login/loading definitions
+still require observed semantic evidence (hidden elements may prove definitions).
+Missing evidence stays unverified, never invents a selector.
+
+Session readiness requires all six core definitions verified. Screening readiness
+additionally requires every workflow selector verified; lifecycle metadata alone
+is not enough. Session-only config keeps `selectors_verified_on: null` so existing
+screening validation blocks, while CEK SESI re-runs the read-only structural proof.
+No endpoint, credentials or network security policy changes are introduced.
+
+From the existing installation folder, start durable deployment/discovery:
+
+```sh
+sudo systemd-run --unit="harun-selector-$(date +%s)" --collect \
+  --working-directory="$PWD" /bin/bash deploy/discover-selectors.sh
+```
+
+Use `journalctl -u 'harun-selector-*' -n 60 --no-pager` for brief result and
+restoration status. Evidence is overwritten only after a complete successful save.
+After worker restoration, read the sanitized evidence without opening a browser:
+
+```sh
+docker exec "$(docker ps -q --filter label=com.docker.compose.project=harun-office --filter label=com.docker.compose.service=worker | head -n 1)" python -m worker.selector_evidence
+```
+
+Local tests use synthetic HTML, not the user's VPS or real Neurobro DOM. Readiness
+is not a claim that real selectors were verified. No login repeat is requested;
+only a genuinely observed LOGIN_REQUIRED warrants manual login.
