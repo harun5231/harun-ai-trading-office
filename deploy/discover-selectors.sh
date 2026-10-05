@@ -33,7 +33,7 @@ docker run --rm --init --pull never --hostname "$hostname" --user 10001:10001 --
   --mount "type=bind,source=$private,target=/private" \
   --env HOME=/home/office --entrypoint xvfb-run harun-office-worker:selectors-local \
   -a -s '-screen 0 430x932x24 -nolisten tcp' python -m worker.selector_discovery \
-  --config /private/browser.json --data-dir /data
+  --config /private/browser.json --data-dir /data --phase2
 result=$?
 set -e
 if [ "$result" -eq 2 ]; then

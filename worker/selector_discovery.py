@@ -99,8 +99,8 @@ def commit_verified(path,result,original):
     updated=json.loads(json.dumps(original));updated.setdefault('neurobro',{})
     # Clear unverified workflow selectors so the existing screening validator blocks.
     for key in REQUIRED+OPTIONAL:updated['neurobro'][key]=result['selectors'].get(key,'')
-    updated['selectors_verified_on']=datetime.now(timezone.utc).isoformat()+'/'+VERSION
-    updated['selector_verification']={'version':VERSION,'status':result['status']}
+    updated['selectors_verified_on']=datetime.now(timezone.utc).isoformat()+'/'+result.get('version',VERSION)
+    updated['selector_verification']={'version':result.get('version',VERSION),'status':result['status']}
     atomic_private(path,updated);return True
 
 
@@ -110,7 +110,7 @@ def main():
     from .screening import private_profile
     os.umask(0o077)
     parser=argparse.ArgumentParser(description='Read-only DOM discovery; no messages, uploads or trading')
-    parser.add_argument('--config',required=True);parser.add_argument('--data-dir',required=True)
+    parser.add_argument('--phase2',action='store_true');parser.add_argument('--config',required=True);parser.add_argument('--data-dir',required=True)
     args=parser.parse_args();browser=None;service=None
     try:
         config_path=Path(args.config).resolve();original=json.loads(config_path.read_text())
@@ -122,11 +122,16 @@ def main():
         import time
         deadline=time.monotonic()+20
         while True:
-            result=discover(browser.page)
+            if args.phase2:
+                from .semantic_inventory import discover_phase2
+                result=discover_phase2(browser.page)
+            else:result=discover(browser.page)
             if result['state'] in ('AUTHENTICATED','LOGIN_REQUIRED','CLOUDFLARE_REQUIRED') or time.monotonic()>=deadline:break
             time.sleep(.5)
         browser.close();browser=None
         written=commit_verified(config_path,result,original)
+        if args.phase2:
+            print(json.dumps({'version':result['version'],'inventory':result['inventory'],'truncated':result['truncated'],'evidence':result['evidence']},sort_keys=True))
         print(json.dumps({'state':result['state'],'selectors':result['status'],'config_updated':written,
                           'screening_ready':written and all(result['status'][k]=='VERIFIED' for k in OPTIONAL),
                           'mode':'DRY_RUN'},sort_keys=True))

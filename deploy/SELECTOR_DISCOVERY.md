@@ -58,3 +58,51 @@ hanya bila pemeriksaan halaman baru membuktikan authenticated + composer editabl
 `screening_ready=false` berarti selector workflow masih belum lengkap. Tool tidak
 mengaktifkan scheduler atau live trading. Seluruh bukti tes repository adalah DOM
 sintetis offline; tidak ada selector Neurobro nyata diverifikasi dari Work.
+
+## Phase 2 — sanitized semantic inventory
+
+Script `deploy/discover-selectors.sh` sekarang menjalankan `--phase2` memakai
+existing local image/offline overlay yang sama. Tidak perlu login ulang. Volume,
+hostname, ownership, safe Singleton recovery, serta metode stop/restore worker
+sama seperti Phase 1. Tidak ada download MCR, endpoint baru, atau perubahan noVNC.
+
+Tool mengeluarkan dua JSON: inventory/evidence lalu ringkasan status. Inventory
+maksimal 200 elemen relevan dengan tag/type/role, metadata semantic aman, boolean
+visible/editable/disabled/contenteditable, hubungan form/application shell,
+fingerprint tag maksimal empat tingkat, kandidat CSS dan jumlah kecocokan.
+ID seperti `e0` hanya nomor record lokal, bukan ID pengguna atau ID DOM.
+
+String diperiksa **di dalam halaman sebelum dikirim keluar**: panjang maksimal
+80, karakter terbatas, vocabulary kata UI generik yang tertutup. Email, nomor,
+JWT/UUID, URL/query, bearer/secret/token, nama akun dan identifier acak tidak
+lolos. Unknown words juga disamarkan, bukan dicetak untuk debugging. Atribut
+account/profile/user dan label dalam subtree pesan/log tidak diekspor. Data
+attributes memakai daftar nama UI generik; class, ID acak, href, src, input value,
+innerText/textContent, HTML, cookie dan storage tidak dikeluarkan. Deteksi provider
+challenge menggunakan kecocokan CSS boolean, tanpa membaca URL iframe ke output.
+Tag custom diganti OTHER dan tidak dipakai untuk menghasilkan selector.
+
+Kandidat selector berasal dari tag/atribut yang benar-benar diamati, bukan
+selector Neurobro yang sudah diasumsikan. Field mempunyai status CANDIDATE,
+VERIFIED, AMBIGUOUS atau UNVERIFIED dengan kode bukti generik. Jika DOM berubah
+antara dua observasi atau inventory terpotong, bukti diturunkan dan config tidak
+boleh diperbarui. Selector yang tidak bisa dibuktikan tetap membutuhkan audit.
+
+Authenticated tidak lagi bergantung pada logout. Kombinasi composer editable
+unik dengan penanda semantic chat + Send pada form yang sama + application/main
+shell yang memuat keduanya dan penanda autentikasi eksplisit diperlukan. Shell
+umum saja menjadi CANDIDATE, karena UI chat dapat tersedia bagi tamu. Selector
+authenticated yang disimpan juga menyertakan penanda autentikasinya. Tidak ada
+inferensi login dari nama akun atau isi pesan. Jika Neurobro tidak menyediakan
+bukti struktural tersebut, tool tidak akan mengklaim authenticated.
+
+Selector pesan dan lifecycle completion/streaming dilaporkan sebagai kandidat
+untuk review scoping berikutnya, tanpa membaca chat atau memancing respons.
+Enam field wajib harus VERIFIED dan state AUTHENTICATED sebelum atomic write
+privat; screening tetap terblokir jika selector workflow belum lengkap. Output
+inventory tidak otomatis disimpan ke disk, tidak dikirim ke GitHub dan tidak
+memuat screenshot. Tes memakai DOM sintetis adversarial, bukan DOM/sesi VPS nyata.
+
+Setelah menjalankan script, kirim **kedua JSON yang disanitasi** dari terminal
+untuk audit berikutnya. UNVERIFIED bukan bukti sesi hilang. Jangan mengirim config
+privat, cookie, HTML mentah, token atau kredensial.
