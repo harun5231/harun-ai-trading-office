@@ -5,6 +5,7 @@ from .core import Review,day,number,RISK,D,risk_check
 from .neuroapi import SETUP_SCHEMA,selections,setup
 from .prompts import ANALYSIS
 from .diagnostics import safe_code,validation_code
+from .provenance import ANALYSIS_VERSION,stamp
 
 SIZING_CONTRACT='Target loss at stop loss is 5 USDT. The worker Risk Manager independently computes the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
 
@@ -36,7 +37,7 @@ def analysis_once(ledger,client,market,symbols):
     ledger.db.execute('CREATE TABLE IF NOT EXISTS analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
     results=[]
     for symbol in symbols:
-        operation=today+':analysis-v5:'+symbol
+        operation=today+':'+ANALYSIS_VERSION+':'+symbol
         ledger.db.execute('BEGIN IMMEDIATE')
         try:
             old=ledger.db.execute('SELECT state,result FROM analysis_checks WHERE operation=?',(operation,)).fetchone()
@@ -46,7 +47,7 @@ def analysis_once(ledger,client,market,symbols):
                 results.append(json.loads(old['result']) if old['state']=='COMPLETE' and old['result'] else empty_result(symbol,'ANALYSIS_CHECK_NEEDS_REVIEW'))
                 continue
             if day()!=today:raise Review('CYCLE_DAY_CHANGED')
-            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':analysis-v5:%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
+            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':'+ANALYSIS_VERSION+':%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
             ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',(operation,today,'PENDING',None))
             ledger.db.execute('COMMIT')
         except BaseException:ledger.db.execute('ROLLBACK');raise
@@ -70,6 +71,7 @@ def analysis_once(ledger,client,market,symbols):
         except Exception as error:
             row=ledger.db.execute('SELECT failure_code FROM api_requests WHERE operation=?',(operation,)).fetchone()
             result['failure_code']=safe_code(row[0]) if row and row[0] else validation_code(error)
+        stamp(ledger.db,result,operation)
         ledger.db.execute("UPDATE analysis_checks SET state='COMPLETE',result=? WHERE operation=?",(json.dumps(result),operation))
         results.append(result)
     return results

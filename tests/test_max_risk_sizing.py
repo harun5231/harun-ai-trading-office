@@ -59,12 +59,12 @@ class MaxRiskTests(unittest.TestCase):
         self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'],'5')
         self.assertEqual(context['risk_constraints']['position_sizing_contract'],SIZING_CONTRACT)
         self.assertIn('largest valid Binance base-asset quantity',SIZING_CONTRACT)
-    def test_v5_new_check_preserves_v4_and_never_replays(self):
+    def test_v6_new_check_preserves_v5_and_never_replays(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'trading').mkdir();ledger=Ledger(root/'trading'/'ledger.sqlite3')
             try:
                 ledger.db.execute('CREATE TABLE analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-                for symbol in ('BTCUSDT','ETHUSDT'):ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',('2026-10-05:analysis-v4:'+symbol,'2026-10-05','COMPLETE','{}'))
+                for symbol in ('BTCUSDT','ETHUSDT'):ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',('2026-10-05:analysis-v5:'+symbol,'2026-10-05','COMPLETE','{}'))
                 calls=[]
                 def transport(method,url,headers,body,timeout):
                     import json
@@ -76,6 +76,6 @@ class MaxRiskTests(unittest.TestCase):
                     self.assertEqual([r['status'] for r in first],['ACCEPT','ACCEPT'])
                     self.assertEqual(first,analysis_once(ledger,client,FakeMarket(),['BTCUSDT','ETHUSDT']))
                 self.assertEqual(calls,['BTCUSDT','ETHUSDT']);self.assertEqual(ledger.count(),0)
-                self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM analysis_checks WHERE operation LIKE '%:analysis-v4:%' AND result='{}'").fetchone()[0],2)
-                self.assertTrue(all(':analysis-v5:' in r['operation'] for r in read_records(root)))
+                self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM analysis_checks WHERE operation LIKE '%:analysis-v5:%' AND result='{}'").fetchone()[0],2)
+                self.assertTrue(all(':analysis-v6:' in r['operation'] for r in read_records(root)))
             finally:ledger.db.close()

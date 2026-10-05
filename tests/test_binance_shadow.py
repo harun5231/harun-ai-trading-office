@@ -11,6 +11,7 @@ from unittest.mock import Mock,patch
 from worker.core import D,Ledger,Signal,day,risk_check,Review
 from worker.neuroapi import NeuroAPI,SETUP_SCHEMA,canonical_output
 from worker.binance_shadow import shadow,run,plan_payload,identity,ids,ShadowError,ShadowStore
+from worker.provenance import stamp
 from worker.execution_model import ExecutionModel,ModelError
 from test_neuroapi import GOOD,FakeMarket,RULES
 
@@ -43,12 +44,14 @@ class ShadowTests(unittest.TestCase):
         value={**GOOD,'symbol':symbol,'side':side,'position_size':D('.002')}
         if side=='SHORT':value.update(take_profit=94,stop_loss=103)
         plan=risk_check(Signal(symbol,side,D(value['limit_entry']),D(value['take_profit']),D(value['stop_loss']),D('.002')),RULES())
-        op=day()+(':analysis-v5:' if kind=='check' else ':analysis:')+symbol
+        op=day()+(':analysis-v6:' if kind=='check' else ':analysis:')+symbol
         self.ledger.db.execute('INSERT INTO api_requests(operation,state,output) VALUES(?,?,?)',(op,'COMPLETE',canonical_output(value,SETUP_SCHEMA)))
+        stamp(self.ledger.db,plan,op)
         if kind=='trade':self.ledger.reserve(plan,'NEUROAPI_DRY_RUN',RULES())
         else:
             self.ledger.db.execute('CREATE TABLE IF NOT EXISTS analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-            result=dict(status='ACCEPT',symbol=symbol,side=side,entry=plan['entry'],TP=plan['tp'],SL=plan['sl'],execution_quantity=plan['execution_quantity'],calculated_risk=plan['risk'],actual_RR=plan['rr'],mode='DRY_RUN')
+            result=dict(status='ACCEPT',symbol=symbol,side=side,entry=plan['entry'],TP=plan['tp'],SL=plan['sl'],execution_quantity=plan['execution_quantity'],calculated_risk=plan['risk'],actual_RR=plan['rr'],neurobro_position_size=plan['neurobro_position_size'],mode='DRY_RUN')
+            stamp(self.ledger.db,result,op)
             self.ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',(op,day(),'COMPLETE',json.dumps(result)))
         return plan
     def go(self):return shadow(self.ledger,self.client,self.market)
@@ -100,13 +103,13 @@ class ShadowTests(unittest.TestCase):
         self.seed();self.market.catalog=lambda:{}
         self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_SYMBOL_INACTIVE')
     def test_provider_levels_tampered_rejected(self):
-        p=self.seed();p['tp']='106';self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
+        p=self.seed();p['tp']='106';stamp(self.ledger.db,p,day()+':analysis:BTCUSDT');self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
         with self.assertRaisesRegex(ShadowError,'SHADOW_SETUP_CHANGED'):self.go()
     def test_oversized_quantity_and_low_rr_fail_closed(self):
-        p=self.seed();p.update(quantity='3',execution_quantity='3',risk='6');self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
+        p=self.seed();p.update(quantity='3',execution_quantity='3',risk='6');stamp(self.ledger.db,p,day()+':analysis:BTCUSDT');self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
         self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_RULES_REJECTED')
     def test_actual_rr_mismatch_cannot_fake_shadow_ok(self):
-        p=self.seed();p['rr']='1.9';self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
+        p=self.seed();p['rr']='1.9';stamp(self.ledger.db,p,day()+':analysis:BTCUSDT');self.ledger.db.execute('UPDATE trades SET plan=?',(json.dumps(p),))
         self.assertEqual(self.go()['plans'][0]['failure_code'],'SHADOW_SETUP_CHANGED')
     def test_existing_position_blocks_closeall_plan(self):
         self.seed();self.client.position=[dict(symbol='BTCUSDT',positionSide='BOTH',positionAmt='0.01')]
@@ -148,7 +151,7 @@ class ShadowTests(unittest.TestCase):
         self.seed(kind='check');self.seed(symbol='ETHUSDT',kind='check')
         with patch('worker.neuroapi.NeuroAPI.ask',side_effect=AssertionError('paid call')):out=self.go()
         self.assertEqual(out['status'],'SHADOW_PREFLIGHT_OK');self.assertEqual(len(out['plans']),2);self.assertEqual(self.ledger.count(),0)
-    def test_legacy_analysis_without_execution_quantity_is_not_invented(self):
+    def test_current_analysis_without_execution_quantity_is_not_invented(self):
         self.seed(kind='check');row=self.ledger.db.execute('SELECT result FROM analysis_checks').fetchone();p=json.loads(row[0]);p.pop('execution_quantity');self.ledger.db.execute('UPDATE analysis_checks SET result=?',(json.dumps(p),))
         with self.assertRaisesRegex(ShadowError,'SHADOW_SOURCE_UNVERIFIED'):self.go()
     def test_no_credential_raw_data_in_ledger_or_output(self):

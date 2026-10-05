@@ -11,6 +11,7 @@ from .neuroapi import setup
 from .state import directory
 from .binance_private import BinanceReadOnly,BinanceCheckError,CODES as AUTH_CODES
 from .execution_model import ExecutionModel
+from .provenance import current,ANALYSIS_VERSION
 
 CODES=frozenset(('NO_PERSISTED_SETUP','WORKER_BUSY','BINANCE_POSITION_MODE_MISMATCH','BINANCE_TRADE_DISABLED',
  'BINANCE_MULTI_ASSET_UNSUPPORTED','SHADOW_DATA_INVALID','SHADOW_DUPLICATE_SETUP','SHADOW_DAILY_LIMIT',
@@ -90,15 +91,31 @@ def load_candidates(ledger,today):
     if len(trades)>2:fail('SHADOW_DAILY_LIMIT')
     for row in trades:
         if row['state']=='ORDER_READY' and row['source']=='NEUROAPI_DRY_RUN':
-            p=json.loads(row['plan']);items.append((p,today+':analysis:'+p['symbol'],True))
+            p=json.loads(row['plan']);operation=today+':analysis:'+p['symbol']
+            try:eligible=current(db,p,operation)
+            except Review:fail('SHADOW_SOURCE_UNVERIFIED')
+            if eligible:
+                try:
+                    if not plan_payload(p,today) or 'neurobro_position_size' not in p:raise ValueError
+                except Exception:fail('SHADOW_SOURCE_UNVERIFIED')
+                items.append((p,operation,True))
     if 'analysis_checks' in names:
         for row in db.execute("SELECT operation,result FROM analysis_checks WHERE day=? AND state='COMPLETE'",(today,)):
             result=json.loads(row['result'])
+            try:eligible=current(db,result,row['operation'])
+            except Review:fail('SHADOW_SOURCE_UNVERIFIED')
+            if not eligible:continue
+            if row['operation']!=today+':'+ANALYSIS_VERSION+':'+str(result.get('symbol')):fail('SHADOW_SOURCE_UNVERIFIED')
+            if result.get('status') not in ('ACCEPT','REJECT','HOLD'):fail('SHADOW_SOURCE_UNVERIFIED')
             if result.get('status')!='ACCEPT':continue
             if result.get('mode')!='DRY_RUN' or not result.get('execution_quantity'):fail('SHADOW_SOURCE_UNVERIFIED')
-            p=dict(symbol=result['symbol'],side=result['side'],entry=result['entry'],tp=result['TP'],sl=result['SL'],
-                quantity=result['execution_quantity'],execution_quantity=result['execution_quantity'],risk=result['calculated_risk'],rr=result['actual_RR'],
-                margin_mode='CROSS',leverage=75,order_type='LIMIT',mode='DRY_RUN')
+            try:
+                p=dict(symbol=result['symbol'],side=result['side'],entry=result['entry'],tp=result['TP'],sl=result['SL'],
+                    quantity=result['execution_quantity'],execution_quantity=result['execution_quantity'],risk=result['calculated_risk'],rr=result['actual_RR'],
+                    neurobro_position_size=result['neurobro_position_size'],
+                    margin_mode='CROSS',leverage=75,order_type='LIMIT',mode='DRY_RUN')
+                plan_payload(p,today)
+            except Exception:fail('SHADOW_SOURCE_UNVERIFIED')
             items.append((p,row['operation'],False))
     if not items:fail('NO_PERSISTED_SETUP')
     if len(trades)+sum(not reserved for _,_,reserved in items)>2:fail('SHADOW_DAILY_LIMIT')
@@ -107,7 +124,8 @@ def load_candidates(ledger,today):
         if 'api_requests' not in names:fail('SHADOW_SOURCE_UNVERIFIED')
         source=db.execute("SELECT output FROM api_requests WHERE operation=? AND state='COMPLETE'",(operation,)).fetchone()
         if not source or not source[0]:fail('SHADOW_SOURCE_UNVERIFIED')
-        signal=setup(json.loads(source[0],parse_float=D),p['symbol'])
+        try:signal=setup(json.loads(source[0],parse_float=D),p['symbol'])
+        except Exception:fail('SHADOW_SOURCE_UNVERIFIED')
         if signal.side!=p['side'] or signal.side=='HOLD':fail('SHADOW_SETUP_CHANGED')
         if any(number(p[k])!=v for k,v in (('entry',signal.entry),('tp',signal.tp),('sl',signal.sl))):fail('SHADOW_SETUP_CHANGED')
         plan_payload(p,today) # Strictly sanitized fields before any persistence/output.

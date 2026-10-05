@@ -96,7 +96,7 @@ class AnalysisContextTests(unittest.TestCase):
     def test_interrupted_check_is_not_replayed(self):
         client=self.client()
         self.ledger.db.execute('CREATE TABLE analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v5:BTCUSDT','2026-10-05','PENDING',NULL)")
+        self.ledger.db.execute("INSERT INTO analysis_checks VALUES('2026-10-05:analysis-v6:BTCUSDT','2026-10-05','PENDING',NULL)")
         with patch('worker.analysis.day',return_value='2026-10-05'):
             result=analysis_once(self.ledger,client,self.market,['BTCUSDT','ETHUSDT'])
         self.assertEqual(result[0]['failure_code'],'ANALYSIS_CHECK_NEEDS_REVIEW');self.assertEqual(len(self.calls),1)

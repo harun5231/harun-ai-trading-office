@@ -46,13 +46,36 @@ All checks must be repeated immediately before any separately reviewed live phas
 ## Persisted setup requirements
 
 `python -m worker binance-shadow` only reads current Bangkok-business-day
-ORDER_READY paper plans and COMPLETE/ACCEPT analysis_checks with an explicit
-execution_quantity. It verifies Entry/TP/SL/side against the canonical COMPLETE
-API record. HOLD creates no plan or slot. Historical/incomplete/rejected results
-are not replayed. Legacy ACCEPT records without deterministic execution_quantity
-fail SHADOW_SOURCE_UNVERIFIED; no quantity is invented for those records.
-NO_PERSISTED_SETUP is an honest result if no eligible records exist. The command
-does not repair/reset records or trigger new research to obtain a setup.
+ORDER_READY paper plans and COMPLETE/ACCEPT analysis_checks explicitly stamped
+by the current producer. Unmarked legacy ACCEPT/REJECT/HOLD records are ignored,
+without deletion or backfilling trust, even if they contain execution_quantity.
+NO_PERSISTED_SETUP is expected when no current eligible ACCEPT exists.
+
+Current provenance stored atomically inside each new result/plan:
+- contract_version: `neuroapi-decision-v1`
+- analysis_version: `analysis-v6`
+- source_type: `NEUROAPI_STRUCTURED`
+- execution_sizing_version: `deterministic-max-risk-5-v1`
+- exact API operation plus SHA256 of the sanitized result/plan and of the canonical
+  structured COMPLETE API output (never raw provider prose, prompts or secrets).
+
+A current-version claim with missing/incorrect provenance, changed evidence or
+missing execution quantity fails SHADOW_SOURCE_UNVERIFIED. Hashes detect changed
+persisted evidence, not malicious database administrators. Shadow independently
+compares side/Entry/TP/SL to the COMPLETE request and rechecks deterministic quantity,
+current Binance rules, risk and RR. No provider level or quantity is repaired.
+HOLD/REJECT remain persisted but never become candidates or consume trade slots.
+Existing trade slots still count against the daily cap, regardless of provenance.
+
+Optional **paid research**, never part of deployment/shadow:
+`docker compose exec -T worker python -m worker analysis-once BTCUSDT ETHUSDT`
+now claims `<business-day>:analysis-v6:<symbol>`, at most two distinct symbols for
+that namespace/day. Previous v3/v4/v5 requests/cycles remain intact. PENDING is
+persisted before any call; repeated or interrupted invocations never replay a
+claimed symbol, including across restart. One normal analysis per symbol; existing
+bounded retries only on explicit provider 429/503 remain unchanged. No screening,
+trade reservation or live execution occurs. Normal daily workflow stamps new
+plans with the same current contract, keeping its existing cycle/request locks.
 
 A new shadow_plans table stores only sanitized plans/IDs and separate model-only
 state. Existing trades, cycles, API ledger, prompts and dashboard are unchanged.

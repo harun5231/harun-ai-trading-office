@@ -10,6 +10,7 @@ from .prompts import SCREENING,ANALYSIS
 from .monitor import PaperMonitor
 from .analysis import analysis_context
 from .diagnostics import safe_code,validation_code
+from .provenance import stamp
 
 SOURCE='NEUROAPI_DRY_RUN'
 def export(ledger,path,connected=False):
@@ -89,6 +90,7 @@ class Workflow:
                         'exit_side':'SELL' if plan['side']=='LONG' else 'BUY','reduce_only':True,
                         'failure_policy':'LIVE_UNIMPLEMENTED_REQUIRES_SEPARATE_REVIEW','simulated':True}
                     if day()!=today:raise Review('CYCLE_DAY_CHANGED')
+                    stamp(self.ledger.db,plan,today+':analysis:'+symbol)
                     self.ledger.reserve(plan,SOURCE,rules)
                     self.event('DRY_RUN_READY',symbol+' / ACCEPT / LIMIT + protective TP/SL plan; no submission')
                 except Review as error:
