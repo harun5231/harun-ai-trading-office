@@ -82,6 +82,13 @@ class RobotStore:
     def entries(self, today):
         return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?', (today,)).fetchone()[0]
 
+    def available_slots(self, running, symbols, today):
+        """One capacity rule for submission, screening, and read-only Office."""
+        active=list(self.db.execute("SELECT symbol,state FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
+        pending=sum(row['state']=='ENTRY_PENDING' for row in active)
+        unrepresented=sum(row['symbol'] not in symbols for row in active)
+        return slots(running,self.entries(today),pending=pending,unrepresented=unrepresented)
+
     def results(self, cycle):
         return list(self.db.execute('SELECT * FROM robot_candidates WHERE cycle=?', (cycle,)))
 
@@ -98,10 +105,14 @@ class RobotStore:
                         (now(), state, agent, message))
 
     def snapshot(self):
+        today=day()
         row = self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
         value = empty_account()
         value.update(json.loads(row[0]) if row else dict(bot_status='OFF', checked_at=None, failure_code=None, wait_reason='ROBOT_OFF'))
-        value.update(self.settings(), bot_entries_today=self.entries(day()), execution_gateway=OrderGateway().status())
+        value.update(self.settings(), bot_entries_today=self.entries(today), execution_gateway=OrderGateway().status())
+        running=value.get('running_positions');symbols=value.get('running_symbols')
+        if type(running) is int and running>=0 and isinstance(symbols,list) and not value.get('account_failure_code'):
+            value['available_slots']=self.available_slots(running,symbols,today)
         if not value['robot_on']: value.update(bot_status='OFF', wait_reason='ROBOT_OFF')
         row = self.db.execute('SELECT symbol,status,failure_code FROM robot_candidates ORDER BY rowid DESC LIMIT 1').fetchone()
         value['last_decision'] = dict(row) if row else None
@@ -160,7 +171,7 @@ class RobotStore:
         if account.get('status') != 'CONNECTED': return
         running = [row['symbol'] for row in account['positions']]
         summary = dict(running_positions=account['active_positions'], running_symbols=running,
-            manual_exposure=sorted(set(running)), available_slots=slots(account['active_positions'], self.entries(day())),
+            manual_exposure=sorted(set(running)), available_slots=self.available_slots(account['active_positions'],running,day()),
             usdt_wallet_balance=account['usdt_wallet_balance'], usdt_available_balance=account['usdt_available_balance'],
             account_checked_at=account['checked_at'], **{key: account[key] for key in ('_account_generation', '_account_revision') if key in account})
         self.report_account(summary)
@@ -199,7 +210,7 @@ class RobotStore:
             checked = datetime.fromisoformat(value['account']['checked_at'])
             fresh = 0 <= (datetime.now(timezone.utc) - checked).total_seconds() <= 120
         except (ValueError, TypeError): fresh = False
-        tasks['position'] = fresh and value['account'].get('status') == 'CONNECTED' and value['account'].get('active_positions', 0) > 0
+        tasks['position'] = robot['robot_on'] and fresh and value['account'].get('status') == 'CONNECTED' and value['account'].get('active_positions', 0) > 0
         names = [('market', 'Market Analyst'), ('neuro', 'Neurobro'), ('risk', 'Risk Manager'),
                  ('trading', 'Trading Agent'), ('position', 'Position Monitor'),
                  ('reviewer', 'Trade Reviewer'), ('report', 'Report Manager'), ('boss', 'BOSS (Kamu)')]

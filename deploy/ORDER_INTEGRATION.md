@@ -37,9 +37,19 @@ koneksi tidak membuktikan bahwa autentikasi atau kesehatan exchange sudah benar.
   Quantity memakai Decimal dan net RR setelah fee minimal 2. Perubahan pengaturan hanya
   memengaruhi analisis baru, bukan intent yang telah dibuat dan diverifikasi.
   Estimasi ini tidak menjamin fee aktual, funding, slippage, atau gap harga.
-- Maksimal dua posisi bersamaan; tidak ada batas entry harian.
-  Pending entry ikut mencadangkan kapasitas. Counter entry hanya
-  berasal dari observasi fill yang lolos kontrak, bukan dari ACK.
+- Maksimal dua entry bot baru per hari WIB (UTC+7) dan dua posisi bersamaan,
+  termasuk posisi manual serta posisi dari hari sebelumnya. Kapasitas adalah
+  `min(day_remaining, concurrency_remaining)`. Seluruh `ENTRY_PENDING` belum fill
+  mencadangkan kuota harian serta slot, termasuk order yang dibuat kemarin dan
+  masih mungkin fill hari ini. Exposure yang sudah tercermin pada posisi akun
+  tidak dihitung dua kali.
+  Counter entry berasal dari fill pertama yang terverifikasi, bukan ACK.
+  Partial fill dan tambahan fill entry yang sama tetap satu receipt pada hari
+  WIB dari fill pertama; receipt dan reservasi tetap persisten setelah restart.
+  Pergantian hari pukul 00:00 WIB memperbarui kuota tanpa menutup posisi lama.
+  Satu posisi lama yang masih aktif menyisakan paling banyak satu slot saat itu;
+  dua posisi lama menyisakan nol sampai slot bebas. Penutupan posisi membebaskan
+  slot bersamaan, tanpa mengembalikan kuota entry hari itu.
 - HYPEUSDT selalu dikecualikan. Setiap symbol yang sudah memiliki posisi aktif
   dikecualikan, termasuk posisi manual. Label exposure tidak memberi hak
   mengambil alih posisi. Receipt historis tidak membuktikan kepemilikan posisi
@@ -141,7 +151,11 @@ waktu fill pertama tidak boleh berubah, quantity kumulatif tidak boleh turun,
 observasi tidak boleh mundur, dan posisi terisi tidak boleh kembali menjadi
 pending/rejected. ID proteksi dan exit harus sesuai validasi coordinator.
 Field lain dibuang; raw response, secret, URL bertanda tangan, dan prose adapter
-tidak disimpan. Receipt entry ditulis satu kali berdasarkan waktu fill pertama.
+tidak disimpan. Receipt entry ditulis satu kali berdasarkan waktu fill pertama
+Binance yang terverifikasi dan memakai hari WIB (UTC+7) dari waktu tersebut.
+Tambahan partial fill tidak membuat entry baru, sekalipun terjadi pada hari
+berikutnya. `ENTRY_PENDING` yang belum pernah fill tetap mencadangkan kuota
+harian yang baru, walaupun order dibuat pada hari sebelumnya.
 
 ## Outcome tidak pasti dan operasi OFF
 
@@ -158,11 +172,15 @@ diimplementasikan diperlakukan sebagai outcome tidak pasti, termasuk
 `GatewayUnavailable`. Worker tidak mengirim ulang claim tersebut otomatis.
 Metadata koneksi tidak mengubah penanganan ini.
 
-OFF menghentikan riset dan submission baru; pemanggilan yang sudah berlangsung
-dapat selesai. Polling saldo/posisi/riwayat tetap berjalan. Lifecycle gateway
-saat ini direkonsiliasi saat ON, sehingga sebelum produksi developer juga harus
-menyelesaikan monitoring pending/filled order selama OFF dan sesudah restart.
-Proteksi Binance harus tetap berada di exchange ketika worker/browser berhenti.
+OFF menghentikan riset, submission baru, dan pemanggilan rekonsiliasi gateway
+berikutnya. OFF tidak menutup posisi dan tidak membatalkan order entry/SL/TP.
+Pemanggilan eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya
+masih dapat selesai dan dicatat ke journal. Polling read-only saldo/posisi/riwayat
+Office tetap berjalan, sementara semua karyawan AI tidak menunjukkan aktivitas
+kerja saat OFF. Rekonsiliasi gateway dijalankan saat ON; developer harus
+menyediakan prosedur penanganan pending/filled order sesudah restart atau ketika
+worker OFF, sesuai pilihan ini. Proteksi Binance tetap berada di exchange ketika
+worker/browser berhenti; OFF tidak memicu close atau cancel otomatis.
 
 ## Migrasi dan pemeriksaan
 

@@ -69,10 +69,10 @@ def screening_contract(count):
     if count==2:return SCREENING,SCREEN_SCHEMA
     raise Review('INVALID_SCREENING_COUNT')
 
-def slots(running,entries=None):
-    # Entry receipts are history, not a daily trading limit. Only currently
-    # running positions consume one of the two concurrent Futures slots.
-    return max(0,2-running)
+def slots(running,entries=0,*,pending=0,unrepresented=0):
+    # Carryover/manual positions consume concurrency; first fills consume that
+    # calendar day's two-entry allowance even after their positions are closed.
+    return max(0,min(2-running-unrepresented,2-entries-pending))
 
 def account_state(client,store,today):
     config=client.check()
@@ -96,7 +96,7 @@ def account_state(client,store,today):
     # Until the gateway supplies current ownership evidence, every existing
     # exposure is externally managed and must remain protected from robot use.
     return dict(running_positions=len(running),running_symbols=sorted(running),manual_exposure=sorted(running),
-        bot_entries_today=entries,available_slots=slots(len(running),entries),
+        bot_entries_today=entries,available_slots=store.available_slots(len(running),sorted(running),today),
         usdt_wallet_balance=config.get('usdt_wallet_balance'),
         usdt_available_balance=config.get('usdt_available_balance'),account_checked_at=now(),account_failure_code=None,
         **account_order())

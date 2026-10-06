@@ -13,14 +13,31 @@ kode `BINANCE_ORDER_GATEWAY_NOT_CONNECTED`, sedangkan gateway menampilkan
 Private GET Binance memakai key VPS existing. Hanya akun ONE_WAY, single-asset,
 dan konfigurasi yang lolos pemeriksaan diterima. Semua posisi nonzero mengurangi
 concurrent capacity. Posisi manual tetap manual; HYPEUSDT selalu dikecualikan
-dari calon entry. Maksimal dua posisi bersamaan, termasuk posisi manual dan
-reservasi pending entry. Tidak ada batas entry harian; counter harian adalah
-laporan dan epoch claim, bukan izin kapasitas:
+dari calon entry. Ada dua batas yang dipenuhi bersamaan: maksimal dua entry bot
+baru per hari WIB (UTC+7) dan maksimal dua posisi bersamaan. Posisi manual dan
+posisi yang terbawa dari hari sebelumnya ikut memakai slot bersamaan.
 
-`account_slots = max(0, 2 - running_positions)`
+`day_remaining = max(0, 2 - confirmed_bot_entries_today - unfilled_pending_entries)`
 
-Coordinator mengurangi slot submission untuk pending entry yang belum menjadi
-posisi aktif, sehingga satu exposure tidak dihitung dua kali.
+`concurrency_remaining = max(0, 2 - running_positions - unrepresented_intents)`
+
+`available_slots = min(day_remaining, concurrency_remaining)`
+
+`unfilled_pending_entries` mencakup seluruh `ENTRY_PENDING`, termasuk yang dibuat
+kemarin karena fill pertama masih dapat terjadi hari ini. `unrepresented_intents`
+adalah pending entry atau exposure bot terisi yang belum tercermin pada posisi
+akun terbaru; exposure yang sudah tercermin tidak dihitung dua kali.
+Counter harian berasal dari receipt fill pertama Binance yang terverifikasi,
+bukan screening, analisis, submission, atau ACK. Partial fill dan tambahan fill
+pada entry yang sama tetap satu entry, mengikuti hari WIB dari fill pertamanya.
+Receipt dan reservasi tetap tersimpan setelah restart.
+
+Pada pukul 00:00 WIB, kuota memakai receipt untuk hari yang baru. Posisi lama
+tidak ditutup, dan pending entry lama masih mencadangkan kuota jika belum fill.
+Jika satu posisi kemarin masih aktif, paling banyak satu slot bersamaan tersedia
+saat itu. Jika dua masih aktif, tidak ada slot baru sampai suatu posisi selesai.
+Posisi yang selesai membebaskan slot bersamaan; receipt entry hari itu tetap
+mengurangi kuota harian.
 
 Screening meminta literal satu atau dua coin sesuai slot. Hasil harus unique
 USDT perpetual aktif dan tidak sedang terekspos. Kandidat valid yang sudah
@@ -76,11 +93,16 @@ Body pengaturan adalah subset tidak kosong dari `robot_on` (boolean) dan
 sebelum pembaruan atomik. Pemeriksaan koneksi CLI `api-check` dan `binance-check`
 hanya menjalankan GET provider/akun, tanpa analisis atau order.
 
-OFF menghentikan claim baru. Request berjalan ditunggu saat shutdown;
-outcome belum pasti memerlukan rekonsiliasi dan tetap fail-closed. Entry hanya
-dihitung setelah konfirmasi exchange yang diverifikasi adapter; hasil screening,
-analisis, dan intent bukan bukti entry. Proteksi, partial fill, recovery, serta
-rekonsiliasi dipenuhi pada satu adapter order, bukan cabang runtime tersendiri.
+OFF menghentikan riset, claim/submission baru, dan pemanggilan rekonsiliasi gateway
+berikutnya. OFF tidak menutup posisi atau membatalkan order entry maupun SL/TP.
+Pemanggilan eksternal yang sudah dikirim tidak dapat ditarik kembali dan masih
+dapat menyelesaikan penyimpanan hasil. Request berjalan ditunggu saat shutdown;
+outcome belum pasti tetap fail-closed sampai ditinjau dan direkonsiliasi.
+Pembacaan saldo/posisi/riwayat Office tetap berjalan sebagai monitoring read-only,
+sementara semua karyawan AI tidak menunjukkan aktivitas kerja saat OFF.
+Entry hanya dihitung setelah konfirmasi exchange yang diverifikasi adapter;
+hasil screening, analisis, dan intent bukan bukti entry. Proteksi, partial fill,
+recovery, serta rekonsiliasi dipenuhi pada satu adapter order.
 
 Migrasi pertama menyimpan backup audit privat, menghapus tabel alur lama dari
 database aktif, dan mengembalikan robot ke OFF. Journal request berbayar serta

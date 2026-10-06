@@ -95,6 +95,10 @@ def canonical_output(value,schema,catalog=None):
         return '{'+','.join(json.dumps(k)+':'+(format(v,'f') if isinstance(v,D) else json.dumps(v)) for k,v in fields.items())+'}'
     raise Review('INVALID_OUTPUT_SCHEMA')
 
+class ResearchPaused(Review):
+    """The current ask invocation has definitely started no HTTP request."""
+
+
 class NeuroAPI:
     def __init__(self,ledger,key=None,transport=request,sleep=time.sleep):
         self.db=ledger.db;self._key=api_key() if key is None else key;self.transport=transport;self.sleep=sleep
@@ -116,7 +120,13 @@ class NeuroAPI:
         return headers
     def health(self):
         return health_check(self._key,self.transport)
-    def ask(self,operation,prompt,schema,validate,context=None,*,catalog=None):
+    def ask(self,operation,prompt,schema,validate,context=None,*,catalog=None,continue_if=None):
+        if continue_if is not None and not callable(continue_if):raise Review('INVALID_CONTINUATION_GUARD')
+        def permitted():
+            if continue_if is None:return True
+            try:return continue_if() is True
+            except Exception:return False
+        if not permitted():raise ResearchPaused('RESEARCH_PAUSED')
         self.require_key()
         if screening_count(schema) is not None and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')
         body={'prompt':prompt,'mode':'smart','stream':False,'output_schema':schema}
@@ -133,11 +143,16 @@ class NeuroAPI:
             self.db.execute('INSERT INTO api_requests(operation,idempotency,body_hash,state,created,attempts,output) VALUES(?,?,?,?,?,?,?)',(operation,idem,digest,'PENDING',time.time(),0,None))
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
-        failure='LOCAL_PROCESSING_FAILED'
+        failure='LOCAL_PROCESSING_FAILED';sent=False
         try:
             for attempt in range(3):
+                if not permitted():
+                    failure='RESEARCH_PAUSED';raise Review(failure)
                 self.db.execute('UPDATE api_requests SET attempts=attempts+1 WHERE operation=?',(operation,))
+                if not permitted():
+                    failure='RESEARCH_PAUSED';raise Review(failure)
                 failure='NETWORK_UNCERTAIN'
+                sent=True
                 code,headers,data=self.transport('POST',BASE+'/agent/ask',self._headers(json_body=True),body,timeout=90)
                 failure='HTTP_'+str(code) if type(code) is int and 100<=code<=599 else 'INVALID_RESPONSE_ENVELOPE'
                 if code==200:
@@ -152,6 +167,8 @@ class NeuroAPI:
                     self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=?",(cached,operation))
                     return value
                 if code not in (429,503) or attempt==2:raise Review('NEUROAPI_REQUEST_FAILED')
+                if not permitted():
+                    failure='RESEARCH_PAUSED';raise Review(failure)
                 hinted=headers.get('retry-after','').strip()
                 # Do not retry early when a present header cannot be interpreted safely.
                 if hinted and not re.fullmatch(r'\d{1,6}',hinted):raise Review('NEUROAPI_RETRY_DEFERRED')
@@ -159,6 +176,11 @@ class NeuroAPI:
                 if delay>30:raise Review('NEUROAPI_RETRY_DEFERRED')
                 self.sleep(max(1,delay))
         except Exception as exc:
+            if failure=='RESEARCH_PAUSED' and not sent:
+                # Only this newly inserted local claim is proven unsent. Never
+                # delete an earlier attempt or reset an interrupted operation.
+                self.db.execute("DELETE FROM api_requests WHERE operation=? AND state='PENDING'",(operation,))
+                raise ResearchPaused('RESEARCH_PAUSED') from None
             if failure=='VALIDATION_REJECTED':failure=validation_code(exc)
             elif failure=='NETWORK_UNCERTAIN' and isinstance(exc,Review) and str(exc)=='INVALID_RESPONSE_ENVELOPE':failure='INVALID_RESPONSE_ENVELOPE'
             failure=safe_code(failure)

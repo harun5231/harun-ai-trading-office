@@ -112,7 +112,7 @@ data.reports.status='PARTIAL';data.reports.complete=false;data.reports.trades_to
         self.run_dom(r"""
 globalThis.window=window;const {createStatusController}=await import('./assets/office3d/status-controller.js');const bridge=createStatusController();data.robot.last_decision={symbol:'ETHUSDT',status:'EXECUTION_BLOCKED',failure_code:'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'};await connect();
 const event=snapshots.at(-1);assert.equal(event.robot_checked_at,data.robot.checked_at);assert.equal(event.account_checked_at,data.account.checked_at);assert.equal(event.reports_checked_at,data.reports.checked_at);assert.equal(event.risk_target_usdt,'5');assert.equal(event.available_slots,1);assert.equal(JSON.stringify(event.manual_exposure),JSON.stringify(['HYPEUSDT']));
-assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTelemetry().last_decision.symbol,'ETHUSDT');assert.equal(bridge.getRole('position').active,true);assert.equal(bridge.getRole('market').active,false);assert.equal(bridge.getRole('trading').active,false);
+assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTelemetry().last_decision.symbol,'ETHUSDT');assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().active_positions,1);assert.equal(bridge.getRole('market').active,false);assert.equal(bridge.getRole('trading').active,false);
 document.getElementById('apiDisconnect').click();assert.equal(bridge.getTelemetry().balance,null);assert.equal(bridge.getRole('position').active,false);bridge.dispose();
 """)
 
@@ -159,6 +159,12 @@ let finishSave;responseOverride=(url,options)=>url.endsWith('/robot/settings')?n
         self.assertIn('href="./"', alias)
         self.assertNotIn('<script', alias)
         self.assertNotIn('SIMULATION', alias)
+
+    def test_daily_two_entry_rule_and_off_idle_staff_preserve_account_reads(self):
+        self.run_dom(r"""
+data.robot.bot_entries_today=2;data.employees=['market','neuro','risk','trading','position','reviewer','report','boss'].map(id=>({id,name:id,status:'WORKING'}));await connect();assert.match(content.textContent,/Entry bot hari ini2 \/ 2/);assert.match(content.textContent,/Maksimal 2 entry bot per hari/);assert.match(content.textContent,/hari sebelumnya dan posisi manual tetap memakai slot/);assert.match(content.textContent,/OFF menghentikan riset, pengiriman order baru, dan rekonsiliasi robot/);assert.match(content.textContent,/OFF tidak menutup posisi atau membatalkan order/);assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');
+open('staff');for(const row of content.querySelectorAll('.dashboard-row'))assert.equal(row.querySelector('p').textContent,'OFF');assert.doesNotMatch(content.textContent,/WORKING/);assert.equal(calls.filter(call=>call.method==='POST').length,0);[...intervals.values()][0]();await flush();assert.equal(statValues()[3],'1');assert.equal(calls.some(call=>/\/order|\/cancel|\/close/.test(call.url)),false);
+""")
 
 
 if __name__ == '__main__':

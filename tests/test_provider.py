@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from worker.analysis import SIZING_CONTRACT, analysis_context
 from worker.core import D, Ledger, Review
 from worker.http_client import NoRedirect, request, unique
-from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA, selections, setup
+from worker.neuroapi import NeuroAPI, ResearchPaused, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA, selections, setup
 from worker.prompts import ANALYSIS, SCREENING
 from support import Account, FakeMarket, GOOD, NUMERIC_FIELDS, hold
 
@@ -135,6 +135,61 @@ class ProviderTests(unittest.TestCase):
                 self.assertTrue(all('Idempotency-Key' not in call[2] for call in calls))
                 self.assertEqual(self.record(str(code))['attempts'], 3)
                 self.assertEqual(self.sleep.call_args_list[-2:], [unittest.mock.call(7), unittest.mock.call(7)])
+
+    def test_off_before_ask_creates_no_claim_or_request(self):
+        client=self.client()
+        with self.assertRaises(ResearchPaused):
+            client.ask('off-before',SCREENING,SCREEN_SCHEMA,
+                lambda value:selections(value,self.catalog),catalog=self.catalog,continue_if=lambda:False)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0],0)
+
+    def test_off_between_local_claim_and_transport_removes_only_unsent_claim(self):
+        client=self.client();checks=iter([True,False])
+        with self.assertRaises(ResearchPaused):
+            client.ask('off-local',SCREENING,SCREEN_SCHEMA,
+                lambda value:selections(value,self.catalog),catalog=self.catalog,continue_if=lambda:next(checks))
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0],0)
+
+    def test_off_after_transient_response_stops_next_retry_and_preserves_sent_journal(self):
+        for code in (429,503):
+            enabled=[True];calls=[];operation='off-retry-'+str(code)
+            def response(*args,**kwargs):
+                calls.append(args);enabled[0]=False
+                return code,{},None
+            client=self.client(response)
+            with self.assertRaisesRegex(Review,'RESEARCH_PAUSED'):
+                client.ask(operation,SCREENING,SCREEN_SCHEMA,
+                    lambda value:selections(value,self.catalog),catalog=self.catalog,continue_if=lambda:enabled[0])
+            self.assertEqual(len(calls),1)
+            self.assertEqual((self.record(operation)['state'],self.record(operation)['attempts']),('NEEDS_REVIEW',1))
+            self.sleep.assert_not_called()
+            enabled[0]=True
+            with self.assertRaisesRegex(Review,'NEUROAPI_REQUEST_NEEDS_REVIEW'):
+                self.screen(client,operation=operation)
+            self.assertEqual(len(calls),1)
+
+    def test_off_during_retry_wait_cannot_start_another_post(self):
+        enabled=[True];calls=[]
+        def response(*args,**kwargs):calls.append(args);return 429,{},None
+        def wait(delay):enabled[0]=False
+        client=self.client(response);client.sleep=wait
+        with self.assertRaisesRegex(Review,'RESEARCH_PAUSED'):
+            client.ask('off-wait',SCREENING,SCREEN_SCHEMA,
+                lambda value:selections(value,self.catalog),catalog=self.catalog,continue_if=lambda:enabled[0])
+        self.assertEqual(len(calls),1)
+        self.assertEqual((self.record('off-wait')['state'],self.record('off-wait')['attempts']),('NEEDS_REVIEW',1))
+
+    def test_success_already_received_after_off_is_still_journaled_once(self):
+        enabled=[True]
+        def response(*args,**kwargs):enabled[0]=False;return self.transport(*args,**kwargs)
+        client=self.client(response)
+        output=client.ask('off-success',SCREENING,SCREEN_SCHEMA,
+            lambda value:selections(value,self.catalog),catalog=self.catalog,continue_if=lambda:enabled[0])
+        self.assertEqual(output,dict(symbols=['BTCUSDT','ETHUSDT']))
+        self.assertEqual((self.record('off-success')['state'],self.record('off-success')['attempts']),('COMPLETE',1))
+        self.assertEqual(len(self.calls),1)
 
     def test_retry_exhaustion_and_untrusted_retry_after_stop_durably(self):
         for code in (429, 503):
