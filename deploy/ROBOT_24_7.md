@@ -13,7 +13,13 @@ kerja saat OFF.
 
 ## Update dari Termius
 
-Gunakan langkah di [DOCKER.md](DOCKER.md#update-instalasi-existing). Updater tidak
+Untuk VPS dengan gateway kustom yang belum di-commit, gunakan
+[panduan Termius existing](TERMIUS_24_7.md). Panduan tersebut mempertahankan source
+VPS, menjelaskan binding file secret, boot Docker, dan konfirmasi CROSS/75 serta
+entry/TP/SL yang harus diselesaikan adapter.
+
+Untuk instalasi standar tanpa gateway kustom yang belum di-commit, gunakan
+langkah di [DOCKER.md](DOCKER.md#update-instalasi-existing). Updater tidak
 menghapus volume atau secret. Migrasi pertama mematikan ROBOT; upgrade berikutnya
 mempertahankan pilihan ON/OFF. Aktifkan ON hanya ketika siap memakai kuota riset.
 
