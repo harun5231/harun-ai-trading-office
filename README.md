@@ -71,6 +71,7 @@ tanpa replay otomatis setelah restart.
 
 - [Deployment Docker dan secret VPS](deploy/DOCKER.md)
 - [Operasi dan pemeriksaan 24/7](deploy/ROBOT_24_7.md)
+- [Panduan Termius untuk VPS existing dan adapter Futures 24/7](deploy/TERMIUS_24_7.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
 
