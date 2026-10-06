@@ -97,8 +97,11 @@ class RobotTests(unittest.TestCase):
         self.assertEqual(r['usdt_wallet_balance'],'117.25')
 
     def test_hype_cannot_be_analyzed_even_if_returned(self):
-        self.account.position('HYPEUSDT',1);self.screens=[['HYPEUSDT']];self.on();self.ticks()
-        self.assertEqual(len(self.calls),1);self.assertEqual(self.store.snapshot()['setups'],[])
+        self.account.position('HYPEUSDT',1);self.screens=[['HYPEUSDT'],['BTCUSDT']];self.on();r=self.ticks()
+        screens=[b for b in self.calls if b['output_schema']!=SETUP_SCHEMA]
+        self.assertEqual([b['prompt'] for b in screens],[SCREENING_ONE,SCREENING_ONE])
+        self.assertFalse(any(s['symbol']=='HYPEUSDT' for s in r['setups']))
+        self.assertTrue(any(s['symbol']=='BTCUSDT' for s in r['setups']))
     def test_prompt_two_exact(self):
         self.ready();self.assertEqual(self.calls[0]['prompt'].encode(),SCREENING.encode())
     def test_prompt_one_exact(self):
