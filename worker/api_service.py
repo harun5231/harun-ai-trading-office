@@ -11,12 +11,12 @@ from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
-from .core import Ledger,Review
+from .core import Ledger,Review,day
 from .market import Market
 from .neuroapi import NeuroAPI,api_key
 from .state import directory
 from .workflow import Workflow,export
-from .robot import RobotStore,Coordinator
+from .robot import RobotStore,Coordinator,account_state
 from .binance_private import BinanceReadOnly
 
 class Controller:
@@ -25,6 +25,23 @@ class Controller:
         self.status='NEUROAPI_UNCHECKED' if api_key() else 'NEUROAPI_NOT_CONFIGURED'
         self.busy=False;self.checked=0;self.stopping=threading.Event()
         self.thread=threading.Thread(target=self.loop,daemon=True);self.thread.start()
+        self.account_thread=threading.Thread(target=self.account_loop,daemon=True);self.account_thread.start()
+    def account_loop(self):
+        ledger=Ledger(self.directory/'ledger.sqlite3')
+        try:
+            store=RobotStore(ledger.db)
+            allowed={'ROBOT_ACCOUNT_UNAVAILABLE','BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED','BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'}
+            while not self.stopping.is_set():
+                if store.settings()['robot_on']:
+                    try:
+                        store.report_account(account_state(BinanceReadOnly(),store,day()))
+                    except Exception as error:
+                        reason=str(error)
+                        store.report_account(reason=reason if reason in allowed else 'ROBOT_ACCOUNT_UNAVAILABLE')
+                    if self.stopping.wait(15):break
+                elif self.stopping.wait(2):break
+        finally:
+            ledger.db.close()
     def snapshot(self):
         with self.lock:return {'status':self.status,'busy':self.busy,'checked_at':self.checked,'mode':'DRY_RUN','live_enabled':False}
     def submit(self,job):
@@ -104,7 +121,7 @@ def handler(controller,read_token,control_token,origin):
             self.end_headers()
         def do_GET(self):
             if not self.authorized():return self.reply(403,{'error':'FORBIDDEN'})
-            if self.path=='/health':return self.reply(200,{'status':'ONLINE' if controller.thread.is_alive() else 'OFFLINE','mode':'DRY_RUN','live_enabled':False})
+            if self.path=='/health':return self.reply(200,{'status':'ONLINE' if controller.thread.is_alive() and controller.account_thread.is_alive() else 'OFFLINE','mode':'DRY_RUN','live_enabled':False})
             if self.path=='/robot/status':return self.reply(200,controller.robot())
             if self.path=='/neuroapi/status':return self.reply(200,controller.snapshot())
             if self.path=='/binance/status':
@@ -146,8 +163,8 @@ def main():
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     def watchdog():
         while not c.stopping.wait(2):
-            if not c.thread.is_alive():server.shutdown();return
+            if not c.thread.is_alive() or not c.account_thread.is_alive():server.shutdown();return
     threading.Thread(target=watchdog,daemon=True).start()
     try:server.serve_forever()
-    finally:server.server_close();c.stopping.set();c.thread.join(timeout=10)
+    finally:server.server_close();c.stopping.set();c.thread.join(timeout=10);c.account_thread.join(timeout=10)
 if __name__=='__main__':main()
