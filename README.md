@@ -48,7 +48,9 @@ selesai membebaskan slot bersamaan, tanpa mengembalikan kuota entry hari itu.
 ROBOT OFF menghentikan riset, submission, dan rekonsiliasi gateway berikutnya.
 OFF tidak menutup posisi atau membatalkan order entry/SL/TP. Request
 eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya masih dapat
-selesai dan dicatat ke journal. Semua karyawan AI berhenti menunjukkan aktivitas
+selesai dan dicatat ke journal. Callback adapter yang sudah dimulai juga dapat
+menyelesaikan proteksinya; guard GET riset tidak menginterupsinya. Semua karyawan
+AI berhenti menunjukkan aktivitas
 kerja saat OFF, sementara pembacaan saldo, posisi, dan riwayat tetap tersedia
 di Office.
 
@@ -72,6 +74,7 @@ tanpa replay otomatis setelah restart.
 - [Deployment Docker dan secret VPS](deploy/DOCKER.md)
 - [Operasi dan pemeriksaan 24/7](deploy/ROBOT_24_7.md)
 - [Panduan Termius untuk VPS existing dan adapter Futures 24/7](deploy/TERMIUS_24_7.md)
+- [Audit source container sebelum ROBOT ON tanpa mengubah adapter VPS](deploy/AUDIT_BEFORE_ON.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
 

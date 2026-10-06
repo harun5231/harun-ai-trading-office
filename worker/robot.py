@@ -16,6 +16,7 @@ from .prompts import ANALYSIS
 from .analysis import analysis_context
 from .diagnostics import validation_code
 from .robot_provenance import VERSION,stamp,verify
+from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads
 
 class Coordinator:
     def __init__(self,ledger,neuro,market,account_factory,stopping=None,gateway=None):
@@ -31,13 +32,38 @@ class Coordinator:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return self.store.report('WAITING',reason='WORKER_BUSY')
             except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
-            try:return self._tick()
+            today=day()
+            try:
+                with research_reads(lambda:self.allowed(today)):return self._tick()
+            except ResearchReadPaused:
+                return self.store.report('WAITING',wait_reason=self.pause_reason())
             except Exception as error:
                 reason=str(error)
                 allowed={'ROBOT_ACCOUNT_UNAVAILABLE','BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED','BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'}
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
+    def research_budget(self,data,results):
+        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
+        technical=sum(r['status']=='REJECTED' for r in results)
+        return data['target']-ready-technical
+    def unfinished_cycle(self,row):
+        data=json.loads(row['data']);results=self.store.results(row['id'])
+        if self.research_budget(data,results)<=0:return False
+        if data['queue']:return True
+        if row['state']=='ACTIVE' and data['screen']==-1:return True
+        held=any(r['status']=='HOLD' and r['symbol'] in data.get('round_symbols',[]) for r in results)
+        return held and data['replacements']<MAX_REPLACEMENTS
+    def reject_queued_symbol(self,cycle,data,symbol,account,reason):
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            data['queue'].pop(0);data['seen'].append(symbol)
+            self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',
+                (cycle+':'+VERSION+':'+symbol,cycle,symbol,'REJECTED',None,reason))
+            self.save_cycle(cycle,data)
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        return self.store.report('REJECTED',account,reason)
     def verified_intent(self,row):
         candidate=self.db.execute('SELECT * FROM robot_candidates WHERE id=?',(row['candidate_id'],)).fetchone()
         if not candidate or row['id']!=candidate['id'] or row['symbol']!=candidate['symbol']:raise Review('ORDER_EVIDENCE_UNVERIFIED')
@@ -65,7 +91,9 @@ class Coordinator:
             try:intent=self.verified_intent(row)
             except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account,'ORDER_EVIDENCE_UNVERIFIED')
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
-            try:result=self.gateway.reconcile(intent)
+            try:
+                # A started adapter transaction may need reads to finish protection.
+                with gateway_transaction_reads():result=self.gateway.reconcile(intent)
             except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account)
             observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
             if observed['bot_status']=='NEEDS_REVIEW':return observed
@@ -98,6 +126,7 @@ class Coordinator:
             target=plan['risk_target_usdt']
             context,rules=analysis_context(self.market,row['symbol'],target,self.account_factory())
             self.market.fresh(context,row['symbol']);preflight(plan,rules,target)
+        except ResearchReadPaused:raise
         except Exception:return self.reject_intent(row,account,'ORDER_PREFLIGHT_REJECTED')
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         # Market/commission GETs may take time while a human opens a position.
@@ -124,7 +153,9 @@ class Coordinator:
             self.db.execute("UPDATE order_intents SET state=?,failure_code=?,updated=? WHERE id=? AND state='SUBMITTING'",
                 (previous_state,NOT_CONNECTED if previous_state=='EXECUTION_BLOCKED' else None,now(),row['id']))
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
-        try:result=self.gateway.submit(intent)
+        try:
+            # OFF stops the next callback; an invoked entry/protection callback drains.
+            with gateway_transaction_reads():result=self.gateway.submit(intent)
         except GatewayUnavailable:
             # A transport that might have sent a request must report an unknown
             # outcome, never claim this pre-send NOT_CONNECTED exception.
@@ -227,11 +258,17 @@ class Coordinator:
         prefix=today+':robot-v9:'
         cycle=prefix+str(self.store.entries(today))
         old=self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(cycle,)).fetchone()
-        if not old:
-            # A first fill changes the entry epoch. Finish the existing bounded
-            # research queue rather than discard already-paid screening results.
-            old=self.db.execute("SELECT * FROM robot_cycles WHERE day=? AND state='ACTIVE' AND id LIKE ? ORDER BY entry_epoch LIMIT 1",(today,prefix+'%')).fetchone()
-            if old:cycle=old['id']
+        if not old or old['state']!='NEEDS_REVIEW':
+            # A first fill changes the epoch. Finish older paid queues first,
+            # including COMPLETE rows written by the previous capacity bug.
+            # Exhausted budgets/HOLD rounds are never reopened here.
+            prior=list(self.db.execute("SELECT * FROM robot_cycles WHERE day=? AND state IN ('ACTIVE','COMPLETE') AND id LIKE ? ORDER BY entry_epoch,rowid",(today,prefix+'%')))
+            for row in prior:
+                if self.unfinished_cycle(row):
+                    old=row;cycle=row['id'];break
+            if not old:
+                old=next((row for row in prior if row['state']=='ACTIVE'),None)
+                if old:cycle=old['id']
         if not old:
             if self.db.execute("SELECT 1 FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','NEEDS_REVIEW') LIMIT 1").fetchone():return self.store.report('WAITING',account,wait_reason='ROBOT_CYCLE_COMPLETE')
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -240,25 +277,29 @@ class Coordinator:
         else:
             data=json.loads(old['data'])
             if old['state']=='NEEDS_REVIEW':return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+            if old['state']=='COMPLETE' and self.unfinished_cycle(old):self.save_cycle(cycle,data)
         results=self.store.results(cycle)
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
-        ready_unexposed=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED') and r['symbol'] not in account['running_symbols'] for r in results)
+        unsent=self.db.execute("SELECT symbol FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')")
+        ready_unexposed=sum(r['symbol'] not in account['running_symbols'] for r in unsent)
         technical=sum(r['status']=='REJECTED' for r in results)
         # A rejected research opportunity uses budget, not a live account slot.
         # Ready intents reserve current free slots; the original target stays fixed.
         # A matching running position already occupies its real account slot.
-        remaining=min(available-ready_unexposed,data['target']-ready-technical)
-        if remaining<=0:
+        budget=self.research_budget(data,results)
+        if budget<=0:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('WAITING' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+        remaining=min(available-ready_unexposed,budget)
+        if remaining<=0:
+            self.save_cycle(cycle,data)
+            return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if data['queue']:
             symbol=data['queue'][0]
             if symbol in self.exposed_symbols(account) or symbol in MANUAL_ONLY_SYMBOLS:
-                data['queue'].pop(0);data['seen'].append(symbol);self.save_cycle(cycle,data)
                 # Account conflicts are technical rejections, never replacement triggers.
-                self.db.execute('INSERT OR IGNORE INTO robot_candidates VALUES(?,?,?,?,?,?)',(cycle+':'+VERSION+':'+symbol,cycle,symbol,'REJECTED',None,'ROBOT_SYMBOL_EXPOSED'))
-                return self.store.report('REJECTED',account,'ROBOT_SYMBOL_EXPOSED')
+                return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
         # Only HOLD decisions from the just-analyzed round are replaceable.
@@ -324,8 +365,14 @@ class Coordinator:
         target=self.store.settings()['risk_target_usdt']
         # Symbol catalog/rules/context are read before the paid call, never guessed.
         try:
-            if symbol not in self.market.catalog():raise Review('INVALID_SCREENING_SYMBOL')
+            catalog=self.market.catalog()
+        except ResearchReadPaused:raise
+        except Exception:return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
+        if symbol not in catalog:
+            return self.reject_queued_symbol(cycle,data,symbol,account,'INVALID_SCREENING_SYMBOL')
+        try:
             context,rules=analysis_context(self.market,symbol,target,self.account_factory())
+        except ResearchReadPaused:raise
         except Exception:
             return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
         if not self.claim(operation,cycle,'ANALYSIS',symbol,today,target):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -344,7 +391,10 @@ class Coordinator:
                 self.market.fresh(context,symbol)
                 # A received response must be journaled even after OFF. Finish
                 # local validation with the rules already read; start no GET.
-                if self.allowed(today):_,rules=analysis_context(self.market,symbol,target,self.account_factory())
+                if self.allowed(today):
+                    try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory())
+                    except ResearchReadPaused:pass
+                    else:rules=refreshed
                 plan=risk_check(signal,rules,target);plan['risk_target_usdt']=target
                 plan['sizing_rules']={k:str(v) if isinstance(v,D) else v for k,v in asdict(rules).items()}
                 preflight(plan,rules,target);stamp(self.db,plan,operation);verify(self.db,plan,operation)

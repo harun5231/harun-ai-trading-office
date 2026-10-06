@@ -5,12 +5,13 @@ Ubuntu 24.04, Docker Compose, dan gateway kustom yang sudah ditempel di VPS.
 Worker berjalan di VPS sehingga Termius dan browser Office boleh ditutup.
 Pertahankan **ROBOT OFF selama persiapan dan pemeriksaan**.
 
-**Kondisi terakhir belum membuktikan order otomatis siap:** reader Binance
-berhasil, tetapi gateway kustom masih menampilkan `connected:false`. Utility
-file-secret memperbaiki binding dan metadata. Pada source kustom terakhir yang
-diperlihatkan, exception TP/SL masih ditelan dan belum ada konfigurasi CROSS/75
-yang dikonfirmasi di exchange. Developer perlu menyelesaikan bagian 5 sebelum
-penggunaan nyata. Gateway standar GitHub tetap stub; gateway kustom berada di VPS.
+**Pemeriksaan terdahulu belum membuktikan order otomatis siap:** reader Binance
+berhasil, tetapi saat itu gateway kustom menampilkan `connected:false`, exception
+TP/SL ditelan, dan konfigurasi CROSS/75 belum dikonfirmasi di exchange. Jika
+adapter kemudian diubah langsung di VPS, periksa versi yang sekarang berjalan
+melalui [audit source container](AUDIT_BEFORE_ON.md) dahulu. Utility file-secret
+memperbaiki binding dan metadata; developer tetap perlu memverifikasi kontrak
+bagian 5. Gateway standar GitHub tetap stub; gateway kustom berada di VPS.
 
 ## 1. Periksa instalasi yang sedang berjalan
 

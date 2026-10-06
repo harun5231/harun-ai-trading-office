@@ -1,5 +1,7 @@
 """Offline provider contracts, bounded retries, and durable uncertain outcomes."""
 import copy
+from decimal import localcontext
+from fractions import Fraction
 import json
 import tempfile
 import traceback
@@ -303,6 +305,42 @@ class ProviderTests(unittest.TestCase):
                 lambda value:setup(value,'BTCUSDT'))
         self.assertEqual(transport.call_count,1)
         self.assertEqual((self.record('unexpected-quantity')['state'],self.record('unexpected-quantity')['output']),('NEEDS_REVIEW',None))
+
+
+class SetupRiskRewardPrecisionTests(unittest.TestCase):
+    CASES = (
+        ('LONG', '99.12345678901234567890123456789',
+         '101.75308642197530864219753086422', '101.75308642197530864219753086421'),
+        ('SHORT', '100.87654321098765432109876543211',
+         '98.24691357802469135780246913578', '98.24691357802469135780246913579'),
+    )
+
+    def test_exact_gross_rr_two_preserves_long_short_levels_at_every_precision(self):
+        for side, stop, take, _ in self.CASES:
+            entry, stop, take = D('100'), D(stop), D(take)
+            self.assertEqual(abs(Fraction(take) - Fraction(entry)),
+                             2 * abs(Fraction(entry) - Fraction(stop)))
+            output = dict(symbol='BTCUSDT', side=side, limit_entry=entry,
+                          take_profit=take, stop_loss=stop, risk_reward=D('2'))
+            for precision in (3, 28, 64):
+                with self.subTest(side=side, precision=precision), localcontext() as context:
+                    context.prec = precision
+                    signal = setup(output, 'BTCUSDT')
+                    self.assertEqual((signal.side, signal.entry, signal.tp, signal.sl),
+                                     (side, entry, take, stop))
+
+    def test_gross_rr_barely_below_two_rejects_both_sides_at_every_precision(self):
+        for side, stop, _, take in self.CASES:
+            entry, stop, take = D('100'), D(stop), D(take)
+            self.assertLess(abs(Fraction(take) - Fraction(entry)),
+                            2 * abs(Fraction(entry) - Fraction(stop)))
+            output = dict(symbol='BTCUSDT', side=side, limit_entry=entry,
+                          take_profit=take, stop_loss=stop, risk_reward=D('2'))
+            for precision in (3, 28, 64):
+                with self.subTest(side=side, precision=precision), localcontext() as context:
+                    context.prec = precision
+                    with self.assertRaisesRegex(Review, '^RISK_REWARD_BELOW_2$'):
+                        setup(output, 'BTCUSDT')
 
 
 class PublicTransportTests(unittest.TestCase):

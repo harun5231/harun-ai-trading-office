@@ -6,10 +6,12 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from support import Account, GOOD, RobotMarket, hold
 from worker.account_state import account_state, SCREENING_ONE, SCREENING
+from worker.binance_private import BinanceReadOnly
 from worker.core import D, Ledger, Review, day, now
 from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA
 from worker.order_gateway import OrderGateway, GatewayUnavailable, NOT_CONNECTED, build_intent
@@ -106,6 +108,23 @@ class OrderPipelineTests(unittest.TestCase):
 
     def receipt_count(self):
         return self.ledger.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0]
+
+    def gateway_reader_off_on_first_get(self):
+        # Use the actual read boundary without key files, sockets, or writes.
+        calls = []
+        def transport(url, headers):
+            path = urlsplit(url).path
+            calls.append(path)
+            if path == '/fapi/v1/time':
+                self.store.configure(dict(robot_on=False))
+                return dict(serverTime=int(datetime.now(timezone.utc).timestamp() * 1000))
+            self.assertEqual(path, '/fapi/v1/openOrders')
+            return []
+        reader = BinanceReadOnly.__new__(BinanceReadOnly)
+        reader._key, reader._secret = 'fixture-api-key-not-real', 'fixture-secret-not-real'
+        reader._transport, reader._clock = transport, lambda: 100.0
+        reader._server, reader._synced = None, None
+        return reader, calls
 
     def test_off_claims_no_paid_call_or_account_read(self):
         result = self.ticks(5)
@@ -230,6 +249,31 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(gateway.submissions, [])
         self.assertEqual(len(self.calls), 2)
         self.assertEqual(self.receipt_count(), 0)
+
+    def test_off_during_market_preflight_stops_reads_without_rejecting_intent(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        original = self.market.transport
+        market_count, account_count = len(self.market.calls), len(self.account.calls)
+        def transport(*args, **kwargs):
+            value = original(*args, **kwargs)
+            self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.market, 'transport', side_effect=transport):
+            result = self.robot.tick()
+        self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
+        self.assertEqual(len(self.market.calls) - market_count, 1)
+        self.assertIn('/premiumIndex?', self.market.calls[-1][1])
+        self.assertEqual(len(self.account.calls) - account_count, 1)  # The initial live snapshot only.
+        self.assertEqual(self.intent()['state'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.ledger.db.execute('SELECT status FROM robot_candidates').fetchone()[0], 'READY_FOR_EXECUTION')
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM office_activity WHERE state='EXECUTING'").fetchone())
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(len(self.calls), 2)
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(len(gateway.submissions), 1)
 
     def test_yesterday_blocked_intent_retires_without_adapter_and_allows_fresh_screen(self):
         self.one_slot_ready()
@@ -620,6 +664,157 @@ class OrderPipelineTests(unittest.TestCase):
         row = self.ledger.db.execute('SELECT * FROM robot_cycles ORDER BY rowid DESC LIMIT 1').fetchone()
         return row, json.loads(row['data'])
 
+    def temporary_capacity_queue(self):
+        self.on()
+        self.robot.tick()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.account.position('HYPEUSDT', '1')
+        self.assertEqual(self.robot.tick()['bot_status'], 'EXECUTION_BLOCKED')
+        row, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['ETHUSDT'])
+        return row['id'], data
+
+    def fill_first_and_release_manual_slot(self):
+        gateway = self.connected()
+        captured = {}
+        def submit(intent):
+            captured['first_fill_at'] = now()
+            self.account.position(intent['symbol'], intent['entry']['quantity'])
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], **captured)
+        gateway.on_submit = submit
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED',
+            intent['entry']['quantity'], **captured)
+        self.account.positions = []
+        self.assertEqual(self.robot.tick()['bot_status'], 'POSITION_PROTECTED')
+        self.assertEqual(self.receipt_count(), 1)
+        return gateway
+
+    def legacy_paid_epoch_screen(self):
+        cycle = day() + ':robot-v9:' + str(self.store.entries(day()))
+        operation = cycle + ':screening:0:1'
+        self.screens.append(['SOLUSDT'])
+        self.client.ask(operation, SCREENING_ONE, SCREEN_ONE_SCHEMA, lambda value: None,
+                        catalog=self.market.catalog())
+        data = dict(target=1, queue=['SOLUSDT'], seen=[], screen=0, replacements=0,
+                    round_symbols=['SOLUSDT'])
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',
+                               (cycle, day(), self.store.entries(day()), 'ACTIVE', json.dumps(data)))
+        self.ledger.db.execute('INSERT INTO robot_jobs VALUES(?,?,?,?,?,?)',
+                               (operation, cycle, 'SCREENING', None, 'COMPLETE', None))
+        return cycle, data
+
+    def test_temporary_capacity_preserves_paid_queue_until_original_slot_opens(self):
+        cycle, before = self.temporary_capacity_queue()
+        self.assertEqual(self.ledger.db.execute('SELECT state FROM robot_cycles WHERE id=?', (cycle,)).fetchone()[0], 'ACTIVE')
+        self.restart()
+        gateway = self.fill_first_and_release_manual_slot()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.screen_counts(), [2])
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_cycles').fetchone()[0], 1)
+        row = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (cycle,)).fetchone()
+        after = json.loads(row['data'])
+        self.assertEqual((after['target'], after['screen'], after['replacements']),
+                         (before['target'], before['screen'], before['replacements']))
+        self.assertEqual(after['queue'], [])
+        self.assertEqual(self.ledger.db.execute("SELECT cycle FROM robot_candidates WHERE symbol='ETHUSDT'").fetchone()[0], cycle)
+        self.assertEqual(len(gateway.submissions), 1)
+
+    def test_legacy_complete_paid_queue_recovers_across_fill_epoch_and_restart(self):
+        cycle, before = self.temporary_capacity_queue()
+        self.ledger.db.execute("UPDATE robot_cycles SET state='COMPLETE' WHERE id=?", (cycle,))
+        self.restart()
+        gateway = self.fill_first_and_release_manual_slot()
+        self.restart()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.screen_counts(), [2])
+        self.assertEqual(len(self.calls), 3)
+        row = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (cycle,)).fetchone()
+        after = json.loads(row['data'])
+        self.assertEqual(row['state'], 'ACTIVE')
+        self.assertEqual((after['target'], after['screen'], after['replacements']),
+                         (before['target'], before['screen'], before['replacements']))
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_cycles').fetchone()[0], 1)
+        self.assertEqual(len(gateway.submissions), 1)
+
+    def test_legacy_queue_takes_priority_over_existing_epoch_paid_screen(self):
+        older, _ = self.temporary_capacity_queue()
+        self.ledger.db.execute("UPDATE robot_cycles SET state='COMPLETE' WHERE id=?", (older,))
+        self.fill_first_and_release_manual_slot()
+        newer, pending = self.legacy_paid_epoch_screen()
+        self.restart()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.ledger.db.execute("SELECT cycle FROM robot_candidates WHERE symbol='ETHUSDT'").fetchone()[0], older)
+        newer_row = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (newer,)).fetchone()
+        self.assertEqual(json.loads(newer_row['data']), pending)
+        self.assertEqual(self.screen_counts(), [2, 1])
+        self.assertEqual(len(self.calls), 4)
+
+    def test_existing_epoch_ready_intent_reserves_slot_before_older_queue_recovery(self):
+        older, _ = self.temporary_capacity_queue()
+        self.ledger.db.execute("UPDATE robot_cycles SET state='COMPLETE' WHERE id=?", (older,))
+        fixture = self.fill_first_and_release_manual_slot()
+        newer, data = self.legacy_paid_epoch_screen()
+        self.assertEqual(self.robot.analyze(newer, data, 'SOLUSDT',
+            account_state(self.account, self.store, day()), day())['bot_status'], 'READY_FOR_EXECUTION')
+        class ReaderGateway(OrderGateway):
+            def reconcile(self, intent): return fixture.reconcile(intent)
+        self.robot.gateway = ReaderGateway()
+        before_calls = len(self.calls)
+        self.assertEqual(self.ticks(4)['bot_status'], 'EXECUTION_BLOCKED')
+        self.assertEqual(len(self.calls), before_calls)
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM robot_candidates WHERE symbol='ETHUSDT'").fetchone())
+        old = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (older,)).fetchone()
+        self.assertEqual(old['state'], 'ACTIVE')
+        self.assertEqual(json.loads(old['data'])['queue'], ['ETHUSDT'])
+
+    def test_definitively_delisted_head_is_rejected_and_valid_queue_continues(self):
+        self.on()
+        self.robot.tick()
+        self.market.symbols = tuple(symbol for symbol in self.market.symbols if symbol != 'BTCUSDT')
+        self.assertEqual(self.robot.tick()['failure_code'], 'INVALID_SCREENING_SYMBOL')
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['ETHUSDT'])
+        self.assertEqual(data['seen'], ['BTCUSDT'])
+        self.restart()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.ticks(4)
+        self.assertEqual(self.screen_counts(), [2])
+        self.assertEqual(len(self.calls), 2)
+        rejected = self.ledger.db.execute("SELECT * FROM robot_candidates WHERE symbol='BTCUSDT'").fetchone()
+        self.assertEqual((rejected['status'], rejected['failure_code'], rejected['plan']),
+                         ('REJECTED', 'INVALID_SCREENING_SYMBOL', None))
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM robot_jobs WHERE kind='ANALYSIS' AND symbol='BTCUSDT'").fetchone())
+        row, data = self.current_cycle()
+        self.assertEqual((row['state'], data['replacements']), ('COMPLETE', 0))
+
+    def test_transient_catalog_failure_keeps_head_retryable_without_paid_call(self):
+        self.on()
+        self.robot.tick()
+        with patch.object(self.market, 'transport', side_effect=TimeoutError('temporary fixture outage')):
+            self.assertEqual(self.robot.tick()['failure_code'], 'MARKET_DATA_UNAVAILABLE')
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT', 'ETHUSDT'])
+        self.assertEqual(data['seen'], [])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.screen_counts(), [2])
+        self.assertEqual(len(self.calls), 3)
+
+    def test_transient_fee_failure_keeps_head_retryable_without_paid_call(self):
+        self.one_slot_ready_prepare_screen()
+        with patch.object(self.account, 'commission_rate', side_effect=Review('FEE_EVIDENCE_UNAVAILABLE')):
+            self.assertEqual(self.robot.tick()['failure_code'], 'MARKET_DATA_UNAVAILABLE')
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT'])
+        self.assertEqual(data['seen'], [])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+
     def test_ready_candidate_does_not_stop_single_hold_replacement(self):
         self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]
         self.decisions['ETHUSDT'] = 'HOLD'
@@ -678,6 +873,28 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.ticks(8)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
         self.assertEqual(len(self.calls), 12)
         self.assertEqual(self.receipt_count(), 0)
+
+    def test_completed_three_hold_rounds_are_not_revived_when_ready_trade_fills(self):
+        self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['XRPUSDT']]
+        self.decisions = {symbol: 'HOLD' for symbol in ('ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT')}
+        self.on()
+        self.assertEqual(self.ticks(10)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        row, old_data = self.current_cycle()
+        older = row['id']
+        self.assertEqual((row['state'], old_data['queue'], old_data['replacements']), ('COMPLETE', [], 3))
+        self.assertEqual(len(self.calls), 9)
+        self.screens.append(['ADAUSDT'])
+        self.fill_first_and_release_manual_slot()
+        self.restart()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        old_row = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (older,)).fetchone()
+        self.assertEqual((old_row['state'], json.loads(old_row['data'])), ('COMPLETE', old_data))
+        row, data = self.current_cycle()
+        self.assertNotEqual(row['id'], older)
+        self.assertEqual((row['entry_epoch'], data['target'], data['screen'], data['replacements']), (1, 1, 0, 0))
+        self.assertEqual(data['queue'], ['ADAUSDT'])
+        self.assertEqual(self.screen_counts(), [2, 1, 1, 1, 1])
+        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_jobs WHERE cycle=? AND kind='SCREENING'", (older,)).fetchone()[0], 4)
 
     def test_technical_rejection_does_not_replace_historical_hold(self):
         self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]
@@ -882,6 +1099,62 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
         self.assertEqual(len(self.calls), 2)
 
+    def test_off_during_analysis_catalog_stops_followup_reads_and_preserves_queue(self):
+        self.one_slot_ready_prepare_screen()
+        original = self.market.transport
+        market_count, account_count = len(self.market.calls), len(self.account.calls)
+        def transport(*args, **kwargs):
+            value = original(*args, **kwargs)
+            self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.market, 'transport', side_effect=transport):
+            result = self.robot.tick()
+        self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
+        self.assertEqual(len(self.market.calls) - market_count, 1)
+        self.assertTrue(self.market.calls[-1][1].endswith('/exchangeInfo'))
+        self.assertEqual(len(self.account.calls) - account_count, 1)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM robot_jobs WHERE kind='ANALYSIS'").fetchone())
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT'])
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_off_during_postpaid_refresh_keeps_received_setup_with_initial_rules(self):
+        self.one_slot_ready_prepare_screen()
+        provider, market_transport = self.client.transport, self.market.transport
+        after_response = {}
+        def transport(*args, **kwargs):
+            value = provider(*args, **kwargs)
+            after_response['market_calls'] = len(self.market.calls)
+            after_response['account_calls'] = len(self.account.calls)
+            return value
+        def market(*args, **kwargs):
+            value = market_transport(*args, **kwargs)
+            if after_response: self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.client, 'transport', side_effect=transport), patch.object(self.market, 'transport', side_effect=market):
+            result = self.robot.tick()
+        self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
+        self.assertEqual(len(self.market.calls) - after_response['market_calls'], 1)
+        self.assertIn('/premiumIndex?', self.market.calls[-1][1])
+        self.assertEqual(len(self.account.calls), after_response['account_calls'])
+        candidate = self.ledger.db.execute('SELECT * FROM robot_candidates').fetchone()
+        self.assertEqual(candidate['status'], 'READY_FOR_EXECUTION')
+        plan = self.store.verified_plan(candidate)
+        self.assertEqual(plan['sizing_rules']['fee_symbol'], 'BTCUSDT')
+        self.assertEqual(plan['sizing_rules']['taker_fee_rate'], '0')
+        self.assertEqual(self.ledger.db.execute("SELECT state FROM api_requests WHERE operation LIKE '%:BTCUSDT'").fetchone()[0], 'COMPLETE')
+        self.assertEqual(self.ledger.db.execute("SELECT state FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0], 'COMPLETE')
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 0)
+        self.assertIsNone(self.intent())
+
     def test_off_during_completed_analysis_keeps_response_without_fresh_fee_get(self):
         self.one_slot_ready_prepare_screen()
         original = self.client.transport
@@ -1007,6 +1280,59 @@ class OrderPipelineTests(unittest.TestCase):
         self.ticks(5)
         self.assertEqual(len(gateway.submissions), 2)
         self.assertEqual(len(self.calls), 3)
+
+    def test_started_reconcile_drains_adapter_reads_after_off_then_stops_next_callback(self):
+        self.on()
+        gateway = self.connected()
+        self.ticks(5)
+        self.assertEqual(len(gateway.submissions), 2)
+        previous = {row['symbol']: row['result'] for row in self.ledger.db.execute('SELECT symbol,result FROM order_intents')}
+        reader, calls = self.gateway_reader_off_on_first_get()
+        def reconcile(intent):
+            reader.sync_time()  # OFF while a started adapter transaction is in progress.
+            reader.signed_get('/fapi/v1/openOrders', intent['symbol'])
+            return gateway.observation(intent)
+        gateway.on_reconcile = reconcile
+        before = len(gateway.reconciliations)
+        result = self.robot.tick()
+        self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
+        self.assertEqual(calls, ['/fapi/v1/time', '/fapi/v1/openOrders'])
+        self.assertEqual(len(gateway.reconciliations) - before, 1)
+        states = {row['symbol']: row['state'] for row in self.ledger.db.execute('SELECT symbol,state FROM order_intents')}
+        self.assertEqual(states, {'BTCUSDT': 'ENTRY_PENDING', 'ETHUSDT': 'ENTRY_PENDING'})
+        self.assertEqual(self.ledger.db.execute("SELECT result FROM order_intents WHERE symbol='ETHUSDT'").fetchone()[0], previous['ETHUSDT'])
+        self.assertEqual(self.receipt_count(), 0)
+        self.assertEqual(len(self.calls), 3)
+        gateway.on_reconcile = lambda intent: gateway.observation(intent)
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(len(gateway.reconciliations) - before, 3)
+        self.assertEqual(len(gateway.submissions), 2)
+        self.assertEqual(len(self.calls), 3)
+
+    def test_started_submit_drains_adapter_protection_reads_and_journals_fill_after_off(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        reader, calls = self.gateway_reader_off_on_first_get()
+        def submit(intent):
+            self.assertEqual(self.intent()['state'], 'SUBMITTING')
+            reader.sync_time()
+            reader.signed_get('/fapi/v1/openOrders', intent['symbol'])
+            self.account.position(intent['symbol'], intent['entry']['quantity'])
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'])
+        gateway.on_submit = submit
+        result = self.robot.tick()
+        self.assertEqual(result['bot_status'], 'OFF')
+        self.assertEqual(calls, ['/fapi/v1/time', '/fapi/v1/openOrders'])
+        self.assertEqual(self.intent()['state'], 'POSITION_PROTECTED')
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.ticks(3)['bot_status'], 'OFF')
+        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(self.receipt_count(), 1)
 
     def test_protected_intent_not_yet_in_account_cannot_be_screened_again(self):
         gateway, captured = self.protected_fixture()

@@ -1,5 +1,6 @@
 """Official NeuroAPI, smart/non-streaming structured output. Never broker execution."""
 from dataclasses import dataclass
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -80,7 +81,7 @@ def setup(output,expected):
     e,tp,sl,rr=[setup_number(output[k]) for k in NUMERIC_FIELDS]
     if not (sl<e<tp if output['side']=='LONG' else tp<e<sl):raise Review('INVALID_ENTRY_TP_SL')
     # Compare distances exactly; no rounding/equality assumption for declared RR.
-    if abs(tp-e)<2*abs(e-sl):raise Review('RISK_REWARD_BELOW_2')
+    if abs(Fraction(tp)-Fraction(e))<2*abs(Fraction(e)-Fraction(sl)):raise Review('RISK_REWARD_BELOW_2')
     return Signal(expected,output['side'],e,tp,sl)
 
 def canonical_output(value,schema,catalog=None):
