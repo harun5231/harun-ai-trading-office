@@ -180,6 +180,9 @@ class Coordinator:
             data=json.loads(old['data'])
             if old['state']=='NEEDS_REVIEW':return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         results=self.store.results(cycle)
+        if old and old['state']=='COMPLETE' and not results and not data['queue'] and data['screen']>=0 and data['replacements']<MAX_REPLACEMENTS:
+            data['replacement_due']=True
+            self.save_cycle(cycle,data,'ACTIVE')
         ready=sum(r['status'] in ('SETUP_READY','APPROVED') for r in results)
         technical=sum(r['status']=='REJECTED' for r in results)
         remaining=min(available,data['target'])-ready-technical
