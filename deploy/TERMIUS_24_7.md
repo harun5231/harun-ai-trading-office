@@ -5,6 +5,13 @@ Ubuntu 24.04, Docker Compose, dan gateway kustom yang sudah ditempel di VPS.
 Worker berjalan di VPS sehingga Termius dan browser Office boleh ditutup.
 Pertahankan **ROBOT OFF selama persiapan dan pemeriksaan**.
 
+Untuk adapter teramati dengan fingerprint
+`74b1db1b51461af34d0d4f0ecc189d4876bc72a6e021a049f9dcd22c9dd3509c`,
+ikuti [perbaikan adapter dan coordinator VPS](VPS_ORDER_FIX.md) terlebih dahulu.
+Prosedur itu mengganti class adapter yang sudah diaudit serta lima file worker,
+dengan backup dan tanpa menghapus source kustom. Utility binding lama pada
+bagian 2 hanya untuk instalasi yang belum memperoleh perbaikan tersebut.
+
 **Pemeriksaan terdahulu belum membuktikan order otomatis siap:** reader Binance
 berhasil, tetapi saat itu gateway kustom menampilkan `connected:false`, exception
 TP/SL ditelan, dan konfigurasi CROSS/75 belum dikonfirmasi di exchange. Jika

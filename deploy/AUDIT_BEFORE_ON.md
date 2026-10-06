@@ -7,6 +7,11 @@ source tersamarkan dan fingerprint dari **container yang sedang berjalan**.
 Tidak ada import adapter, panggilan API, pengiriman order, perubahan settings,
 atau penghapusan file.
 
+Adapter dengan fingerprint `74b1db1b51461af34d0d4f0ecc189d4876bc72a6e021a049f9dcd22c9dd3509c`
+sudah ditinjau dan memerlukan perbaikan. Gunakan
+[perbaikan VPS yang terarah](VPS_ORDER_FIX.md) untuk fingerprint tersebut;
+pemeriksaan di bawah tetap berlaku untuk source lain atau setelah deployment.
+
 ## Ambil bukti melalui Termius
 
 Pertahankan ROBOT OFF di Office selama pemeriksaan. Salin blok berikut:
