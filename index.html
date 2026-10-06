@@ -94,29 +94,26 @@ button:focus-visible{outline:3px solid #8cdbc7;outline-offset:3px}
 <button id="resetCamera" class="camera-reset" aria-label="Kembalikan sudut pandang kantor">↗ Reset view</button>
 <div id="loading"><div>MEMBANGUN KANTOR 3D<span>Menyiapkan avatar, workstation, dan ruang trading…</span></div></div>
 <div class="top">
- <div class="brand"><div class="logo">⌁</div><div><strong>HARUN AI TRADING OFFICE</strong><small>● OFFICE ONLINE · LIVE SIMULATION</small></div></div>
+ <div class="brand"><div class="logo">⌁</div><div><strong>HARUN AI TRADING OFFICE</strong><small>● WORKER BELUM TERHUBUNG</small></div></div>
  <div class="stats">
-  <div class="stat"><span>Balance (USDT)</span><b>12,430.85</b></div>
-  <div class="stat"><span>PNL Hari Ini</span><b class="positive">+82.40</b></div>
-  <div class="stat"><span>Trade Hari Ini</span><b>1 / 2</b></div>
-  <div class="stat"><span>Posisi Aktif</span><b>1</b></div>
+  <div class="stat"><span>Balance (USDT)</span><b>—</b></div>
+  <div class="stat"><span>PNL Hari Ini</span><b>—</b></div>
+  <div class="stat"><span>Fill Hari Ini</span><b>—</b></div>
+  <div class="stat"><span>Posisi Aktif</span><b>—</b></div>
  </div>
 </div>
 <button id="menuToggle" class="menu-toggle" aria-expanded="false">☰ <span>MENU</span></button>
 <div id="menuDrawer" class="menu-drawer" hidden>
-  <button data-view="office" class="menu-item active">⌂ <span>Kantor</span></button>
-  <button data-view="market" class="menu-item">▥ <span>Market</span></button>
-  <button data-view="trading" class="menu-item">↗ <span>Trading</span></button>
-  <button data-view="reports" class="menu-item">▤ <span>Laporan & Aktivitas</span></button>
+  <button id="robotMenu" data-view="robot" class="menu-item active">◉ <span>Robot Trading ON / OFF</span></button>
   <button data-view="staff" class="menu-item">♙ <span>Karyawan AI</span></button>
-  <button data-view="settings" class="menu-item">⚙ <span>Pengaturan</span></button>
+  <button data-view="reports" class="menu-item">▤ <span>Laporan</span></button>
+  <button data-view="activity" class="menu-item">≋ <span>Aktivitas</span></button>
+  <button data-view="positions" class="menu-item">↗ <span>Riwayat Posisi Binance</span></button>
   <div class="drawer-note">Pilih menu untuk membuka panel. Tampilan kantor tetap terlihat.</div>
 </div>
-<div id="infoPanel" class="panel info-panel" hidden><div class="panel-head"><h3 id="panelTitle">RINGKASAN KANTOR</h3><button id="panelClose" class="panel-close" aria-label="Tutup panel">✕</button></div>
+<div id="infoPanel" class="panel info-panel" hidden><div class="panel-head"><h3 id="panelTitle">ROBOT TRADING ON / OFF</h3><button id="panelClose" class="panel-close" aria-label="Tutup panel">✕</button></div>
 <div id="panelContent">
-<div class="coin"><div class="coinicon">₿</div><div><b>BTCUSDT</b><small>Entry 67,250.0 · PNL +82.40 USDT</small></div><div class="tag">LONG</div></div>
-<div class="coin"><div style="width:29px;color:#8ea5c3">◷</div><div><b>Risk Manager</b><small>SL / TP tervalidasi · Risiko terkendali</small></div><div class="tag">OK</div></div>
-<div class="activity-list"><h3>AKTIVITAS TERBARU</h3><div class="event"><time>09:50</time><div class="role">Market Analyst</div><div class="msg">Memindai BTC, ETH, SOL…</div></div><div class="event"><time>09:48</time><div class="role">Neurobro</div><div class="msg">Menganalisis setup trading…</div></div><div class="event"><time>09:45</time><div class="role">Risk Manager</div><div class="msg">Memvalidasi risiko dan ukuran posisi…</div></div><div class="event"><time>09:42</time><div class="role">Trading Agent</div><div class="msg">Menyiapkan order BTCUSDT…</div></div></div>
+<p>Hubungkan worker untuk membaca akun dan status robot.</p>
 </div></div>
 <div class="bottomhint">Geser untuk memutar · Cubit untuk zoom</div>
 <script type="importmap">
@@ -128,36 +125,6 @@ button:focus-visible{outline:3px solid #8cdbc7;outline-offset:3px}
 }
 </script>
 <script type="module" src="assets/office3d/renderer.js"></script>
-
-<script>
-(() => {
- const toggle=document.getElementById('menuToggle');
- const drawer=document.getElementById('menuDrawer');
- const panel=document.getElementById('infoPanel');
- const title=document.getElementById('panelTitle');
- const content=document.getElementById('panelContent');
- const original=content.innerHTML;
- const views={
-  office:['RINGKASAN KANTOR',original],
-  market:['MARKET', '<div class="coin"><div class="coinicon">₿</div><div><b>BTCUSDT</b><small>Contoh tampilan market · belum terhubung ke data live</small></div></div><div class="coin"><div class="coinicon" style="background:#6578df;color:white">Ξ</div><div><b>ETHUSDT</b><small>Menunggu integrasi data market</small></div></div><div class="coin"><div class="coinicon" style="background:#8b6cff;color:white">◎</div><div><b>SOLUSDT</b><small>Menunggu integrasi data market</small></div></div>'],
-  trading:['TRADING', '<div class="coin"><div><b>Status trading</b><small>Mode simulasi. Belum mengirim order ke Binance.</small></div></div><div class="coin"><div><b>Batas risiko</b><small>Maksimal 5 USDT per SL · maksimal 2 trade per hari</small></div></div>'],
-  reports:['LAPORAN & AKTIVITAS', original],
-  staff:['KARYAWAN AI', '<div class="coin"><div><b>Market Analyst</b><small>Memindai kandidat coin (simulasi)</small></div><div class="tag">DEMO</div></div><div class="coin"><div><b>Neurobro</b><small>Analisis setup (belum terhubung)</small></div><div class="tag">DEMO</div></div><div class="coin"><div><b>Risk Manager</b><small>Validasi batas risiko</small></div><div class="tag">DEMO</div></div>'],
-  settings:['PENGATURAN', '<div class="coin"><div><b>Mode</b><small>Visual simulasi — belum ada eksekusi trading otomatis.</small></div></div><div class="coin"><div><b>Pengamanan</b><small>Jangan masukkan API key Binance ke halaman ini.</small></div></div>']
- };
- toggle.addEventListener('click',()=>{
-  const opening=drawer.hidden;
-  drawer.hidden=!opening;
-  toggle.setAttribute('aria-expanded',String(opening));
- });
- drawer.querySelectorAll('[data-view]').forEach(btn=>btn.addEventListener('click',()=>{
-  drawer.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b===btn));
-  const v=views[btn.dataset.view]||views.office;
-  title.textContent=v[0];content.innerHTML=v[1];panel.hidden=false;drawer.hidden=true;toggle.setAttribute('aria-expanded','false');
- }));
- document.getElementById('panelClose').addEventListener('click',()=>panel.hidden=true);
-})();
-</script>
 
 <script>
 window.addEventListener('error', function(e) {
@@ -175,7 +142,6 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 });
 </script>
-<script src="assets/workflow.js"></script>
-<script src="assets/neuroapi.js"></script>
+<script src="assets/dashboard.js"></script>
 </body>
 </html>

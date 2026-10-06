@@ -6,15 +6,14 @@ from pathlib import Path
 STATE_FILES = (
     'migration.lock', 'cycle.lock',
     'ledger.sqlite3', 'ledger.sqlite3-wal', 'ledger.sqlite3-shm', 'ledger.sqlite3-journal',
-    'ledger.migrating', 'ledger.migrating-wal', 'ledger.migrating-shm', 'ledger.migrating-journal',
-    'snapshot.json', 'live-status.json',
+    'ledger-pre-order.sqlite3',
 )
 
 def repair_state_locks(directory):
     """Repair only existing known trading state, preserving every file/lock inode.
 
-    The historical function name remains the boot entry point. Unknown artifacts
-    and the old browser ledger are untouched; no paths are created or removed.
+    Unknown artifacts and the migration audit backup are never executed.
+    No paths are created or removed by this ownership repair.
     Validate the whole bounded set before changing any ownership or permissions.
     """
     try:

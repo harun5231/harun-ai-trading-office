@@ -1,306 +1,198 @@
-// Read-only bridge from the existing worker UI to office activity and speech.
-// A visual role never starts work, approves a setup, or submits an order.
+// Read-only animation bridge. Worker facts determine activity; avatars never initiate work.
 const ROLES = ['market', 'neuro', 'risk', 'trading', 'position', 'reviewer', 'report', 'boss'];
-const FRESH_MS = 120000;
-const STATES = new Set([
-  'IDLE', 'WORKING', 'BREAK', 'WAITING', 'SCREENING', 'REPLACEMENT_SCREENING',
-  'COINS_SELECTED', 'REPLACEMENT_SELECTED', 'MARKET_DATA', 'ANALYSIS', 'ANALYZING',
-  'ANALYZING_COIN_1', 'ANALYZING_COIN_2', 'VALIDATING', 'LONG', 'SHORT', 'HOLD',
-  'SETUP_READY', 'APPROVED', 'USER_REJECTED', 'REJECTED', 'REVIEWING',
-  'REVIEW_REQUIRED', 'APPROVAL_PENDING', 'AWAITING_APPROVAL', 'DRY_RUN_READY',
-  'ORDER_READY', 'ORDER_PREPARATION', 'PREPARING_ORDER', 'ENTRY_PREPARING',
-  'ENTRY_PENDING', 'ENTRY_SUBMITTED', 'POSITION_OPEN', 'MONITORING', 'CLOSED',
-  'REPORTING', 'GENERATING_REPORT', 'REPORT_GENERATION', 'ERROR', 'LOCKED',
-  'INSUFFICIENT_ACTIONABLE_SETUPS', 'NEUROAPI_NOT_CONFIGURED', 'NEUROAPI_UNCHECKED',
-  'NEUROAPI_CONNECTED', 'NEUROAPI_UNAVAILABLE', 'NEEDS_REVIEW', 'OFFLINE', 'ONLINE'
-]);
+const PHASE_FRESH_MS = 120000, ACCOUNT_FRESH_MS = 45000;
+const PHASES = new Set(['OFF', 'IDLE', 'WAITING', 'SCREENING', 'ANALYZING', 'VALIDATING', 'HOLD',
+  'REJECTED', 'EXECUTION_BLOCKED', 'EXECUTING', 'NEEDS_REVIEW', 'READY_FOR_EXECUTION',
+  'ENTRY_PENDING', 'POSITION_PROTECTED', 'CLOSED', 'INSUFFICIENT_ACTIONABLE_SETUPS', 'OFFLINE']);
+const EMPLOYEE_STATES = new Set(['WORKING', 'IDLE', 'WAITING', 'BLOCKED', 'OFFLINE']);
 const IDLE_SPEECH = {
-  market: 'Menunggu kandidat market.', neuro: 'Menunggu analisis baru.',
-  risk: 'Menunggu setup untuk divalidasi.', trading: 'Menunggu tiket untuk ditinjau.',
-  position: 'Belum ada posisi untuk dipantau.', reviewer: 'Menunggu setup untuk ditinjau.',
-  report: 'Menunggu hasil untuk dirangkum.', boss: 'Belum ada divisi aktif.'
+  market: 'Menunggu screening.', neuro: 'Menunggu analisis.', risk: 'Menunggu validasi risiko.',
+  trading: 'Menunggu adapter Binance.', position: 'Tidak ada posisi aktif.',
+  reviewer: 'Menunggu hasil pipeline.', report: 'Menunggu laporan Binance.', boss: 'Mengawasi status kantor.'
 };
-
-function statusValue(value) {
-  if (typeof value !== 'string' || value.length > 64) return null;
-  const state = value.trim().toUpperCase();
-  return STATES.has(state) ? state : null;
-}
-function timestampValue(value) {
-  const at = typeof value === 'string' ? Date.parse(value) :
-    typeof value === 'number' && Number.isFinite(value) ? (value < 1e12 ? value * 1000 : value) : NaN;
-  return Number.isFinite(at) && at > 0 && at <= Date.now() + 30000 ? Math.min(at, Date.now()) : null;
-}
-function countValue(value) {
-  return Number.isInteger(value) && value >= 0 && value <= 10000 ? value : null;
-}
-function roleValue(agent) {
-  if (typeof agent !== 'string' || agent.length > 80) return null;
-  const name = agent.toLowerCase().replace(/[^a-z]/g, '');
-  if (/^(market|marketanalyst|marketanalysis)$/.test(name)) return 'market';
-  if (/^(neuro|neurobro|neuroapi|analysis|analyst)$/.test(name)) return 'neuro';
-  if (/^(risk|riskmanager)$/.test(name)) return 'risk';
-  if (/^(trading|trader|tradingdesk|orderdesk)$/.test(name)) return 'trading';
-  if (/^(position|positionmanager|positionmonitor)$/.test(name)) return 'position';
-  if (/^(reviewer|review|approval)$/.test(name)) return 'reviewer';
-  if (/^(report|reporter|reporting|reports)$/.test(name)) return 'report';
-  if (/^(boss|harun|coordinator)$/.test(name)) return 'boss';
-  return null;
-}
-function fresh(at, now) { return at !== null && now >= at && now - at < FRESH_MS; }
-function iso(at) { return at === null ? null : new Date(at).toISOString(); }
-function copyRole(value) { return { ...value }; }
-function textValue(value, limit = 80) {
+const WORK_SPEECH = {
+  market: 'Screening kandidat coin.', neuro: 'Menganalisis setup.', risk: 'Memvalidasi risiko.',
+  trading: 'Menjalankan adapter Binance.', reviewer: 'Memeriksa hasil pipeline.', report: 'Membaca laporan Binance.'
+};
+function text(value, limit = 80) {
   return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, limit) : null;
 }
-function decimalValue(value) {
+function state(value, allowed) {
+  const candidate = text(value, 64)?.trim().toUpperCase();
+  return allowed.has(candidate) ? candidate : null;
+}
+function time(value) {
+  const candidate = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(candidate) && candidate > 0 && candidate <= Date.now() + 30000 ? Math.min(candidate, Date.now()) : null;
+}
+function decimal(value) {
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   return typeof value === 'string' && value.length <= 64 && /^-?\d+(?:\.\d+)?$/.test(value) ? value : null;
 }
-function tradeSummary(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  let plan = null;
-  if (value.plan && typeof value.plan === 'object' && !Array.isArray(value.plan)) {
-    plan = { symbol: textValue(value.plan.symbol, 32), side: ['LONG', 'SHORT', 'HOLD'].includes(value.plan.side) ? value.plan.side : null };
-    for (const key of ['entry', 'tp', 'sl', 'quantity', 'execution_quantity', 'risk', 'risk_target_usdt', 'rr']) plan[key] = decimalValue(value.plan[key]);
-  }
-  return { id: textValue(value.id, 160), day: textValue(value.day, 10), source: textValue(value.source, 64),
-    state: statusValue(value.state), created: iso(timestampValue(value.created)),
-    closed_day: textValue(value.closed_day, 10), pnl: decimalValue(value.pnl), plan };
-}
-function eventSummaries(events) {
-  const summaries = events.slice(-20).map(event => ({ at: iso(event.at), state: event.state, agent: event.agent, message: event.message }));
-  const encoder = new TextEncoder();
-  while (summaries.length && encoder.encode(JSON.stringify(summaries)).byteLength > 8192) summaries.shift();
-  return summaries;
-}
+function count(value) { return Number.isInteger(value) && value >= 0 && value <= 10000 ? value : null; }
+function fresh(at, now, ttl) { return at !== null && now >= at && now - at < ttl; }
+function iso(at) { return at === null ? null : new Date(at).toISOString(); }
 function copyTelemetry(value) {
   return { ...value, events: (value.events ?? []).map(event => ({ ...event })),
-    trades: (value.trades ?? []).map(trade => ({ ...trade, plan: trade.plan ? { ...trade.plan } : null })) };
+    trades: [], employees: (value.employees ?? []).map(employee => ({ ...employee })),
+    execution_gateway: value.execution_gateway ? { ...value.execution_gateway } : null,
+    last_decision: value.last_decision ? { ...value.last_decision } : null,
+    manual_exposure: [...(value.manual_exposure ?? [])] };
 }
 
 export function createStatusController({ onChange } = {}) {
   const win = typeof window === 'undefined' ? null : window;
-  const doc = typeof document === 'undefined' ? null : document;
-  let disposed = false, observer = null, expiryTimer = null, expiryAt = null;
-  let snapshot = null, ui = null, roles = {}, telemetry = {}, signature = '';
-  let received = 0, malformed = 0;
+  let snapshot = null, roles = {}, telemetry = {}, signature = '';
+  let disposed = false, expiryTimer = null, expiryAt = null, received = 0, malformed = 0;
 
   function normalize(payload) {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
-    const status = statusValue(payload.status);
-    const activePositions = countValue(payload.active_positions);
-    const pendingOrders = countValue(payload.pending_orders);
-    if (!status && activePositions === null && pendingOrders === null) return null;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        payload.schema_version !== 2 || payload.source !== 'BINANCE_FUTURES') return null;
+    const status = state(payload.status, PHASES), generatedAt = time(payload.generated_at);
+    if (!status || generatedAt === null) return null;
     const receivedAt = Date.now();
-    const suppliedTime = payload.generated_at ?? payload.checked_at ?? payload.timestamp;
-    const timestamp = suppliedTime === undefined ? receivedAt : timestampValue(suppliedTime);
-    if (timestamp === null) return null;
-    const events = Array.isArray(payload.events) ? payload.events.slice(-100).flatMap(event => {
-      if (!event || typeof event !== 'object' || Array.isArray(event)) return [];
-      const state = statusValue(event.state ?? event.status), at = timestampValue(event.at ?? event.timestamp);
-      if (!state || at === null) return [];
-      return [{ state, at, role: roleValue(event.agent), agent: textValue(event.agent), message: textValue(event.message, 160) }];
+    const phaseAt = payload.robot_checked_at === undefined ? generatedAt : time(payload.robot_checked_at);
+    const accountAt = payload.account_checked_at === undefined ? generatedAt : time(payload.account_checked_at);
+    const reportsAt = payload.reports_checked_at === undefined ? generatedAt : time(payload.reports_checked_at);
+    const employees = Array.isArray(payload.employees) ? payload.employees.slice(0, 50).flatMap(employee => {
+      if (!employee || typeof employee !== 'object' || !ROLES.includes(employee.id)) return [];
+      const status = state(employee.status, EMPLOYEE_STATES);
+      return status ? [{ id: employee.id, name: text(employee.name), status,
+        at: employee.checked_at === undefined ? phaseAt : time(employee.checked_at) }] : [];
     }) : [];
-    const balance = decimalValue(payload.balance);
-    const wallet = decimalValue(payload.usdt_wallet_balance) ?? balance;
-    const trades = Array.isArray(payload.trades) ? payload.trades.slice(-20).map(tradeSummary).filter(Boolean) : [];
-    return { status, activePositions, pendingOrders, timestamp, receivedAt, events,
-      display: { balance, usdt_wallet_balance: wallet, pnl_today: decimalValue(payload.pnl_today),
-        trades_today: countValue(payload.trades_today), generated_at: iso(timestamp),
-        events: eventSummaries(events), trades } };
+    const events = Array.isArray(payload.events) ? payload.events.slice(-20).flatMap(event => {
+      if (!event || typeof event !== 'object') return [];
+      const at = time(event.at), message = text(event.message, 160), agent = text(event.agent, 80), status = text(event.state, 64);
+      return at !== null && message !== null && agent !== null && status !== null ? [{ at: iso(at), state: status, agent, message }] : [];
+    }) : [];
+    const gateway = payload.execution_gateway;
+    const executionGateway = gateway && typeof gateway === 'object' && !Array.isArray(gateway) ?
+      { connected: gateway.connected === true, status: text(gateway.status, 64), failure_code: text(gateway.failure_code, 80) } :
+      { connected: false, status: 'NOT_CONNECTED', failure_code: null };
+    return { status, generatedAt, phaseAt, accountAt, reportsAt, receivedAt, employees, events,
+      robotOn: typeof payload.robot_on === 'boolean' ? payload.robot_on : null,
+      positions: count(payload.active_positions), pendingOrders: count(payload.pending_orders),
+      executionGateway, balance: decimal(payload.usdt_wallet_balance ?? payload.balance),
+      decision: payload.last_decision && typeof payload.last_decision === 'object' && !Array.isArray(payload.last_decision) ? {
+        symbol: text(payload.last_decision.symbol, 32), status: text(payload.last_decision.status, 64),
+        failure_code: text(payload.last_decision.failure_code, 80)
+      } : null,
+      pnl: decimal(payload.pnl_today), tradesToday: count(payload.trades_today),
+      slots: count(payload.available_slots), risk: decimal(payload.risk_target_usdt),
+      manual: Array.isArray(payload.manual_exposure) ? payload.manual_exposure.slice(0, 30).map(value => text(value, 32)).filter(Boolean) : [] };
   }
-
-  function sampleUI() {
-    if (!doc || disposed) return;
-    const menu = doc.getElementById('robotMenu');
-    const panel = doc.getElementById('robotStatus');
-    const workerMenu = doc.getElementById('neuroapiMenu');
-    const menuMatch = menu?.textContent?.match(/^ROBOT\s+(ON|OFF)\s*[·|]\s*([A-Z0-9_]+)\s*$/);
-    const panelText = panel?.textContent ?? '';
-    const panelStatus = statusValue(panelText.match(/BOT STATUS:\s*([A-Z0-9_]+)/)?.[1]);
-    const menuStatus = statusValue(menuMatch?.[2]);
-    // Failed polls repaint retained robotData; those DOM writes are not a new worker heartbeat.
-    // NEUROAPI_UNCHECKED describes provider health and does not imply the worker is offline.
-    if (/^WORKER\s+OFFLINE\b/.test(workerMenu?.textContent ?? '') ||
-        (menu && /BELUM TERHUBUNG/.test(menu.textContent ?? ''))) {
-      ui = { status: 'OFFLINE', robotOn: null, waitReason: null, activePositions: null, timestamp: Date.now() };
-      refresh(); return;
-    }
-    if (menuMatch && !menuStatus) {
-      ui = { status: 'OFFLINE', robotOn: null, waitReason: null, activePositions: null, timestamp: Date.now() };
-      refresh(); return;
-    }
-    if (!menuStatus && !panelStatus) { ui = null; refresh(); return; }
-    const status = menuStatus ?? panelStatus;
-    const wait = panelStatus === status ? panelText.match(/\bWAIT:\s*([A-Z0-9_]{1,80})/)?.[1] : null;
-    const positions = panelText.match(/RUNNING FUTURES:\s*(\d+)\s*\//)?.[1];
-    ui = {
-      status, robotOn: menuMatch ? menuMatch[1] === 'ON' : null,
-      waitReason: wait ?? null, activePositions: positions === undefined ? null : countValue(Number(positions)),
-      timestamp: Date.now()
-    };
-    refresh();
-  }
-
-  function nextExpiry(deadlines, now) {
-    const next = deadlines.filter(at => at !== null && at > now).sort((a, b) => a - b)[0] ?? null;
+  function schedule(deadlines, now) {
+    const next = deadlines.filter(value => value !== null && value > now).sort((a, b) => a - b)[0] ?? null;
     if (next === expiryAt) return;
     if (expiryTimer !== null) clearTimeout(expiryTimer);
     expiryAt = next; expiryTimer = null;
     if (next !== null && !disposed) {
-      expiryTimer = setTimeout(() => { expiryAt = null; expiryTimer = null; refresh(); }, Math.max(1, next - now + 1));
+      expiryTimer = setTimeout(() => { expiryTimer = null; expiryAt = null; refresh(); }, Math.max(1, next - now + 1));
       expiryTimer?.unref?.();
     }
   }
-
   function refresh() {
     if (disposed) return;
     const now = Date.now();
-    const uiFresh = ui && fresh(ui.timestamp, now);
-    const snapshotFresh = snapshot && fresh(snapshot.timestamp, now);
-    const recentEvents = snapshot?.events.filter(event => fresh(event.at, now)) ?? [];
-    const latestEvent = recentEvents.reduce((latest, event) => !latest || event.at >= latest.at ? event : latest, null);
-    // Coordinator UI reflects v7 work; a paper snapshot can still say REJECTED from an older cycle.
-    const source = uiFresh ? 'robot-ui' : snapshotFresh ? 'workerSnapshot' : latestEvent ? 'worker-event' : 'unknown';
-    const status = uiFresh ? ui.status : snapshotFresh ? snapshot.status ?? latestEvent?.state : latestEvent?.state;
-    const at = uiFresh ? ui.timestamp : snapshotFresh ? snapshot.timestamp : latestEvent?.at ?? null;
-    const known = Boolean(status && status !== 'OFFLINE');
-    const robotOn = uiFresh ? ui.robotOn : null;
-    // The existing UI overlays a current account count onto its paper snapshot before dispatch.
-    const countFresh = status !== 'OFFLINE' && snapshot && fresh(snapshot.receivedAt, now) && (snapshotFresh || uiFresh);
-    const positions = countFresh && snapshot.activePositions !== null ? snapshot.activePositions :
-      uiFresh ? ui.activePositions : null;
-    const pendingOrders = status !== 'OFFLINE' && snapshotFresh ? snapshot.pendingOrders : null;
+    const transportFresh = Boolean(snapshot && snapshot.status !== 'OFFLINE' && fresh(snapshot.receivedAt, now, PHASE_FRESH_MS));
+    const phaseFresh = transportFresh && fresh(snapshot.phaseAt, now, PHASE_FRESH_MS);
+    const accountFresh = transportFresh && fresh(snapshot.accountAt, now, ACCOUNT_FRESH_MS);
+    const reportsFresh = transportFresh && fresh(snapshot.reportsAt, now, PHASE_FRESH_MS);
+    const positions = accountFresh ? snapshot.positions : null;
+    const status = phaseFresh ? snapshot.status : 'OFFLINE';
     const nextRoles = Object.fromEntries(ROLES.map(role => [role, {
-      state: 'IDLE', active: false, known, timestamp: known ? iso(at) : null,
-      speech: known ? IDLE_SPEECH[role] : 'Menunggu status…'
+      state: 'IDLE', active: false, known: phaseFresh, timestamp: phaseFresh ? iso(snapshot.phaseAt) : null,
+      speech: phaseFresh ? IDLE_SPEECH[role] : 'Menunggu status worker…'
     }]));
-    function work(role, speech, timestamp = at) {
-      nextRoles[role] = { state: 'WORKING', active: true, known: true, speech, timestamp: iso(timestamp) };
+    const gateway = snapshot?.executionGateway;
+    const blocked = !gateway?.connected || ['BLOCKED', 'NOT_CONNECTED', 'UNAVAILABLE'].includes(gateway.status) ||
+      gateway.failure_code === 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED' || status === 'EXECUTION_BLOCKED';
+    function work(role, speech, at = snapshot.phaseAt) {
+      nextRoles[role] = { state: 'WORKING', active: true, known: true, timestamp: iso(at), speech };
     }
-    if (known && robotOn !== false) {
-      switch (status) {
-        case 'SCREENING': case 'REPLACEMENT_SCREENING':
-          work('market', 'Memindai kandidat market.');
-          work('neuro', 'Menyeleksi kandidat coin.'); break;
-        case 'MARKET_DATA': work('market', 'Membaca data market.'); break;
-        case 'ANALYSIS': case 'ANALYZING': case 'ANALYZING_COIN_1': case 'ANALYZING_COIN_2':
-          work('neuro', 'Menganalisis setup.'); break;
-        case 'VALIDATING': work('risk', 'Memeriksa quantity dan batas risiko.'); break;
-        case 'SETUP_READY': case 'REVIEWING': case 'REVIEW_REQUIRED':
-        case 'APPROVAL_PENDING': case 'AWAITING_APPROVAL':
-          work('reviewer', 'Setup menunggu tinjauan.');
-          nextRoles.risk.speech = 'Validasi setup selesai.'; break;
-        case 'DRY_RUN_READY': case 'ORDER_READY': case 'ORDER_PREPARATION':
-        case 'PREPARING_ORDER': case 'ENTRY_PREPARING':
-          work('trading', 'Meninjau rencana order yang dilaporkan.'); break;
-        case 'ENTRY_PENDING': case 'ENTRY_SUBMITTED':
-          work('trading', 'Mengamati status order yang dilaporkan.'); break;
-        case 'REPORTING': case 'GENERATING_REPORT': case 'REPORT_GENERATION':
-          work('report', 'Merangkum hasil yang dilaporkan.'); break;
-        case 'WORKING': {
-          const latestByRole = new Map();
-          for (const event of recentEvents) {
-            if (event.role && event.role !== 'boss' && (!latestByRole.has(event.role) || latestByRole.get(event.role).at <= event.at)) latestByRole.set(event.role, event);
-          }
-          for (const [role, event] of latestByRole) {
-            if (event.state === 'WORKING') work(role, 'Mengerjakan tugas yang dilaporkan.', event.at);
-            else if (event.state === 'BREAK') nextRoles[role].speech = 'Sedang istirahat.';
-          }
-          break;
-        }
-        case 'BREAK': for (const role of ROLES) nextRoles[role].speech = 'Sedang istirahat.'; break;
-        case 'REJECTED': case 'USER_REJECTED':
-          nextRoles.risk.speech = 'Setup ditolak; menunggu tugas baru.';
-          nextRoles.reviewer.speech = 'Belum ada setup untuk disetujui.'; break;
-        case 'HOLD': nextRoles.neuro.speech = 'HOLD; menunggu kandidat berikutnya.'; break;
-        case 'APPROVED': nextRoles.reviewer.speech = 'Review tersimpan; tiket perlu dikirim manual.'; break;
-        case 'CLOSED': nextRoles.report.speech = 'Hasil posisi selesai tersedia.'; break;
+    // OFF suppresses research/execution activity while genuine position reads remain independent.
+    if (phaseFresh && snapshot.robotOn === true && status !== 'OFF') {
+      const phaseRole = { SCREENING: 'market', ANALYZING: 'neuro', VALIDATING: 'risk', EXECUTING: 'trading' }[status];
+      if (phaseRole && (phaseRole !== 'trading' || !blocked)) work(phaseRole, WORK_SPEECH[phaseRole]);
+      for (const employee of snapshot.employees) {
+        if (employee.status !== 'WORKING' || !fresh(employee.at, now, PHASE_FRESH_MS) || ['boss', 'position'].includes(employee.id)) continue;
+        if (employee.id === 'trading' && blocked) continue;
+        work(employee.id, WORK_SPEECH[employee.id], employee.at);
       }
+      if (status === 'HOLD') nextRoles.neuro.speech = 'HOLD; menunggu kandidat berikutnya.';
+      if (status === 'REJECTED') nextRoles.risk.speech = 'Setup tidak memenuhi validasi.';
+      if (status === 'NEEDS_REVIEW') nextRoles.trading.speech = 'Status adapter belum pasti.';
     }
-    if (uiFresh && status === 'WAITING') {
-      if (ui.waitReason === 'SCREENING_COMPLETE_ANALYSIS_PENDING') nextRoles.neuro.speech = 'Menunggu giliran analisis.';
-      if (ui.waitReason === 'SCREENING_REPLACEMENT_REQUIRED') nextRoles.market.speech = 'Menunggu screening pengganti.';
-      if (ui.waitReason === 'ROBOT_LIFECYCLE_NEEDS_REVIEW') nextRoles.reviewer.speech = 'Lifecycle lama perlu ditinjau.';
+    if (phaseFresh && blocked) {
+      nextRoles.trading = { state: 'IDLE', active: false, known: true, timestamp: iso(snapshot.phaseAt), speech: 'Gateway Binance belum terhubung.' };
     }
-    if (positions === 0) nextRoles.position = { state: 'IDLE', active: false, known: true, timestamp: iso(at), speech: IDLE_SPEECH.position };
-    if (positions > 0) work('position', `Memantau ${positions} posisi yang dilaporkan.`, countFresh ? snapshot.receivedAt : ui.timestamp);
-    else if (positions === null && known && ['POSITION_OPEN', 'MONITORING'].includes(status)) work('position', 'Memantau posisi yang dilaporkan.');
-    const activeCount = ROLES.filter(role => role !== 'boss' && nextRoles[role].active).length;
-    if (activeCount) work('boss', `Mengawasi ${activeCount} divisi aktif.`);
+    if (accountFresh && positions !== null) {
+      nextRoles.position = { state: positions > 0 ? 'WORKING' : 'IDLE', active: positions > 0, known: true,
+        timestamp: iso(snapshot.accountAt), speech: positions > 0 ? `Memantau ${positions} posisi Binance.` : IDLE_SPEECH.position };
+    } else nextRoles.position = { state: 'IDLE', active: false, known: false, timestamp: null, speech: 'Menunggu data posisi Binance…' };
+    const active = ROLES.filter(role => role !== 'boss' && nextRoles[role].active).length;
+    if (active) work('boss', `Mengawasi ${active} divisi aktif.`, phaseFresh ? snapshot.phaseAt : snapshot.accountAt);
     const nextTelemetry = {
-      balance: countFresh ? snapshot.display.balance : null,
-      usdt_wallet_balance: countFresh ? snapshot.display.usdt_wallet_balance : null,
-      pnl_today: snapshot?.display.pnl_today ?? null,
-      active_positions: positions, pending_orders: pendingOrders,
-      trades_today: snapshot?.display.trades_today ?? null,
-      generated_at: snapshot?.display.generated_at ?? null,
-      events: snapshot?.display.events ?? [], trades: snapshot?.display.trades ?? [],
-      status: status ?? 'UNKNOWN', robotOn, waitReason: uiFresh ? ui.waitReason : null,
-      activePositions: positions, pendingOrders, source, updatedAt: iso(at),
-      stale: Boolean((snapshot && status === 'OFFLINE') || ((snapshot || ui) && !uiFresh && !snapshotFresh && !latestEvent)),
-      connected: source !== 'unknown' && status !== 'OFFLINE'
+      source: transportFresh ? 'workerSnapshot' : 'unknown', schema_version: 2,
+      balance: accountFresh ? snapshot.balance : null, usdt_wallet_balance: accountFresh ? snapshot.balance : null,
+      pnl_today: reportsFresh ? snapshot.pnl : null, trades_today: reportsFresh ? snapshot.tradesToday : null,
+      active_positions: positions, activePositions: positions,
+      pending_orders: phaseFresh ? snapshot.pendingOrders : null, pendingOrders: phaseFresh ? snapshot.pendingOrders : null,
+      generated_at: snapshot ? iso(snapshot.generatedAt) : null, robot_checked_at: phaseFresh ? iso(snapshot.phaseAt) : null,
+      account_checked_at: accountFresh ? iso(snapshot.accountAt) : null, reports_checked_at: reportsFresh ? iso(snapshot.reportsAt) : null,
+      status, robotOn: phaseFresh ? snapshot.robotOn : null, robot_on: phaseFresh ? snapshot.robotOn : null,
+      connected: transportFresh, stale: Boolean(snapshot && (!phaseFresh || !transportFresh)),
+      receivedAt: snapshot ? iso(snapshot.receivedAt) : null, updatedAt: phaseFresh ? iso(snapshot.phaseAt) : null,
+      events: transportFresh ? snapshot.events : [], trades: [],
+      employees: phaseFresh ? snapshot.employees.map(({ id, name, status }) => ({ id, name, status })) : [],
+      execution_gateway: phaseFresh ? gateway : null,
+      last_decision: phaseFresh ? snapshot.decision : null,
+      available_slots: phaseFresh ? snapshot.slots : null, risk_target_usdt: phaseFresh ? snapshot.risk : null,
+      manual_exposure: accountFresh ? snapshot.manual : [], waitReason: null
     };
-    const nextSignature = JSON.stringify({ roles: nextRoles, telemetry: nextTelemetry });
     roles = nextRoles; telemetry = nextTelemetry;
-    nextExpiry([
-      uiFresh ? ui.timestamp + FRESH_MS : null,
-      snapshotFresh ? snapshot.timestamp + FRESH_MS : null,
-      countFresh ? snapshot.receivedAt + FRESH_MS : null,
-      ...recentEvents.map(event => event.at + FRESH_MS)
+    schedule([
+      transportFresh ? snapshot.receivedAt + PHASE_FRESH_MS : null,
+      phaseFresh ? snapshot.phaseAt + PHASE_FRESH_MS : null,
+      accountFresh ? snapshot.accountAt + ACCOUNT_FRESH_MS : null,
+      reportsFresh ? snapshot.reportsAt + PHASE_FRESH_MS : null,
+      ...snapshot?.employees.filter(employee => fresh(employee.at, now, PHASE_FRESH_MS)).map(employee => employee.at + PHASE_FRESH_MS) ?? []
     ], now);
+    const nextSignature = JSON.stringify({ roles, telemetry });
     if (signature !== nextSignature) {
       signature = nextSignature;
       if (typeof onChange === 'function') {
-        try { onChange({ roles: Object.fromEntries(ROLES.map(role => [role, copyRole(roles[role])])), telemetry: copyTelemetry(telemetry) }); }
-        catch (_) { /* Visual consumers cannot interrupt the worker UI. */ }
+        try { onChange({ roles: Object.fromEntries(ROLES.map(role => [role, { ...roles[role] }])), telemetry: copyTelemetry(telemetry) }); }
+        catch (_) { /* An animation consumer cannot interrupt worker updates. */ }
       }
     }
   }
-
-  function onSnapshot(event) {
+  function receive(event) {
     if (disposed) return;
-    received += 1;
+    received++;
     try {
-      const next = normalize(event?.detail);
-      if (!next) { malformed += 1; return; }
-      snapshot = next; refresh();
-    } catch (_) { malformed += 1; }
-  }
-  function relevantNode(node, includeChildren = false) {
-    if (!node) return false;
-    const element = node.nodeType === 1 ? node : node.parentElement;
-    return Boolean(element?.matches?.('#robotMenu, #robotStatus, #neuroapiMenu') || element?.closest?.('#robotMenu, #robotStatus, #neuroapiMenu') ||
-      (includeChildren && element?.querySelector?.('#robotMenu, #robotStatus, #neuroapiMenu')));
+      const candidate = normalize(event?.detail);
+      if (!candidate) { malformed++; return; }
+      snapshot = candidate; refresh();
+    } catch (_) { malformed++; }
   }
   function ensureFresh() { if (expiryAt !== null && Date.now() >= expiryAt) refresh(); }
-
-  win?.addEventListener('workerSnapshot', onSnapshot);
-  if (doc && typeof MutationObserver !== 'undefined') {
-    observer = new MutationObserver(records => {
-      if (records.some(record => relevantNode(record.target) || [...record.addedNodes, ...record.removedNodes].some(node => relevantNode(node, true)))) sampleUI();
-    });
-    for (const id of ['menuDrawer', 'infoPanel']) {
-      const root = doc.getElementById(id);
-      if (root) observer.observe(root, { childList: true, subtree: true, characterData: true });
-    }
-  }
-  sampleUI(); refresh();
+  win?.addEventListener('workerSnapshot', receive); refresh();
   return {
     getRole(role) {
       ensureFresh();
-      return ROLES.includes(role) ? copyRole(roles[role]) : { state: 'IDLE', speech: 'Menunggu status…', active: false, timestamp: null, known: false };
+      return { ...(ROLES.includes(role) ? roles[role] : { state: 'IDLE', active: false, known: false, timestamp: null, speech: 'Menunggu status worker…' }) };
     },
     getTelemetry() { ensureFresh(); return copyTelemetry(telemetry); },
     diagnostics() {
       ensureFresh();
-      return { disposed, observerActive: Boolean(observer && !disposed), receivedSnapshots: received, malformedPayloads: malformed,
+      return { disposed, observerActive: false, receivedSnapshots: received, malformedPayloads: malformed,
         eventCount: snapshot?.events.length ?? 0, telemetry: copyTelemetry(telemetry),
         roleStates: Object.fromEntries(ROLES.map(role => [role, roles[role].state])) };
     },
     dispose() {
-      disposed = true; win?.removeEventListener('workerSnapshot', onSnapshot); observer?.disconnect();
+      if (disposed) return;
+      disposed = true; win?.removeEventListener('workerSnapshot', receive);
       if (expiryTimer !== null) clearTimeout(expiryTimer);
       expiryTimer = null; expiryAt = null;
     }
