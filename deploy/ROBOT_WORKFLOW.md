@@ -13,32 +13,48 @@ kode `BINANCE_ORDER_GATEWAY_NOT_CONNECTED`, sedangkan gateway menampilkan
 Private GET Binance memakai key VPS existing. Hanya akun ONE_WAY, single-asset,
 dan konfigurasi yang lolos pemeriksaan diterima. Semua posisi nonzero mengurangi
 concurrent capacity. Posisi manual tetap manual; HYPEUSDT selalu dikecualikan
-dari calon entry. Maksimal dua posisi dan dua entry bot terkonfirmasi per hari
-Asia/Bangkok:
+dari calon entry. Maksimal dua posisi bersamaan, termasuk posisi manual dan
+reservasi pending entry. Tidak ada batas entry harian; counter harian adalah
+laporan dan epoch claim, bukan izin kapasitas:
 
-`available_slots = max(0, min(2 - running_positions, 2 - confirmed_bot_entries_today))`
+`account_slots = max(0, 2 - running_positions)`
+
+Coordinator mengurangi slot submission untuk pending entry yang belum menjadi
+posisi aktif, sehingga satu exposure tidak dihitung dua kali.
 
 Screening meminta literal satu atau dua coin sesuai slot. Hasil harus unique
 USDT perpetual aktif dan tidak sedang terekspos. Kandidat valid yang sudah
-antre tetap dianalisis selama kapasitas dan budget tersedia. Kandidat HOLD atau
-dikecualikan dapat memakai replacement bounded; technical failure dan unknown
-outcome tidak membuat loop riset tak terbatas.
+antre tetap dianalisis selama kapasitas dan budget tersedia. Hanya hasil HOLD
+meminta screening pengganti, maksimal tiga screening tambahan sesudah awal.
+Dua HOLD meminta dua pengganti; satu HOLD meminta satu pengganti. Symbol manual,
+technical failure, risiko/net RR yang ditolak, dan unknown outcome tidak
+memberi izin mengulang screening.
 
 ## Analisis dan validasi
 
-Market context terbaru mencakup candle1h/15m, mark price, waktu server, dan
-filter kontrak. Model menghasilkan side serta harga entry/TP/SL. Quantity
-ditentukan worker menggunakan floor Decimal berdasarkan jarak entry ke SL,
-step size, batas quantity, dan min notional. Target default 5 USDT, RR aktual
-minimal2; leverage tidak memperbesar budget loss. Data stale atau konfigurasi
-tidak valid menghentikan alur sebelum gateway.
+Market context memakai candle 1h/15m nyata, mark price, waktu server, filter
+kontrak, dan taker commission akun per symbol dari signed Binance GET.
+Model hanya menghasilkan side serta harga Entry/TP/SL, tanpa provider quantity.
+Worker menghitung quantity legal terbesar menggunakan floor Decimal:
+
+`net_loss_sl_per_unit = abs(Entry - SL) + Entry * taker_rate + SL * taker_rate`
+
+`net_reward_tp_per_unit = abs(TP - Entry) - Entry * taker_rate - TP * taker_rate`
+
+Quantity mengikuti target default net 5 USDT, step size, batas quantity, dan
+min notional. Net RR harus minimal 2 sesudah fee; target tetap editable positif
+sampai 100 USDT. Entry LIMIT, CROSS, dan leverage 75 tidak memperbesar budget
+loss atau mengubah harga setup. Data/fee stale atau tidak tersedia menghentikan
+alur sebelum gateway. Perhitungan memakai fee taker konservatif; funding,
+slippage, perubahan fee, dan gap tidak dijamin oleh estimasi ini.
 
 Pengaturan risiko positif sampai 100 USDT tetap tersedia di panel Robot Trading.
 Target ditangkap sebelum analisis dan disimpan pada claim serta bukti intent.
 Perubahan hanya dipakai analisis berikutnya; intent lama tidak diubah ukurannya.
 
-Proof mengikat operation, request/output hash, level, quantity, risk target,
-dan rules yang dipakai sizing. Claim persisten dibuat sebelum request berbayar.
+Proof `analysis-v9` mengikat operation, request/output hash, level, quantity,
+risk target, commission, net risk/reward, serta rules yang dipakai sizing.
+Cycle memakai namespace `robot-v9`. Claim persisten dibuat sebelum request berbayar.
 Polling/restart tidak membuat replay claim yang outcome-nya belum pasti.
 Journal account dan riset terpisah; hasil analisis terlambat tidak mengganti
 saldo/posisi yang sudah diamati lebih baru.
@@ -69,3 +85,7 @@ rekonsiliasi dipenuhi pada satu adapter order, bukan cabang runtime tersendiri.
 Migrasi pertama menyimpan backup audit privat, menghapus tabel alur lama dari
 database aktif, dan mengembalikan robot ke OFF. Journal request berbayar serta
 entry nyata terkonfirmasi dipertahankan. Backup tidak dimuat oleh coordinator.
+Upgrade namespace fee-inclusive memakai schema version 2; hanya constraint
+`UNIQUE(day,entry_epoch)` yang dihapus. Cycle lama beserta seluruh journal,
+candidate, intent, settings, receipt, dan exposure tetap tersimpan. Candidate
+risiko harga tanpa fee lama tidak dipromosikan; unknown order tetap memblokir.

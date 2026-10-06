@@ -97,7 +97,7 @@ class RobotRiskSettingTests(unittest.TestCase):
         self.assertEqual(D(plan['risk']), D('10'))
         self.assertEqual(D(plan['execution_quantity']), D('5'))
         self.assertEqual((plan['entry'], plan['tp'], plan['sl']), ('100', '104', '98'))
-        self.assertEqual(plan['neurobro_position_size'], '2.5')
+        self.assertNotIn('neurobro_position_size', plan)
         self.assertEqual(f.ledger.db.execute("SELECT risk_target FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0], '10')
         context = json.loads(f.calls[1]['message_history'][0]['content'])
         self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'], '10')
@@ -188,6 +188,75 @@ class RobotRiskSettingTests(unittest.TestCase):
                 build_intent({**copy.deepcopy(plan), **changed}, self.candidate()['id'])
         self.assertEqual(self.plan(), plan)
         self.assertEqual(f.receipt_count(), 0)
+
+    def positive_fee_setup(self,target='5'):
+        f=self.prepare_one_slot(target)
+        f.account.taker_fee='0.0005'
+        original=f.client.transport
+        def transport(*args,**kwargs):
+            status,headers,body=original(*args,**kwargs)
+            body['output']['take_profit']=106
+            body['output']['risk_reward']=3
+            return status,headers,body
+        f.client.transport=transport
+        self.assertEqual(f.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
+        return f
+
+    def test_planned_five_includes_actual_quote_entry_and_sl_fees_at_largest_lot(self):
+        f=self.positive_fee_setup()
+        plan=self.plan()
+        self.assertEqual(plan['execution_quantity'],'2.382')
+        self.assertEqual(D(plan['gross_risk']),D('4.764'))
+        self.assertEqual(D(plan['entry_fee_usdt']),D('0.1191'))
+        self.assertEqual(D(plan['sl_exit_fee_usdt']),D('0.116718'))
+        self.assertEqual(D(plan['risk']),D('4.999818'))
+        self.assertLessEqual(D(plan['risk']),D('5'))
+        next_quantity=D(plan['quantity'])+D('.001')
+        self.assertGreater(next_quantity*(D('2')+D('198')*D('.0005')),D('5'))
+        self.assertGreaterEqual(D(plan['net_rr']),D('2'))
+        context=json.loads(f.calls[1]['message_history'][0]['content'])
+        self.assertEqual(context['source'],'Binance Futures')
+        self.assertEqual(set(context['timeframes']),{'1h','15m'})
+        self.assertEqual(context['risk_constraints']['entry_fee_rate'],'0.0005')
+        self.assertEqual(context['risk_constraints']['reward_risk_basis'],'NET_AFTER_ENTRY_AND_EXIT_FEES')
+        self.assertTrue(verify(f.ledger.db,plan,self.candidate()['id']))
+        gateway=f.connected()
+        self.assertEqual(f.robot.tick()['bot_status'],'ENTRY_PENDING')
+        intent=gateway.submissions[0]
+        self.assertEqual(intent['risk_usdt'],plan['risk'])
+        self.assertEqual(intent['entry_fee_usdt'],plan['entry_fee_usdt'])
+        self.assertEqual(intent['sl_exit_fee_usdt'],plan['sl_exit_fee_usdt'])
+        self.assertEqual(intent['fee_evidence']['taker_rate'],'0.0005')
+        self.assertEqual((intent['margin_mode'],intent['leverage']),('CROSS',75))
+        self.assertEqual(f.receipt_count(),0)
+
+    def test_configured_ten_includes_fees_and_is_not_hardcoded_to_five(self):
+        self.positive_fee_setup('10')
+        plan=self.plan()
+        self.assertEqual(plan['execution_quantity'],'4.764')
+        self.assertEqual(D(plan['risk']),D('9.999636'))
+        self.assertLessEqual(D(plan['risk']),D('10'))
+        self.assertGreater(D(plan['risk']),D('5'))
+
+    def test_missing_commission_quote_claims_no_paid_analysis(self):
+        f=self.prepare_one_slot()
+        def unavailable(symbol):raise RuntimeError('private details')
+        f.account.commission_rate=unavailable
+        result=f.robot.tick()
+        self.assertEqual(result['bot_status'],'REJECTED')
+        self.assertEqual(len(f.calls),1)
+        self.assertEqual(f.ledger.db.execute("SELECT COUNT(*) FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0],0)
+        self.assertEqual(f.receipt_count(),0)
+
+    def test_increased_fee_before_submission_rejects_immutable_size_without_post(self):
+        f=self.positive_fee_setup()
+        before=self.candidate()['plan']
+        f.account.taker_fee='0.001'
+        gateway=f.connected()
+        self.assertEqual(f.robot.tick()['failure_code'],'ORDER_PREFLIGHT_REJECTED')
+        self.assertEqual(self.candidate()['plan'],before)
+        self.assertEqual(gateway.submissions,[])
+        self.assertEqual(f.receipt_count(),0)
 
 
 if __name__ == '__main__': unittest.main()

@@ -135,7 +135,7 @@
     toggle.onclick = () => saveSettings({ robot_on: !snapshot.robot.robot_on }); actions.append(toggle); main.append(actions);
     main.append(element('p', message, 'dashboard-message'));
     const riskControls = element('div', undefined, 'dashboard-connection dashboard-risk');
-    const riskLabel = element('label', 'RISK PER SL (USDT, lebih dari 0 sampai 100)');
+    const riskLabel = element('label', 'RISIKO PER SL TERMASUK FEE (USDT, lebih dari 0 sampai 100)');
     const risk = element('input'); risk.id = 'robotRisk'; risk.type = 'number'; risk.inputMode = 'decimal';
     risk.min = '0'; risk.max = '100'; risk.step = 'any'; risk.value = riskDraft ?? robot?.risk_target_usdt ?? '5';
     risk.disabled = !origin || !online || saving || !robot; risk.oninput = () => { riskDraft = risk.value; };
@@ -147,7 +147,7 @@
       catch (error) { message = error.message; paint(); }
     };
     riskActions.append(riskSave); riskControls.append(riskLabel, riskActions,
-      notice('Perubahan risiko berlaku hanya untuk analisis baru. Setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
+      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry dan exit SL pada harga setup. Slippage, gap harga, dan funding dapat mengubah kerugian aktual. Perubahan risiko berlaku hanya untuk analisis baru. Setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
     main.append(riskControls);
     const status = element('p', robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
     status.id = 'robotStatus'; status.setAttribute('role', 'status'); main.append(status);

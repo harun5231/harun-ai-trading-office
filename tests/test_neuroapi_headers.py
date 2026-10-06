@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from worker.core import Ledger, Review
-from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA
-from worker.prompts import SCREENING
+from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SETUP_SCHEMA, setup
+from worker.prompts import SCREENING, ANALYSIS
 
 class HeaderTests(unittest.TestCase):
     def setUp(self):
@@ -18,11 +18,15 @@ class HeaderTests(unittest.TestCase):
         self.client=NeuroAPI(self.ledger,key=self.key)
     def invoke(self,kind):
         if kind=='health':return self.client.health()
+        if kind=='analysis':return self.client.ask('analysis',ANALYSIS,SETUP_SCHEMA,lambda value:setup(value,'BTCUSDT'),
+            {'symbol':'BTCUSDT','timeframes':{'1h':[],'15m':[]},'risk_constraints':{'target_loss_at_sl_usdt':'10'}})
         return self.client.ask('screen',SCREENING,SCREEN_SCHEMA,lambda value:None,catalog={'BTCUSDT':{},'ETHUSDT':{}})
     def verify_request(self,kind):
         response=MagicMock();response.__enter__.return_value=response
         response.code=200;response.headers={}
         data={'status':'healthy','authenticated':True} if kind=='health' else {'mode':'smart','answer':None,'output':{'symbols':['BTCUSDT','ETHUSDT']}}
+        if kind=='analysis':data={'mode':'smart','answer':None,'output':{'symbol':'BTCUSDT','side':'LONG',
+            'limit_entry':100,'take_profit':104,'stop_loss':98,'risk_reward':2}}
         response.read.return_value=json.dumps(data).encode()
         output=io.StringIO()
         with patch('worker.http_client.build_opener') as factory, contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
@@ -39,15 +43,22 @@ class HeaderTests(unittest.TestCase):
             self.assertIsNone(req.data);self.assertNotIn('content-type',headers)
         else:
             self.assertEqual(headers['content-type'],'application/json')
-            self.assertEqual(json.loads(req.data)['prompt'],SCREENING)
+            body=json.loads(req.data)
+            self.assertEqual(body['prompt'],ANALYSIS if kind=='analysis' else SCREENING)
+            if kind=='analysis':
+                self.assertEqual(set(body['output_schema']['properties']),{'symbol','side','limit_entry','take_profit','stop_loss','risk_reward'})
+                self.assertEqual(body['mode'],'smart');self.assertIs(body['stream'],False)
+                self.assertEqual(json.loads(body['message_history'][0]['content'])['risk_constraints']['target_loss_at_sl_usdt'],'10')
+                self.assertNotIn('position_size',body['output_schema']['required'])
             self.assertNotIn(self.key,req.data.decode())
         self.assertEqual(output.getvalue(),'');self.assertNotIn(self.key,json.dumps(result))
         rows=[dict(row) for row in self.ledger.db.execute('SELECT * FROM api_requests')]
         self.assertNotIn(self.key,json.dumps(rows))
     def test_health_wire_headers_and_secret_isolation(self):self.verify_request('health')
     def test_ask_wire_headers_and_secret_isolation(self):self.verify_request('ask')
+    def test_analysis_wire_prompt_levels_only_and_secret_isolation(self):self.verify_request('analysis')
     def test_raw_header_errors_never_expose_key(self):
-        for kind in ('health','ask'):
+        for kind in ('health','ask','analysis'):
             with self.subTest(kind=kind):
                 output=io.StringIO()
                 with patch('worker.http_client.build_opener',side_effect=RuntimeError(str(self.client._headers()))), contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):

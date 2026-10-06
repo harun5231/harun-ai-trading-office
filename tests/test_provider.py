@@ -12,7 +12,7 @@ from worker.core import D, Ledger, Review
 from worker.http_client import NoRedirect, request, unique
 from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA, selections, setup
 from worker.prompts import ANALYSIS, SCREENING
-from support import FakeMarket, GOOD, NUMERIC_FIELDS, hold
+from support import Account, FakeMarket, GOOD, NUMERIC_FIELDS, hold
 
 
 class ProviderTests(unittest.TestCase):
@@ -35,7 +35,7 @@ class ProviderTests(unittest.TestCase):
             count = body['output_schema']['properties']['symbols']['minItems']
             output = dict(symbols=list(self.catalog)[:count])
         else:
-            output = copy.deepcopy(GOOD)
+            output = {key:copy.deepcopy(value) for key,value in GOOD.items() if key!='position_size'}
         return 200, {}, dict(mode='smart', answer=None, output=output)
 
     def client(self, transport=None, ledger=None, key=None):
@@ -70,15 +70,37 @@ class ProviderTests(unittest.TestCase):
                 selections(dict(symbols=symbols), self.catalog, 1)
 
     def test_analysis_context_has_rules_before_request_and_prompt_stays_literal(self):
-        context, rules = analysis_context(FakeMarket(), 'BTCUSDT', D('10'))
+        account=Account();account.maker_fee='0.0002';account.taker_fee='0.0005'
+        context, rules = analysis_context(FakeMarket(), 'BTCUSDT', D('10'),account)
+        self.assertIn(('GET','/fapi/v1/commissionRate?symbol=BTCUSDT'),account.calls)
         self.client().ask('analysis', ANALYSIS, SETUP_SCHEMA, lambda value: setup(value, 'BTCUSDT'), context)
         body = self.calls[0][3]
-        self.assertEqual(body['prompt'], ANALYSIS)
+        expected = ('Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\n'
+                    'Tentukan !\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar.\nRISK REWARD 1:2')
+        self.assertEqual(body['prompt'].encode('utf-8'), expected.encode('utf-8'))
+        self.assertEqual(body['prompt'], ANALYSIS);self.assertNotIn('Ukuran posisi',body['prompt'])
+        self.assertNotIn('5 usdt',body['prompt'])
+        self.assertNotIn('position_size',body['output_schema']['properties'])
+        self.assertNotIn('position_size',body['output_schema']['required'])
         self.assertEqual(body['message_history'][0]['role'], 'user')
         self.assertEqual(json.loads(body['message_history'][0]['content']), context)
         self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'], '10')
         self.assertEqual(context['risk_constraints']['position_sizing_contract'], SIZING_CONTRACT.replace('5 USDT', '10 USDT'))
         self.assertEqual(context['contract_rules']['stepSize'], str(rules.step))
+        self.assertEqual(context['risk_constraints']['reward_risk_basis'],'NET_AFTER_ENTRY_AND_EXIT_FEES')
+        self.assertEqual(context['risk_constraints']['fee_symbol'],'BTCUSDT')
+        self.assertEqual(context['risk_constraints']['fee_source'],'BINANCE_FUTURES_COMMISSION_RATE')
+        for field in ('entry_fee_rate','sl_exit_fee_rate','tp_exit_fee_rate'):
+            self.assertEqual(context['risk_constraints'][field],'0.0005')
+
+    def test_missing_account_fee_evidence_stops_before_any_paid_analysis_claim(self):
+        client=self.client()
+        account=Account();account.commission_rate=Mock(side_effect=OSError('PRIVATE_FEE_RESPONSE'))
+        with self.assertRaisesRegex(Review,'FEE_EVIDENCE_UNAVAILABLE'):
+            context,_=analysis_context(FakeMarket(),'BTCUSDT',D('10'),account)
+            client.ask('missing-fees',ANALYSIS,SETUP_SCHEMA,lambda value:setup(value,'BTCUSDT'),context)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0],0)
 
     def test_health_uses_get_and_discards_provider_prefix(self):
         result = self.client().health()
@@ -203,16 +225,29 @@ class ProviderTests(unittest.TestCase):
             self.assertNotIn('PRIVATE_PROSE', json.dumps(self.record(str(index))))
 
     def test_setup_schema_preserves_hold_and_rejects_ambiguous_numbers(self):
+        fresh={key:value for key,value in GOOD.items() if key!='position_size'}
         self.assertEqual(setup(hold('BTCUSDT'), 'BTCUSDT').side, 'HOLD')
         for field in NUMERIC_FIELDS:
             with self.subTest(field=field), self.assertRaises(Review):
                 setup({**hold('BTCUSDT'), field: 1}, 'BTCUSDT')
-        for value in ({**GOOD, 'position_size': '2.5'}, {**GOOD, 'limit_entry': 100.0},
-                      {**GOOD, 'risk_reward': True}, {**GOOD, 'symbol': 'ETHUSDT'},
-                      {**GOOD, 'take_profit': D('103.99'), 'risk_reward': 99}, {**GOOD, 'extra': 'PRIVATE'}):
+        for value in ({**fresh, 'position_size': '2.5'}, {**fresh, 'limit_entry': 100.0},
+                      {**fresh, 'risk_reward': True}, {**fresh, 'symbol': 'ETHUSDT'},
+                      {**fresh, 'take_profit': D('103.99'), 'risk_reward': 99}, {**fresh, 'extra': 'PRIVATE'}):
             with self.subTest(value=value), self.assertRaises(Review):
                 setup(value, 'BTCUSDT')
-        self.assertEqual(setup({**GOOD, 'risk_reward': 99}, 'BTCUSDT').tp, D('104'))
+        self.assertEqual(setup({**fresh, 'risk_reward': 99}, 'BTCUSDT').tp, D(fresh['take_profit']))
+
+    def test_provider_output_strictly_rejects_quantity_and_does_not_cache_it(self):
+        fresh={key:value for key,value in GOOD.items() if key!='position_size'}
+        self.assertEqual(setup(fresh,'BTCUSDT').entry,D(fresh['limit_entry']))
+        archive={**fresh,'position_size':D('2.5')}
+        with self.assertRaisesRegex(Review,'INVALID_SETUP_SCHEMA'):setup(archive,'BTCUSDT')
+        transport=Mock(return_value=(200,{},dict(mode='smart',answer=None,output=archive)))
+        with self.assertRaisesRegex(Review,'INVALID_SETUP_SCHEMA'):
+            self.client(transport).ask('unexpected-quantity',ANALYSIS,SETUP_SCHEMA,
+                lambda value:setup(value,'BTCUSDT'))
+        self.assertEqual(transport.call_count,1)
+        self.assertEqual((self.record('unexpected-quantity')['state'],self.record('unexpected-quantity')['output']),('NEEDS_REVIEW',None))
 
 
 class PublicTransportTests(unittest.TestCase):

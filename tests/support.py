@@ -1,6 +1,7 @@
 """Shared offline provider/account fixtures for the automatic pipeline tests."""
 import copy
 import time
+from datetime import datetime,timezone
 from urllib.parse import parse_qs, urlsplit
 
 from worker.core import D, Rules
@@ -8,13 +9,16 @@ from worker.market import INTERVALS, Market
 from worker.neuroapi import NUMERIC_FIELDS
 
 
-GOOD = dict(symbol='BTCUSDT', side='LONG', position_size=D('2.5'),
+GOOD = dict(symbol='BTCUSDT', side='LONG',
             limit_entry=100, take_profit=104, stop_loss=98, risk_reward=2)
 SYMBOLS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT']
 
 
 def RULES():
-    return Rules(D('.001'), D('.001'), D('1000'), D('.01'), D('5'), time.time())
+    # Explicit zero-fee exchange quote for lifecycle/precision fixtures only.
+    return Rules(D('.001'), D('.001'), D('1000'), D('.01'), D('5'), time.time(),
+        taker_fee_rate=D('0'),fee_observed_at=time.time(),fee_symbol='BTCUSDT',
+        fee_source='BINANCE_FUTURES_COMMISSION_RATE')
 
 
 def row(symbol):
@@ -72,6 +76,8 @@ class Account:
     def __init__(self):
         self.positions = []
         self.calls = []
+        self.maker_fee = '0'
+        self.taker_fee = '0'
 
     def check(self):
         return dict(status='BINANCE_CONNECTED', position_mode='ONE_WAY',
@@ -89,3 +95,10 @@ class Account:
 
     def position(self, symbol, amount):
         self.positions.append(dict(symbol=symbol, positionSide='BOTH', positionAmt=str(amount)))
+
+    def commission_rate(self,symbol):
+        self.calls.append(('GET','/fapi/v1/commissionRate?symbol='+symbol))
+        milliseconds=int(time.time()*1000)
+        return dict(symbol=symbol,maker=self.maker_fee,taker=self.taker_fee,
+            source='BINANCE_FUTURES_COMMISSION_RATE',checked_at_ms=milliseconds,
+            checked_at=datetime.fromtimestamp(milliseconds/1000,timezone.utc).isoformat())

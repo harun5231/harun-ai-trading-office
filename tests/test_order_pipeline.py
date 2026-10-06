@@ -9,8 +9,8 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from support import Account, GOOD, RobotMarket, hold
-from worker.account_state import account_state, SCREENING_ONE
-from worker.core import D, Ledger, day, now
+from worker.account_state import account_state, SCREENING_ONE, SCREENING
+from worker.core import D, Ledger, Review, day, now
 from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA
 from worker.order_gateway import OrderGateway, GatewayUnavailable, NOT_CONNECTED, build_intent
 from worker.robot import Coordinator
@@ -128,7 +128,7 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.calls[1]['output_schema'], SETUP_SCHEMA)
         self.assertEqual(len(self.calls), 2)
         row = self.intent()
-        self.assertIn(':analysis-v8:BTCUSDT', row['id'])
+        self.assertIn(':robot-v9:0:analysis-v9:BTCUSDT', row['id'])
         self.assertEqual(row['state'], 'EXECUTION_BLOCKED')
         payload = json.loads(row['payload'])
         self.assertEqual(payload['symbol'], 'BTCUSDT')
@@ -179,6 +179,72 @@ class OrderPipelineTests(unittest.TestCase):
         gateway.on_submit = submit
         self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
         self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_manual_position_during_fee_preflight_blocks_third_position(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        original = self.account.commission_rate
+        def commission(symbol):
+            value = original(symbol)
+            self.account.position('ETHUSDT', '1')
+            return value
+        self.account.commission_rate = commission
+        result = self.robot.tick()
+        self.assertEqual(result['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(result['running_symbols'], ['ETHUSDT', 'HYPEUSDT'])
+        self.assertEqual(result['available_slots'], 0)
+        self.assertEqual(self.intent()['state'], 'READY_FOR_EXECUTION')
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 0)
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM office_activity WHERE state='EXECUTING'").fetchone())
+
+    def test_symbol_opened_manually_during_fee_preflight_is_not_submitted(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        original = self.account.commission_rate
+        def commission(symbol):
+            value = original(symbol)
+            self.account.position('BTCUSDT', '1')
+            return value
+        self.account.commission_rate = commission
+        result = self.robot.tick()
+        self.assertEqual(result['failure_code'], 'ROBOT_SYMBOL_EXPOSED')
+        self.assertEqual(self.intent()['state'], 'REJECTED')
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_off_during_fee_preflight_leaves_unsubmitted_intent_for_later(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        original = self.account.commission_rate
+        def commission(symbol):
+            value = original(symbol)
+            self.store.configure(dict(robot_on=False))
+            return value
+        self.account.commission_rate = commission
+        self.assertEqual(self.robot.tick()['wait_reason'], 'ROBOT_OFF')
+        self.assertEqual(self.intent()['state'], 'READY_FOR_EXECUTION')
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_yesterday_blocked_intent_retires_without_adapter_and_allows_fresh_screen(self):
+        self.one_slot_ready()
+        self.robot.tick()
+        self.assertEqual(self.intent()['state'], 'EXECUTION_BLOCKED')
+        self.screens.append(['ETHUSDT'])
+        tomorrow = (datetime.fromisoformat(day()) + timedelta(days=1)).date().isoformat()
+        fee_count = sum('/commissionRate' in path for _, path in self.account.calls)
+        with patch('worker.robot.day', return_value=tomorrow):
+            self.assertEqual(self.robot.tick()['failure_code'], 'STALE_ORDER_INTENT')
+            self.assertEqual(self.intent()['state'], 'REJECTED')
+            self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(sum('/commissionRate' in path for _, path in self.account.calls), fee_count)
+        self.assertEqual(self.screen_counts(), [1, 1])
+        self.assertEqual(len(self.calls), 3)
         self.assertEqual(self.receipt_count(), 0)
 
     def test_implemented_adapter_dispatch_ignores_false_connection_switch(self):
@@ -351,13 +417,179 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertEqual(self.receipt_count(), 0)
 
-    def test_two_confirmed_daily_entries_block_research_even_when_closed(self):
-        for index in range(2):
+    def test_manual_symbol_opened_after_screening_does_not_consume_remaining_analysis_slot(self):
+        self.on()
+        self.robot.tick()
+        self.account.position('BTCUSDT', '1')
+        before = copy.deepcopy(self.account.positions)
+        self.assertEqual(self.robot.tick()['failure_code'], 'ROBOT_SYMBOL_EXPOSED')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.ticks(4)
+        self.assertEqual(self.screen_counts(), [2])
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual({row['symbol']: row['status'] for row in self.ledger.db.execute(
+            'SELECT symbol,status FROM robot_candidates')},
+            {'BTCUSDT': 'REJECTED', 'ETHUSDT': 'EXECUTION_BLOCKED'})
+        self.assertEqual(self.account.positions, before)
+
+    def test_ready_symbol_now_manual_does_not_double_reserve_other_slot(self):
+        self.on()
+        self.ticks(2)
+        self.account.position('BTCUSDT', '1')
+        before = copy.deepcopy(self.account.positions)
+        self.assertEqual(self.robot.tick()['failure_code'], 'ROBOT_SYMBOL_EXPOSED')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.calls[-1]['output_schema'], SETUP_SCHEMA)
+        self.assertEqual(json.loads(self.calls[-1]['message_history'][0]['content'])['symbol'], 'ETHUSDT')
+        gateway = self.connected()
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual([value['symbol'] for value in gateway.submissions], ['ETHUSDT'])
+        self.assertEqual(self.account.positions, before)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_historical_daily_receipts_do_not_limit_concurrent_research(self):
+        for index in range(5):
             self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
                                    ('fixture-' + str(index), 'BTCUSDT', day(), now()))
         self.on()
-        self.assertEqual(self.ticks(4)['wait_reason'], 'ROBOT_CAPACITY_FULL')
-        self.assertEqual(self.calls, [])
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.calls[0]['prompt'], SCREENING)
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.ticks(3)['bot_status'], 'EXECUTION_BLOCKED')
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.receipt_count(), 5)
+        self.assertTrue(all(':robot-v9:5:analysis-v9:' in row['id'] for row in
+                            self.ledger.db.execute('SELECT id FROM robot_candidates')))
+
+    def screen_counts(self):
+        return [1 if call['output_schema'] == SCREEN_ONE_SCHEMA else 2
+                for call in self.calls if call['output_schema'] in (SCREEN_SCHEMA, SCREEN_ONE_SCHEMA)]
+
+    def current_cycle(self):
+        row = self.ledger.db.execute('SELECT * FROM robot_cycles ORDER BY rowid DESC LIMIT 1').fetchone()
+        return row, json.loads(row['data'])
+
+    def test_ready_candidate_does_not_stop_single_hold_replacement(self):
+        self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]
+        self.decisions['ETHUSDT'] = 'HOLD'
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.robot.tick()['bot_status'], 'HOLD')
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(self.ticks(5)['bot_status'], 'EXECUTION_BLOCKED')
+        self.assertEqual(self.screen_counts(), [2, 1])
+        self.assertEqual(len(self.calls), 5)
+        self.assertEqual({row['symbol']: row['status'] for row in self.ledger.db.execute(
+            'SELECT symbol,status FROM robot_candidates')},
+            {'BTCUSDT': 'EXECUTION_BLOCKED', 'ETHUSDT': 'HOLD', 'SOLUSDT': 'READY_FOR_EXECUTION'})
+        _, data = self.current_cycle()
+        self.assertEqual((data['target'], data['replacements']), (2, 1))
+        self.assertEqual(self.receipt_count(), 0)
+        self.restart()
+        self.ticks(6)
+        self.assertEqual(len(self.calls), 5)
+
+    def test_two_simultaneous_holds_replace_exactly_two_after_restart(self):
+        self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT', 'BNBUSDT']]
+        self.decisions = dict(BTCUSDT='HOLD', ETHUSDT='HOLD')
+        self.on()
+        self.robot.tick()
+        self.assertEqual(self.robot.tick()['bot_status'], 'HOLD')
+        self.restart()
+        self.assertEqual(self.robot.tick()['bot_status'], 'HOLD')
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.ticks(2)['bot_status'], 'READY_FOR_EXECUTION')
+        self.ticks(4)
+        self.assertEqual(self.screen_counts(), [2, 2])
+        self.assertEqual(len(self.calls), 6)
+        _, data = self.current_cycle()
+        self.assertEqual((data['target'], data['replacements']), (2, 1))
+        self.assertEqual(data['round_symbols'], ['SOLUSDT', 'BNBUSDT'])
+        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')").fetchone()[0], 2)
+
+    def test_hold_replacement_exhausts_three_rounds_and_stays_stable(self):
+        self.market.symbols = (*self.market.symbols, 'DOGEUSDT', 'TRXUSDT')
+        self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT', 'BNBUSDT'],
+                        ['XRPUSDT', 'ADAUSDT'], ['DOGEUSDT', 'TRXUSDT']]
+        self.decisions = {symbol: 'HOLD' for pair in self.screens for symbol in pair}
+        self.on()
+        result = self.ticks(13)
+        self.assertEqual(result['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(self.screen_counts(), [2, 2, 2, 2])
+        self.assertEqual(len(self.calls), 12)
+        row, data = self.current_cycle()
+        self.assertEqual(row['state'], 'COMPLETE')
+        self.assertEqual(data['replacements'], 3)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 8)
+        self.restart()
+        self.assertEqual(self.ticks(8)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(len(self.calls), 12)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_technical_rejection_does_not_replace_historical_hold(self):
+        self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]
+        self.decisions['ETHUSDT'] = 'HOLD'
+        self.on()
+        self.ticks(4)
+        with patch('worker.robot.risk_check', side_effect=Review('RISK_LIMIT_EXCEEDED')):
+            self.assertEqual(self.robot.tick()['bot_status'], 'REJECTED')
+        self.ticks(5)
+        self.assertEqual(self.screen_counts(), [2, 1])
+        self.assertEqual(len(self.calls), 5)
+        row, data = self.current_cycle()
+        self.assertEqual(row['state'], 'COMPLETE')
+        self.assertEqual(data['replacements'], 1)
+        self.assertEqual(self.ledger.db.execute("SELECT state FROM api_requests WHERE operation LIKE '%:SOLUSDT'").fetchone()[0], 'COMPLETE')
+        self.assertEqual(self.ledger.db.execute("SELECT status FROM robot_candidates WHERE symbol='SOLUSDT'").fetchone()[0], 'REJECTED')
+        self.restart()
+        self.ticks(5)
+        self.assertEqual(len(self.calls), 5)
+
+    def test_excluded_screening_symbol_is_not_a_hold_replacement_trigger(self):
+        self.account.position('HYPEUSDT', '4.16')
+        self.screens = [['HYPEUSDT']]
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_NO_ELIGIBLE_SYMBOLS')
+        self.assertEqual(self.ticks(4)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(self.screen_counts(), [1])
+        self.assertEqual(len(self.calls), 1)
+        row, data = self.current_cycle()
+        self.assertEqual((row['state'], data['replacements']), ('COMPLETE', 0))
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        self.assertEqual(self.account.positions[0]['symbol'], 'HYPEUSDT')
+
+    def test_repeated_old_hold_symbol_does_not_create_another_replacement(self):
+        self.account.position('HYPEUSDT', '4.16')
+        self.screens = [['BTCUSDT'], ['BTCUSDT']]
+        self.decisions['BTCUSDT'] = 'HOLD'
+        self.on()
+        self.robot.tick()
+        self.assertEqual(self.robot.tick()['bot_status'], 'HOLD')
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_NO_ELIGIBLE_SYMBOLS')
+        self.assertEqual(self.ticks(5)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(self.screen_counts(), [1, 1])
+        self.assertEqual(len(self.calls), 3)
+        _, data = self.current_cycle()
+        self.assertEqual(data['round_symbols'], [])
+        self.assertEqual(data['replacements'], 1)
+
+    def test_legacy_active_cycle_is_not_resumed_by_current_namespace(self):
+        previous = day() + ':robot-v8:0'
+        previous_data = dict(target=2, queue=['ETHUSDT'], seen=['BTCUSDT'], screen=0,
+                             replacements=0, replacement_due=True)
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',
+                               (previous, day(), 0, 'ACTIVE', json.dumps(previous_data)))
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.screen_counts(), [2])
+        old = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (previous,)).fetchone()
+        self.assertEqual(json.loads(old['data']), previous_data)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_cycles').fetchone()[0], 2)
 
     def test_off_after_ready_prevents_new_gateway_submission(self):
         self.one_slot_ready()
@@ -412,6 +644,22 @@ class OrderPipelineTests(unittest.TestCase):
         self.ticks(5)
         self.assertEqual(len(gateway.submissions), 2)
         self.assertEqual(len(self.calls), 3)
+
+    def test_protected_intent_not_yet_in_account_cannot_be_screened_again(self):
+        gateway, captured = self.protected_fixture()
+        # An exchange GET may temporarily lag a confirmed adapter observation.
+        self.account.positions = []
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED',
+            intent['entry']['quantity'], **captured)
+        self.screens.append(['BTCUSDT'])
+        self.assertEqual(self.robot.tick()['wait_reason'], 'ROBOT_CYCLE_COMPLETE')
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_NO_ELIGIBLE_SYMBOLS')
+        self.assertEqual(self.ticks(4)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(self.screen_counts(), [1, 1])
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 1)
 
     def test_protected_position_does_not_starve_original_eth_queue(self):
         self.on()
@@ -479,7 +727,7 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(self.receipt_count(), 0)
 
-    def test_first_fill_before_order_intent_cannot_bypass_daily_count(self):
+    def test_first_fill_before_order_intent_cannot_fabricate_receipt(self):
         self.one_slot_ready()
         gateway = self.connected()
         gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5',

@@ -1,4 +1,4 @@
-"""One-time retirement of previous runtime tables; archived data is never loaded."""
+"""Durable retirement and lossless namespace upgrades; archives are never loaded."""
 import os
 import sqlite3
 import stat
@@ -9,6 +9,7 @@ RETIRED_TABLES = frozenset(('trades', 'events', 'cycles', 'analysis_checks',
     'robot_status', 'shadow_plans', 'shadow_events', 'live_records', 'live_actions', 'live_events',
     'live_settings', 'live_requests', 'live_arms', 'live_scheduler'))
 RETIRED_CACHES = ('snapshot.json', 'live-status.json')
+CYCLE_NAMESPACE_SCHEMA_VERSION = 2
 
 
 def _checked_file(directory, name, code):
@@ -138,3 +139,62 @@ def retire_previous_runtime(db):
             os.close(fd)
         if directory is not None:
             os.close(directory)
+
+
+def upgrade_cycle_namespaces(db):
+    """Allow a new request namespace without changing existing execution evidence.
+
+    Version 1 tied cycle identity to (day, entry_epoch). That uniqueness would
+    reuse a previous gross-risk request when the fee-inclusive contract starts
+    at the same observed entry epoch. Cycle IDs already contain the contract
+    namespace, so only their primary key must remain unique.
+    """
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if 'office_schema' not in tables:
+        # The audited first-retirement migration must run before this upgrade.
+        raise RuntimeError('WORKER_SCHEMA_BASELINE_REQUIRED')
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        versions = db.execute('SELECT version FROM office_schema').fetchall()
+        if len(versions) != 1 or type(versions[0][0]) is not int or versions[0][0] < 1:
+            raise RuntimeError('WORKER_SCHEMA_INVALID')
+        if versions[0][0] >= CYCLE_NAMESPACE_SCHEMA_VERSION:
+            db.execute('COMMIT')
+            return
+        tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'robot_cycles' in tables:
+            obsolete_indexes = set()
+            for index in db.execute('PRAGMA index_list(robot_cycles)').fetchall():
+                if not index[2]:
+                    continue
+                columns = [row[2] for row in db.execute('PRAGMA index_info("' + index[1].replace('"', '""') + '")')]
+                if len(columns) == 2 and set(columns) == {'day', 'entry_epoch'}:
+                    obsolete_indexes.add(index[1])
+            if obsolete_indexes:
+                columns = db.execute('PRAGMA table_info(robot_cycles)').fetchall()
+                if [row[1] for row in columns] != ['id', 'day', 'entry_epoch', 'state', 'data']:
+                    raise RuntimeError('WORKER_CYCLE_SCHEMA_UNSUPPORTED')
+                if 'robot_cycles_namespace_upgrade' in tables:
+                    raise RuntimeError('WORKER_CYCLE_SCHEMA_UNSUPPORTED')
+                # No table may lose rows through DROP-triggered FK cascades.
+                for table in tables:
+                    name = table.replace('"', '""')
+                    if any(row[2] == 'robot_cycles' for row in db.execute('PRAGMA foreign_key_list("' + name + '")')):
+                        raise RuntimeError('WORKER_CYCLE_SCHEMA_UNSUPPORTED')
+                definitions = [(row[0], row[1]) for row in db.execute(
+                    "SELECT name,sql FROM sqlite_master WHERE tbl_name='robot_cycles' AND type IN ('index','trigger') AND sql IS NOT NULL")
+                    if row[0] not in obsolete_indexes]
+                db.execute('''CREATE TABLE robot_cycles_namespace_upgrade(
+                    id TEXT PRIMARY KEY,day TEXT NOT NULL,entry_epoch INTEGER NOT NULL,
+                    state TEXT NOT NULL,data TEXT NOT NULL)''')
+                db.execute('''INSERT INTO robot_cycles_namespace_upgrade(rowid,id,day,entry_epoch,state,data)
+                    SELECT rowid,id,day,entry_epoch,state,data FROM robot_cycles''')
+                db.execute('DROP TABLE robot_cycles')
+                db.execute('ALTER TABLE robot_cycles_namespace_upgrade RENAME TO robot_cycles')
+                for _, definition in definitions:
+                    db.execute(definition)
+        db.execute('UPDATE office_schema SET version=?', (CYCLE_NAMESPACE_SCHEMA_VERSION,))
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise

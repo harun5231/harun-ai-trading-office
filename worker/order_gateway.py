@@ -56,6 +56,12 @@ def build_intent(plan, operation):
                         stop_loss=plan['sl'], take_profit=plan['tp'], working_type='MARK_PRICE'),
         margin_mode=plan['margin_mode'], leverage=plan['leverage'],
         risk_target_usdt=plan['risk_target_usdt'], risk_usdt=plan['risk'],
+        gross_risk_usdt=plan['gross_risk'],entry_fee_usdt=plan['entry_fee_usdt'],
+        sl_exit_fee_usdt=plan['sl_exit_fee_usdt'],tp_exit_fee_usdt=plan['tp_exit_fee_usdt'],
+        net_reward_usdt=plan['net_reward'],net_reward_risk=plan['net_rr'],
+        fee_evidence=dict(source=plan['fee_source'],symbol=plan['fee_symbol'],
+            observed_at=plan['fee_observed_at'],taker_rate=plan['entry_fee_rate']),
+        excluded_costs=plan['excluded_costs'],
         evidence_sha256=plan['provenance']['payload_sha256'])
 
 

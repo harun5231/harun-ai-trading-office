@@ -46,13 +46,16 @@ class Coordinator:
         return expected
     def execution_slots(self,account,today):
         rows=list(self.db.execute("SELECT symbol,state FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
-        # A pending entry reserves both a possible position and today's entry
-        # allowance. A confirmed fill reserves its position until a later GET
+        # A pending entry reserves a possible position. A confirmed fill
+        # reserves its position until a later GET
         # reflects it; represented positions are never counted twice.
-        pending=sum(row['state']=='ENTRY_PENDING' for row in rows)
         unrepresented=sum(row['symbol'] not in account['running_symbols'] for row in rows)
-        return max(0,min(account['available_slots'],2-account['running_positions']-unrepresented,
-            2-self.store.entries(today)-pending))
+        return max(0,min(account['available_slots'],2-account['running_positions']-unrepresented))
+    def exposed_symbols(self,account):
+        # A confirmed adapter observation can precede the next account GET.
+        # Reserve both its slot and symbol until that intent is closed/rejected.
+        active=self.db.execute("SELECT symbol FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')")
+        return set(account['running_symbols'])|{row['symbol'] for row in active}
     def advance_execution(self,account,today):
         row=self.db.execute("SELECT * FROM order_intents WHERE state IN ('SUBMITTING','NEEDS_REVIEW') ORDER BY rowid LIMIT 1").fetchone()
         if row:return self.store.report('NEEDS_REVIEW',account,row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN')
@@ -76,22 +79,31 @@ class Coordinator:
             (row['id'],row['id'],row['symbol'],'READY_FOR_EXECUTION',json.dumps(intent),None,None,now(),now()))
         try:self.verified_intent(self.db.execute('SELECT * FROM order_intents WHERE id=?',(row['id'],)).fetchone())
         except Exception:return self.mark_unknown(row['id'],row['id'],account,'ORDER_EVIDENCE_UNVERIFIED')
+        # Expired/exposed unsent intents retire even while the adapter is absent.
+        # Otherwise yesterday's blocked intent could stop today's research.
+        if row['cycle'].split(':',1)[0]!=today or not 0<=time.time()-plan['rules_checked_at']<=300:
+            return self.reject_intent(row,account,'STALE_ORDER_INTENT')
+        if row['symbol'] in self.exposed_symbols(account) or row['symbol'] in MANUAL_ONLY_SYMBOLS:
+            return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
         try:require_implementation(self.gateway)
         except GatewayUnavailable:
             self.db.execute("UPDATE order_intents SET state='EXECUTION_BLOCKED',failure_code=?,updated=? WHERE id=?",(NOT_CONNECTED,now(),row['id']))
             self.db.execute("UPDATE robot_candidates SET status='EXECUTION_BLOCKED',failure_code=? WHERE id=?",(NOT_CONNECTED,row['id']))
             return self.store.report('EXECUTION_BLOCKED',account,NOT_CONNECTED)
-        # Implementing a gateway never permits old, stale or already exposed setups.
-        if row['cycle'].split(':',1)[0]!=today or not 0<=time.time()-plan['rules_checked_at']<=300:
-            return self.reject_intent(row,account,'STALE_ORDER_INTENT')
-        if row['symbol'] in account['running_symbols'] or row['symbol'] in MANUAL_ONLY_SYMBOLS:
-            return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
         if not self.execution_slots(account,today):return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         try:
             target=plan['risk_target_usdt']
-            context,rules=analysis_context(self.market,row['symbol'],target)
+            context,rules=analysis_context(self.market,row['symbol'],target,self.account_factory())
             self.market.fresh(context,row['symbol']);preflight(plan,rules,target)
         except Exception:return self.reject_intent(row,account,'ORDER_PREFLIGHT_REJECTED')
+        # Market/commission GETs may take time while a human opens a position.
+        # Refresh the live account after those reads and before claiming submit.
+        account=account_state(self.account_factory(),self.store,today)
+        self.store.report_account(account)
+        if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        if row['symbol'] in self.exposed_symbols(account) or row['symbol'] in MANUAL_ONLY_SYMBOLS:
+            return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
+        if not self.execution_slots(account,today):return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         self.db.execute('BEGIN IMMEDIATE')
         try:
             if not self.allowed(today):
@@ -189,24 +201,29 @@ class Coordinator:
         today=day();account=account_state(self.account_factory(),self.store,today)
         self.store.report_account(account)
         advanced=self.advance_execution(account,today)
-        if advanced is not None:return advanced
+        # An absent order adapter does not stop analyzing the rest of an already
+        # screened batch or replacing actual HOLD decisions. Unknown order or
+        # provider outcomes still stop the pipeline immediately.
+        blocked=advanced if advanced is not None and advanced['bot_status']=='EXECUTION_BLOCKED' else None
+        if advanced is not None and blocked is None:return advanced
         available=self.execution_slots(account,today)
-        if not available:return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        if not available:return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         # An interrupted paid request cannot be automatically replayed under a new ID.
         if self.db.execute("SELECT 1 FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone() or self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         self.neuro.require_key() # Configuration failure claims no paid operation.
-        cycle=today+':robot-v8:'+str(self.store.entries(today))
+        prefix=today+':robot-v9:'
+        cycle=prefix+str(self.store.entries(today))
         old=self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(cycle,)).fetchone()
         if not old:
             # A first fill changes the entry epoch. Finish the existing bounded
             # research queue rather than discard already-paid screening results.
-            old=self.db.execute("SELECT * FROM robot_cycles WHERE day=? AND state='ACTIVE' ORDER BY entry_epoch LIMIT 1",(today,)).fetchone()
+            old=self.db.execute("SELECT * FROM robot_cycles WHERE day=? AND state='ACTIVE' AND id LIKE ? ORDER BY entry_epoch LIMIT 1",(today,prefix+'%')).fetchone()
             if old:cycle=old['id']
         if not old:
             if self.db.execute("SELECT 1 FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():return self.store.report('WAITING',account,wait_reason='ROBOT_CYCLE_COMPLETE')
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
-            data=dict(target=available,queue=[],seen=[],screen=-1,replacements=0)
+            data=dict(target=available,queue=[],seen=[],screen=-1,replacements=0,round_symbols=[])
             self.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,today,self.store.entries(today),'ACTIVE',json.dumps(data)))
         else:
             data=json.loads(old['data'])
@@ -221,26 +238,28 @@ class Coordinator:
         remaining=min(available-ready_unexposed,data['target']-ready-technical)
         if remaining<=0:
             self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('WAITING' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+            return blocked or self.store.report('WAITING' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if data['queue']:
             symbol=data['queue'][0]
-            if symbol in account['running_symbols'] or symbol in MANUAL_ONLY_SYMBOLS:
+            if symbol in self.exposed_symbols(account) or symbol in MANUAL_ONLY_SYMBOLS:
                 data['queue'].pop(0);data['seen'].append(symbol);self.save_cycle(cycle,data)
                 # Account conflicts are technical rejections, never replacement triggers.
-                self.db.execute('INSERT OR IGNORE INTO robot_candidates VALUES(?,?,?,?,?,?)',(cycle+':analysis-v8:'+symbol,cycle,symbol,'REJECTED',None,'ROBOT_SYMBOL_EXPOSED'))
+                self.db.execute('INSERT OR IGNORE INTO robot_candidates VALUES(?,?,?,?,?,?)',(cycle+':'+VERSION+':'+symbol,cycle,symbol,'REJECTED',None,'ROBOT_SYMBOL_EXPOSED'))
                 return self.store.report('REJECTED',account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
-        held=any(r['status']=='HOLD' for r in results)
-        # Filtered screening symbols leave capacity for a bounded replacement,
-        # including after other eligible symbols in that screen were analyzed.
-        replacement_due=bool(data.get('replacement_due'))
-        if not initial and not held and not replacement_due:return self.store.report('REJECTED' if technical else 'WAITING',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+        # Only HOLD decisions from the just-analyzed round are replaceable.
+        # A rejected/duplicate/exposed screening result is not a new HOLD, and
+        # historical HOLDs must not trigger another paid round after rejection.
+        held=sum(r['status']=='HOLD' and r['symbol'] in data.get('round_symbols',[]) for r in results)
+        if not initial and not held:
+            self.save_cycle(cycle,data,'COMPLETE')
+            return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         if not initial and data['replacements']>=MAX_REPLACEMENTS:
             self.save_cycle(cycle,data,'COMPLETE')
             return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
-        return self.screen(cycle,data,remaining,account,today,initial)
+        return self.screen(cycle,data,remaining if initial else min(remaining,held),account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -258,17 +277,19 @@ class Coordinator:
             coins=selections(value,catalog,count)
             data['screen']=index
             if not initial:data['replacements']+=1
-            eligible=[s for s in coins if s not in data['seen'] and s not in account['running_symbols'] and s not in MANUAL_ONLY_SYMBOLS]
+            exposed=self.exposed_symbols(account)
+            eligible=[s for s in coins if s not in data['seen'] and s not in exposed and s not in MANUAL_ONLY_SYMBOLS]
             rejected=[s for s in coins if s not in eligible]
             for symbol in rejected:
                 if symbol not in data['seen']:data['seen'].append(symbol)
             data['queue']=eligible
-            data['replacement_due']=bool(rejected)
+            data['round_symbols']=eligible
+            data.pop('replacement_due',None)
             self.db.execute('BEGIN IMMEDIATE')
             self.save_cycle(cycle,data,'ACTIVE')
             self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=?",(operation,))
             self.db.execute('COMMIT')
-            return self.store.report('WAITING',account,wait_reason='SCREENING_COMPLETE_ANALYSIS_PENDING' if eligible else 'SCREENING_REPLACEMENT_REQUIRED')
+            return self.store.report('WAITING',account,wait_reason='SCREENING_COMPLETE_ANALYSIS_PENDING' if eligible else 'SCREENING_NO_ELIGIBLE_SYMBOLS')
         except Exception:
             if self.db.in_transaction:self.db.execute('ROLLBACK')
             self.db.execute("UPDATE robot_jobs SET state='NEEDS_REVIEW' WHERE operation=?",(operation,))
@@ -280,7 +301,7 @@ class Coordinator:
         # Symbol catalog/rules/context are read before the paid call, never guessed.
         try:
             if symbol not in self.market.catalog():raise Review('INVALID_SCREENING_SYMBOL')
-            context,_=analysis_context(self.market,symbol,target)
+            context,_=analysis_context(self.market,symbol,target,self.account_factory())
         except Exception:
             return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
         if not self.claim(operation,cycle,'ANALYSIS',symbol,today,target):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -292,7 +313,8 @@ class Coordinator:
             if signal.side=='HOLD':state='HOLD'
             else:
                 self.store.report('VALIDATING',account)
-                self.market.fresh(context,symbol);rules=self.market.rules(symbol)
+                self.market.fresh(context,symbol)
+                _,rules=analysis_context(self.market,symbol,target,self.account_factory())
                 plan=risk_check(signal,rules,target);plan['risk_target_usdt']=target
                 plan['sizing_rules']={k:str(v) if isinstance(v,D) else v for k,v in asdict(rules).items()}
                 preflight(plan,rules,target);stamp(self.db,plan,operation);verify(self.db,plan,operation)

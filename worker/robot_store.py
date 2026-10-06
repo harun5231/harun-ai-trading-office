@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from .core import D, Review, day, now, validated_risk_target
 from .account_state import (empty_account, account_observation, newer_account,
                             newer_account_json, account_order, account_timestamp, slots)
-from .migration import retire_previous_runtime
+from .migration import retire_previous_runtime, upgrade_cycle_namespaces
 from .order_gateway import OrderGateway
 from .robot_provenance import verify
 
@@ -41,10 +41,11 @@ class RobotStore:
         db.create_function('robot_account_newer', 2, newer_account_json)
         if not initialize: return
         retire_previous_runtime(db)
+        upgrade_cycle_namespaces(db)
         db.executescript('''
         CREATE TABLE IF NOT EXISTS robot_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,risk TEXT NOT NULL);
         INSERT OR IGNORE INTO robot_settings VALUES(1,0,'5');
-        CREATE TABLE IF NOT EXISTS robot_cycles(id TEXT PRIMARY KEY,day TEXT NOT NULL,entry_epoch INTEGER NOT NULL,state TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(day,entry_epoch));
+        CREATE TABLE IF NOT EXISTS robot_cycles(id TEXT PRIMARY KEY,day TEXT NOT NULL,entry_epoch INTEGER NOT NULL,state TEXT NOT NULL,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS robot_jobs(operation TEXT PRIMARY KEY,cycle TEXT NOT NULL,kind TEXT NOT NULL,symbol TEXT,state TEXT NOT NULL,risk_target TEXT);
         CREATE TABLE IF NOT EXISTS robot_candidates(id TEXT PRIMARY KEY,cycle TEXT NOT NULL,symbol TEXT NOT NULL,status TEXT NOT NULL,plan TEXT,failure_code TEXT,UNIQUE(cycle,symbol));
         CREATE TABLE IF NOT EXISTS order_intents(id TEXT PRIMARY KEY,candidate_id TEXT UNIQUE NOT NULL,symbol TEXT NOT NULL,state TEXT NOT NULL,payload TEXT NOT NULL,result TEXT,failure_code TEXT,created TEXT NOT NULL,updated TEXT NOT NULL);
@@ -87,7 +88,7 @@ class RobotStore:
     def verified_plan(self, row):
         try:
             plan = json.loads(row['plan'])
-            if row['symbol'] != plan['symbol'] or row['cycle'] != row['id'].rsplit(':analysis-v8:', 1)[0]: raise ValueError
+            if row['symbol'] != plan['symbol'] or row['cycle'] != row['id'].rsplit(':analysis-v9:', 1)[0]: raise ValueError
             verify(self.db, plan, row['id'])
             return plan
         except Exception: raise Review('ORDER_EVIDENCE_UNVERIFIED') from None

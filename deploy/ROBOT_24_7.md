@@ -37,13 +37,24 @@ docker compose exec --user 10001:10001 -T worker python -m worker api-check
 docker compose exec --user 10001:10001 -T worker python -m worker binance-check
 ```
 
-Pengaturan risiko masih tersedia di panel Robot Trading; default 5 USDT dan
-perubahan hanya dipakai analisis baru. URL Office lama diarahkan ke halaman utama
+Pengaturan risiko masih tersedia di panel Robot Trading; default net 5 USDT,
+termasuk fee entry dan exit SL memakai taker commission akun per symbol.
+Perubahan hanya dipakai analisis baru. Net RR minimal 2 setelah fee; funding,
+slippage, perubahan fee, atau gap dapat membuat hasil nyata berbeda.
+URL Office lama diarahkan ke halaman utama
 yang sama, sehingga bookmark lama tetap menuju dashboard terbaru.
 
 Jika hanya HYPEUSDT manual aktif, harapkan posisi1/2, slot1, dan HYPEUSDT berada
 dalam manual exposure. Symbol manual tidak diambil alih. Laporan dan riwayat
 akun berasal dari Binance; aktivitas riset tidak dicatat sebagai fill akun.
+Maksimal dua posisi bersamaan tanpa batas entry harian. Pending entry
+mencadangkan slot. Penggantian kandidat hanya berasal dari HOLD, maksimal
+tiga screening tambahan setelah screening awal.
+
+Upgrade namespace `robot-v9`/`analysis-v9` mempertahankan cycle dan journal lama,
+order unknown, receipt, pengaturan, serta exposure. Schema version 2 menghapus
+constraint hari/epoch yang menghalangi cycle baru; bukti lama tidak menjadi
+order fee-inclusive secara otomatis.
 
 Pada build ini ujung pipeline berstatus `EXECUTION_BLOCKED` dengan kode
 `BINANCE_ORDER_GATEWAY_NOT_CONNECTED`; gateway menampilkan `NOT_CONNECTED`.
