@@ -174,13 +174,13 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   }
   function trading(ctx, t, data, variant) {
     box(ctx, 12, 42, 224, 180); box(ctx, 246, 42, 254, 180);
-    text(ctx, 'BINANCE ADAPTER / READ ONLY', 22, 59, palette.amber, 10);
+    text(ctx, 'BINANCE ADAPTER / STATUS', 22, 59, palette.amber, 10);
     const adapter = gateway(data), connected = adapter?.connected === true;
     text(ctx, 'GATEWAY', 23, 86, palette.muted, 9);
     text(ctx, connected ? short(adapter.status, 24) : 'NOT_CONNECTED', 23, 107, connected ? palette.green : palette.amber, 14, '600');
     text(ctx, 'WORKER PHASE', 23, 135, palette.muted, 9);
     text(ctx, status(data), 23, 155, palette.cyan, 11);
-    text(ctx, adapter?.failure_code ? short(adapter.failure_code, 29) : connected ? 'STATUS FROM WORKER' : 'NO CONNECTED ORDER GATEWAY', 23, 185, palette.muted, 9);
+    text(ctx, adapter?.failure_code ? short(adapter.failure_code, 29) : connected ? 'STATUS FROM WORKER' : 'ORDER TRANSPORT UNAVAILABLE', 23, 185, palette.muted, 9);
     text(ctx, 'OFFICE GRAPHICS / ADAPTER', 257, 59, palette.cyan, 10);
     grid(ctx, 258, 76, 228, 88, 3, 7);
     for (let i = 0; i < 22; i++) {
@@ -202,7 +202,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     text(ctx, manual.length ? manual.slice(0, 3).map(v => short(v, 10)).join(' / ') : '—', 329, 140, palette.text, 11);
     text(ctx, 'STATUS', 329, 164, palette.muted, 9);
     text(ctx, status(data), 329, 183, palette.cyan, 10);
-    text(ctx, 'READ ONLY · NO ORDERS', 329, 208, palette.muted, 9);
+    text(ctx, 'ACCOUNT TELEMETRY · READ ONLY', 329, 208, palette.muted, 9);
   }
   function reviewer(ctx, t, data, variant) {
     box(ctx, 12, 42, 488, 180); text(ctx, 'PIPELINE DECISION / READ ONLY', 24, 61, palette.cyan, 11);

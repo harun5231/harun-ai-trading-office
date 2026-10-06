@@ -7,10 +7,24 @@ risiko. Pengiriman entry/TP/SL **belum terhubung**. Alur berhenti pada
 status itu tidak menyatakan bahwa ada order di Binance.
 
 Developer melanjutkan di satu kelas: [`OrderGateway`](../worker/order_gateway.py).
-Implementasikan `submit(intent)` dan `reconcile(intent)` beserta status koneksi
-yang benar. Jangan hanya mengubah `connected=True`: kedua metode sekarang
-melempar error dan belum memiliki transport produksi. Tidak ada engine kedua,
-jalur tiket, approval browser, atau sakelar environment pengiriman order.
+Implementasikan `submit(intent)` dan `reconcile(intent)` beserta `status()` yang
+menggambarkan adapter dengan benar. Kedua metode bawaan sekarang melempar error
+dan belum memiliki transport produksi. Tidak ada engine kedua, jalur tiket,
+approval browser, atau sakelar environment pengiriman order.
+
+`require_implementation(gateway)` memeriksa secara lokal bahwa `submit` dan
+`reconcile` tersedia, dapat dipanggil, dan bukan metode stub bawaan yang masih
+diwarisi dari `_MissingOrderImplementation`. Tambahkan kedua implementasi pada
+kelas publik `OrderGateway`; stub privat tetap menandai bagian yang belum diisi.
+Pemeriksaan ini tidak menjalankan request,
+membaca konfigurasi koneksi, atau menggunakan status sebagai sakelar. Adapter
+yang belum diimplementasikan dihentikan sebelum claim `SUBMITTING`.
+
+Coordinator meneruskan pemanggilan ke metode yang telah diimplementasikan setelah
+validasi alur, terlepas dari metadata `connected` pada `status()`. Status dipakai
+untuk laporan Office dan health, sedangkan adapter menangani autentikasi,
+transport, dan hasil exchange. Kelulusan pemeriksaan metode maupun status
+koneksi tidak membuktikan bahwa autentikasi atau kesehatan exchange sudah benar.
 
 ## Batas coordinator yang sudah tersedia
 
@@ -74,6 +88,9 @@ Dokumentasi resmi Binance diperiksa pada 6 Oktober 2026:
 Gunakan ID deterministik untuk entry serta kedua proteksi, signing, sinkronisasi
 server time, timeout terbatas, dan rate limit sesuai dokumentasi terkini.
 `BinanceReadOnly` tetap reader GET; transport order hanya berada di gateway.
+Helper HTTP publik juga tetap melayani pembacaan market. Developer menyediakan
+signed transport order pada gateway tunggal, dengan kontrak reader tersebut
+tetap dipertahankan.
 API key dan secret hanya dibaca di VPS, tidak masuk payload journal atau Office.
 
 ACK entry belum membuktikan fill atau proteksi. Adapter harus mengonfirmasi
@@ -120,6 +137,11 @@ prosedur rekonsiliasi berdasarkan client ID, order/fill Binance, dan proteksi,
 kemudian memperbarui journal secara terverifikasi. Jangan menghapus journal
 atau menganggap timeout berarti order gagal. Pemulihan outcome tidak pasti
 sengaja belum diotomatisasi pada build sambungan yang belum terhubung ini.
+
+Sesudah claim `SUBMITTING`, setiap exception dari metode adapter yang sudah
+diimplementasikan diperlakukan sebagai outcome tidak pasti, termasuk
+`GatewayUnavailable`. Worker tidak mengirim ulang claim tersebut otomatis.
+Metadata koneksi tidak mengubah penanganan ini.
 
 OFF menghentikan riset dan submission baru; pemanggilan yang sudah berlangsung
 dapat selesai. Polling saldo/posisi/riwayat tetap berjalan. Lifecycle gateway

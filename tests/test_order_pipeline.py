@@ -19,8 +19,6 @@ from worker.robot_store import RobotStore
 
 class FixtureGateway:
     """An explicitly injected test adapter, never a runtime fallback."""
-    connected = True
-
     def __init__(self):
         self.submissions = []
         self.reconciliations = []
@@ -160,7 +158,7 @@ class OrderPipelineTests(unittest.TestCase):
         intent = build_intent(self.store.verified_plan(candidate), candidate['id'])
         with patch('worker.http_client.request', side_effect=AssertionError('Unexpected network')) as request:
             gateway = OrderGateway()
-            self.assertFalse(gateway.connected)
+            self.assertFalse(gateway.status()['connected'])
             for method in (gateway.submit, gateway.reconcile):
                 with self.assertRaises(GatewayUnavailable): method(intent)
             request.assert_not_called()
@@ -181,6 +179,89 @@ class OrderPipelineTests(unittest.TestCase):
         gateway.on_submit = submit
         self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
         self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_implemented_adapter_dispatch_ignores_false_connection_switch(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        gateway.connected = False
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(self.robot.tick()['bot_status'], 'WAITING')
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(len(gateway.reconciliations), 1)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_implemented_subclass_dispatch_does_not_use_display_status(self):
+        class ImplementedGateway(FixtureGateway, OrderGateway):
+            pass
+        self.one_slot_ready()
+        gateway = ImplementedGateway()
+        self.robot.gateway = gateway
+        self.assertFalse(gateway.status()['connected'])
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(len(gateway.submissions), 1)
+
+    def test_true_flag_cannot_replace_missing_transport(self):
+        self.one_slot_ready()
+        self.robot.gateway.connected = True
+        self.assertEqual(self.robot.tick()['failure_code'], NOT_CONNECTED)
+        self.assertEqual(self.intent()['state'], 'EXECUTION_BLOCKED')
+        self.assertEqual(self.receipt_count(), 0)
+        self.assertFalse(self.ledger.db.execute("SELECT 1 FROM office_activity WHERE state='EXECUTING'").fetchone())
+
+    def test_missing_reconciliation_is_detected_before_submission_claim(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        gateway.reconcile = None
+        self.assertEqual(self.robot.tick()['failure_code'], NOT_CONNECTED)
+        self.assertEqual(self.intent()['state'], 'EXECUTION_BLOCKED')
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_implementing_public_gateway_methods_needs_no_other_switch(self):
+        self.one_slot_ready()
+        fixture = FixtureGateway()
+        with patch.object(OrderGateway, 'submit', fixture.submit), patch.object(OrderGateway, 'reconcile', fixture.reconcile):
+            self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+            self.assertEqual(self.robot.tick()['bot_status'], 'WAITING')
+        self.assertEqual(len(fixture.submissions), 1)
+        self.assertEqual(len(fixture.reconciliations), 1)
+
+    def test_existing_pending_order_can_reconcile_without_submit_implementation(self):
+        self.one_slot_ready()
+        fixture = self.connected()
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        class ReaderGateway(OrderGateway):
+            def reconcile(self, intent): return fixture.reconcile(intent)
+        self.robot.gateway = ReaderGateway()
+        self.assertEqual(self.robot.tick()['bot_status'], 'WAITING')
+        self.assertEqual(self.intent()['state'], 'ENTRY_PENDING')
+        self.assertEqual(len(fixture.submissions), 1)
+        self.assertEqual(len(fixture.reconciliations), 1)
+
+    def test_missing_reader_preserves_existing_pending_order_and_slot(self):
+        self.one_slot_ready()
+        fixture = self.connected()
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        before = dict(self.intent())
+        self.robot.gateway = OrderGateway()
+        self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
+        self.assertEqual(dict(self.intent()), before)
+        current_account = account_state(self.account, self.store, day())
+        self.assertEqual(self.robot.execution_slots(current_account, day()), 0)
+        self.assertEqual(len(fixture.submissions), 1)
+
+    def test_gateway_unavailable_after_claim_is_unknown_and_never_replayed(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        def unavailable(intent): raise GatewayUnavailable(NOT_CONNECTED)
+        gateway.on_submit = unavailable
+        self.assertEqual(self.robot.tick()['failure_code'], 'ORDER_OUTCOME_UNKNOWN')
+        self.assertEqual(self.intent()['state'], 'NEEDS_REVIEW')
+        self.restart()
+        self.ticks(4)
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(gateway.reconciliations, [])
         self.assertEqual(self.receipt_count(), 0)
 
     def test_submit_timeout_never_replays_after_restart(self):

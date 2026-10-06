@@ -121,7 +121,7 @@
   function gatewayNote(robot) {
     const gateway = robot?.execution_gateway;
     if (!gateway?.connected || ['NOT_CONNECTED', 'BLOCKED', 'UNAVAILABLE'].includes(gateway.status)) {
-      return notice('Eksekusi Binance diblokir · '+(gateway?.failure_code || 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED')+'. Status ON tidak membuktikan order sudah dikirim.', 'warning');
+      return notice('Transport pengiriman order Binance belum tersedia · '+(gateway?.failure_code || 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED')+'. Worker belum dapat mengirim order ke Binance.', 'warning');
     }
     return notice('Gateway eksekusi: '+(gateway.status ?? 'BELUM DIKETAHUI')+'. Riwayat Binance menjadi bukti transaksi yang terjadi.');
   }

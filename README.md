@@ -12,6 +12,13 @@ Entry, TP, dan SL belum terkirim. Developer manusia menyambungkan satu adapter
 [panduan integrasi](deploy/ORDER_INTEGRATION.md). Tidak ada transport trading
 alternatif atau tombol yang dapat melewati adapter tersebut.
 
+Coordinator memeriksa implementasi `submit` dan `reconcile` sebelum menyimpan
+claim `SUBMITTING`. Metode yang sudah diimplementasikan dipanggil setelah
+validasi alur, dengan status koneksi sebagai metadata Office. Field `connected`
+tidak mengaktifkan atau menonaktifkan dispatch, dan tidak ada sakelar environment
+pengiriman order. Keberadaan metode maupun status tidak membuktikan autentikasi
+atau kesehatan exchange; developer harus menyelesaikan dan memverifikasi adapter.
+
 ## Office
 
 Menu hanya memuat Robot Trading ON/OFF, Karyawan AI, Laporan, Aktivitas, dan
@@ -58,5 +65,5 @@ oleh jalur runtime. Journal request berbayar serta bukti entry Binance yang
 terkonfirmasi dipertahankan. Tidak ada promosi setup lama menjadi order.
 
 Pengujian lokal menggunakan fixtures tanpa key atau uang nyata. Test lulus
-tidak membuktikan adapter Binance sudah tersambung. Gateway tetap
-`NOT_CONNECTED` sampai developer menyelesaikan transport, rekonsiliasi, dan proteksi.
+tidak membuktikan adapter Binance sudah tersambung. Status default `NOT_CONNECTED`
+mencerminkan adapter bawaan yang belum memiliki transport, rekonsiliasi, dan proteksi.
