@@ -59,11 +59,12 @@ emit({...data(),status:'EXECUTING',execution_gateway:{connected:true,status:'CON
 bridge.dispose();
 """)
 
-    def test_robot_off_stops_research_but_keeps_actual_position_monitoring(self):
+    def test_robot_off_stops_all_avatars_but_keeps_read_only_account_values(self):
         self.run_node(r"""
-emit({...data(),status:'OFF',robot_on:false,employees:roles.map(id=>({id,status:'WORKING'}))});for(const role of ['market','neuro','risk','trading','reviewer','report'])assert.equal(bridge.getRole(role).active,false);assert.equal(bridge.getRole('position').active,true);assert.match(bridge.getRole('position').speech,/1 posisi Binance/);
+emit({...data(),status:'OFF',robot_on:false,employees:roles.map(id=>({id,status:'WORKING'}))});for(const role of roles){assert.equal(bridge.getRole(role).state,'IDLE');assert.equal(bridge.getRole(role).active,false);assert.equal(bridge.getRole(role).known,true);}assert.match(bridge.getRole('position').speech,/Robot OFF/);assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTelemetry().active_positions,1);assert.ok(bridge.getTelemetry().employees.every(employee=>employee.status==='OFF'));
 emit({...data(),status:'OFF',robot_on:false,active_positions:0});assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getRole('position').known,true);assert.equal(bridge.getRole('boss').active,false);
-emit({...data(),status:'OFF',robot_on:false,active_positions:null});assert.equal(bridge.getRole('position').known,false);assert.equal(bridge.getRole('position').active,false);
+emit({...data(),status:'OFF',robot_on:false,active_positions:null});assert.equal(bridge.getRole('position').known,true);assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().active_positions,null);
+emit({...data(),status:'ANALYZING',robot_on:false,employees:roles.map(id=>({id,status:'WORKING'}))});assert.ok(roles.every(role=>!bridge.getRole(role).active));
 emit({...data(),status:'OFFLINE',active_positions:2});assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().balance,null);bridge.dispose();
 """)
 

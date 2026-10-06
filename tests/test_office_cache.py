@@ -5,7 +5,8 @@ import tempfile
 import unittest
 
 from worker.account_state import account_order
-from worker.core import Ledger
+from worker.core import Ledger,day,now
+from unittest.mock import patch
 from worker.robot_store import RobotStore
 
 
@@ -65,3 +66,41 @@ class OfficeCacheTests(unittest.TestCase):
         self.assertEqual(snapshot['account']['status'], 'CONNECTED')
         self.assertEqual(snapshot['reports']['pnl_today_usdt'], '4')
         self.assertIsNone(snapshot['robot']['account_failure_code'])
+
+    def test_off_keeps_fresh_running_position_visible_and_every_employee_idle(self):
+        observation=self.observation()
+        self.store.configure({'robot_on':True})
+        self.store.report_office(observation)
+        self.assertEqual(next(row['status'] for row in self.store.office_snapshot()['employees'] if row['id']=='position'),'WORKING')
+        self.store.configure({'robot_on':False})
+        # Completion of already-started work must not make an OFF worker active.
+        self.store.report('ANALYZING')
+        snapshot=self.store.office_snapshot()
+        self.assertEqual(snapshot['robot']['bot_status'],'OFF')
+        self.assertTrue(all(row['status']=='IDLE' for row in snapshot['employees']))
+        self.assertEqual(snapshot['account'],{key:value for key,value in observation['account'].items() if not key.startswith('_')})
+        self.assertEqual(snapshot['account']['active_positions'],1)
+        self.assertEqual(snapshot['position_history']['items'],observation['position_history']['items'])
+
+    def test_closed_entries_keep_daily_quota_spent_and_day_rollover_recomputes_slots(self):
+        observation=self.observation()
+        self.store.report_office(observation)
+        for index in range(2):
+            self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+                ('closed-'+str(index),'ETHUSDT',day(),now()))
+        current=self.store.snapshot()
+        self.assertEqual((current['bot_entries_today'],current['available_slots']),(2,0))
+        # A cached account may still be current across midnight. New quota is
+        # derived from the new day, while the carried position remains present.
+        with patch('worker.robot_store.day',return_value='2099-01-01'):
+            current=self.store.snapshot()
+        self.assertEqual((current['bot_entries_today'],current['running_positions'],current['available_slots']),(0,1,1))
+
+    def test_pending_entry_reserves_daily_quota_and_is_not_double_counted_as_a_position(self):
+        self.store.report_office(self.observation())
+        self.ledger.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
+            ('pending','pending','BTCUSDT','ENTRY_PENDING','{}',None,None,now(),now()))
+        self.assertEqual(self.store.snapshot()['available_slots'],1)
+        self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+            ('today-filled','ETHUSDT',day(),now()))
+        self.assertEqual(self.store.snapshot()['available_slots'],0)

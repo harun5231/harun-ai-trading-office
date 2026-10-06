@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from worker import binance_office as office
 from worker.binance_private import BASE, BinanceReadOnly, BinanceCheckError, read_only_get, signature
-from worker.account_state import account_state, newer_account, account_order as observation_order
+from worker.account_state import account_state, newer_account, slots, account_order as observation_order
 
 END=int(datetime(2026,10,6,12,tzinfo=timezone.utc).timestamp())*1000
 TODAY=int(datetime(2026,10,5,17,tzinfo=timezone.utc).timestamp())*1000
@@ -154,7 +154,8 @@ class OfficeTests(unittest.TestCase):
         database=sqlite3.connect(':memory:');self.addCleanup(database.close)
         database.execute('CREATE TABLE robot_entry_receipts(id TEXT,symbol TEXT,entry_day TEXT,confirmed_at TEXT)')
         database.execute("INSERT INTO robot_entry_receipts VALUES('old-bot-fill','BTCUSDT','2026-10-01','2026-10-01T12:00:00Z')")
-        store=SimpleNamespace(db=database,entries=lambda today:0)
+        store=SimpleNamespace(db=database,entries=lambda today:0,
+                              available_slots=lambda running,symbols,today:slots(running,0))
         self.client.account['positions'].append(dict(symbol='BTCUSDT',positionSide='BOTH',positionAmt='0.1'))
         self.client.check=lambda:dict(status='BINANCE_CONNECTED',position_mode='ONE_WAY',can_trade=True,
                                      multi_assets_margin=False,usdt_wallet_balance='116.92800000',usdt_available_balance='110.5')

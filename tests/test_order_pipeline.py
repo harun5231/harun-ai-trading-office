@@ -29,7 +29,7 @@ class FixtureGateway:
         value = dict(source='BINANCE_FUTURES', state=state, symbol=intent['symbol'],
                      client_order_id=intent['client_order_id'], order_id='10',
                      filled_quantity=filled, observed_at=now())
-        if D(filled): value.update(first_fill_at=now())
+        if D(filled): value.update(first_fill_at=value['observed_at'])
         if state == 'POSITION_PROTECTED':
             value.update(sl_confirmed=True, tp_confirmed=True, sl_order_id='11', tp_order_id='12')
         value.update(changes)
@@ -448,20 +448,169 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(self.account.positions, before)
         self.assertEqual(self.receipt_count(), 0)
 
-    def test_historical_daily_receipts_do_not_limit_concurrent_research(self):
-        for index in range(5):
+    def test_two_confirmed_daily_entries_block_research_even_when_closed(self):
+        for index in range(2):
             self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
                                    ('fixture-' + str(index), 'BTCUSDT', day(), now()))
         self.on()
+        result = self.ticks(5)
+        self.assertEqual(result['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(result['running_positions'], 0)
+        self.assertEqual(result['available_slots'], 0)
+        self.assertEqual(result['bot_entries_today'], 2)
+        self.assertEqual(self.calls, [])
+        self.restart()
+        self.assertEqual(self.ticks(5)['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.receipt_count(), 2)
+
+    def test_new_day_resets_entry_budget_and_respects_zero_one_two_carryovers(self):
+        previous = day()
+        today = (datetime.fromisoformat(previous) + timedelta(days=1)).date().isoformat()
+        for carried in (0, 1, 2):
+            with self.subTest(carried=carried):
+                ledger = Ledger(Path(self.temporary.name) / ('carry-' + str(carried) + '.sqlite3'))
+                self.addCleanup(ledger.db.close)
+                account = Account()
+                for symbol in ('BTCUSDT', 'ETHUSDT')[:carried]: account.position(symbol, '1')
+                positions = copy.deepcopy(account.positions)
+                calls = []
+                def transport(method, url, headers, body, timeout):
+                    self.assertEqual(method, 'POST')
+                    calls.append(copy.deepcopy(body))
+                    return 200, {}, dict(mode='smart', answer=None, output=dict(
+                        symbols=['SOLUSDT', 'BNBUSDT'] if carried == 0 else ['SOLUSDT']))
+                client = NeuroAPI(ledger, key='fixture-only', transport=transport)
+                coordinator = Coordinator(ledger, client, self.market, lambda: account)
+                for index in range(2):
+                    ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+                                      ('yesterday-' + str(index), 'XRPUSDT', previous, now()))
+                coordinator.store.configure(dict(robot_on=True))
+                with patch('worker.robot.day', return_value=today), patch('worker.robot_store.day', return_value=today):
+                    result = coordinator.tick()
+                self.assertEqual(result['running_positions'], carried)
+                self.assertEqual(result['available_slots'], 2 - carried)
+                self.assertEqual(result['bot_entries_today'], 0)
+                self.assertEqual(account.positions, positions)
+                if carried == 2:
+                    self.assertEqual(result['wait_reason'], 'ROBOT_CAPACITY_FULL')
+                    self.assertEqual(calls, [])
+                else:
+                    self.assertEqual(result['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+                    self.assertEqual(calls[0]['output_schema'], SCREEN_SCHEMA if carried == 0 else SCREEN_ONE_SCHEMA)
+                    self.assertEqual(calls[0]['prompt'], SCREENING if carried == 0 else SCREENING_ONE)
+                self.assertEqual(ledger.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 2)
+
+    def test_one_daily_receipt_plus_pending_fill_reserves_last_trade(self):
+        self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+                               ('closed-today', 'ETHUSDT', day(), now()))
+        self.screens = [['BTCUSDT']]
+        self.on()
+        gateway = self.connected()
         self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
-        self.assertEqual(self.calls[0]['prompt'], SCREENING)
         self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
-        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
-        self.assertEqual(self.ticks(3)['bot_status'], 'EXECUTION_BLOCKED')
-        self.assertEqual(len(self.calls), 3)
-        self.assertEqual(self.receipt_count(), 5)
-        self.assertTrue(all(':robot-v9:5:analysis-v9:' in row['id'] for row in
-                            self.ledger.db.execute('SELECT id FROM robot_candidates')))
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(self.robot.tick()['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(self.screen_counts(), [1])
+        self.assertEqual(self.store.entries(day()), 1)
+        self.assertEqual(self.robot.execution_slots(account_state(self.account, self.store, day()), day()), 0)
+        self.restart()
+        self.assertEqual(self.ticks(3)['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 1)
+
+    def test_yesterday_pending_reserves_today_but_allows_one_remaining_trade(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        self.robot.tick()
+        self.account.positions = []
+        self.screens.append(['ETHUSDT'])
+        today = (datetime.fromisoformat(day()) + timedelta(days=1)).date().isoformat()
+        with patch('worker.robot.day', return_value=today), patch('worker.robot_store.day', return_value=today):
+            self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+            self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+            self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+            self.assertEqual(self.robot.tick()['wait_reason'], 'ROBOT_CAPACITY_FULL')
+            self.assertEqual(self.store.entries(today), 0)
+            self.restart()
+            self.assertEqual(self.ticks(3)['wait_reason'], 'ROBOT_CAPACITY_FULL')
+        self.assertEqual(self.screen_counts(), [1, 1])
+        self.assertEqual([intent['symbol'] for intent in gateway.submissions], ['BTCUSDT', 'ETHUSDT'])
+        self.assertEqual(self.account.positions, [])
+        self.assertEqual(len(self.calls), 4)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_yesterday_pending_and_today_closed_receipt_use_whole_daily_budget(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        self.robot.tick()
+        self.account.positions = []
+        today = (datetime.fromisoformat(day()) + timedelta(days=1)).date().isoformat()
+        self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+                               ('closed-today', 'ETHUSDT', today, now()))
+        with patch('worker.robot.day', return_value=today), patch('worker.robot_store.day', return_value=today):
+            result = self.ticks(3)
+            current = account_state(self.account, self.store, today)
+            self.assertEqual(current['running_positions'], 0)
+            self.assertEqual(self.robot.execution_slots(current, today), 0)
+            self.assertEqual(result['wait_reason'], 'ROBOT_CAPACITY_FULL')
+            self.assertEqual(result['bot_entries_today'], 1)
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_pending_fill_exchanges_daily_reservation_for_one_unique_receipt(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        self.robot.tick()
+        self.account.positions = []
+        first_fill = now()
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED',
+            intent['entry']['quantity'], first_fill_at=first_fill)
+        self.robot.tick()
+        current = account_state(self.account, self.store, day())
+        self.assertEqual(self.store.entries(day()), 1)
+        self.assertEqual(self.robot.execution_slots(current, day()), 1)
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(self.intent()['state'], 'POSITION_PROTECTED')
+        self.screens.append(['ETHUSDT'])
+        self.restart()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(self.robot.execution_slots(account_state(self.account, self.store, day()), day()), 1)
+
+    def test_yesterday_pending_first_fill_counts_today_once_across_restart(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        self.robot.tick()
+        previous = day()
+        today = (datetime.fromisoformat(previous) + timedelta(days=1)).date().isoformat()
+        observed = datetime.fromisoformat(today).replace(hour=12, tzinfo=timezone.utc)
+        first_fill = (observed - timedelta(seconds=30)).isoformat()
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None): return observed.astimezone(tz) if tz else observed.replace(tzinfo=None)
+        self.account.positions = []
+        self.screens.append(['ETHUSDT'])
+        gateway.on_reconcile = lambda intent: (gateway.observation(intent, observed_at=observed.isoformat())
+            if intent['symbol'] == 'ETHUSDT' else gateway.observation(intent, 'POSITION_PROTECTED',
+                intent['entry']['quantity'], first_fill_at=first_fill, observed_at=observed.isoformat()))
+        gateway.on_submit = lambda intent: gateway.observation(intent, observed_at=observed.isoformat())
+        with patch('worker.robot.day', return_value=today), patch('worker.robot_store.day', return_value=today), \
+                patch('worker.robot.datetime', Clock), patch('worker.robot.now', return_value=observed.isoformat()):
+            self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+            self.assertEqual(self.store.entries(today), 1)
+            self.assertEqual(self.store.entries(previous), 0)
+            self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+            self.restart()
+            self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+            self.assertEqual(self.ticks(3)['wait_reason'], 'ROBOT_CAPACITY_FULL')
+            self.assertEqual(self.store.entries(today), 1)
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(self.account.positions, [])
+        self.assertEqual([intent['symbol'] for intent in gateway.submissions], ['BTCUSDT', 'ETHUSDT'])
+        self.assertEqual(self.screen_counts(), [1, 1])
+        self.assertEqual(len(self.calls), 4)
 
     def screen_counts(self):
         return [1 if call['output_schema'] == SCREEN_ONE_SCHEMA else 2
@@ -612,6 +761,220 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(gateway.reconciliations, [])
         self.assertEqual(self.intent()['state'], 'ENTRY_PENDING')
         self.assertEqual(len(self.calls), 2)
+
+    def test_off_during_account_read_starts_no_gateway_reconcile(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        self.robot.tick()
+        before = dict(self.intent())
+        positions = copy.deepcopy(self.account.positions)
+        original = self.account.signed_get
+        def account_get(path):
+            value = original(path)
+            self.store.configure(dict(robot_on=False))
+            return value
+        self.account.signed_get = account_get
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(dict(self.intent()), before)
+        self.assertEqual(self.account.positions, positions)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_off_during_first_reconcile_journals_it_and_stops_second(self):
+        self.on()
+        gateway = self.connected()
+        self.ticks(5)
+        before = len(gateway.reconciliations)
+        other = dict(self.ledger.db.execute("SELECT * FROM order_intents WHERE symbol='ETHUSDT'").fetchone())
+        def reconcile(intent):
+            self.store.configure(dict(robot_on=False))
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'])
+        gateway.on_reconcile = reconcile
+        gateway.cancel = lambda *args: self.fail('OFF must not cancel an order')
+        gateway.close = lambda *args: self.fail('OFF must not close a position')
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(len(gateway.reconciliations) - before, 1)
+        self.assertEqual(self.intent()['state'], 'POSITION_PROTECTED')
+        self.assertEqual(dict(self.ledger.db.execute("SELECT * FROM order_intents WHERE symbol='ETHUSDT'").fetchone()), other)
+        self.assertEqual(self.receipt_count(), 1)
+        self.assertEqual(self.store.entries(day()), 1)
+        self.restart()
+        self.ticks(4)
+        self.assertEqual(len(gateway.reconciliations) - before, 1)
+        self.assertEqual(len(gateway.submissions), 2)
+        self.assertEqual(len(self.calls), 3)
+        self.assertEqual(self.receipt_count(), 1)
+
+    def test_off_after_local_submit_claim_restores_proven_unsent_state(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        original = self.store.report
+        def report(state, *args, **kwargs):
+            value = original(state, *args, **kwargs)
+            if state == 'EXECUTING': self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.store, 'report', side_effect=report):
+            self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(self.intent()['state'], 'READY_FOR_EXECUTION')
+        self.assertEqual(gateway.submissions, [])
+        self.assertEqual(self.receipt_count(), 0)
+        self.restart()
+        self.ticks(3)
+        self.assertEqual(gateway.submissions, [])
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(len(self.calls), 2)
+
+    def test_off_during_started_submit_still_journals_actual_fill_once(self):
+        self.one_slot_ready()
+        gateway = self.connected()
+        def submit(intent):
+            self.account.position('BTCUSDT', intent['entry']['quantity'])
+            self.store.configure(dict(robot_on=False))
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'])
+        gateway.on_submit = submit
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(self.intent()['state'], 'POSITION_PROTECTED')
+        self.assertEqual(self.receipt_count(), 1)
+        positions = copy.deepcopy(self.account.positions)
+        self.restart()
+        self.ticks(4)
+        self.assertEqual(self.account.positions, positions)
+        self.assertEqual(len(gateway.submissions), 1)
+        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(self.receipt_count(), 1)
+
+    def test_off_after_screening_claim_starts_no_paid_request_and_can_resume(self):
+        self.on()
+        original = self.store.report
+        def report(state, *args, **kwargs):
+            value = original(state, *args, **kwargs)
+            if state == 'SCREENING': self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.store, 'report', side_effect=report):
+            self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0], 0)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0], 0)
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_off_after_analysis_claim_preserves_unpaid_queue_for_resume(self):
+        self.one_slot_ready_prepare_screen()
+        original = self.store.report
+        def report(state, *args, **kwargs):
+            value = original(state, *args, **kwargs)
+            if state == 'ANALYZING': self.store.configure(dict(robot_on=False))
+            return value
+        with patch.object(self.store, 'report', side_effect=report):
+            self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0], 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT'])
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_off_during_completed_analysis_keeps_response_without_fresh_fee_get(self):
+        self.one_slot_ready_prepare_screen()
+        original = self.client.transport
+        after_response = {}
+        def transport(*args, **kwargs):
+            value = original(*args, **kwargs)
+            after_response['account_calls'] = len(self.account.calls)
+            after_response['market_calls'] = len(self.market.calls)
+            self.store.configure(dict(robot_on=False))
+            return value
+        self.client.transport = transport
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(len(self.account.calls), after_response['account_calls'])
+        self.assertEqual(len(self.market.calls), after_response['market_calls'])
+        self.assertEqual(self.ledger.db.execute("SELECT state FROM api_requests WHERE operation LIKE '%:BTCUSDT'").fetchone()[0], 'COMPLETE')
+        self.assertEqual(self.ledger.db.execute("SELECT state FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0], 'COMPLETE')
+        self.assertEqual(self.ledger.db.execute('SELECT status FROM robot_candidates').fetchone()[0], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.receipt_count(), 0)
+
+    def test_provider_pause_before_first_send_preserves_screening_for_resume(self):
+        self.on()
+        original = self.client.ask
+        def ask(*args, **kwargs):
+            self.store.configure(dict(robot_on=False))
+            return original(*args, **kwargs)
+        with patch.object(self.client, 'ask', side_effect=ask):
+            self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0], 0)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0], 0)
+        _, data = self.current_cycle()
+        self.assertEqual(data['screen'], -1)
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_provider_pause_before_first_send_preserves_analysis_queue(self):
+        self.one_slot_ready_prepare_screen()
+        original = self.client.ask
+        def ask(*args, **kwargs):
+            self.store.configure(dict(robot_on=False))
+            return original(*args, **kwargs)
+        with patch.object(self.client, 'ask', side_effect=ask):
+            self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM api_requests').fetchone()[0], 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0], 1)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT'])
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+
+    def test_off_after_retryable_provider_response_starts_no_retry_or_replay(self):
+        self.on()
+        def transport(method, url, headers, body, timeout):
+            self.calls.append(copy.deepcopy(body))
+            self.store.configure(dict(robot_on=False))
+            return 503, {}, {}
+        self.client.transport = transport
+        self.client.sleep = lambda delay: self.fail('OFF must stop before retry sleep/send')
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(len(self.calls), 1)
+        request = self.ledger.db.execute('SELECT state,attempts,failure_code FROM api_requests').fetchone()
+        self.assertEqual(tuple(request), ('NEEDS_REVIEW', 1, 'RESEARCH_PAUSED'))
+        self.assertEqual(self.ledger.db.execute('SELECT state FROM robot_jobs').fetchone()[0], 'NEEDS_REVIEW')
+        self.restart()
+        self.on()
+        self.assertEqual(self.ticks(4)['failure_code'], 'ROBOT_REQUEST_NEEDS_REVIEW')
+        self.assertEqual(len(self.calls), 1)
+
+    def test_off_during_completed_screening_preserves_paid_result_and_queue(self):
+        self.on()
+        original = self.client.transport
+        def transport(*args, **kwargs):
+            value = original(*args, **kwargs)
+            self.store.configure(dict(robot_on=False))
+            return value
+        self.client.transport = transport
+        self.assertEqual(self.robot.tick()['bot_status'], 'OFF')
+        self.assertEqual(self.ledger.db.execute('SELECT state FROM api_requests').fetchone()[0], 'COMPLETE')
+        self.assertEqual(self.ledger.db.execute('SELECT state FROM robot_jobs').fetchone()[0], 'COMPLETE')
+        _, data = self.current_cycle()
+        self.assertEqual(data['queue'], ['BTCUSDT', 'ETHUSDT'])
+        self.restart()
+        self.on()
+        self.assertEqual(self.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.screen_counts(), [2])
 
     def test_yesterday_protected_position_allows_today_remaining_slot(self):
         gateway, captured = self.protected_fixture()

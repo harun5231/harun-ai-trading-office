@@ -29,10 +29,28 @@ menghentikan worker VPS.
 
 Default robot OFF dan target risiko net ke SL 5 USDT, termasuk fee entry dan
 fee exit SL memakai taker commission per symbol dari signed GET Binance.
-Maksimal dua posisi bersamaan; jumlah entry per hari tidak dibatasi. Posisi manual mengurangi
-slot; HYPEUSDT selalu manual-only. Jika HYPEUSDT merupakan satu-satunya posisi
+Maksimal dua entry bot baru per hari WIB (UTC+7) dan dua posisi bersamaan,
+termasuk posisi manual serta posisi yang terbawa dari hari sebelumnya.
+Entry `ENTRY_PENDING` mencadangkan kuota harian dan kapasitas, termasuk yang
+dibuat kemarin tetapi masih mungkin fill hari ini. Partial fill dihitung sebagai
+satu entry pada hari WIB dari fill pertama yang terverifikasi; receipt tetap
+tersimpan setelah restart. Posisi manual mengurangi slot; HYPEUSDT selalu
+manual-only. Jika HYPEUSDT merupakan satu-satunya posisi
 aktif, screening meminta satu coin lain. Robot tidak mengambil alih posisi
 manual atau memakai hasil analisis sebagai bukti adanya order Binance.
+
+Kapasitas adalah nilai terkecil dari sisa kuota harian dan sisa slot bersamaan.
+Pergantian hari pada pukul 00:00 WIB memperbarui kuota entry, tanpa menutup posisi
+lama. Satu posisi lama yang masih aktif menyisakan paling banyak satu slot saat
+itu; dua posisi lama menyisakan nol sampai salah satunya selesai. Posisi yang
+selesai membebaskan slot bersamaan, tanpa mengembalikan kuota entry hari itu.
+
+ROBOT OFF menghentikan riset, submission, dan rekonsiliasi gateway berikutnya.
+OFF tidak menutup posisi atau membatalkan order entry/SL/TP. Request
+eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya masih dapat
+selesai dan dicatat ke journal. Semua karyawan AI berhenti menunjukkan aktivitas
+kerja saat OFF, sementara pembacaan saldo, posisi, dan riwayat tetap tersedia
+di Office.
 
 Pengaturan risiko tetap tersedia di panel Robot Trading, dengan nilai positif
 sampai 100 USDT seperti sebelumnya. Perubahan hanya berlaku untuk analisis baru;

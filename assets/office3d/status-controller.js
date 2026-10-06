@@ -100,6 +100,8 @@ export function createStatusController({ onChange } = {}) {
     const reportsFresh = transportFresh && fresh(snapshot.reportsAt, now, PHASE_FRESH_MS);
     const positions = accountFresh ? snapshot.positions : null;
     const status = phaseFresh ? snapshot.status : 'OFFLINE';
+    const robotRunning = phaseFresh && snapshot.robotOn === true && status !== 'OFF';
+    const robotOff = phaseFresh && (snapshot.robotOn === false || status === 'OFF');
     const nextRoles = Object.fromEntries(ROLES.map(role => [role, {
       state: 'IDLE', active: false, known: phaseFresh, timestamp: phaseFresh ? iso(snapshot.phaseAt) : null,
       speech: phaseFresh ? IDLE_SPEECH[role] : 'Menunggu status worker…'
@@ -110,8 +112,8 @@ export function createStatusController({ onChange } = {}) {
     function work(role, speech, at = snapshot.phaseAt) {
       nextRoles[role] = { state: 'WORKING', active: true, known: true, timestamp: iso(at), speech };
     }
-    // OFF suppresses research/execution activity while genuine position reads remain independent.
-    if (phaseFresh && snapshot.robotOn === true && status !== 'OFF') {
+    // Robot activity stops with OFF; read-only account telemetry remains independent.
+    if (robotRunning) {
       const phaseRole = { SCREENING: 'market', ANALYZING: 'neuro', VALIDATING: 'risk', EXECUTING: 'trading' }[status];
       if (phaseRole && (phaseRole !== 'trading' || !blocked)) work(phaseRole, WORK_SPEECH[phaseRole]);
       for (const employee of snapshot.employees) {
@@ -127,9 +129,14 @@ export function createStatusController({ onChange } = {}) {
       nextRoles.trading = { state: 'IDLE', active: false, known: true, timestamp: iso(snapshot.phaseAt), speech: 'Gateway Binance belum terhubung.' };
     }
     if (accountFresh && positions !== null) {
-      nextRoles.position = { state: positions > 0 ? 'WORKING' : 'IDLE', active: positions > 0, known: true,
-        timestamp: iso(snapshot.accountAt), speech: positions > 0 ? `Memantau ${positions} posisi Binance.` : IDLE_SPEECH.position };
+      const monitoring = robotRunning && positions > 0;
+      nextRoles.position = { state: monitoring ? 'WORKING' : 'IDLE', active: monitoring, known: true,
+        timestamp: iso(snapshot.accountAt), speech: monitoring ? `Memantau ${positions} posisi Binance.` : IDLE_SPEECH.position };
     } else nextRoles.position = { state: 'IDLE', active: false, known: false, timestamp: null, speech: 'Menunggu data posisi Binance…' };
+    if (robotOff) for (const role of ROLES) {
+      nextRoles[role] = { state: 'IDLE', active: false, known: true, timestamp: iso(snapshot.phaseAt),
+        speech: role === 'position' ? 'Robot OFF; posisi tetap di Binance.' : 'Robot OFF.' };
+    }
     const active = ROLES.filter(role => role !== 'boss' && nextRoles[role].active).length;
     if (active) work('boss', `Mengawasi ${active} divisi aktif.`, phaseFresh ? snapshot.phaseAt : snapshot.accountAt);
     const nextTelemetry = {
@@ -144,7 +151,7 @@ export function createStatusController({ onChange } = {}) {
       connected: transportFresh, stale: Boolean(snapshot && (!phaseFresh || !transportFresh)),
       receivedAt: snapshot ? iso(snapshot.receivedAt) : null, updatedAt: phaseFresh ? iso(snapshot.phaseAt) : null,
       events: transportFresh ? snapshot.events : [], trades: [],
-      employees: phaseFresh ? snapshot.employees.map(({ id, name, status }) => ({ id, name, status })) : [],
+      employees: phaseFresh ? snapshot.employees.map(({ id, name, status }) => ({ id, name, status: robotOff ? 'OFF' : status })) : [],
       execution_gateway: phaseFresh ? gateway : null,
       last_decision: phaseFresh ? snapshot.decision : null,
       available_slots: phaseFresh ? snapshot.slots : null, risk_target_usdt: phaseFresh ? snapshot.risk : null,

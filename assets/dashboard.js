@@ -155,9 +155,10 @@
     field(metrics, 'Risk per SL', number(robot?.risk_target_usdt)+' USDT');
     field(metrics, 'Posisi / kapasitas', number(account?.active_positions, 0)+' / 2');
     field(metrics, 'Slot tersedia', number(robot?.available_slots, 0));
-    field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0));
+    field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0)+' / 2');
     main.append(metrics, gatewayNote(robot));
-    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan pekerjaan baru; proses yang sudah berjalan dapat selesai. Posisi manual tetap dipantau tanpa diubah.'));
+    main.append(notice('Maksimal 2 entry bot per hari. Posisi bawaan dari hari sebelumnya dan posisi manual tetap memakai slot dari kapasitas 2 posisi.'));
+    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset, pengiriman order baru, dan rekonsiliasi robot. Posisi serta order SL/TP yang sudah ada tetap di Binance; OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
     if (robot?.last_decision) main.append(notice('Keputusan terakhir: '+robot.last_decision.symbol+' · '+robot.last_decision.status+(robot.last_decision.failure_code ? ' · '+robot.last_decision.failure_code : '')));
     content.append(main);
     const current = section('AKUN FUTURES'); source(current, account);
@@ -198,9 +199,10 @@
   }
   function renderStaff() {
     const employees = snapshot?.employees ?? [];
-    content.append(notice(online ? 'Status karyawan mengikuti pekerjaan yang dilaporkan coordinator.' : 'Status karyawan belum tersedia dari worker.', online ? 'normal' : 'warning'));
+    const robotOff = snapshot?.robot.robot_on === false || snapshot?.robot.bot_status === 'OFF';
+    content.append(notice(online ? robotOff ? 'Robot OFF. Seluruh pekerjaan karyawan AI berhenti; dashboard tetap dapat membaca akun.' : 'Status karyawan mengikuti pekerjaan yang dilaporkan coordinator.' : 'Status karyawan belum tersedia dari worker.', online ? 'normal' : 'warning'));
     for (const employee of employees) {
-      const row = element('article', undefined, 'dashboard-row'); row.append(element('strong', employee.name), element('p', employee.status)); content.append(row);
+      const row = element('article', undefined, 'dashboard-row'); row.append(element('strong', employee.name), element('p', robotOff ? 'OFF' : employee.status)); content.append(row);
     }
     if (!employees.length) content.append(notice('Belum ada status karyawan AI.'));
   }
