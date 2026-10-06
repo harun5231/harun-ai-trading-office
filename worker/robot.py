@@ -198,7 +198,7 @@ class Coordinator:
         initial=data['screen']==-1
         held=any(r['status'] in ('HOLD','USER_REJECTED') for r in results)
         # A replacement that returned only seen/exposed symbols can try again within cap.
-        if not initial and not held:return self.store.report('REJECTED' if technical else 'WAITING',account)
+        if not initial and not held and (results or data['queue']):return self.store.report('REJECTED' if technical else 'WAITING',account)
         if not initial and data['replacements']>=MAX_REPLACEMENTS:
             self.save_cycle(cycle,data,'COMPLETE')
             return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account)
