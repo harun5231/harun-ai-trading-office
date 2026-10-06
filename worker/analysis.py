@@ -1,11 +1,6 @@
-"""Shared pre-analysis contract context and bounded, paper-only analysis checks."""
-import json
+"""Fresh public market context for the single research-to-order-intent pipeline."""
 import time
-from .core import Review,day,number,RISK,D,risk_check,validated_risk_target
-from .neuroapi import SETUP_SCHEMA,selections,setup
-from .prompts import ANALYSIS
-from .diagnostics import safe_code,validation_code
-from .provenance import ANALYSIS_VERSION,stamp
+from .core import Review,number,RISK,validated_risk_target
 
 SIZING_CONTRACT='Target loss at stop loss is 5 USDT. The worker Risk Manager independently computes the largest valid Binance base-asset quantity conforming to stepSize/minQty/maxQty such that quantity × abs(limit_entry - stop_loss) <= 5 USDT. The resulting risk should be as close as possible to 5 USDT without exceeding it.'
 
@@ -30,53 +25,3 @@ def analysis_context(market,symbol,risk_target=RISK):
     return {**data,'contract_rules':contract,'risk_constraints':{'quantity_unit':'base_asset',
         'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(risk_target),
         'minimum_actual_reward_risk':2,'target_loss_at_sl_usdt':str(risk_target),'position_sizing_contract':SIZING_CONTRACT.replace('5 USDT',str(risk_target)+' USDT')}},rules
-
-def analysis_once(ledger,client,market,symbols):
-    # Validate all supplied symbols before any analysis. No screening or substitutions.
-    catalog=market.catalog();selections({'symbols':symbols},catalog)
-    today=day()
-    ledger.db.execute('CREATE TABLE IF NOT EXISTS analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)')
-    results=[]
-    for symbol in symbols:
-        operation=today+':'+ANALYSIS_VERSION+':'+symbol
-        ledger.db.execute('BEGIN IMMEDIATE')
-        try:
-            old=ledger.db.execute('SELECT state,result FROM analysis_checks WHERE operation=?',(operation,)).fetchone()
-            if old:
-                ledger.db.execute('COMMIT')
-                # No network/replay for completed or interrupted checks.
-                results.append(json.loads(old['result']) if old['state']=='COMPLETE' and old['result'] else empty_result(symbol,'ANALYSIS_CHECK_NEEDS_REVIEW'))
-                continue
-            if day()!=today:raise Review('CYCLE_DAY_CHANGED')
-            if ledger.db.execute('SELECT COUNT(*) FROM analysis_checks WHERE day=? AND operation LIKE ?',(today,today+':'+ANALYSIS_VERSION+':%')).fetchone()[0]>=2:raise Review('ANALYSIS_CHECK_DAILY_LIMIT')
-            ledger.db.execute('INSERT INTO analysis_checks VALUES(?,?,?,?)',(operation,today,'PENDING',None))
-            ledger.db.execute('COMMIT')
-        except BaseException:ledger.db.execute('ROLLBACK');raise
-        result=empty_result(symbol,None)
-        try:
-            context,_=analysis_context(market,symbol)
-            value=client.ask(operation,ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,symbol),context)
-            signal=setup(value,symbol)
-            if signal.side=='HOLD':
-                result.update(status='HOLD',side='HOLD')
-            else:
-                result.update(side=signal.side,neurobro_position_size=str(signal.quantity) if signal.quantity is not None else None,
-                    entry=str(signal.entry),TP=str(signal.tp),SL=str(signal.sl),
-                    actual_RR=str(abs(signal.tp-signal.entry)/abs(signal.entry-signal.sl)))
-                market.fresh(context,symbol)
-                rules=market.rules(symbol)
-                try:plan=risk_check(signal,rules)
-                except Review as error:
-                    client.record_validation(operation,error);raise
-                result.update(status='ACCEPT',position_size=plan['quantity'],execution_quantity=plan['quantity'],calculated_risk=plan['risk'])
-        except Exception as error:
-            row=ledger.db.execute('SELECT failure_code FROM api_requests WHERE operation=?',(operation,)).fetchone()
-            result['failure_code']=safe_code(row[0]) if row and row[0] else validation_code(error)
-        stamp(ledger.db,result,operation)
-        ledger.db.execute("UPDATE analysis_checks SET state='COMPLETE',result=? WHERE operation=?",(json.dumps(result),operation))
-        results.append(result)
-    return results
-
-def empty_result(symbol,reason):
-    return dict(status='REJECT',symbol=symbol,side=None,position_size=None,execution_quantity=None,neurobro_position_size=None,entry=None,TP=None,SL=None,
-        calculated_risk=None,actual_RR=None,failure_code=reason,mode='DRY_RUN')

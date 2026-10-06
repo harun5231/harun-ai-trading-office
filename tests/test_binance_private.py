@@ -35,7 +35,7 @@ class PrivateTests(unittest.TestCase):
         self.assertEqual(signature(key,query),'3c661234138461fcc7a7d8746c6558c9842d4e10870d2ecbedf7777cad694af9')
     def test_timestamp_recvwindow_header_and_sanitized_success(self):
         client=self.client();result=client.check()
-        self.assertEqual(result,dict(status='BINANCE_CONNECTED',futures=True,can_trade=True,position_mode='ONE_WAY',multi_assets_margin=False,live_execution=False,mode='DRY_RUN',usdt_wallet_balance='100.1200',usdt_available_balance='90.1'))
+        self.assertEqual(result,dict(status='BINANCE_CONNECTED',futures=True,can_trade=True,position_mode='ONE_WAY',multi_assets_margin=False,live_execution=False,mode='BINANCE_READ_ONLY',usdt_wallet_balance='100.1200',usdt_available_balance='90.1'))
         self.assertEqual(self.calls[0],(BASE+'/fapi/v1/time',{}))
         query='recvWindow=5000&timestamp=1700000000000'
         for url,headers in self.calls[1:]:
@@ -110,13 +110,13 @@ class PrivateTests(unittest.TestCase):
             client=self.client();old=client._transport
             client._transport=lambda u,h:body if '/v3/account?' in u else old(u,h)
             with self.assertRaisesRegex(BinanceCheckError,'BINANCE_ACCOUNT_UNAVAILABLE'):client.check()
-    def test_command_does_not_open_ledger_or_snapshot_or_neuroapi(self):
-        from worker.__main__ import main
+    def test_account_check_does_not_create_state_or_contact_neuroapi(self):
         client=self.client();out=io.StringIO();before=set(self.root.iterdir())
-        with patch('sys.argv',['worker','binance-check']),patch('worker.binance_private.BinanceReadOnly',return_value=client),patch('worker.__main__.Ledger',side_effect=AssertionError('DB')),patch('worker.__main__.directory',side_effect=AssertionError('Storage')),patch('worker.__main__.NeuroAPI',side_effect=AssertionError('NeuroAPI')),contextlib.redirect_stdout(out):
-            self.assertEqual(main(),0)
+        with patch('worker.binance_private.BinanceReadOnly',return_value=client),patch('worker.neuroapi.NeuroAPI',side_effect=AssertionError('NeuroAPI')),contextlib.redirect_stdout(out):
+            result=check()
+        self.assertEqual(result['status'],'BINANCE_CONNECTED');self.assertEqual(out.getvalue(),'')
         self.assertEqual(set(self.root.iterdir()),before)
-        for value in (KEY,SECRET,'signature','DONT_EXPOSE'):self.assertNotIn(value,out.getvalue())
+        for value in (KEY,SECRET,'signature','DONT_EXPOSE'):self.assertNotIn(value,json.dumps(result))
     def test_generic_public_transport_also_rejects_binance_mutations(self):
         from worker.http_client import request
         from worker.core import Review
@@ -145,10 +145,9 @@ class PrivateTests(unittest.TestCase):
                     trace=traceback.format_exc()
                     for value in (KEY,SECRET,'PRIVATE_SIGNATURE'):self.assertNotIn(value,trace)
                 else:self.fail('Expected sanitized failure')
-    def test_command_failure_never_prints_secret_or_calls_trading(self):
-        from worker.__main__ import main
+    def test_account_check_failure_never_prints_secret_or_calls_gateway(self):
         out=io.StringIO();err=io.StringIO()
-        with patch('sys.argv',['worker','binance-check']),patch('worker.binance_private.BinanceReadOnly',side_effect=RuntimeError(KEY+SECRET)),patch('worker.__main__.Workflow',side_effect=AssertionError('Trading')),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
-            self.assertEqual(main(),1)
-        self.assertEqual(json.loads(out.getvalue())['status'],'BINANCE_ACCOUNT_UNAVAILABLE');self.assertEqual(err.getvalue(),'')
-        for value in (KEY,SECRET):self.assertNotIn(value,out.getvalue())
+        with patch('worker.binance_private.BinanceReadOnly',side_effect=RuntimeError(KEY+SECRET)),patch('worker.order_gateway.OrderGateway.submit',side_effect=AssertionError('Trading')),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            result=check()
+        self.assertEqual(result['status'],'BINANCE_ACCOUNT_UNAVAILABLE');self.assertEqual(out.getvalue(),'');self.assertEqual(err.getvalue(),'')
+        for value in (KEY,SECRET):self.assertNotIn(value,json.dumps(result))

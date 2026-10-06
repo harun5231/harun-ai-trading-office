@@ -18,8 +18,6 @@ services:
       BINANCE_API_KEY_FILE: /run/office/binance_api_key
       BINANCE_API_SECRET_FILE: /run/office/binance_api_secret
       OFFICE_DASHBOARD_ORIGIN: ${OFFICE_DASHBOARD_ORIGIN:-https://harun5231.github.io}
-      OFFICE_AUTO_DRY_RUN: ${OFFICE_AUTO_DRY_RUN:-false}
-      OFFICE_RUN_AT: ${OFFICE_RUN_AT:-08:00}
       OFFICE_CANDLE_LOOKBACK: ${OFFICE_CANDLE_LOOKBACK:-100}
       OFFICE_MARKET_MAX_AGE: ${OFFICE_MARKET_MAX_AGE:-180}
     secrets: [read_token, control_token, neuroapi_key, binance_api_key, binance_api_secret]

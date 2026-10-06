@@ -1,266 +1,29 @@
-"""Persistent bounded research coordinator. No execution, no exchange mutation.
-
-One paid operation per tick, claimed before sending. Unknown outcomes block the
-cycle, including after restart. Setup/approval and actual entry receipts are
-separate tables. This release has NO writer for actual entry receipts.
-"""
+"""One ON/OFF research pipeline ending at the Binance order gateway."""
 from dataclasses import asdict
-from datetime import datetime,timezone
 import fcntl
-from itertools import count
 import json
 import re
 import time
-from uuid import uuid4
 from pathlib import Path
-from .core import D,Review,day,now,validated_risk_target,risk_check,preflight
-from .neuroapi import SCREEN_SCHEMA,SCREEN_ONE_SCHEMA,SETUP_SCHEMA,selections,setup
-from .prompts import SCREENING,ANALYSIS
+from datetime import datetime,timezone
+from zoneinfo import ZoneInfo
+from .core import D,Review,day,now,risk_check,preflight
+from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS,slots)
+from .robot_store import RobotStore
+from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent
+from .neuroapi import SETUP_SCHEMA,selections,setup
+from .prompts import ANALYSIS
 from .analysis import analysis_context
 from .diagnostics import validation_code
 from .robot_provenance import VERSION,stamp,verify
 
-SCREENING_ONE='pilihkan 1 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
-MANUAL_ONLY_SYMBOLS=frozenset(('HYPEUSDT',))
-MAX_REPLACEMENTS=3
-ACCOUNT_FIELDS=('running_positions','running_symbols','available_slots','manual_exposure',
-    'usdt_wallet_balance','usdt_available_balance','bot_entries_today')
-ACCOUNT_GENERATION=uuid4().hex
-ACCOUNT_REVISION=count(1)
-ACCOUNT_ORDER_FIELDS=('_account_generation','_account_revision')
-
-def empty_account():
-    return dict(running_positions=None,running_symbols=None,available_slots=None,manual_exposure=[],
-        usdt_wallet_balance=None,usdt_available_balance=None,account_checked_at=None,account_failure_code=None,
-        _account_generation=None,_account_revision=None)
-
-def account_order():
-    # Observation completion order is shared by the daemon's account/actor
-    # threads. UTC remains a displayed time, not the ordering mechanism; a new
-    # process generation also supersedes persisted observations after restart.
-    return dict(_account_generation=ACCOUNT_GENERATION,_account_revision=next(ACCOUNT_REVISION))
-
-def current_account_revision(value):
-    revision=value.get('_account_revision')
-    return revision if value.get('_account_generation')==ACCOUNT_GENERATION and type(revision) is int and revision>0 else None
-
-def account_timestamp(value):
-    try:
-        value=datetime.fromisoformat(value)
-        if value.tzinfo is None:return None
-        return value.astimezone(timezone.utc).isoformat(timespec='microseconds')
-    except (TypeError,ValueError):return None
-
-def account_observation(account,reason=None,stamp=False):
-    value=empty_account()
-    if account:value.update({k:account[k] for k in ACCOUNT_FIELDS if k in account})
-    checked=account_timestamp(account.get('account_checked_at')) if account else None
-    if account:value.update({k:account[k] for k in ACCOUNT_ORDER_FIELDS if k in account})
-    if stamp and checked is None:value.update(account_order())
-    value.update(account_checked_at=checked or (account_timestamp(now()) if stamp else None),
-        account_failure_code=reason if reason is not None else (account.get('account_failure_code') if account else None))
-    return value
-
-def newer_account(observation,previous):
-    revision=current_account_revision(observation);older=current_account_revision(previous)
-    if revision is not None:return older is None or revision>=older
-    if older is not None:return False
-    # Legacy observations lack a source ordering token. Use their actual GET
-    # timestamps only until this daemon publishes its first ordered observation.
-    checked=account_timestamp(observation.get('account_checked_at'))
-    prior=account_timestamp(previous.get('account_checked_at'))
-    return prior is None or checked is not None and checked>=prior
-
-def newer_account_json(observation,previous):
-    return newer_account(json.loads(observation),json.loads(previous))
-
-def screening_contract(count):
-    if count==1:return SCREENING_ONE,SCREEN_ONE_SCHEMA
-    if count==2:return SCREENING,SCREEN_SCHEMA
-    raise Review('INVALID_SCREENING_COUNT')
-
-def slots(running,entries):return max(0,min(2-running,2-entries))
-
-class RobotStore:
-    def __init__(self,db,initialize=True):
-        self.db=db
-        db.create_function('robot_account_newer',2,newer_account_json)
-        if not initialize:return
-        db.executescript('''
-        CREATE TABLE IF NOT EXISTS robot_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,risk TEXT NOT NULL);
-        INSERT OR IGNORE INTO robot_settings VALUES(1,0,'5');
-        CREATE TABLE IF NOT EXISTS robot_cycles(id TEXT PRIMARY KEY,day TEXT NOT NULL,entry_epoch INTEGER NOT NULL,state TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(day,entry_epoch));
-        CREATE TABLE IF NOT EXISTS robot_jobs(operation TEXT PRIMARY KEY,cycle TEXT NOT NULL,kind TEXT NOT NULL,symbol TEXT,state TEXT NOT NULL,risk_target TEXT);
-        CREATE TABLE IF NOT EXISTS robot_setups(id TEXT PRIMARY KEY,cycle TEXT NOT NULL,symbol TEXT NOT NULL,status TEXT NOT NULL,plan TEXT,failure_code TEXT,UNIQUE(cycle,symbol));
-        CREATE TABLE IF NOT EXISTS robot_decisions(setup_id TEXT PRIMARY KEY,decision TEXT NOT NULL,at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT NOT NULL,entry_day TEXT NOT NULL,confirmed_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS robot_status(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS robot_simulations(
-          setup_id TEXT NOT NULL,scenario TEXT NOT NULL,ticket_sha256 TEXT NOT NULL,
-          result TEXT NOT NULL,created_at TEXT NOT NULL,last_requested_at TEXT NOT NULL,
-          PRIMARY KEY(setup_id,scenario,ticket_sha256));
-        ''')
-    def settings(self):
-        r=self.db.execute('SELECT * FROM robot_settings WHERE id=1').fetchone()
-        return {'robot_on':bool(r['enabled']),'risk_target_usdt':format(validated_risk_target(r['risk']),'f')}
-    def configure(self,value):
-        if not isinstance(value,dict) or not value or set(value)-{'robot_on','risk_target_usdt'}:raise Review('INVALID_ROBOT_SETTING')
-        if 'robot_on' in value and type(value['robot_on']) is not bool:raise Review('INVALID_ROBOT_SETTING')
-        if 'risk_target_usdt' in value:
-            if not isinstance(value['risk_target_usdt'],str):raise Review('INVALID_RISK_TARGET')
-            target=format(validated_risk_target(value['risk_target_usdt']),'f')
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            if 'robot_on' in value:self.db.execute('UPDATE robot_settings SET enabled=? WHERE id=1',(int(value['robot_on']),))
-            if 'risk_target_usdt' in value:self.db.execute('UPDATE robot_settings SET risk=? WHERE id=1',(target,))
-            self.db.execute('COMMIT')
-        except BaseException:self.db.execute('ROLLBACK');raise
-        return self.snapshot()
-    def entries(self,today):return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?',(today,)).fetchone()[0]
-    def results(self,cycle):return list(self.db.execute('SELECT * FROM robot_setups WHERE cycle=?',(cycle,)))
-    def verified_plan(self,row):
-        try:
-            plan=json.loads(row['plan'])
-            if not isinstance(plan,dict) or row['symbol']!=plan.get('symbol') or row['cycle']!=row['id'].rsplit(':analysis-v7:',1)[0]:raise ValueError
-            verify(self.db,plan,row['id'])
-            return plan
-        except Exception:raise Review('ROBOT_SETUP_UNVERIFIED') from None
-    def snapshot(self):
-        row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
-        value=empty_account()
-        value.update(json.loads(row[0]) if row else dict(bot_status='WAITING',checked_at=None))
-        for key in ACCOUNT_ORDER_FIELDS:value.pop(key,None)
-        value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False,simulation_mode='LOCAL',manual_submission_required=True)
-        value.setdefault('wait_reason',None)
-        if not value['robot_on']:value.update(bot_status='WAITING',wait_reason='ROBOT_OFF')
-        value['setups']=[]
-        for row in self.db.execute("SELECT * FROM robot_setups ORDER BY rowid DESC LIMIT 50"):
-            item=dict(id=row['id'],symbol=row['symbol'],status=row['status'],failure_code=row['failure_code'])
-            if row['plan']:
-                try:
-                    plan=self.verified_plan(row)
-                    details={k:plan[k] for k in ('side','entry','tp','sl','execution_quantity','risk_target_usdt','risk','rr')}
-                    if row['status'] in ('SETUP_READY','APPROVED'):
-                        from .manual_ticket import build_ticket
-                        ticket=build_ticket(self.db,plan,row['id'],row['status'])
-                        details['ticket']=ticket
-                        details['account_review']=dict(
-                            review_required=True,checked_at=value.get('account_checked_at'),
-                            available_slots=value.get('available_slots'),
-                            symbol_exposed=(row['symbol'] in value['running_symbols']) if isinstance(value.get('running_symbols'),list) else None,
-                            setup_from_current_day=(ticket['business_day']==day()))
-                    item.update(details)
-                except Exception:item.update(status='REJECTED',failure_code='ROBOT_SETUP_UNVERIFIED')
-            if 'ticket' in item:
-                from .manual_ticket import simulate_ticket
-                recorded=self.db.execute('SELECT scenario,result FROM robot_simulations WHERE setup_id=? AND ticket_sha256=? ORDER BY last_requested_at DESC,rowid DESC LIMIT 1',(row['id'],item['ticket']['ticket_sha256'])).fetchone()
-                if recorded:
-                    try:
-                        simulation=json.loads(recorded['result'])
-                        if simulation!=simulate_ticket(item['ticket'],recorded['scenario']):raise Review('ROBOT_SIMULATION_UNVERIFIED')
-                        item['simulation']=simulation
-                    except Exception:item['simulation_failure_code']='ROBOT_SIMULATION_UNVERIFIED'
-            value['setups'].append(item)
-        return value
-    def simulate(self,value):
-        from .manual_ticket import build_ticket,simulate_ticket,SCENARIOS
-        if not isinstance(value,dict) or set(value)!={'setup_id','scenario'}:raise Review('INVALID_SIMULATION_REQUEST')
-        setup_id=value['setup_id'];scenario=value['scenario']
-        if not isinstance(setup_id,str) or not setup_id or len(setup_id)>160 or not isinstance(scenario,str) or scenario not in SCENARIOS:raise Review('INVALID_SIMULATION_REQUEST')
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            row=self.db.execute('SELECT * FROM robot_setups WHERE id=?',(setup_id,)).fetchone()
-            if not row:raise Review('SETUP_NOT_FOUND')
-            if row['status'] not in ('SETUP_READY','APPROVED') or not row['plan']:raise Review('SETUP_NOT_READY')
-            ticket=build_ticket(self.db,self.verified_plan(row),setup_id,row['status'])
-            result=simulate_ticket(ticket,scenario)
-            key=(setup_id,scenario,ticket['ticket_sha256'])
-            old=self.db.execute('SELECT result FROM robot_simulations WHERE setup_id=? AND scenario=? AND ticket_sha256=?',key).fetchone()
-            if old and json.loads(old['result'])!=result:raise Review('ROBOT_SIMULATION_UNVERIFIED')
-            at=now()
-            if old:self.db.execute('UPDATE robot_simulations SET last_requested_at=? WHERE setup_id=? AND scenario=? AND ticket_sha256=?',(at,*key))
-            else:self.db.execute('INSERT INTO robot_simulations VALUES(?,?,?,?,?,?)',(*key,json.dumps(result),at,at))
-            self.db.execute('COMMIT')
-        except BaseException:self.db.execute('ROLLBACK');raise
-        snapshot=self.snapshot();snapshot['simulation']=result
-        return snapshot
-    def report(self,state,account=None,reason=None,wait_reason=None):
-        observation=account_observation(account) if account else empty_account()
-        encoded=json.dumps(observation)
-        # One SQLite statement reads/merges/writes under the write lock. The
-        # provider may have occupied this actor for minutes while the account
-        # thread published a newer success or failure; preserve that observation.
-        self.db.execute('''INSERT OR REPLACE INTO robot_status
-          SELECT 1,json_set(
-            CASE WHEN ? AND robot_account_newer(?,previous)
-            THEN json_patch(previous,?) ELSE previous END,
-            '$.bot_status',?,'$.failure_code',?,'$.wait_reason',?,'$.checked_at',?)
-          FROM (SELECT COALESCE((SELECT data FROM robot_status WHERE id=1),?) AS previous)''',
-          (bool(account),encoded,encoded,state,reason,wait_reason,now(),json.dumps(empty_account())))
-        return self.snapshot()
-    def report_account(self,account=None,reason=None):
-        # The account poll and coordinator use separate SQLite connections.
-        # Hold the write lock while merging so a newer coordinator status cannot
-        # be overwritten by an account snapshot read before that status changed.
-        observation=account_observation(account,reason,stamp=True)
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
-            value=json.loads(row[0]) if row else dict(bot_status='WAITING',failure_code=None,wait_reason=None,checked_at=None)
-            if newer_account(observation,value):value.update(observation)
-            self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
-            self.db.execute('COMMIT')
-        except BaseException:self.db.execute('ROLLBACK');raise
-        return self.snapshot()
-    def approve(self,setup_id,decision):
-        if not isinstance(setup_id,str) or len(setup_id)>160 or decision not in ('APPROVED','USER_REJECTED'):raise Review('INVALID_APPROVAL')
-        self.db.execute('BEGIN IMMEDIATE')
-        try:
-            row=self.db.execute('SELECT * FROM robot_setups WHERE id=?',(setup_id,)).fetchone()
-            if not row:raise Review('SETUP_NOT_FOUND')
-            old=self.db.execute('SELECT decision FROM robot_decisions WHERE setup_id=?',(setup_id,)).fetchone()
-            if old:
-                if old[0]!=decision:raise Review('DECISION_ALREADY_RECORDED')
-            else:
-                if row['status']!='SETUP_READY':raise Review('SETUP_NOT_READY')
-                self.verified_plan(row)
-                self.db.execute('INSERT INTO robot_decisions VALUES(?,?,?)',(setup_id,decision,now()))
-                self.db.execute('UPDATE robot_setups SET status=? WHERE id=?',(decision,setup_id))
-            self.db.execute('COMMIT')
-        except BaseException:self.db.execute('ROLLBACK');raise
-        return self.snapshot()
-
-def account_state(client,store,today):
-    config=client.check()
-    if config.get('status')!='BINANCE_CONNECTED' or config.get('position_mode')!='ONE_WAY' or config.get('multi_assets_margin') is not False or config.get('can_trade') is not True:
-        raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-    client.sync_time();value=client.signed_get('/fapi/v3/account')
-    rows=value.get('positions') if isinstance(value,dict) else None
-    if not isinstance(rows,list):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-    running=set()
-    for row in rows:
-        if not isinstance(row,dict):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-        amount=row.get('positionAmt');symbol=row.get('symbol')
-        if not isinstance(amount,str) or len(amount)>64 or not re.fullmatch(r'-?\d+(?:\.\d+)?',amount) or not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9_]{2,30}',symbol):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-        # Zero-amount rows are not active Futures exposure. Validate BOTH only
-        # for non-zero positions that actually consume one of the two slots.
-        if D(amount)==0:continue
-        if row.get('positionSide')!='BOTH':raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-        running.add(symbol)
-    owned={r[0] for r in store.db.execute('SELECT DISTINCT symbol FROM robot_entry_receipts')}-MANUAL_ONLY_SYMBOLS
-    entries=store.entries(today)
-    return dict(running_positions=len(running),running_symbols=sorted(running),manual_exposure=sorted(running-owned),
-        bot_entries_today=entries,available_slots=slots(len(running),entries),
-        usdt_wallet_balance=config.get('usdt_wallet_balance'),
-        usdt_available_balance=config.get('usdt_available_balance'),account_checked_at=now(),account_failure_code=None,
-        **account_order())
-
 class Coordinator:
-    def __init__(self,ledger,neuro,market,account_factory,stopping=None):
+    def __init__(self,ledger,neuro,market,account_factory,stopping=None,gateway=None):
         self.ledger=ledger;self.db=ledger.db;self.store=RobotStore(self.db)
         self.neuro=neuro;self.market=market;self.account_factory=account_factory;self.stopping=stopping
+        self.gateway=gateway if gateway is not None else OrderGateway()
     def tick(self):
-        # Shares the CLI cycle lock; overlapping coordinators cannot spend twice.
+        # Processes share the cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
         try:lock=path.open('a')
         except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
@@ -275,83 +38,198 @@ class Coordinator:
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
-    def screened_exclusions(self,cycle,data,results):
-        # Recover a missing legacy partial-screen marker only from a completed
-        # claimed screen with completed provider evidence. Never retry its ID.
-        rows=self.db.execute("SELECT j.operation,a.state,a.output FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation WHERE j.cycle=? AND j.kind='SCREENING' AND j.state='COMPLETE'",(cycle,))
-        prefix=cycle+':screening:'+str(data['screen'])+':'
-        resolved={r['symbol'] for r in results}
+    def verified_intent(self,row):
+        candidate=self.db.execute('SELECT * FROM robot_candidates WHERE id=?',(row['candidate_id'],)).fetchone()
+        if not candidate or row['id']!=candidate['id'] or row['symbol']!=candidate['symbol']:raise Review('ORDER_EVIDENCE_UNVERIFIED')
+        expected=build_intent(self.store.verified_plan(candidate),candidate['id'])
+        if json.loads(row['payload'])!=expected:raise Review('ORDER_EVIDENCE_UNVERIFIED')
+        return expected
+    def execution_slots(self,account,today):
+        rows=list(self.db.execute("SELECT symbol,state FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
+        # A pending entry reserves both a possible position and today's entry
+        # allowance. A confirmed fill reserves its position until a later GET
+        # reflects it; represented positions are never counted twice.
+        pending=sum(row['state']=='ENTRY_PENDING' for row in rows)
+        unrepresented=sum(row['symbol'] not in account['running_symbols'] for row in rows)
+        return max(0,min(account['available_slots'],2-account['running_positions']-unrepresented,
+            2-self.store.entries(today)-pending))
+    def advance_execution(self,account,today):
+        row=self.db.execute("SELECT * FROM order_intents WHERE state IN ('SUBMITTING','NEEDS_REVIEW') ORDER BY rowid LIMIT 1").fetchone()
+        if row:return self.store.report('NEEDS_REVIEW',account,row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN')
+        rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED') ORDER BY rowid LIMIT 2"))
         for row in rows:
-            if row['state']!='COMPLETE' or row['operation'] not in (prefix+'1',prefix+'2'):continue
-            try:
-                output=json.loads(row['output']);symbols=output['symbols'];count=int(row['operation'][-1])
-                if set(output)!={'symbols'} or not isinstance(symbols,list) or len(symbols)!=count or len(set(symbols))!=count:continue
-                if any(not isinstance(s,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',s) for s in symbols):continue
-                if any(s in data['seen'] and s not in resolved for s in symbols):return True
-            except (TypeError,ValueError,KeyError):continue
-        return False
+            if not self.gateway.connected:return self.store.report('NEEDS_REVIEW',account,NOT_CONNECTED)
+            try:intent=self.verified_intent(row)
+            except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account,'ORDER_EVIDENCE_UNVERIFIED')
+            try:result=self.gateway.reconcile(intent)
+            except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account)
+            observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
+            if observed['bot_status']=='NEEDS_REVIEW':return observed
+        row=self.db.execute("SELECT * FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED') ORDER BY rowid LIMIT 1").fetchone()
+        if not row:return None
+        try:plan=self.store.verified_plan(row);intent=build_intent(plan,row['id'])
+        except Exception:
+            self.db.execute("UPDATE robot_candidates SET status='REJECTED',failure_code='ORDER_EVIDENCE_UNVERIFIED' WHERE id=?",(row['id'],))
+            return self.store.report('REJECTED',account,'ORDER_EVIDENCE_UNVERIFIED')
+        self.db.execute('INSERT OR IGNORE INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
+            (row['id'],row['id'],row['symbol'],'READY_FOR_EXECUTION',json.dumps(intent),None,None,now(),now()))
+        try:self.verified_intent(self.db.execute('SELECT * FROM order_intents WHERE id=?',(row['id'],)).fetchone())
+        except Exception:return self.mark_unknown(row['id'],row['id'],account,'ORDER_EVIDENCE_UNVERIFIED')
+        if not self.gateway.connected:
+            self.db.execute("UPDATE order_intents SET state='EXECUTION_BLOCKED',failure_code=?,updated=? WHERE id=?",(NOT_CONNECTED,now(),row['id']))
+            self.db.execute("UPDATE robot_candidates SET status='EXECUTION_BLOCKED',failure_code=? WHERE id=?",(NOT_CONNECTED,row['id']))
+            return self.store.report('EXECUTION_BLOCKED',account,NOT_CONNECTED)
+        # Connecting a gateway never permits old, stale or already exposed setups.
+        if row['cycle'].split(':',1)[0]!=today or not 0<=time.time()-plan['rules_checked_at']<=300:
+            return self.reject_intent(row,account,'STALE_ORDER_INTENT')
+        if row['symbol'] in account['running_symbols'] or row['symbol'] in MANUAL_ONLY_SYMBOLS:
+            return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
+        if not self.execution_slots(account,today):return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        try:
+            context,rules=analysis_context(self.market,row['symbol'],'5')
+            self.market.fresh(context,row['symbol']);preflight(plan,rules,D('5'))
+        except Exception:return self.reject_intent(row,account,'ORDER_PREFLIGHT_REJECTED')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if not self.allowed(today):
+                self.db.execute('ROLLBACK');return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+            changed=self.db.execute("UPDATE order_intents SET state='SUBMITTING',failure_code=NULL,updated=? WHERE id=? AND state IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')",(now(),row['id'])).rowcount
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        if not changed:return self.store.report('NEEDS_REVIEW',account,'ORDER_OUTCOME_UNKNOWN')
+        self.store.report('EXECUTING',account)
+        try:result=self.gateway.submit(intent)
+        except GatewayUnavailable:
+            # A transport that might have sent a request must report an unknown
+            # outcome, never claim this pre-send NOT_CONNECTED exception.
+            return self.mark_unknown(row['id'],row['id'],account)
+        except Exception:return self.mark_unknown(row['id'],row['id'],account)
+        return self.record_gateway_observation(row['id'],row['id'],result,account)
+    def reject_intent(self,row,account,reason):
+        self.db.execute("UPDATE order_intents SET state='REJECTED',failure_code=?,updated=? WHERE id=?",(reason,now(),row['id']))
+        self.db.execute("UPDATE robot_candidates SET status='REJECTED',failure_code=? WHERE id=?",(reason,row['id']))
+        return self.store.report('REJECTED',account,reason)
+    def mark_unknown(self,intent_id,candidate_id,account,reason='ORDER_OUTCOME_UNKNOWN'):
+        self.db.execute("UPDATE order_intents SET state='NEEDS_REVIEW',failure_code=?,updated=? WHERE id=?",(reason,now(),intent_id))
+        self.db.execute("UPDATE robot_candidates SET status='NEEDS_REVIEW',failure_code=? WHERE id=?",(reason,candidate_id))
+        return self.store.report('NEEDS_REVIEW',account,reason)
+    def record_gateway_observation(self,intent_id,candidate_id,result,account):
+        row=self.db.execute('SELECT * FROM order_intents WHERE id=?',(intent_id,)).fetchone()
+        try:
+            intent=self.verified_intent(row)
+            if row['candidate_id']!=candidate_id:raise ValueError
+            if not isinstance(result,dict) or result.get('source')!='BINANCE_FUTURES':raise ValueError
+            state=result['state']
+            if state not in ('ENTRY_PENDING','POSITION_PROTECTED','CLOSED','REJECTED'):raise ValueError
+            if result['symbol']!=intent['symbol'] or result['client_order_id']!=intent['client_order_id']:raise ValueError
+            if not isinstance(result['order_id'],str) or not re.fullmatch(r'[1-9][0-9]{0,29}',result['order_id']):raise ValueError
+            quantity=result['filled_quantity']
+            if not isinstance(quantity,str) or not re.fullmatch(r'\d+(?:\.\d+)?',quantity):raise ValueError
+            filled=D(quantity)
+            if not 0<=filled<=D(intent['entry']['quantity']):raise ValueError
+            at=datetime.fromisoformat(result['observed_at'])
+            if at.tzinfo is None or not 0<=(datetime.now(timezone.utc)-at).total_seconds()<=120:raise ValueError
+            if state=='POSITION_PROTECTED':
+                if not filled or result.get('sl_confirmed') is not True or result.get('tp_confirmed') is not True:raise ValueError
+                for key in ('sl_order_id','tp_order_id'):
+                    if not isinstance(result.get(key),str) or not re.fullmatch(r'[1-9][0-9]{0,29}',result[key]):raise ValueError
+                if len({result['order_id'],result['sl_order_id'],result['tp_order_id']})!=3:raise ValueError
+            if state=='ENTRY_PENDING' and filled>0:raise ValueError
+            if state=='REJECTED' and filled>0:raise ValueError
+            if state=='CLOSED' and not filled:raise ValueError
+            entry_at=datetime.fromisoformat(result['first_fill_at']) if filled else None
+            created=datetime.fromisoformat(row['created'])
+            if entry_at and (entry_at.tzinfo is None or created.tzinfo is None or not created<=entry_at<=at):raise ValueError
+            if state=='CLOSED':
+                closed=datetime.fromisoformat(result['closed_at'])
+                exit_id=result['exit_order_id']
+                if closed.tzinfo is None or not entry_at<=closed<=at:raise ValueError
+                if not isinstance(exit_id,str) or not re.fullmatch(r'[1-9][0-9]{0,29}',exit_id) or exit_id==result['order_id']:raise ValueError
+            previous=json.loads(row['result']) if row['result'] else None
+            if previous:
+                transitions={'ENTRY_PENDING':('ENTRY_PENDING','POSITION_PROTECTED','CLOSED','REJECTED'),
+                    'POSITION_PROTECTED':('POSITION_PROTECTED','CLOSED'),'CLOSED':('CLOSED',),'REJECTED':('REJECTED',)}
+                if state not in transitions[previous['state']] or result['order_id']!=previous['order_id']:raise ValueError
+                if filled<D(previous['filled_quantity']) or at<datetime.fromisoformat(previous['observed_at']):raise ValueError
+                if D(previous['filled_quantity']) and entry_at!=datetime.fromisoformat(previous['first_fill_at']):raise ValueError
+            # Cache only the explicit verified-observation fields, never raw
+            # Binance envelopes, URLs, headers, credentials, or adapter prose.
+            allowed=('source','state','symbol','client_order_id','order_id','filled_quantity',
+                     'observed_at','first_fill_at','sl_confirmed','tp_confirmed','sl_order_id','tp_order_id',
+                     'exit_order_id','closed_at')
+            recorded={key:result[key] for key in allowed if key in result}
+            entry_day=entry_at.astimezone(ZoneInfo('Asia/Bangkok')).date().isoformat() if filled else None
+            receipt=self.db.execute('SELECT * FROM robot_entry_receipts WHERE id=?',(intent['client_order_id'],)).fetchone()
+            if receipt and (not filled or receipt['symbol']!=intent['symbol'] or receipt['entry_day']!=entry_day or
+                datetime.fromisoformat(receipt['confirmed_at'])!=entry_at):raise ValueError
+        except Exception:return self.mark_unknown(intent_id,candidate_id,account)
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            self.db.execute('UPDATE order_intents SET state=?,result=?,failure_code=NULL,updated=? WHERE id=?',
+                (state,json.dumps(recorded),now(),intent_id))
+            self.db.execute('UPDATE robot_candidates SET status=?,failure_code=NULL WHERE id=?',(state,candidate_id))
+            if filled:
+                self.db.execute('INSERT OR IGNORE INTO robot_entry_receipts VALUES(?,?,?,?)',
+                    (intent['client_order_id'],intent['symbol'],entry_day,result['first_fill_at']))
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        account=dict(account,bot_entries_today=self.store.entries(day()))
+        account['available_slots']=slots(account['running_positions'],account['bot_entries_today'])
+        return self.store.report(state,account)
     def allowed(self,today):return not (self.stopping and self.stopping.is_set()) and self.store.settings()['robot_on'] and day()==today
     def pause_reason(self):
         if self.stopping and self.stopping.is_set():return 'ROBOT_STOPPING'
         return 'ROBOT_OFF' if not self.store.settings()['robot_on'] else 'ROBOT_DAY_CHANGED'
-    def lifecycle_blocked(self):
-        names={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if 'shadow_plans' in names:
-            from .binance_shadow import ShadowStore
-            if ShadowStore(self.db).blocked():return True
-        if 'live_records' in names:
-            # Retained offline model rows are not executions; unresolved models block research.
-            return bool(self.db.execute("SELECT 1 FROM live_records WHERE state NOT IN ('CLOSED','REJECTED') LIMIT 1").fetchone())
-        return False
     def _tick(self):
-        if not self.store.settings()['robot_on']:return self.store.report('WAITING',wait_reason='ROBOT_OFF')
+        if not self.store.settings()['robot_on']:return self.store.report('OFF',wait_reason='ROBOT_OFF')
         if self.stopping and self.stopping.is_set():return self.store.report('WAITING',wait_reason='ROBOT_STOPPING')
         today=day();account=account_state(self.account_factory(),self.store,today)
-        available=account['available_slots']
+        self.store.report_account(account)
+        advanced=self.advance_execution(account,today)
+        if advanced is not None:return advanced
+        available=self.execution_slots(account,today)
         if not available:return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
-        if self.lifecycle_blocked():return self.store.report('WAITING',account,wait_reason='ROBOT_LIFECYCLE_NEEDS_REVIEW')
         # An interrupted paid request cannot be automatically replayed under a new ID.
-        if self.db.execute("SELECT 1 FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():
+        if self.db.execute("SELECT 1 FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone() or self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         self.neuro.require_key() # Configuration failure claims no paid operation.
-        cycle=today+':robot-v7:'+str(account['bot_entries_today'])
+        cycle=today+':robot-v8:'+str(self.store.entries(today))
         old=self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(cycle,)).fetchone()
         if not old:
-            if self.db.execute("SELECT 1 FROM robot_setups WHERE status IN ('SETUP_READY','APPROVED') LIMIT 1").fetchone():return self.store.report('SETUP_READY',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+            # A first fill changes the entry epoch. Finish the existing bounded
+            # research queue rather than discard already-paid screening results.
+            old=self.db.execute("SELECT * FROM robot_cycles WHERE day=? AND state='ACTIVE' ORDER BY entry_epoch LIMIT 1",(today,)).fetchone()
+            if old:cycle=old['id']
+        if not old:
+            if self.db.execute("SELECT 1 FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():return self.store.report('WAITING',account,wait_reason='ROBOT_CYCLE_COMPLETE')
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             data=dict(target=available,queue=[],seen=[],screen=-1,replacements=0)
-            self.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,today,account['bot_entries_today'],'ACTIVE',json.dumps(data)))
+            self.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,today,self.store.entries(today),'ACTIVE',json.dumps(data)))
         else:
             data=json.loads(old['data'])
             if old['state']=='NEEDS_REVIEW':return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         results=self.store.results(cycle)
-        # Older persisted cycles can lack the replacement marker after a screen
-        # yielded no usable symbols. Recover both states within the original cap;
-        # unresolved paid jobs were already checked above and are never replayed.
-        if old and old['state'] in ('ACTIVE','COMPLETE') and not data['queue'] and data['screen']>=0 and (not results or self.screened_exclusions(cycle,data,results)):
-            data['replacement_due']=True
-            self.save_cycle(cycle,data,'ACTIVE' if data['replacements']<MAX_REPLACEMENTS else 'COMPLETE')
-        ready=sum(r['status'] in ('SETUP_READY','APPROVED') for r in results)
-        ready_unexposed=sum(r['status'] in ('SETUP_READY','APPROVED') and r['symbol'] not in account['running_symbols'] for r in results)
+        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
+        ready_unexposed=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED') and r['symbol'] not in account['running_symbols'] for r in results)
         technical=sum(r['status']=='REJECTED' for r in results)
         # A rejected research opportunity uses budget, not a live account slot.
-        # Ready tickets reserve current free slots; the original target stays fixed.
+        # Ready intents reserve current free slots; the original target stays fixed.
         # A matching running position already occupies its real account slot.
         remaining=min(available-ready_unexposed,data['target']-ready-technical)
         if remaining<=0:
             self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('SETUP_READY' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+            return self.store.report('WAITING' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if data['queue']:
             symbol=data['queue'][0]
             if symbol in account['running_symbols'] or symbol in MANUAL_ONLY_SYMBOLS:
                 data['queue'].pop(0);data['seen'].append(symbol);self.save_cycle(cycle,data)
                 # Account conflicts are technical rejections, never replacement triggers.
-                self.db.execute('INSERT OR IGNORE INTO robot_setups VALUES(?,?,?,?,?,?)',(cycle+':analysis-v7:'+symbol,cycle,symbol,'REJECTED',None,'ROBOT_SYMBOL_EXPOSED'))
+                self.db.execute('INSERT OR IGNORE INTO robot_candidates VALUES(?,?,?,?,?,?)',(cycle+':analysis-v8:'+symbol,cycle,symbol,'REJECTED',None,'ROBOT_SYMBOL_EXPOSED'))
                 return self.store.report('REJECTED',account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
-        held=any(r['status'] in ('HOLD','USER_REJECTED') for r in results)
+        held=any(r['status']=='HOLD' for r in results)
         # Filtered screening symbols leave capacity for a bounded replacement,
         # including after other eligible symbols in that screen were analyzed.
         replacement_due=bool(data.get('replacement_due'))
@@ -410,11 +288,12 @@ class Coordinator:
             signal=setup(value,symbol)
             if signal.side=='HOLD':state='HOLD'
             else:
+                self.store.report('VALIDATING',account)
                 self.market.fresh(context,symbol);rules=self.market.rules(symbol)
                 plan=risk_check(signal,rules,target);plan['risk_target_usdt']=target
                 plan['sizing_rules']={k:str(v) if isinstance(v,D) else v for k,v in asdict(rules).items()}
                 preflight(plan,rules,target);stamp(self.db,plan,operation);verify(self.db,plan,operation)
-                state='SETUP_READY'
+                state='READY_FOR_EXECUTION'
         except Exception as error:
             reason=validation_code(error)
             row=self.db.execute('SELECT state FROM api_requests WHERE operation=?',(operation,)).fetchone()
@@ -424,7 +303,7 @@ class Coordinator:
         data['queue'].pop(0);data['seen'].append(symbol)
         self.db.execute('BEGIN IMMEDIATE')
         try:
-            self.db.execute('INSERT INTO robot_setups VALUES(?,?,?,?,?,?)',(operation,cycle,symbol,state,json.dumps(plan) if plan else None,reason))
+            self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',(operation,cycle,symbol,state,json.dumps(plan) if plan else None,reason))
             self.save_cycle(cycle,data,'NEEDS_REVIEW' if unknown else 'ACTIVE')
             self.db.execute('UPDATE robot_jobs SET state=? WHERE operation=?',('NEEDS_REVIEW' if unknown else 'COMPLETE',operation))
             self.db.execute('COMMIT')

@@ -67,7 +67,7 @@ class StateLockRecoveryTests(unittest.TestCase):
         outside.chmod(0o640)
         alias=self.trading/'unknown-alias'
         alias.symlink_to(outside)
-        temporary=self.trading/'.snapshot-interrupted'
+        temporary=self.trading/'.ledger-backup-interrupted'
         temporary.write_bytes(b'unknown historical temporary output')
         temporary.chmod(0o644)
         fifo=self.trading/'unknown-pipe'
@@ -187,7 +187,7 @@ class StateLockRecoveryTests(unittest.TestCase):
         lock.chmod(0o640)
         target=self.root/'outside'
         target.write_bytes(b'outside audit')
-        (self.trading/'snapshot.json').symlink_to(target)
+        (self.trading/'ledger-pre-order.sqlite3').symlink_to(target)
         before=lock.stat()
         with patch('deploy.container_boot.os.fchown') as chown:
             with self.assertRaisesRegex(SystemExit,'^WORKER_STATE_LOCK_INVALID$'):
@@ -197,7 +197,7 @@ class StateLockRecoveryTests(unittest.TestCase):
 
     def test_every_open_descriptor_is_closed_on_validation_failure(self):
         (self.trading/'migration.lock').write_bytes(b'valid inode')
-        os.mkfifo(self.trading/'snapshot.json',0o600)
+        os.mkfifo(self.trading/'ledger-pre-order.sqlite3',0o600)
         opened=[]
         closed=[]
         real_open,real_close=os.open,os.close
@@ -232,7 +232,7 @@ class StateLockRecoveryTests(unittest.TestCase):
                 repair_state_locks(self.trading)
 
     def test_chmod_failure_does_not_leak_private_details(self):
-        (self.trading/'snapshot.json').write_bytes(b'private state')
+        (self.trading/'ledger-pre-order.sqlite3').write_bytes(b'private state')
         with patch('deploy.container_boot.os.fchown'),patch('deploy.container_boot.os.fchmod',side_effect=PermissionError('private detail')):
             with self.assertRaisesRegex(SystemExit,'^WORKER_STATE_LOCK_INVALID$'):
                 repair_state_locks(self.trading)
