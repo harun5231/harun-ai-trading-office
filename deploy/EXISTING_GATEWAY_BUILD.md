@@ -16,6 +16,27 @@ utility tidak mengimpor adapter, melakukan build, atau mengirim order.
 Source asli dan manifest hash disimpan privat pada direktori sibling
 `/root/harun-ai-trading-office-gateway-build-backups/`.
 
+Untuk gateway yang sudah berhasil dibuild tetapi masih menampilkan
+`connected:false`, `status:null`, dan `failure_code:null` sementara reader
+`BINANCE_CONNECTED`, tersedia opsi **`--wire-file-secrets`**. Opsi ini menghubungkan
+constructor kustom ke file `BINANCE_API_KEY_FILE` dan `BINANCE_API_SECRET_FILE`
+yang sama dengan reader. Kode/default constructor yang ada dan seluruh metode
+HTTP `submit`/`reconcile` dipertahankan; normalisasi status mempertahankan field
+asal. `CONFIGURED` hanya berarti secret berhasil dimuat secara lokal, tanpa
+membuktikan autentikasi Binance, penerimaan order, fill, atau proteksi.
+
+Opsi wiring hanya menerima constructor sederhana dengan parameter string
+`api_key=''`, `api_secret=''`, dan `base_url='https://fapi.binance.com'`, assignment
+langsung ke atribut yang sudah dikenali, serta status berupa dict sederhana
+yang memuat `connected:self._connected`. Fallback literal `getenv`, jika ada,
+wajib kosong; field status yang dikenali sebagai credential juga ditolak.
+Bentuk source lain ditolak tanpa mencoba menebak konfigurasinya.
+Default credential kosong membaca kedua file
+secret; pasangan credential eksplisit yang lengkap tetap dipakai. Pasangan
+sebagian atau file yang tidak valid menghasilkan `BINANCE_NOT_CONFIGURED`,
+tanpa mencampur sumber credential. Persiapan tanpa opsi ini tetap memakai
+perilaku sebelumnya; backup dan guard restore berlaku untuk kedua pilihan.
+
 Setelah utility tersedia di `origin/main`, jalankan seluruh blok ini. Pemeriksaan
 OFF membaca ledger secara read-only tanpa mengimpor gateway atau memanggil API.
 Kegagalan pemeriksaan atau command lain menghentikan blok sebelum langkah berikutnya.
@@ -44,21 +65,25 @@ PY
   set -euo pipefail
   check_robot_off
   git fetch origin main
-  git show origin/main:deploy/prepare_gateway_build.py | python3 -I -B -S - --project /root/harun-ai-trading-office
+  git show origin/main:deploy/prepare_gateway_build.py | python3 -I -B -S - --project /root/harun-ai-trading-office --wire-file-secrets
   docker compose -f compose.yaml config --quiet
   docker compose -f compose.yaml build worker
   check_robot_off
   docker compose -f compose.yaml stop -t 660 worker
   docker compose -f compose.yaml up -d --no-build --no-deps --force-recreate --wait --wait-timeout 180 worker
+  check_robot_off
   docker compose -f compose.yaml ps
 )
 ```
 
 Simpan path `Backup:` yang dicetak utility. Jika muncul `BASELINE_MISMATCH` atau
 error lain, periksa penyebabnya sebelum melanjutkan; jangan melewati guard.
+Untuk persiapan helper/dependency saja, hilangkan `--wire-file-secrets` dari
+command utility di atas.
 Build yang berhasil hanya memastikan dependency/import tersedia. Worker baru
 harus tetap OFF. Verifikasi file image terhadap source host tanpa menjalankan
-adapter, kemudian jalankan diagnostic akun yang hanya melakukan GET:
+metode adapter, periksa import, lalu jalankan diagnostic akun GET dan status
+read-only Office:
 
 ```bash
 (
@@ -78,22 +103,28 @@ if not {'build_intent', 'require_implementation'} <= names:
     raise SystemExit('GATEWAY_HELPERS_MISSING')
 print('GATEWAY_SOURCE_MATCH')
 PY
+  docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -c 'from worker.order_gateway import OrderGateway, build_intent, require_implementation; print("GATEWAY_IMPORT_OK")'
   docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker binance-check
+  docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker.robot_status
 )
 ```
 
 `BINANCE_CONNECTED` pada `binance-check` membuktikan pembacaan akun/config berhasil.
 `live_execution:false` di diagnostic menjelaskan mode reader tersebut, bukan
 status adapter. Label gateway `connected` juga tidak membuktikan POST diterima,
-entry terisi, atau SL/TP sudah terpasang di Binance.
+entry terisi, atau SL/TP sudah terpasang di Binance. Periksa metadata
+`execution_gateway` pada `robot_status`; `CONFIGURED` tetap sebatas pemuatan
+secret. Field `connected` adalah metadata, bukan sakelar eksekusi. Robot harus
+tetap OFF sesudah seluruh pemeriksaan; polling read-only Office tetap berjalan.
 
-Adapter kustom yang dibahas masih menelan exception TP/SL sesudah entry, belum
-menunjukkan konfigurasi CROSS/leverage 75 secara eksplisit, dan memakai `getenv`
-dengan pemetaan ke file secret VPS yang belum terbukti. Bukti fill pertama serta
+Adapter kustom yang dibahas masih menelan exception TP/SL sesudah entry dan belum
+menunjukkan konfigurasi CROSS/leverage 75 secara eksplisit. Wiring file secret
+tidak memperbaiki kedua hal tersebut. Bukti fill pertama serta
 lifecycle/rekonsiliasi juga belum diverifikasi. Developer manusia perlu
 memperbaiki bagian tersebut sesuai [ORDER_INTEGRATION.md](ORDER_INTEGRATION.md)
-sebelum penggunaan nyata. Panduan build ini tidak mengaktifkan ON atau mengirim
-order entry/TP/SL.
+sebelum penggunaan nyata. Credential yang dimuat dapat dipakai SDK kustom saat
+ROBOT ON, sehingga pertahankan OFF sampai bagian tersebut selesai ditinjau dan
+diperbaiki. Panduan build ini tidak mengaktifkan ON atau mengirim order entry/TP/SL.
 
 Untuk mengembalikan dua file lokal, gunakan path backup yang dicetak utility:
 
@@ -106,4 +137,5 @@ Untuk mengembalikan dua file lokal, gunakan path backup yang dicetak utility:
 
 Restore hanya berjalan bila hash file masih sama dengan hasil persiapan;
 perubahan berikutnya tidak ditimpa. Restore file tidak mengganti image/container
-yang sedang berjalan. Data volume dan secret tidak dihapus oleh utility.
+yang sedang berjalan. `--restore` dipakai terpisah dari `--wire-file-secrets`.
+Data volume dan secret tidak dihapus oleh utility.
