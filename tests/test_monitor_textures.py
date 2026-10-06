@@ -35,7 +35,7 @@ class MonitorTextures(unittest.TestCase):
         self.run_node(r"""
 assert.equal(canvases.length,16);assert.equal(monitors.diagnostics().textures,16);
 for(const role of monitors.diagnostics().roles){assert.match(text(role),/READ ONLY · OFFICE GRAPHICS/);assert.doesNotMatch(text(role),/DEMO|SIMULATION|SYNTHETIC|HUMAN REVIEW/);assert.equal(words(role).some(value=>/^\$?-?\d+(?:\.\d+)?%?$/.test(value)),false);}
-assert.match(text('trading'),/NOT_CONNECTED/);assert.doesNotMatch(text('trading'),/BUY|SELL|ORDER BOOK|PRICE|QTY/);assert.equal(monitors.update(0,{}),true);assert.equal(monitors.update(.02,{}),false);monitors.dispose();assert.equal(monitors.update(1,data),false);assert.throws(()=>monitors.get('market'));
+assert.match(text('trading'),/NOT_CONNECTED/);assert.match(text('trading'),/ORDER TRANSPORT UNAVAILABLE/);assert.match(text('position'),/ACCOUNT TELEMETRY · READ ONLY/);assert.doesNotMatch(text('trading'),/BUY|SELL|ORDER BOOK|PRICE|QTY/);assert.equal(monitors.update(0,{}),true);assert.equal(monitors.update(.02,{}),false);monitors.dispose();assert.equal(monitors.update(1,data),false);assert.throws(()=>monitors.get('market'));
 """)
 
     def test_only_fresh_fact_fields_render_as_numbers_and_decisions(self):

@@ -84,7 +84,7 @@ class DashboardContract(unittest.TestCase):
     def test_account_connection_switch_and_read_only_sections(self):
         self.run_dom(r"""
 assert.deepEqual(statValues(),['—','—','—','—']);open('robot');assert.equal(document.getElementById('robotToggle').disabled,true);
-await connect();assert.equal(document.getElementById('apiToken').value,'');assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.match(content.textContent,/HYPEUSDT/);assert.match(content.textContent,/Eksekusi Binance diblokir/);
+await connect();assert.equal(document.getElementById('apiToken').value,'');assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.match(content.textContent,/HYPEUSDT/);assert.match(content.textContent,/Transport pengiriman order Binance belum tersedia/);assert.match(content.textContent,/Worker belum dapat mengirim order ke Binance/);assert.doesNotMatch(content.textContent,/Eksekusi Binance diblokir/);
 document.getElementById('robotToggle').click();await flush();assert.match(document.getElementById('robotToggle').textContent,/: ON/);
 const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{robot_on:true});
 open('staff');assert.match(content.textContent,/NeuroAPI Analyst/);open('reports');assert.match(content.textContent,/3.75/);open('activity');assert.match(content.textContent,/<img src=x/);assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);

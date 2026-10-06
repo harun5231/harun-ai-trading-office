@@ -13,6 +13,29 @@ class GatewayUnavailable(Review):
     pass
 
 
+class _MissingOrderImplementation:
+    """Local placeholders only; implement the public OrderGateway below."""
+    def submit(self, intent):
+        raise GatewayUnavailable(NOT_CONNECTED)
+
+    def reconcile(self, intent):
+        raise GatewayUnavailable(NOT_CONNECTED)
+
+
+def require_implementation(gateway, *names):
+    """Require real adapter methods, independently of connection display data.
+
+    This checks Python methods only and performs no I/O. An implemented adapter
+    owns signing, configuration, exchange checks, and protection handling.
+    Detect missing methods before claiming SUBMITTING: the built-in stubs can
+    never have sent a request. Every exception after that claim remains unknown.
+    """
+    for name in names or ('submit', 'reconcile'):
+        method = getattr(gateway, name, None)
+        if not callable(method) or getattr(method, '__func__', method) is getattr(_MissingOrderImplementation, name):
+            raise GatewayUnavailable(NOT_CONNECTED)
+
+
 def build_intent(plan, operation):
     """Immutable internal order command, never a user ticket or exchange receipt."""
     if not isinstance(plan, dict) or plan.get('mode') != 'ORDER_INTENT' or plan.get('symbol') == 'HYPEUSDT':
@@ -36,22 +59,17 @@ def build_intent(plan, operation):
         evidence_sha256=plan['provenance']['payload_sha256'])
 
 
-class OrderGateway:
-    connected = False
+class OrderGateway(_MissingOrderImplementation):
+    """Implement submit(intent), reconcile(intent), and status() in this class.
 
+    submit must authenticate the entry and handle real SL/TP protection.
+    reconcile must read its real lifecycle using stable exchange IDs.
+    Return only verified observations per deploy/ORDER_INTEGRATION.md.
+    """
     def status(self):
-        return dict(connected=self.connected,
-                    status='CONNECTED' if self.connected else 'NOT_CONNECTED',
-                    failure_code=None if self.connected else NOT_CONNECTED)
+        """Display actual adapter status; never an execution permission switch.
 
-    def submit(self, intent):
-        """Implement authenticated entry submission + real protection handling here.
-
-        Return only a verified Binance observation in the contract documented in
-        deploy/ORDER_INTEGRATION.md. Never synthesize an order/fill response.
+        The built-in adapter has no transport. Its developer implementation
+        must also report its actual configuration/connection status here.
         """
-        raise GatewayUnavailable(NOT_CONNECTED)
-
-    def reconcile(self, intent):
-        """Read the real entry/protection lifecycle by its stable exchange IDs."""
-        raise GatewayUnavailable(NOT_CONNECTED)
+        return dict(connected=False, status='NOT_CONNECTED', failure_code=NOT_CONNECTED)

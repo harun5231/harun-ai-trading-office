@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from .core import D,Review,day,now,risk_check,preflight
 from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS,slots)
 from .robot_store import RobotStore
-from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent
+from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent,require_implementation
 from .neuroapi import SETUP_SCHEMA,selections,setup
 from .prompts import ANALYSIS
 from .analysis import analysis_context
@@ -58,7 +58,8 @@ class Coordinator:
         if row:return self.store.report('NEEDS_REVIEW',account,row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN')
         rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED') ORDER BY rowid LIMIT 2"))
         for row in rows:
-            if not self.gateway.connected:return self.store.report('NEEDS_REVIEW',account,NOT_CONNECTED)
+            try:require_implementation(self.gateway,'reconcile')
+            except GatewayUnavailable:return self.store.report('NEEDS_REVIEW',account,NOT_CONNECTED)
             try:intent=self.verified_intent(row)
             except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account,'ORDER_EVIDENCE_UNVERIFIED')
             try:result=self.gateway.reconcile(intent)
@@ -75,11 +76,12 @@ class Coordinator:
             (row['id'],row['id'],row['symbol'],'READY_FOR_EXECUTION',json.dumps(intent),None,None,now(),now()))
         try:self.verified_intent(self.db.execute('SELECT * FROM order_intents WHERE id=?',(row['id'],)).fetchone())
         except Exception:return self.mark_unknown(row['id'],row['id'],account,'ORDER_EVIDENCE_UNVERIFIED')
-        if not self.gateway.connected:
+        try:require_implementation(self.gateway)
+        except GatewayUnavailable:
             self.db.execute("UPDATE order_intents SET state='EXECUTION_BLOCKED',failure_code=?,updated=? WHERE id=?",(NOT_CONNECTED,now(),row['id']))
             self.db.execute("UPDATE robot_candidates SET status='EXECUTION_BLOCKED',failure_code=? WHERE id=?",(NOT_CONNECTED,row['id']))
             return self.store.report('EXECUTION_BLOCKED',account,NOT_CONNECTED)
-        # Connecting a gateway never permits old, stale or already exposed setups.
+        # Implementing a gateway never permits old, stale or already exposed setups.
         if row['cycle'].split(':',1)[0]!=today or not 0<=time.time()-plan['rules_checked_at']<=300:
             return self.reject_intent(row,account,'STALE_ORDER_INTENT')
         if row['symbol'] in account['running_symbols'] or row['symbol'] in MANUAL_ONLY_SYMBOLS:
