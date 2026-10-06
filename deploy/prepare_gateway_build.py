@@ -22,6 +22,13 @@ HELPERS = ('build_intent', 'require_implementation')
 TARGETS = ('worker/order_gateway.py', 'Dockerfile')
 PIN = b'RUN python -m pip install --no-cache-dir requests==2.32.5'
 LIMIT = 2 * 1024 * 1024
+WIRE_INIT_BEGIN = '# HARUN_FILE_SECRETS_V1_BEGIN sha256='
+WIRE_INIT_END = '# HARUN_FILE_SECRETS_V1_END'
+WIRE_STATUS_BEGIN = '# HARUN_FILE_STATUS_V1_BEGIN sha256='
+WIRE_STATUS_END = '# HARUN_FILE_STATUS_V1_END'
+WIRE_CREDENTIAL_FIELDS = {'apikey', 'apisecret', 'secret', 'secretkey', 'password', 'token',
+                          'signature', 'authorization', 'credentials', 'accesskey',
+                          'accesstoken', 'bearertoken', 'authtoken', 'privatekey', 'key'}
 
 
 class Refuse(Exception):
@@ -223,6 +230,246 @@ def needs_requests(raw):
         for node in ast.walk(tree))
 
 
+def source_span(raw, node):
+    lines = raw.splitlines(keepends=True)
+    start = sum(map(len, lines[:node.lineno - 1])) + node.col_offset
+    end = sum(map(len, lines[:node.end_lineno - 1])) + node.end_col_offset
+    return start, end
+
+
+def line_start(raw, number):
+    return sum(map(len, raw.splitlines(keepends=True)[:number - 1]))
+
+
+def wire_methods(raw):
+    try:
+        tree = ast.parse(raw)
+    except (SyntaxError, UnicodeError):
+        raise Refuse('SOURCE_PARSE_FAILED') from None
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'OrderGateway']
+    if len(classes) != 1 or classes[0].decorator_list or classes[0].keywords:
+        raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    cls = classes[0]
+    protected = {'__init__', 'status'}
+    for node in cls.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if ((isinstance(node, ast.ClassDef) and node.name in protected)
+                or any(isinstance(value, ast.Name) and isinstance(value.ctx, (ast.Store, ast.Del))
+                       and value.id in protected for value in ast.walk(node))
+                or (isinstance(node, ast.Import) and any((alias.asname or alias.name.split('.')[0]) in protected for alias in node.names))
+                or (isinstance(node, ast.ImportFrom) and any((alias.asname or alias.name) in protected or alias.name == '*' for alias in node.names))):
+            raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    methods = {}
+    for name in ('__init__', 'status'):
+        found = [node for node in cls.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name]
+        if len(found) != 1 or not isinstance(found[0], ast.FunctionDef) or found[0].decorator_list:
+            raise Refuse('WIRE_' + ('CONSTRUCTOR' if name == '__init__' else 'STATUS') + '_UNSUPPORTED')
+        methods[name] = found[0]
+    if methods['__init__'].lineno >= methods['status'].lineno:
+        raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    return tree, methods['__init__'], methods['status']
+
+
+def self_attr(node, name):
+    return isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == 'self' and node.attr == name
+
+
+def pure_connected(node):
+    return (isinstance(node, ast.BoolOp) and isinstance(node.op, ast.And) and len(node.values) == 2
+            and self_attr(node.values[0], 'api_key') and self_attr(node.values[1], 'api_secret'))
+
+
+def validate_wire_shape(raw):
+    tree, ctor, status = wire_methods(raw)
+    args = ctor.args
+    if (args.posonlyargs or args.vararg or args.kwarg or args.kwonlyargs
+            or [arg.arg for arg in args.args] != ['self', 'api_key', 'api_secret', 'base_url']
+            or len(args.defaults) != 3
+            or any(not isinstance(node, ast.Constant) or node.value != value
+                   for node, value in zip(args.defaults, ('', '', 'https://fapi.binance.com')))
+            or any(not isinstance(arg.annotation, ast.Name) or arg.annotation.id != 'str' for arg in args.args[1:])):
+        raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    body = ctor.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant) and isinstance(body[0].value.value, str):
+        body = body[1:]
+    if (len(body) != 5 or not isinstance(body[0], ast.Import)
+            or [(alias.name, alias.asname) for alias in body[0].names] != [('os', None)]):
+        raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    for node, name in zip(body[1:], ('api_key', 'api_secret', 'base_url', '_connected')):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not self_attr(node.targets[0], name):
+            raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+        value = node.value
+        if name in ('api_key', 'api_secret'):
+            if not (isinstance(value, ast.IfExp) and isinstance(value.test, ast.Name) and value.test.id == name
+                    and isinstance(value.body, ast.Name) and value.body.id == name
+                    and isinstance(value.orelse, ast.Call) and isinstance(value.orelse.func, ast.Attribute)
+                    and isinstance(value.orelse.func.value, ast.Name) and value.orelse.func.value.id == 'os'
+                    and value.orelse.func.attr == 'getenv' and not value.orelse.keywords
+                    and 1 <= len(value.orelse.args) <= 2
+                    and all(isinstance(arg, ast.Constant) and isinstance(arg.value, str) for arg in value.orelse.args)
+                    and bool(value.orelse.args[0].value.strip())
+                    and (len(value.orelse.args) == 1 or value.orelse.args[1].value == '')):
+                raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+        elif name == 'base_url':
+            if not isinstance(value, ast.Name) or value.id != 'base_url':
+                raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+        elif not ((isinstance(value, ast.IfExp) and pure_connected(value.test)
+                   and isinstance(value.body, ast.Constant) and value.body.value is True
+                   and isinstance(value.orelse, ast.Constant) and value.orelse.value is False)
+                  or (isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == 'bool'
+                      and not value.keywords and len(value.args) == 1 and pure_connected(value.args[0]))):
+            raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    args = status.args
+    if (args.posonlyargs or args.vararg or args.kwarg or args.kwonlyargs or args.defaults
+            or [arg.arg for arg in args.args] != ['self'] or len(status.body) != 1
+            or not isinstance(status.body[0], ast.Return) or not isinstance(status.body[0].value, ast.Dict)):
+        raise Refuse('WIRE_STATUS_UNSUPPORTED')
+    value = status.body[0].value
+    if (len(value.keys) != 4 or any(not isinstance(key, ast.Constant) or not isinstance(key.value, str) for key in value.keys)
+            or len({key.value for key in value.keys}) != 4
+            or {'status', 'failure_code'} & {key.value for key in value.keys}):
+        raise Refuse('WIRE_STATUS_UNSUPPORTED')
+    connected = False
+    clock = ast.dump(ast.parse('datetime.now(timezone.utc).isoformat()', mode='eval').body, include_attributes=False)
+    for key, val in zip(value.keys, value.values):
+        normalized = re.sub(r'[^a-z0-9]', '', key.value.lower())
+        if normalized in WIRE_CREDENTIAL_FIELDS or normalized.removeprefix('binance') in WIRE_CREDENTIAL_FIELDS:
+            raise Refuse('WIRE_STATUS_UNSUPPORTED')
+        if key.value == 'connected':
+            if not self_attr(val, '_connected'):
+                raise Refuse('WIRE_STATUS_UNSUPPORTED')
+            connected = True
+        elif not (isinstance(val, ast.Constant) and type(val.value) in (str, bool, int, float, type(None))) and ast.dump(val, include_attributes=False) != clock:
+            raise Refuse('WIRE_STATUS_UNSUPPORTED')
+    if not connected:
+        raise Refuse('WIRE_STATUS_UNSUPPORTED')
+    return tree, ctor, status
+
+
+def wire_init_block(indent, checksum, newline):
+    lines = [WIRE_INIT_BEGIN + checksum,
+        'self._office_file_secret_failure = None',
+        'if api_key and api_secret:',
+        '    self.api_key = api_key', '    self.api_secret = api_secret', '    self._connected = True',
+        'elif api_key or api_secret:',
+        "    self.api_key = ''", "    self.api_secret = ''", '    self._connected = False',
+        "    self._office_file_secret_failure = 'BINANCE_NOT_CONFIGURED'", 'else:',
+        '    from .binance_private import read_secret as _office_read_secret, BinanceCheckError as _office_secret_error',
+        '    try:', "        self.api_key = _office_read_secret('BINANCE_API_KEY_FILE')",
+        "        self.api_secret = _office_read_secret('BINANCE_API_SECRET_FILE')",
+        '    except _office_secret_error:', "        self.api_key = ''", "        self.api_secret = ''",
+        "        self._office_file_secret_failure = 'BINANCE_NOT_CONFIGURED'",
+        '    self._connected = bool(self.api_key and self.api_secret)', WIRE_INIT_END]
+    return b''.join(indent + line.encode() + newline for line in lines)
+
+
+def wire_status_block(indent, checksum, original, tail, newline):
+    return (indent + WIRE_STATUS_BEGIN.encode() + checksum.encode() + newline
+        + indent + b'return (' + original + b') | {' + newline
+        + indent + b"    'status': 'CONFIGURED' if self._connected else 'NOT_CONNECTED'," + newline
+        + indent + b"    'connected': bool(self._connected)," + newline
+        + indent + b"    'failure_code': self._office_file_secret_failure," + newline
+        + indent + b'}' + tail + (b'' if tail.endswith(b'\n') else newline)
+        + indent + WIRE_STATUS_END.encode() + newline)
+
+
+def marker_range(raw, begin, end):
+    start = re.compile(rb'(?m)^([ \t]*)' + re.escape(begin.encode()) + rb'([0-9a-f]{64})\r?\n')
+    finish = re.compile(rb'(?m)^([ \t]*)' + re.escape(end.encode()) + rb'(?:\r?\n|$)')
+    starts, finishes = list(start.finditer(raw)), list(finish.finditer(raw))
+    if len(starts) != 1 or len(finishes) != 1 or starts[0].end() >= finishes[0].start() or starts[0].group(1) != finishes[0].group(1):
+        raise Refuse('WIRE_MARKER_CONFLICT')
+    return starts[0], finishes[0]
+
+
+def wire_file_secrets(raw):
+    newline = b'\r\n' if b'\r\n' in raw else b'\n'
+    _, ctor, status = wire_methods(raw)
+    marked = b'HARUN_FILE_SECRETS_V1_' in raw or b'HARUN_FILE_STATUS_V1_' in raw
+    if marked:
+        try:
+            init_begin, init_end = marker_range(raw, WIRE_INIT_BEGIN, WIRE_INIT_END)
+            status_begin, status_end = marker_range(raw, WIRE_STATUS_BEGIN, WIRE_STATUS_END)
+            if raw.count(b'HARUN_FILE_SECRETS_V1_') != 2 or raw.count(b'HARUN_FILE_STATUS_V1_') != 2:
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            ctor_start = line_start(raw, ctor.lineno)
+            status_start = line_start(raw, status.lineno)
+            if not (ctor_start < init_begin.start() <= line_start(raw, ctor.end_lineno)
+                    and init_end.start() == line_start(raw, ctor.end_lineno + 1)
+                    and init_end.end() <= status_start):
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            if not (status_start < status_begin.start()
+                    and status_end.start() == line_start(raw, status.end_lineno + 1)):
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            prefix = raw[ctor_start:init_begin.start()]
+            checksum = digest(prefix)
+            expected_init = wire_init_block(init_begin.group(1), checksum, newline)
+            if init_begin.group(2).decode() != checksum or raw[init_begin.start():init_end.end()] != expected_init:
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            if (len(status.body) != 1 or not isinstance(status.body[0], ast.Return)
+                    or not isinstance(status.body[0].value, ast.BinOp) or not isinstance(status.body[0].value.op, ast.BitOr)
+                    or not isinstance(status.body[0].value.left, ast.Dict)):
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            if status_begin.end() != line_start(raw, status.body[0].lineno):
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            returned = status.body[0].value
+            start, end = source_span(raw, returned.left)
+            original = raw[start:end]
+            _, outer_end = source_span(raw, returned)
+            tail = raw[outer_end:status_end.start()]
+            if not re.fullmatch(rb'[ \t]*(?:#[^\r\n]*)?(?:\r?\n)?', tail):
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            status_prefix = raw[status_start:status_begin.start()]
+            checksum = digest(status_prefix + original + tail)
+            expected_status = wire_status_block(status_begin.group(1), checksum, original, tail, newline)
+            if status_begin.group(2).decode() != checksum or raw[status_begin.start():status_end.end()] != expected_status:
+                raise Refuse('WIRE_MARKER_CONFLICT')
+            unwired = raw
+            edits = [(init_begin.start(), init_end.end(), b''),
+                     (status_begin.start(), status_end.end(), status_begin.group(1) + b'return ' + original + tail)]
+            for start, end, value in sorted(edits, reverse=True):
+                unwired = unwired[:start] + value + unwired[end:]
+            validate_wire_shape(unwired)
+            return raw
+        except Refuse:
+            raise Refuse('WIRE_MARKER_CONFLICT') from None
+    tree, ctor, status = validate_wire_shape(raw)
+    if any((isinstance(node, ast.Name) and node.id.startswith('_office_'))
+           or (isinstance(node, ast.Attribute) and node.attr == '_office_file_secret_failure') for node in ast.walk(tree)):
+        raise Refuse('WIRE_MARKER_CONFLICT')
+    lines = raw.splitlines(keepends=True)
+    ctor_start = line_start(raw, ctor.lineno)
+    ctor_end = sum(map(len, lines[:ctor.end_lineno]))
+    indent = lines[ctor.body[0].lineno - 1][:ctor.body[0].col_offset]
+    if indent.strip() or not raw[ctor_start:ctor_end].endswith(b'\n'):
+        raise Refuse('WIRE_CONSTRUCTOR_UNSUPPORTED')
+    init_block = wire_init_block(indent, digest(raw[ctor_start:ctor_end]), newline)
+    returned = status.body[0]
+    value_start, value_end = source_span(raw, returned.value)
+    return_start = line_start(raw, returned.lineno)
+    return_end = sum(map(len, lines[:returned.end_lineno]))
+    status_start = line_start(raw, status.lineno)
+    indent = lines[returned.lineno - 1][:returned.col_offset]
+    if raw[return_start:value_start] != indent + b'return ':
+        raise Refuse('WIRE_STATUS_UNSUPPORTED')
+    original, tail = raw[value_start:value_end], raw[value_end:return_end]
+    if not tail.endswith(b'\n'):
+        tail += newline
+    status_block = wire_status_block(indent, digest(raw[status_start:return_start] + original + tail), original, tail, newline)
+    changed = raw
+    for start, end, value in sorted([(ctor_end, ctor_end, init_block), (return_start, return_end, status_block)], reverse=True):
+        changed = changed[:start] + value + changed[end:]
+    try:
+        ast.parse(changed)
+    except (SyntaxError, UnicodeError):
+        raise Refuse('PREPARED_SOURCE_PARSE_FAILED') from None
+    # Apply the same exact marker and shape checks to a newly produced patch.
+    if wire_file_secrets(changed) != changed:
+        raise Refuse('WIRE_MARKER_CONFLICT')
+    return changed
+
+
 def write_new(parent, name, raw, mode=0o600, uid=None, gid=None):
     fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                  mode, dir_fd=parent)
@@ -329,6 +576,8 @@ def run(args):
         if result.returncode:
             raise Refuse('BASELINE_UNAVAILABLE')
         items[0]['changed'] = gateway_bytes(items[0]['raw'], result.stdout)
+        if args.wire_file_secrets:
+            items[0]['changed'] = wire_file_secrets(items[0]['changed'])
         items[1]['changed'] = docker_bytes(items[1]['raw']) if needs_requests(items[0]['raw']) else items[1]['raw']
         changed = [item for item in items if item['changed'] != item['raw']]
         if not changed:
@@ -369,7 +618,11 @@ def main(argv=None):
     parser.add_argument('--project', type=Path, default=Path('/root/harun-ai-trading-office'))
     parser.add_argument('--backup-root', type=Path)
     parser.add_argument('--restore', type=Path, metavar='BACKUP_DIRECTORY')
+    parser.add_argument('--wire-file-secrets', action='store_true',
+                        help='Opt in to the verified simple constructor/status FILE-secret bridge; no exchange requests.')
     args = parser.parse_args(argv)
+    if args.restore and args.wire_file_secrets:
+        parser.error('--restore and --wire-file-secrets cannot be combined')
     try:
         run(args)
     except Refuse as error:
