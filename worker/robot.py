@@ -40,6 +40,10 @@ class RobotStore:
         CREATE TABLE IF NOT EXISTS robot_decisions(setup_id TEXT PRIMARY KEY,decision TEXT NOT NULL,at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT NOT NULL,entry_day TEXT NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS robot_status(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS robot_simulations(
+          setup_id TEXT NOT NULL,scenario TEXT NOT NULL,ticket_sha256 TEXT NOT NULL,
+          result TEXT NOT NULL,created_at TEXT NOT NULL,last_requested_at TEXT NOT NULL,
+          PRIMARY KEY(setup_id,scenario,ticket_sha256));
         ''')
     def settings(self):
         r=self.db.execute('SELECT * FROM robot_settings WHERE id=1').fetchone()
@@ -59,10 +63,17 @@ class RobotStore:
         return self.snapshot()
     def entries(self,today):return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?',(today,)).fetchone()[0]
     def results(self,cycle):return list(self.db.execute('SELECT * FROM robot_setups WHERE cycle=?',(cycle,)))
+    def verified_plan(self,row):
+        try:
+            plan=json.loads(row['plan'])
+            if not isinstance(plan,dict) or row['symbol']!=plan.get('symbol') or row['cycle']!=row['id'].rsplit(':analysis-v7:',1)[0]:raise ValueError
+            verify(self.db,plan,row['id'])
+            return plan
+        except Exception:raise Review('ROBOT_SETUP_UNVERIFIED') from None
     def snapshot(self):
         row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
         value=json.loads(row[0]) if row else dict(bot_status='WAITING',running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None,checked_at=None)
-        value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False)
+        value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False,simulation_mode='LOCAL',manual_submission_required=True)
         value.setdefault('wait_reason',None)
         if not value['robot_on']:value.update(bot_status='WAITING',wait_reason='ROBOT_OFF')
         value['setups']=[]
@@ -70,12 +81,52 @@ class RobotStore:
             item=dict(id=row['id'],symbol=row['symbol'],status=row['status'],failure_code=row['failure_code'])
             if row['plan']:
                 try:
-                    plan=json.loads(row['plan'])
-                    verify(self.db,plan,row['id'])
-                    item.update({k:plan[k] for k in ('side','entry','tp','sl','execution_quantity','risk_target_usdt','risk','rr')})
+                    plan=self.verified_plan(row)
+                    details={k:plan[k] for k in ('side','entry','tp','sl','execution_quantity','risk_target_usdt','risk','rr')}
+                    if row['status'] in ('SETUP_READY','APPROVED'):
+                        from .manual_ticket import build_ticket
+                        ticket=build_ticket(self.db,plan,row['id'],row['status'])
+                        details['ticket']=ticket
+                        details['account_review']=dict(
+                            review_required=True,checked_at=value.get('account_checked_at') or value.get('checked_at'),
+                            available_slots=value.get('available_slots'),
+                            symbol_exposed=(row['symbol'] in value['running_symbols']) if isinstance(value.get('running_symbols'),list) else None,
+                            setup_from_current_day=(ticket['business_day']==day()))
+                    item.update(details)
                 except Exception:item.update(status='REJECTED',failure_code='ROBOT_SETUP_UNVERIFIED')
+            if 'ticket' in item:
+                from .manual_ticket import simulate_ticket
+                recorded=self.db.execute('SELECT scenario,result FROM robot_simulations WHERE setup_id=? AND ticket_sha256=? ORDER BY last_requested_at DESC,rowid DESC LIMIT 1',(row['id'],item['ticket']['ticket_sha256'])).fetchone()
+                if recorded:
+                    try:
+                        simulation=json.loads(recorded['result'])
+                        if simulation!=simulate_ticket(item['ticket'],recorded['scenario']):raise Review('ROBOT_SIMULATION_UNVERIFIED')
+                        item['simulation']=simulation
+                    except Exception:item['simulation_failure_code']='ROBOT_SIMULATION_UNVERIFIED'
             value['setups'].append(item)
         return value
+    def simulate(self,value):
+        from .manual_ticket import build_ticket,simulate_ticket,SCENARIOS
+        if not isinstance(value,dict) or set(value)!={'setup_id','scenario'}:raise Review('INVALID_SIMULATION_REQUEST')
+        setup_id=value['setup_id'];scenario=value['scenario']
+        if not isinstance(setup_id,str) or not setup_id or len(setup_id)>160 or not isinstance(scenario,str) or scenario not in SCENARIOS:raise Review('INVALID_SIMULATION_REQUEST')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.db.execute('SELECT * FROM robot_setups WHERE id=?',(setup_id,)).fetchone()
+            if not row:raise Review('SETUP_NOT_FOUND')
+            if row['status'] not in ('SETUP_READY','APPROVED') or not row['plan']:raise Review('SETUP_NOT_READY')
+            ticket=build_ticket(self.db,self.verified_plan(row),setup_id,row['status'])
+            result=simulate_ticket(ticket,scenario)
+            key=(setup_id,scenario,ticket['ticket_sha256'])
+            old=self.db.execute('SELECT result FROM robot_simulations WHERE setup_id=? AND scenario=? AND ticket_sha256=?',key).fetchone()
+            if old and json.loads(old['result'])!=result:raise Review('ROBOT_SIMULATION_UNVERIFIED')
+            at=now()
+            if old:self.db.execute('UPDATE robot_simulations SET last_requested_at=? WHERE setup_id=? AND scenario=? AND ticket_sha256=?',(at,*key))
+            else:self.db.execute('INSERT INTO robot_simulations VALUES(?,?,?,?,?,?)',(*key,json.dumps(result),at,at))
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        snapshot=self.snapshot();snapshot['simulation']=result
+        return snapshot
     def report(self,state,account=None,reason=None,wait_reason=None):
         value=dict(bot_status=state,failure_code=reason,wait_reason=wait_reason,checked_at=now())
         if account:value.update(account)
@@ -110,7 +161,7 @@ class RobotStore:
                 if old[0]!=decision:raise Review('DECISION_ALREADY_RECORDED')
             else:
                 if row['status']!='SETUP_READY':raise Review('SETUP_NOT_READY')
-                verify(self.db,json.loads(row['plan']),setup_id)
+                self.verified_plan(row)
                 self.db.execute('INSERT INTO robot_decisions VALUES(?,?,?)',(setup_id,decision,now()))
                 self.db.execute('UPDATE robot_setups SET status=? WHERE id=?',(decision,setup_id))
             self.db.execute('COMMIT')

@@ -77,11 +77,12 @@ class Controller:
             except queue.Full:return False
             self.busy=True
         return True
-    def robot(self,value=None,approval=False):
+    def robot(self,value=None,approval=False,simulation=False):
         ledger=Ledger(self.directory/'ledger.sqlite3')
         try:
             store=RobotStore(ledger.db)
             if value is None:return store.snapshot()
+            if simulation:return store.simulate(value)
             if approval:
                 if not isinstance(value,dict) or set(value)!={'setup_id','decision'}:raise Review('INVALID_APPROVAL')
                 return store.approve(value['setup_id'],value['decision'])
@@ -173,7 +174,7 @@ def handler(controller,read_token,control_token,origin):
             self.reply(404,{'error':'NOT_FOUND'})
         def do_POST(self):
             if not self.authorized(True) or self.headers.get('Origin')!=origin:return self.reply(403,{'error':'FORBIDDEN'})
-            if self.path in ('/robot/settings','/robot/approval'):
+            if self.path in ('/robot/settings','/robot/approval','/robot/simulation'):
                 try:
                     from .http_client import unique
                     length=self.headers.get('Content-Length','')
@@ -181,7 +182,7 @@ def handler(controller,read_token,control_token,origin):
                     self.connection.settimeout(5)
                     value=json.loads(self.rfile.read(int(length)),object_pairs_hook=unique)
                     if not isinstance(value,dict):raise ValueError
-                    result=controller.robot(value,approval=self.path=='/robot/approval')
+                    result=controller.robot(value,approval=self.path=='/robot/approval',simulation=self.path=='/robot/simulation')
                     return self.reply(200,result)
                 except Exception:return self.reply(400,{'error':'ROBOT_CONTROL_REJECTED'})
             if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length','0')!='0':return self.reply(400,{'error':'BODY_NOT_ALLOWED'})

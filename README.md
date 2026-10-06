@@ -12,6 +12,15 @@ per tick setelah membaca posisi Futures nyata melalui GET. Semua posisi manual
 termasuk HYPE memakai concurrent capacity, tetapi tidak dianggap bot entry.
 Polling ini menjalankan riset; live order tetap dinonaktifkan.
 
+Setup v7 terverifikasi kini menyediakan **SALIN TIKET** entry LIMIT, TP dan SL
+untuk ditinjau dan dikirim sendiri di Binance, serta **UJI SIMULASI** lokal untuk
+lima skenario lifecycle. Tiket memakai quantity dan level immutable dari proof,
+risk target default 5 USDT; OK/APPROVED maupun salin tiket tidak mengirim order.
+Simulasi memakai jejak fill/proteksi sintetis, tanpa API key baru atau panggilan
+provider. Hasilnya tidak mengubah saldo, posisi, PnL akun atau counter entry nyata.
+Setup unresolved tetap membatasi riset berbayar berikutnya. Rincian penggunaan
+dan pembaruan frontend: [deploy/MANUAL_SIMULATION.md](deploy/MANUAL_SIMULATION.md).
+
 Alur: kapasitas nyata (maksimal 2 posisi dan 2 bot entry/hari Asia/Bangkok) →
 screening literal 1 atau 2 coin sesuai slot → active USDT perpetual catalog →
 realtime 1h/15m + contract rules → ANALYSIS literal → LONG/SHORT/HOLD → deterministic

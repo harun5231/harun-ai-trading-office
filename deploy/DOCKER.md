@@ -7,6 +7,27 @@ image MCR. Docker Hub masih harus dapat diakses untuk base Python saat build per
 
 ## Update VPS existing
 
+Untuk perubahan tiket manual/simulasi pada branch yang sudah dipakai VPS:
+
+```sh
+cd /root/harun-ai-trading-office
+git status --short
+git fetch origin &&
+git switch codex/fix-robot-coordinator-24-7 &&
+git pull --ff-only origin codex/fix-robot-coordinator-24-7 &&
+bash deploy/update-api.sh &&
+docker compose ps &&
+docker compose exec -T worker python -m worker.health
+```
+
+Jangan reset paksa bila Git menolak perubahan lokal. Tidak perlu key baru untuk
+simulasi lokal. Frontend GitHub Pages harus mendapat perubahan `assets/` yang sama
+melalui PR merge ke configured source branch; update Docker tidak mempublish UI.
+Source Pages aktual belum diverifikasi. Panduan lengkap:
+[MANUAL_SIMULATION.md](MANUAL_SIMULATION.md).
+
+Setelah perubahan sudah digabungkan ke `main`, update rutin memakai:
+
 1. `git pull --ff-only origin main` dari folder instalasi existing.
 2. `sudo python3 deploy/setup.py`: hanya meminta API key bila belum tersimpan;
    input getpass tidak tampil, tidak berada di argumen command/history.
@@ -77,6 +98,12 @@ terpisah dan memasok posisi serta saldo USDT nyata. `/robot/status` memakai
 `wait_reason` untuk menjelaskan WAITING normal dan blocker lifecycle. Lihat
 [ROBOT_WORKFLOW.md](ROBOT_WORKFLOW.md) untuk kapasitas, pengecualian HYPEUSDT dan
 recovery screening yang dibatasi tiga replacement. Live order tetap OFF.
+
+POST `/robot/simulation` memakai control token + exact Origin dan menyimpan hasil
+lokal idempotent untuk setup terverifikasi. Tidak ada provider calls/order, key
+baru, mutasi akun atau counter entry. GET `/robot/status` menyertakan tiket manual
+dan hasil simulasi terbaru. Screening tetap memakai key NeuroAPI existing dan
+approval unresolved tetap membatasi riset.
 
 Spesifikasi awal: 1 vCPU, RAM 1 GB (2 GB disarankan), storage 10 GB, Ubuntu 24.04,
 Docker Engine + Compose plugin. Ini perkiraan operasional, bukan benchmark VPS.

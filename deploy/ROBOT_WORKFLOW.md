@@ -4,6 +4,13 @@ Build ini **tidak dapat mengirim order Binance**. Transport production tetap
 GET-only, binance-arm/execute tidak bisa diaktifkan, live scheduler OFF. ROBOT ON
 hanya mengizinkan riset NeuroAPI berbayar dan pembuatan setup untuk review.
 
+SETUP_READY/APPROVED terverifikasi menyediakan tiket entry/TP/SL yang dapat disalin
+untuk pengiriman manual, serta lima skenario simulasi lokal. Parameter berasal
+dari proof immutable dengan risk target default 5 USDT. Simulasi tidak memanggil
+provider, tidak perlu key baru, dan tidak mengubah account/PnL/counter entry atau
+approval. Jejak SL/TP sintetis bukan acknowledgment Binance. Lihat
+[MANUAL_SIMULATION.md](MANUAL_SIMULATION.md) untuk penggunaan dan batas hasil.
+
 ## Office
 
 MENU → ROBOT TRADING memakai koneksi worker/token kontrol yang sama dengan panel
@@ -123,6 +130,12 @@ Legacy `OFFICE_AUTO_DRY_RUN` tidak lagi menjadi trigger di service.
   1024 byte, hanya `robot_on` (boolean) / `risk_target_usdt` (string decimal).
 - POST `/robot/approval`: control token + exact Origin, hanya `setup_id` dan
   `decision` (`APPROVED`/`USER_REJECTED`). Duplicate retry tidak menggandakan approval.
+- POST `/robot/simulation`: control token + exact Origin, JSON maksimum 1024 byte,
+  hanya `setup_id` dan `scenario` (`FULL_TP`, `FULL_SL`, `PARTIAL_TP`,
+  `PROTECTION_FAILURE`, `UNCERTAIN_ENTRY`). SETUP_READY/APPROVED harus diverifikasi;
+  tiket dibangun ulang server-side. Hasil persisten idempotent per setup/skenario/
+  hash tiket; replay tidak menambah record dan tidak mengirim provider request.
+  GET status memuat tiket, account review dan simulasi terbaru terverifikasi.
 
 Tidak ada endpoint arm/order/execution. Caddy hanya meneruskan path eksplisit.
 
@@ -134,6 +147,12 @@ Di direktori repository VPS:
 git pull --ff-only origin main
 bash deploy/update-api.sh
 ```
+
+Jika masih mengikuti branch PR existing `codex/fix-robot-coordinator-24-7`, gunakan
+perintah branch dan health check di [MANUAL_SIMULATION.md](MANUAL_SIMULATION.md).
+Frontend GitHub Pages juga memerlukan file UI baru: merge PR ke source branch
+yang tercantum di Settings → Pages dan tunggu publish berhasil. Configured source
+belum diverifikasi; build worker tidak menerbitkan frontend.
 
 Script build worker lalu recreate worker/proxy, memakai volume dan secret yang
 sama. Pada SIGTERM worker menghentikan claim/request riset baru dan memberi operasi

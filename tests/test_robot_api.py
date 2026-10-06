@@ -14,7 +14,7 @@ class RobotAPITests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.c=Mock();self.c.directory=Path(self.tmp.name)
-        self.c.robot=lambda value=None,approval=False:Controller.robot(self.c,value,approval)
+        self.c.robot=lambda value=None,approval=False,simulation=False:Controller.robot(self.c,value,approval,simulation)
         self.c.thread.is_alive.return_value=True;self.c.account_thread.is_alive.return_value=True
         self.origin='https://office.example';self.read='R'*32;self.control='C'*32
         self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.c,self.read,self.control,self.origin))
@@ -47,9 +47,46 @@ class RobotAPITests(unittest.TestCase):
         value={'setup_id':'unknown','decision':'APPROVED'}
         self.assertEqual(self.call('/robot/approval','POST',token=self.read,value=value)[0],403)
         self.assertEqual(self.call('/robot/approval','POST',value=value)[0],400)
+    def test_simulation_requires_control_and_exact_origin(self):
+        value={'setup_id':'unknown','scenario':'FULL_TP'}
+        self.assertEqual(self.call('/robot/simulation','POST',token=self.read,value=value)[0],403)
+        self.assertEqual(self.call('/robot/simulation','POST',origin='https://evil.example',value=value)[0],403)
+        self.assertEqual(self.call('/robot/simulation','POST',value=value)[0],400)
+    def test_simulation_rejects_duplicate_fields_and_live_options(self):
+        for raw in (b'{"setup_id":"x","scenario":"FULL_TP","scenario":"FULL_SL"}',b'{"setup_id":"x","scenario":"FULL_TP","live":true}',b'{"setup_id":"x","scenario":"LIVE"}',b'x'*1025):
+            self.assertEqual(self.call('/robot/simulation','POST',raw=raw)[0],400)
+        ledger=Ledger(self.c.directory/'ledger.sqlite3')
+        try:self.assertEqual(ledger.db.execute('SELECT COUNT(*) FROM robot_simulations').fetchone()[0],0)
+        finally:ledger.db.close()
+    def test_simulation_verified_ticket_through_http_and_concurrent_replay(self):
+        import test_robot as fixtures
+        from concurrent.futures import ThreadPoolExecutor
+        seed=fixtures.RobotTests('test_default_risk_five');seed.setUp();self.addCleanup(seed.doCleanups)
+        seed.account.position('HYPEUSDT','4.16');seed.screens=[['BTCUSDT']];seed.on();status=seed.ticks(3)
+        setup_id=status['setups'][0]['id']
+        ledger=Ledger(self.c.directory/'ledger.sqlite3')
+        try:seed.ledger.db.backup(ledger.db)
+        finally:ledger.db.close()
+        value={'setup_id':setup_id,'scenario':'FULL_SL'}
+        calls=len(seed.calls)
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            replies=list(pool.map(lambda _:self.call('/robot/simulation','POST',value=value),range(3)))
+        for code,result in replies:
+            self.assertEqual(code,200);self.assertEqual(result['simulation']['mode'],'SIMULATION')
+            self.assertFalse(result['simulation']['real_order_submitted']);self.assertFalse(result['live_execution'])
+            self.assertEqual(result['manual_exposure'],['HYPEUSDT']);self.assertEqual(result['available_slots'],1)
+            self.assertEqual(result['setups'][0]['ticket']['entry']['quantity'],status['setups'][0]['execution_quantity'])
+        ledger=Ledger(self.c.directory/'ledger.sqlite3')
+        try:
+            self.assertEqual(ledger.db.execute('SELECT COUNT(*) FROM robot_simulations').fetchone()[0],1)
+            self.assertEqual(ledger.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0],0)
+        finally:ledger.db.close()
+        self.assertEqual(len(seed.calls),calls)
+        persisted=self.call('/robot/status',token=self.read)[1]['setups'][0]['simulation']
+        self.assertEqual(persisted['status'],'CLOSED');self.assertEqual(float(persisted['pnl_usdt']),-5)
     def test_cors_json_header_and_no_live_route(self):
         code,data=self.call('/binance/execute','POST');self.assertEqual(code,404)
-        for path in ('/robot/settings','/robot/approval'):self.assertEqual(self.call(path)[0],404)
+        for path in ('/robot/settings','/robot/approval','/robot/simulation'):self.assertEqual(self.call(path)[0],404)
     def test_robot_tick_does_not_replace_neuroapi_health_status(self):
         # Controller status is the provider health indicator; robot status has
         # its own endpoint and must not replace it between UI polls.
@@ -65,5 +102,5 @@ class RobotAPITests(unittest.TestCase):
 
     def test_proxy_exact_routes(self):
         proxy=Path('deploy/Caddyfile.docker').read_text()
-        for path in ('/robot/status','/robot/settings','/robot/approval'):self.assertIn(path,proxy)
+        for path in ('/robot/status','/robot/settings','/robot/approval','/robot/simulation'):self.assertIn(path,proxy)
         self.assertNotIn('/robot/*',proxy)
