@@ -71,6 +71,12 @@ OFFICE_UI_TESTS=1 PLAYWRIGHT_CHROMIUM_EXECUTABLE=/tmp/chromium python -m unittes
 
 Deployment remains `sudo python3 deploy/setup.py` (silent getpass to private VPS
 secret file), followed by `bash deploy/update-api.sh` and
-`docker compose exec -T worker python -m worker api-check`.
+`docker compose exec --user 10001:10001 -T worker python -m worker api-check`.
 The health check sends no prompt. The build uses Docker Hub's Python base, not MCR.
 Persistent volumes and audit logs remain intact; no `down -v` or secret cleanup.
+
+Container service drops to UID/GID 10001 at bootstrap; Docker exec otherwise
+defaults to root. Always select `--user 10001:10001` for worker CLI to avoid a
+root-owned 0600 `/data/trading/cycle.lock` blocking the coordinator. Existing
+lock ownership recovery is documented in [DOCKER.md](DOCKER.md); it preserves
+lock contents, request claims and state, and sends no trading/research request.

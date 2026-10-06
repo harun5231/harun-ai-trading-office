@@ -72,7 +72,7 @@ HOLD/REJECT remain persisted but never become candidates or consume trade slots.
 Existing trade slots still count against the daily cap, regardless of provenance.
 
 Optional **paid research**, never part of deployment/shadow:
-`docker compose exec -T worker python -m worker analysis-once BTCUSDT ETHUSDT`
+`docker compose exec --user 10001:10001 -T worker python -m worker analysis-once BTCUSDT ETHUSDT`
 now claims `<business-day>:analysis-v6:<symbol>`, at most two distinct symbols for
 that namespace/day. Previous v3/v4/v5 requests/cycles remain intact. PENDING is
 persisted before any call; repeated or interrupted invocations never replay a

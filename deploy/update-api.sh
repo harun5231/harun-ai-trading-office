@@ -10,3 +10,5 @@ docker compose stop -t 660 worker
 OFFICE_AUTO_DRY_RUN=false docker compose up -d --no-build --no-deps --force-recreate --wait --wait-timeout 180 worker
 docker compose up -d --no-deps --force-recreate --wait --wait-timeout 90 proxy
 docker compose ps
+# Read-only coordinator/account/lock diagnostics; no paid research or state reset.
+docker compose exec --user 10001:10001 -T worker python -m worker.robot_status

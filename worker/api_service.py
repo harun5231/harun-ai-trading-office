@@ -4,6 +4,7 @@ import json
 import os
 import queue
 import signal
+import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -25,16 +26,62 @@ ROBOT_POLL_SECONDS=45
 ACTOR_STALL_SECONDS=600
 ACCOUNT_STALL_SECONDS=120
 SHUTDOWN_DRAIN_SECONDS=600
+SERVICE_FAILURE_CODES=frozenset(('WORKER_STATE_INITIALIZATION_FAILED',
+    'WORKER_ACTOR_INITIALIZATION_FAILED','WORKER_ACTOR_UNAVAILABLE',
+    'WORKER_ACCOUNT_READER_UNAVAILABLE','ROBOT_COORDINATOR_UNAVAILABLE'))
+
+def robot_snapshot(controller,result):
+    """Mask unavailable service observations on every detached robot response."""
+    with controller.lock:
+        worker_failure=getattr(controller,'worker_failure',None)
+        account_failure=getattr(controller,'account_failure',None)
+    if worker_failure:result.update(bot_status='REJECTED',failure_code=worker_failure,wait_reason=None)
+    if account_failure:
+        result.update(account_failure_code=account_failure,running_positions=None,available_slots=None,
+            running_symbols=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None,account_checked_at=None)
+        for setup in result.get('setups',[]):
+            if 'account_review' in setup:
+                setup['account_review'].update(checked_at=None,available_slots=None,symbol_exposed=None)
+    return result
 
 class Controller:
     def __init__(self,data):
-        self.directory=directory(data);self.jobs=queue.Queue(maxsize=1);self.lock=threading.Lock()
+        try:self.directory=directory(data)
+        except Exception:raise RuntimeError('WORKER_STATE_INITIALIZATION_FAILED') from None
+        self.jobs=queue.Queue(maxsize=1);self.lock=threading.Lock()
+        self.state_lock=threading.Lock()
         self.status='NEUROAPI_UNCHECKED' if api_key() else 'NEUROAPI_NOT_CONFIGURED'
-        self.busy=False;self.checked=0;self.stopping=threading.Event()
+        self.busy=False;self.checked=0;self.checked_monotonic=float('-inf');self.stopping=threading.Event()
+        self.worker_failure=None;self.account_failure=None
         self.robot_wakeup=threading.Event()
         self.worker_progress=self.account_progress=time.monotonic()
+        # Establish WAL and all robot tables before competing actor connections.
+        # SQLite's initial journal-mode transition can fail immediately with BUSY.
+        try:
+            ledger=self.open_ledger()
+            try:export(ledger,self.directory/'snapshot.json')
+            finally:ledger.db.close()
+        except Exception:raise RuntimeError('WORKER_STATE_INITIALIZATION_FAILED') from None
         self.thread=threading.Thread(target=self.loop,daemon=True);self.thread.start()
         self.account_thread=threading.Thread(target=self.account_loop,daemon=True);self.account_thread.start()
+    def open_ledger(self):
+        # Connections remain thread-owned; only their schema initialization is serialized.
+        with getattr(self,'state_lock',self.lock):
+            ledger=Ledger(self.directory/'ledger.sqlite3')
+            try:RobotStore(ledger.db)
+            except Exception:
+                ledger.db.close();raise
+            return ledger
+    def failure(self,code,account=False):
+        if code not in SERVICE_FAILURE_CODES:code='WORKER_ACTOR_UNAVAILABLE'
+        field='account_failure' if account else 'worker_failure'
+        with self.lock:
+            changed=getattr(self,field,None)!=code
+            setattr(self,field,code)
+        # Emit a fixed code once per transition, never exception text, headers or payloads.
+        if changed:print(json.dumps({'event':'WORKER_SERVICE_FAILURE','code':code}),flush=True)
+    def clear_failure(self,account=False):
+        with self.lock:setattr(self,'account_failure' if account else 'worker_failure',None)
     def progress(self,account=False):
         with self.lock:
             if account:self.account_progress=time.monotonic()
@@ -51,53 +98,69 @@ class Controller:
         for actor in (self.thread,self.account_thread):
             actor.join(timeout=max(0,deadline-time.monotonic()))
     def account_loop(self):
-        ledger=Ledger(self.directory/'ledger.sqlite3')
+        ledger=None
         try:
-            store=RobotStore(ledger.db)
+            ledger=self.open_ledger()
+            with getattr(self,'state_lock',self.lock):store=RobotStore(ledger.db)
             allowed={'ROBOT_ACCOUNT_UNAVAILABLE','BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED','BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'}
             while not self.stopping.is_set():
                 self.progress(account=True)
-                if store.settings()['robot_on']:
-                    try:
-                        store.report_account(account_state(BinanceReadOnly(),store,day()))
-                    except Exception as error:
-                        reason=str(error)
-                        store.report_account(reason=reason if reason in allowed else 'ROBOT_ACCOUNT_UNAVAILABLE')
-                    self.progress(account=True)
-                    if self.stopping.wait(15):break
-                elif self.stopping.wait(2):break
+                interval=15
+                try:
+                    if store.settings()['robot_on']:
+                        try:store.report_account(account_state(BinanceReadOnly(),store,day()))
+                        except Exception as error:
+                            reason=str(error)
+                            store.report_account(reason=reason if reason in allowed else 'ROBOT_ACCOUNT_UNAVAILABLE')
+                        self.clear_failure(account=True)
+                    else:interval=2
+                except Exception:self.failure('WORKER_ACCOUNT_READER_UNAVAILABLE',account=True)
+                self.progress(account=True)
+                if self.stopping.wait(interval):break
+        except Exception:self.failure('WORKER_ACCOUNT_READER_UNAVAILABLE',account=True)
         finally:
-            ledger.db.close()
+            if ledger is not None:ledger.db.close()
     def snapshot(self):
-        with self.lock:return {'status':self.status,'busy':self.busy,'checked_at':self.checked,'mode':'DRY_RUN','live_enabled':False}
+        with self.lock:return {'status':self.status,'busy':self.busy,'checked_at':self.checked,'mode':'DRY_RUN','live_enabled':False,
+            'worker_failure_code':getattr(self,'worker_failure',None),'account_reader_failure_code':getattr(self,'account_failure',None)}
     def submit(self,job):
         with self.lock:
-            if self.stopping.is_set() or self.busy or time.time()-self.checked<3:return False
+            if self.stopping.is_set() or self.busy or time.monotonic()-getattr(self,'checked_monotonic',float('-inf'))<3:return False
             try:self.jobs.put_nowait(job)
             except queue.Full:return False
             self.busy=True
         return True
     def robot(self,value=None,approval=False,simulation=False):
-        ledger=Ledger(self.directory/'ledger.sqlite3')
+        if value is None:
+            # Status/diagnostic reads never initialize schemas, alter WAL mode,
+            # insert settings, or acquire the state-writer initialization lock.
+            db=sqlite3.connect((self.directory/'ledger.sqlite3').as_uri()+'?mode=ro',uri=True,timeout=5)
+            try:
+                db.row_factory=sqlite3.Row
+                db.execute('PRAGMA query_only=ON')
+                return robot_snapshot(self,RobotStore(db,initialize=False).snapshot())
+            finally:db.close()
+        ledger=self.open_ledger()
         try:
-            store=RobotStore(ledger.db)
-            if value is None:return store.snapshot()
-            if simulation:return store.simulate(value)
+            with getattr(self,'state_lock',self.lock):store=RobotStore(ledger.db)
+            if simulation:return robot_snapshot(self,store.simulate(value))
             if approval:
                 if not isinstance(value,dict) or set(value)!={'setup_id','decision'}:raise Review('INVALID_APPROVAL')
-                return store.approve(value['setup_id'],value['decision'])
+                return robot_snapshot(self,store.approve(value['setup_id'],value['decision']))
             was_on=store.settings()['robot_on']
             result=store.configure(value)
             if result['robot_on'] and not was_on:self.robot_wakeup.set()
-            return result
+            return robot_snapshot(self,result)
         finally:ledger.db.close()
     def loop(self):
-        ledger=Ledger(self.directory/'ledger.sqlite3');last_monitor=0;last_tick=-ROBOT_POLL_SECONDS
+        ledger=None;initialized=False;last_monitor=0;last_tick=-ROBOT_POLL_SECONDS
         try:
-            export(ledger,self.directory/'snapshot.json')
-            client=NeuroAPI(ledger)
+            ledger=self.open_ledger()
+            with getattr(self,'state_lock',self.lock):client=NeuroAPI(ledger)
             market=Market(int(os.getenv('OFFICE_CANDLE_LOOKBACK','100')),int(os.getenv('OFFICE_MARKET_MAX_AGE','180')))
-            robot=Coordinator(ledger,client,market,BinanceReadOnly,stopping=self.stopping)
+            with getattr(self,'state_lock',self.lock):
+                robot=Coordinator(ledger,client,market,BinanceReadOnly,stopping=self.stopping)
+            initialized=True
             while not self.stopping.is_set():
                 self.progress()
                 try:job=self.jobs.get(timeout=1)
@@ -122,15 +185,18 @@ class Controller:
                         # Robot state is exposed by /robot/status.  A coordinator
                         # tick must not overwrite the independent NeuroAPI health
                         # indicator shown by the Office.
-                        last_tick=time.monotonic();robot.tick()
+                        last_tick=time.monotonic();robot.tick();self.clear_failure()
                 except Exception:
                     if job=='check':
                         status='NEUROAPI_NOT_CONFIGURED' if not api_key() else 'NEUROAPI_UNAVAILABLE'
                         with self.lock:self.status=status
+                    else:self.failure('ROBOT_COORDINATOR_UNAVAILABLE')
                 finally:
-                    with self.lock:self.checked=time.time();self.busy=False
+                    with self.lock:self.checked=time.time();self.checked_monotonic=time.monotonic();self.busy=False
                     self.progress()
-        finally:ledger.db.close()
+        except Exception:self.failure('WORKER_ACTOR_UNAVAILABLE' if initialized else 'WORKER_ACTOR_INITIALIZATION_FAILED')
+        finally:
+            if ledger is not None:ledger.db.close()
 
 def handler(controller,read_token,control_token,origin):
     u=urlsplit(origin)
@@ -160,7 +226,9 @@ def handler(controller,read_token,control_token,origin):
         def do_GET(self):
             if not self.authorized():return self.reply(403,{'error':'FORBIDDEN'})
             if self.path=='/health':return self.reply(200,{'status':'ONLINE' if controller.healthy() else 'OFFLINE','mode':'DRY_RUN','live_enabled':False})
-            if self.path=='/robot/status':return self.reply(200,controller.robot())
+            if self.path=='/robot/status':
+                try:return self.reply(200,controller.robot())
+                except Exception:return self.reply(503,{'error':'WORKER_STATE_UNAVAILABLE','mode':'DRY_RUN','live_enabled':False})
             if self.path=='/neuroapi/status':return self.reply(200,controller.snapshot())
             if self.path=='/binance/status':
                 try:data=json.loads((controller.directory/'live-status.json').read_text())
@@ -204,7 +272,9 @@ def main():
         while not c.stopping.wait(2):
             if not c.healthy():
                 with c.lock:
+                    worker_failed=not c.thread.is_alive() or time.monotonic()-c.worker_progress>=ACTOR_STALL_SECONDS
                     if time.monotonic()-c.worker_progress>=ACTOR_STALL_SECONDS:stalled_actor.set()
+                c.failure('WORKER_ACTOR_UNAVAILABLE' if worker_failed else 'WORKER_ACCOUNT_READER_UNAVAILABLE',account=not worker_failed)
                 # A failed account reader must not cut off a healthy paid call.
                 # Only a stalled research actor skips the normal shutdown drain.
                 c.stopping.set();server.shutdown();return

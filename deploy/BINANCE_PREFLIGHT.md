@@ -47,7 +47,7 @@ files yield BINANCE_NOT_CONFIGURED; no credential-value environment fallback.
 The normal worker filesystem remains read-only and persistent data is untouched.
 
 Rebuild/recreate only worker after setup, keep OFFICE_AUTO_DRY_RUN=false, then run
-`docker compose exec -T worker python -m worker binance-check` explicitly.
+`docker compose exec --user 10001:10001 -T worker python -m worker binance-check` explicitly.
 No screening/analysis is run by the preflight. Do not remove volumes or reset the
 ledger. Work tests use synthetic fixtures; actual account authentication must be
 verified on the trusted VPS IP. Do not paste secrets into chat or dashboard.

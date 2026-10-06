@@ -14,6 +14,11 @@ class RobotAPITests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.c=Mock();self.c.directory=Path(self.tmp.name)
+        self.c.lock=threading.Lock();self.c.state_lock=threading.Lock()
+        self.c.worker_failure=None;self.c.account_failure=None
+        self.c.robot_wakeup=threading.Event()
+        self.c.open_ledger=lambda:Controller.open_ledger(self.c)
+        self.c.open_ledger().db.close() # Real service initializes schema before serving HTTP.
         self.c.robot=lambda value=None,approval=False,simulation=False:Controller.robot(self.c,value,approval,simulation)
         self.c.thread.is_alive.return_value=True;self.c.account_thread.is_alive.return_value=True
         self.origin='https://office.example';self.read='R'*32;self.control='C'*32

@@ -342,6 +342,30 @@ class RobotTests(unittest.TestCase):
         with (self.path.parent/'cycle.lock').open('a') as f:
             fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB);r=self.robot.tick()
         self.assertEqual(r['failure_code'],'WORKER_BUSY');self.assertEqual(self.calls,[])
+    def test_cycle_lock_permission_failure_is_reported_without_private_error(self):
+        self.on()
+        with patch('worker.robot.Path.open',side_effect=PermissionError('DO_NOT_PERSIST_PRIVATE /run/secrets/private-file')):
+            r=self.robot.tick()
+        self.assertEqual(r['bot_status'],'REJECTED');self.assertEqual(r['failure_code'],'ROBOT_CYCLE_LOCK_UNAVAILABLE')
+        self.assertIsNotNone(r['checked_at']);self.assertEqual(self.calls,[]);self.assertEqual(self.account.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0],0)
+        self.assertNotIn('DO_NOT_PERSIST_PRIVATE','\n'.join(self.ledger.db.iterdump()))
+        self.assertNotIn('/run/secrets/private-file',json.dumps(r))
+    def test_cycle_lock_missing_parent_is_reported_without_paid_request(self):
+        self.on();missing_path=self.path.parent/'missing-parent'/'ledger.sqlite3'
+        with patch('worker.robot.Path',return_value=missing_path):r=self.robot.tick()
+        self.assertEqual(r['bot_status'],'REJECTED');self.assertEqual(r['failure_code'],'ROBOT_CYCLE_LOCK_UNAVAILABLE')
+        self.assertIsNotNone(r['checked_at']);self.assertEqual(self.calls,[]);self.assertEqual(self.account.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0],0)
+        self.assertFalse(missing_path.parent.exists());self.assertNotIn(str(missing_path.parent),json.dumps(r))
+    def test_cycle_lock_flock_failure_closes_handle_without_paid_request(self):
+        self.on();lock=(self.path.parent/'cycle.lock').open('a')
+        self.addCleanup(lambda:lock.close() if not lock.closed else None)
+        with patch('worker.robot.Path.open',return_value=lock),patch('worker.robot.fcntl.flock',side_effect=PermissionError('DO_NOT_PERSIST_PRIVATE')):
+            r=self.robot.tick()
+        self.assertTrue(lock.closed);self.assertEqual(r['failure_code'],'ROBOT_CYCLE_LOCK_UNAVAILABLE')
+        self.assertEqual(self.calls,[]);self.assertEqual(self.account.calls,[])
+        self.assertNotIn('DO_NOT_PERSIST_PRIVATE','\n'.join(self.ledger.db.iterdump()))
     def test_no_private_payload_logged(self):
         self.decisions['BTCUSDT']='NETWORK';self.ready()
         dump='\n'.join(self.ledger.db.iterdump())

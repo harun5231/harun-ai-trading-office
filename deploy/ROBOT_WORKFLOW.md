@@ -82,6 +82,15 @@ ROBOT OFF, kapasitas penuh, menunggu analisis/replacement pada tick berikutnya,
 atau lifecycle lama yang perlu review. Menunggu tick berikutnya adalah alur normal.
 Blocker lifecycle tidak menghapus model/proof lama dan tidak mengirim order.
 Kegagalan account/request tetap dilaporkan dengan kode kegagalan yang aman.
+Status coordinator menggabungkan observasi account secara atomik sehingga hasil
+analisis yang selesai belakangan tidak mengganti observasi account yang lebih
+baru. Waktu account review berasal dari observasi account, bukan waktu hasil
+analisis. Technical rejection memakai budget riset cycle, bukan slot posisi
+kosong; kandidat eligible yang sudah ada pada antrean tetap dapat dianalisis
+selama kapasitas dan budget asli tersedia.
+Urutan observasi memakai generation/revision internal satu daemon, sehingga
+koreksi UTC atau restart tidak membekukan snapshot dengan timestamp lama.
+Ini tidak memilih leader beberapa daemon; deployment tetap satu service worker.
 
 | `wait_reason` | Arti |
 | --- | --- |
@@ -148,11 +157,21 @@ git pull --ff-only origin main
 bash deploy/update-api.sh
 ```
 
-Jika masih mengikuti branch PR existing `codex/fix-robot-coordinator-24-7`, gunakan
-perintah branch dan health check di [MANUAL_SIMULATION.md](MANUAL_SIMULATION.md).
+Jika VPS masih mengikuti branch PR lama, beralih ke main dengan perintah aman
+dan pemeriksaan di [ROBOT_24_7.md](ROBOT_24_7.md).
 Frontend GitHub Pages juga memerlukan file UI baru: merge PR ke source branch
-yang tercantum di Settings → Pages dan tunggu publish berhasil. Configured source
-belum diverifikasi; build worker tidak menerbitkan frontend.
+yang tercantum di Settings → Pages dan tunggu publish berhasil. Deployment Pages
+untuk frontend kantor di main telah diperiksa berhasil; build worker tidak
+menerbitkan frontend.
+
+Untuk pemeriksaan CLI selalu gunakan `docker compose exec --user 10001:10001 -T
+worker python -m worker ...`. Docker exec default tetap root walaupun service
+sudah berjalan sebagai UID10001. Lock `/data/trading/cycle.lock` yang dibuat root
+dengan mode 0600 dapat menghalangi coordinator sebelum screening; balance dan
+status healthy saja tidak membuktikan lock dapat dibuka. Bootstrap baru memulihkan
+owner lock saat start. Pemulihan manual satu kali hanya mengubah owner/mode pada
+regular file existing, tanpa menghapus/truncate state, tersedia di
+[DOCKER.md](DOCKER.md#cli-worker-dan-pemulihan-izin-cycle-lock).
 
 Script build worker lalu recreate worker/proxy, memakai volume dan secret yang
 sama. Pada SIGTERM worker menghentikan claim/request riset baru dan memberi operasi
@@ -171,6 +190,11 @@ selama 120 detik; `restart: unless-stopped` kemudian menjalankan worker kembali.
 Heartbeat memakai jam monotonic agar koreksi jam sistem tidak menyebabkan restart
 palsu. Restart tidak mereplay request dengan outcome belum pasti. Gangguan monitor
 paper tidak mematikan actor riset.
+Inisialisasi schema/WAL diselesaikan sebelum thread account dan riset dimulai;
+inisialisasi koneksi selanjutnya diserialkan. Cooldown kontrol memakai jam
+monotonic, sementara waktu status tetap memakai wall clock. Exception coordinator
+yang tidak diharapkan tampil sebagai ROBOT_COORDINATOR_UNAVAILABLE dan log kode
+tetap tanpa payload; tick selanjutnya mencoba kembali melalui claim existing.
 
 Tests memakai account/provider sintetis serta browser UI lokal. Tidak membuktikan
 service VPS sudah terpasang atau meminta NeuroAPI nyata. Google/DOM/browser login
