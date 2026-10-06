@@ -102,6 +102,15 @@ class RobotTests(unittest.TestCase):
         self.assertEqual([b['prompt'] for b in screens],[SCREENING_ONE,SCREENING_ONE])
         self.assertFalse(any(s['symbol']=='HYPEUSDT' for s in r['setups']))
         self.assertTrue(any(s['symbol']=='BTCUSDT' for s in r['setups']))
+    def test_persisted_empty_screen_cycle_recovers(self):
+        self.account.position('HYPEUSDT',1);self.screens=[['BTCUSDT']];self.on()
+        cycle=day()+':robot-v7:0'
+        data=dict(target=1,queue=[],seen=[],screen=0,replacements=0)
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,day(),0,'COMPLETE',json.dumps(data)))
+        r=self.ticks(3)
+        self.assertEqual(self.calls[0]['prompt'],SCREENING_ONE)
+        self.assertTrue(any(s['symbol']=='BTCUSDT' for s in r['setups']))
+
     def test_prompt_two_exact(self):
         self.ready();self.assertEqual(self.calls[0]['prompt'].encode(),SCREENING.encode())
     def test_prompt_one_exact(self):
