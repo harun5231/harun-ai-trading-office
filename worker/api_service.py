@@ -62,11 +62,19 @@ class Controller:
                     continue
                 with self.lock:self.busy=True
                 try:
-                    if job=='check':status=client.health()
+                    if job=='check':
+                        status=client.health()
+                        with self.lock:self.status=status
                     else:
-                        last_tick=time.monotonic();status=robot.tick()['bot_status']
-                except Exception:status='NEUROAPI_NOT_CONFIGURED' if not api_key() else 'NEUROAPI_UNAVAILABLE'
-                with self.lock:self.status=status;self.checked=time.time();self.busy=False
+                        # Robot state is exposed by /robot/status.  A coordinator
+                        # tick must not overwrite the independent NeuroAPI health
+                        # indicator shown by the Office.
+                        last_tick=time.monotonic();robot.tick()
+                except Exception:
+                    if job=='check':
+                        status='NEUROAPI_NOT_CONFIGURED' if not api_key() else 'NEUROAPI_UNAVAILABLE'
+                        with self.lock:self.status=status
+                with self.lock:self.checked=time.time();self.busy=False
         finally:ledger.db.close()
 
 def handler(controller,read_token,control_token,origin):
