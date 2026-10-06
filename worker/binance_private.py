@@ -12,6 +12,7 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit, parse_qsl
 from urllib.request import Request, build_opener, ProxyHandler
 from .http_client import NoRedirect, unique
+from .research_guard import ResearchReadPaused,check_research_read
 
 BASE='https://fapi.binance.com'
 COMMISSION_PATH='/fapi/v1/commissionRate'
@@ -123,6 +124,7 @@ def read_only_get(url,headers):
             if status!=200 or (isinstance(data,dict) and type(data.get('code')) is int and data['code']<0):
                 reason=failure(status,data)
             elif isinstance(data,(dict,list)):return data
+    except ResearchReadPaused:raise
     except Exception:pass
     # Never chain a URL-bearing urllib exception, provider message or raw response.
     raise BinanceCheckError(reason) from None
@@ -133,7 +135,9 @@ class BinanceReadOnly:
         self._secret=read_secret('BINANCE_API_SECRET_FILE')
         self._transport=transport;self._clock=clock;self._server=None;self._synced=None
     def _get(self,url,headers):
+        check_research_read()
         try:return self._transport(url,headers)
+        except ResearchReadPaused:raise
         except BinanceCheckError as error:
             reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
         except Exception:reason='BINANCE_ACCOUNT_UNAVAILABLE'
@@ -208,6 +212,7 @@ class BinanceReadOnly:
 def check():
     """CLI boundary: no ledger, snapshot, dashboard, logging or provider response storage."""
     try:return BinanceReadOnly().check()
+    except ResearchReadPaused:raise
     except BinanceCheckError as error:
         reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
     except Exception:reason='BINANCE_ACCOUNT_UNAVAILABLE'

@@ -175,7 +175,11 @@ Metadata koneksi tidak mengubah penanganan ini.
 OFF menghentikan riset, submission baru, dan pemanggilan rekonsiliasi gateway
 berikutnya. OFF tidak menutup posisi dan tidak membatalkan order entry/SL/TP.
 Pemanggilan eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya
-masih dapat selesai dan dicatat ke journal. Polling read-only saldo/posisi/riwayat
+masih dapat selesai dan dicatat ke journal. Guard GET riset tidak menginterupsi
+callback adapter yang sudah dimulai, karena callback dapat sedang menyelesaikan
+proteksi entry. OFF mencegah pemanggilan callback berikutnya. Exception callback
+tetap diperlakukan sebagai outcome belum pasti, tanpa replay otomatis.
+Polling read-only saldo/posisi/riwayat
 Office tetap berjalan, sementara semua karyawan AI tidak menunjukkan aktivitas
 kerja saat OFF. Rekonsiliasi gateway dijalankan saat ON; developer harus
 menyediakan prosedur penanganan pending/filled order sesudah restart atau ketika
