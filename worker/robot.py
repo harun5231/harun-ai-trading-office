@@ -81,6 +81,16 @@ class RobotStore:
         else:value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
         self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
         return self.snapshot()
+    def report_account(self,account=None,reason=None):
+        row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
+        value=json.loads(row[0]) if row else dict(bot_status='WAITING',failure_code=None,checked_at=None)
+        if account:
+            value.update(account)
+        else:
+            value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
+        value.update(account_failure_code=reason,account_checked_at=now())
+        self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
+        return self.snapshot()
     def approve(self,setup_id,decision):
         if not isinstance(setup_id,str) or len(setup_id)>160 or decision not in ('APPROVED','USER_REJECTED'):raise Review('INVALID_APPROVAL')
         self.db.execute('BEGIN IMMEDIATE')
