@@ -51,7 +51,7 @@ class OfficeUI(unittest.TestCase):
         self.assertEqual(self.errors,[])
     def test_robot_mobile_settings_and_approval_cards(self):
         p=self.page;calls=[]
-        robot=dict(mode='DRY_RUN',live_enabled=False,live_execution=False,robot_on=False,risk_target_usdt='5',running_positions=1,bot_entries_today=0,available_slots=1,manual_exposure=['HYPEUSDT'],bot_status='SETUP_READY',setups=[dict(id='test',symbol='BTCUSDT',status='SETUP_READY',side='LONG',entry='100',tp='104',sl='98',execution_quantity='2.5',risk_target_usdt='5',risk='5',rr='2')])
+        robot=dict(mode='DRY_RUN',live_enabled=False,live_execution=False,robot_on=False,risk_target_usdt='5',usdt_wallet_balance='117.25',usdt_available_balance='109.50',running_positions=1,bot_entries_today=0,available_slots=1,manual_exposure=['HYPEUSDT'],bot_status='SETUP_READY',setups=[dict(id='test',symbol='BTCUSDT',status='SETUP_READY',side='LONG',entry='100',tp='104',sl='98',execution_quantity='2.5',risk_target_usdt='5',risk='5',rr='2')])
         def worker(route):
             request=route.request;path=request.url.removeprefix('https://worker.test');calls.append((request.method,path,request.post_data))
             data=dict(mode='DRY_RUN',live_enabled=False)
@@ -63,13 +63,16 @@ class OfficeUI(unittest.TestCase):
                 data=robot
             elif path=='/health':data.update(status='ONLINE')
             elif path=='/neuroapi/status':data.update(status='IDLE',busy=False)
-            elif path=='/snapshot':data.update(schema_version=1,source='NEUROAPI_DRY_RUN',status='IDLE',trades=[],events=[],pnl_today='0',trades_today=0,active_positions=0,generated_at='2026-01-01T00:00:00Z')
+            elif path=='/snapshot':data.update(schema_version=1,source='NEUROAPI_DRY_RUN',status='IDLE',balance=None,trades=[],events=[],pnl_today='0',trades_today=0,active_positions=0,generated_at='2026-01-01T00:00:00Z')
             route.fulfill(content_type='application/json',body=json.dumps(data),headers={'Access-Control-Allow-Origin':'https://office.test','Access-Control-Allow-Headers':'Authorization, Content-Type'})
         p.route('https://worker.test/**',worker)
         p.click('#menuToggle');p.click('#robotMenu');self.assertTrue(p.locator('#robotToggle').is_disabled())
         p.fill('#apiOrigin','https://worker.test');p.fill('#apiToken','C'*32);p.click('#apiConnect')
         p.wait_for_function('!document.querySelector("#robotToggle").disabled')
         self.assertIn('HYPEUSDT',p.locator('#robotStatus').inner_text())
+        self.assertIn('117.25',p.locator('#robotStatus').inner_text())
+        p.wait_for_function('document.querySelectorAll(".stats .stat b")[0].textContent.includes("117.25")')
+        self.assertEqual(p.locator('.stats .stat b').nth(3).inner_text(),'1')
         p.click('#robotToggle');p.wait_for_function('document.querySelector("#robotToggle").textContent.includes(": ON")')
         p.fill('#robotRisk','10');p.click('#robotRiskSave');p.wait_for_function('document.querySelector("#robotStatus").textContent.includes("RISK PER SL: 10")')
         p.locator('#robotCards button').filter(has_text='OK').click();p.wait_for_function('document.querySelector("#robotCards").textContent.includes("APPROVED")')

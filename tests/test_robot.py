@@ -16,7 +16,7 @@ from test_neuroapi import GOOD,RULES
 
 class Account:
     def __init__(self):self.positions=[];self.calls=[]
-    def check(self):return dict(status='BINANCE_CONNECTED',position_mode='ONE_WAY',multi_assets_margin=False,can_trade=True)
+    def check(self):return dict(status='BINANCE_CONNECTED',position_mode='ONE_WAY',multi_assets_margin=False,can_trade=True,usdt_wallet_balance='117.25',usdt_available_balance='109.50')
     def sync_time(self):pass
     def signed_get(self,path):
         self.calls.append(('GET',path));return {'positions':copy.deepcopy(self.positions)}
@@ -76,7 +76,15 @@ class RobotTests(unittest.TestCase):
     def test_hype_manual_counted_never_owned(self):
         self.account.position('HYPEUSDT',1);self.screens=[['BTCUSDT']];self.on();r=self.ticks()
         self.assertEqual(r['running_positions'],1);self.assertEqual(r['manual_exposure'],['HYPEUSDT']);self.assertEqual(r['bot_entries_today'],0)
+        self.assertEqual(r['usdt_wallet_balance'],'117.25');self.assertEqual(r['usdt_available_balance'],'109.50')
         self.assertEqual(len(r['setups']),1);self.assertTrue(all(m=='GET' for m,_ in self.account.calls))
+    def test_zero_amount_non_both_row_does_not_hide_real_position(self):
+        self.account.positions=[
+            dict(symbol='BTCUSDT',positionSide='LONG',positionAmt='0'),
+            dict(symbol='HYPEUSDT',positionSide='BOTH',positionAmt='4.16'),
+        ]
+        self.screens=[['ETHUSDT']];self.on();r=self.robot.tick()
+        self.assertEqual(r['running_positions'],1);self.assertEqual(r['running_symbols'],['HYPEUSDT']);self.assertEqual(r['available_slots'],1)
     def test_hype_cannot_be_analyzed_even_if_returned(self):
         self.account.position('HYPEUSDT',1);self.screens=[['HYPEUSDT']];self.on();self.ticks()
         self.assertEqual(len(self.calls),1);self.assertEqual(self.store.snapshot()['setups'],[])

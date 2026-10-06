@@ -33,7 +33,8 @@
    const [s,h,snapshot,robot]=await Promise.all([request('/neuroapi/status'),request('/health'),request('/snapshot'),request('/robot/status')]);if(g!==generation)return;
    robotData=robot;online=h.status==='ONLINE';busy=s.busy===true;status=busy?snapshot.status:s.status;
    note=busy?'Worker memproses permintaan. Jangan ulangi siklus.':'Binance GET-only. OK hanya menyimpan approval; order live tetap nonaktif.';
-   window.dispatchEvent(new CustomEvent('workerSnapshot',{detail:snapshot}));paint();
+   const dashboard={...snapshot,balance:robot.usdt_wallet_balance??snapshot.balance,active_positions:robot.running_positions??snapshot.active_positions};
+   window.dispatchEvent(new CustomEvent('workerSnapshot',{detail:dashboard}));paint();
   }catch(e){if(g===generation){online=false;note=e.message;paint();}}
  }
  async function action(name){
@@ -50,7 +51,7 @@
   document.getElementById('robotRiskSave').disabled=!origin||robotBusy||!robotData;
   if(robotData&&document.activeElement!==risk)risk.value=robotData.risk_target_usdt;
   document.getElementById('robotStatus').textContent=robotData?
-   'RISK PER SL: '+robotData.risk_target_usdt+' USDT · RUNNING FUTURES: '+(robotData.running_positions??'?')+' / 2 · BOT ENTRIES TODAY: '+robotData.bot_entries_today+' / 2 · AVAILABLE SLOTS: '+(robotData.available_slots??'?')+' · MANUAL EXPOSURE: '+(robotData.manual_exposure.join(', ')||'—')+' · BOT STATUS: '+robotData.bot_status+(robotData.failure_code?' · '+robotData.failure_code:''):'Hubungkan worker untuk membaca status.';
+   'RISK PER SL: '+robotData.risk_target_usdt+' USDT · FUTURES BALANCE: '+(robotData.usdt_wallet_balance??'?')+' USDT · RUNNING FUTURES: '+(robotData.running_positions??'?')+' / 2 · BOT ENTRIES TODAY: '+robotData.bot_entries_today+' / 2 · AVAILABLE SLOTS: '+(robotData.available_slots??'?')+' · MANUAL EXPOSURE: '+(robotData.manual_exposure.join(', ')||'—')+' · BOT STATUS: '+robotData.bot_status+(robotData.failure_code?' · '+robotData.failure_code:''):'Hubungkan worker untuk membaca status.';
   const rows=robotData?.setups||[],key=JSON.stringify(rows);
   if(key===cardKey)return;cardKey=key;
   const cards=document.getElementById('robotCards');cards.replaceChildren();

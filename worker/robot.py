@@ -61,7 +61,7 @@ class RobotStore:
     def results(self,cycle):return list(self.db.execute('SELECT * FROM robot_setups WHERE cycle=?',(cycle,)))
     def snapshot(self):
         row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
-        value=json.loads(row[0]) if row else dict(bot_status='WAITING',running_positions=None,available_slots=None,manual_exposure=[],checked_at=None)
+        value=json.loads(row[0]) if row else dict(bot_status='WAITING',running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None,checked_at=None)
         value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False)
         if not value['robot_on']:value['bot_status']='WAITING'
         value['setups']=[]
@@ -78,7 +78,7 @@ class RobotStore:
     def report(self,state,account=None,reason=None):
         value=dict(bot_status=state,failure_code=reason,checked_at=now())
         if account:value.update(account)
-        else:value.update(running_positions=None,available_slots=None,manual_exposure=[])
+        else:value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
         self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
         return self.snapshot()
     def approve(self,setup_id,decision):
@@ -108,14 +108,20 @@ def account_state(client,store,today):
     if not isinstance(rows,list):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
     running=set()
     for row in rows:
-        if not isinstance(row,dict) or row.get('positionSide')!='BOTH':raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        if not isinstance(row,dict):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
         amount=row.get('positionAmt');symbol=row.get('symbol')
         if not isinstance(amount,str) or len(amount)>64 or not re.fullmatch(r'-?\d+(?:\.\d+)?',amount) or not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9_]{2,30}',symbol):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-        if D(amount)!=0:running.add(symbol)
+        # Zero-amount rows are not active Futures exposure. Validate BOTH only
+        # for non-zero positions that actually consume one of the two slots.
+        if D(amount)==0:continue
+        if row.get('positionSide')!='BOTH':raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        running.add(symbol)
     owned={r[0] for r in store.db.execute('SELECT DISTINCT symbol FROM robot_entry_receipts')}-MANUAL_ONLY_SYMBOLS
     entries=store.entries(today)
     return dict(running_positions=len(running),running_symbols=sorted(running),manual_exposure=sorted(running-owned),
-        bot_entries_today=entries,available_slots=slots(len(running),entries))
+        bot_entries_today=entries,available_slots=slots(len(running),entries),
+        usdt_wallet_balance=config.get('usdt_wallet_balance'),
+        usdt_available_balance=config.get('usdt_available_balance'))
 
 class Coordinator:
     def __init__(self,ledger,neuro,market,account_factory):
@@ -128,7 +134,10 @@ class Coordinator:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return self.store.report('WAITING',reason='WORKER_BUSY')
             try:return self._tick()
-            except Exception:return self.store.report('REJECTED',reason='ROBOT_PREFLIGHT_NEEDS_REVIEW')
+            except Exception as error:
+                reason=str(error)
+                allowed={'ROBOT_ACCOUNT_UNAVAILABLE','BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED','BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'}
+                return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
     def allowed(self,today):return self.store.settings()['robot_on'] and day()==today
