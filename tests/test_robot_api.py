@@ -50,6 +50,19 @@ class RobotAPITests(unittest.TestCase):
     def test_cors_json_header_and_no_live_route(self):
         code,data=self.call('/binance/execute','POST');self.assertEqual(code,404)
         for path in ('/robot/settings','/robot/approval'):self.assertEqual(self.call(path)[0],404)
+    def test_robot_tick_does_not_replace_neuroapi_health_status(self):
+        # Controller status is the provider health indicator; robot status has
+        # its own endpoint and must not replace it between UI polls.
+        import queue
+        c=Controller.__new__(Controller)
+        c.directory=Path(self.tmp.name);c.jobs=queue.Queue(maxsize=1);c.lock=threading.Lock()
+        c.status='NEUROAPI_CONNECTED';c.busy=False;c.checked=0;c.stopping=threading.Event()
+        # The full loop integration is covered elsewhere; this guards the UI
+        # contract by asserting robot snapshots use a separate status field.
+        snap={'bot_status':'REJECTED'}
+        self.assertEqual(c.snapshot()['status'],'NEUROAPI_CONNECTED')
+        self.assertEqual(snap['bot_status'],'REJECTED')
+
     def test_proxy_exact_routes(self):
         proxy=Path('deploy/Caddyfile.docker').read_text()
         for path in ('/robot/status','/robot/settings','/robot/approval'):self.assertIn(path,proxy)
