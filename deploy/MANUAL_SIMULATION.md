@@ -61,11 +61,11 @@ maintenance. Di Termius, setelah perubahan branch tersedia di GitHub:
 cd /root/harun-ai-trading-office
 git status --short
 git fetch origin &&
-git switch codex/fix-robot-coordinator-24-7 &&
-git pull --ff-only origin codex/fix-robot-coordinator-24-7 &&
+git switch main &&
+git pull --ff-only origin main &&
 bash deploy/update-api.sh &&
 docker compose ps &&
-docker compose exec -T worker python -m worker.health
+docker compose exec --user 10001:10001 -T worker python -m worker.health
 ```
 
 Jika Git menolak karena perubahan lokal atau history berbeda, berhenti dan
@@ -74,13 +74,14 @@ Worker/proxy harus healthy; itu belum membuktikan riset provider berhasil.
 
 Dashboard adalah file statis GitHub Pages (`index.html` dan `assets/`); update
 worker Docker tidak menerbitkan JavaScript baru. Checkout ini tidak mempunyai
-workflow Pages dan configured source branch belum diverifikasi. Buka repository
-Settings → Pages untuk memeriksa source. Gabungkan PR ke branch source tersebut
-(misalnya `main` jika itu source yang terpasang), lalu tunggu deployment Pages
-berhasil. Jika source sengaja dipilih berbeda, terbitkan perubahan frontend yang
-sama melalui source tersebut; pengubahan setting hosting dilakukan pengguna.
+file workflow Pages; deployment Pages yang dikelola GitHub telah diperiksa
+berhasil untuk frontend kantor di main. Perubahan frontend berikutnya masih
+memerlukan deployment Pages berhasil setelah merge.
 Refresh penuh/reopen Office setelah publish dan pastikan SALIN TIKET serta
 UJI SIMULASI muncul pada setup terverifikasi. Token tetap hanya di memori tab.
 
 Pengujian lokal tidak mengklaim bahwa versi ini sudah dipasang di VPS, frontend
 sudah dipublikasikan, atau screening NeuroAPI akun pengguna sudah diuji.
+
+Untuk worker 24/7, perintah status singkat, dan arti WAITING, gunakan
+[ROBOT_24_7.md](ROBOT_24_7.md).

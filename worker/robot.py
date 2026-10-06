@@ -5,10 +5,13 @@ cycle, including after restart. Setup/approval and actual entry receipts are
 separate tables. This release has NO writer for actual entry receipts.
 """
 from dataclasses import asdict
+from datetime import datetime,timezone
 import fcntl
+from itertools import count
 import json
 import re
 import time
+from uuid import uuid4
 from pathlib import Path
 from .core import D,Review,day,now,validated_risk_target,risk_check,preflight
 from .neuroapi import SCREEN_SCHEMA,SCREEN_ONE_SCHEMA,SETUP_SCHEMA,selections,setup
@@ -20,6 +23,56 @@ from .robot_provenance import VERSION,stamp,verify
 SCREENING_ONE='pilihkan 1 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
 MANUAL_ONLY_SYMBOLS=frozenset(('HYPEUSDT',))
 MAX_REPLACEMENTS=3
+ACCOUNT_FIELDS=('running_positions','running_symbols','available_slots','manual_exposure',
+    'usdt_wallet_balance','usdt_available_balance','bot_entries_today')
+ACCOUNT_GENERATION=uuid4().hex
+ACCOUNT_REVISION=count(1)
+ACCOUNT_ORDER_FIELDS=('_account_generation','_account_revision')
+
+def empty_account():
+    return dict(running_positions=None,running_symbols=None,available_slots=None,manual_exposure=[],
+        usdt_wallet_balance=None,usdt_available_balance=None,account_checked_at=None,account_failure_code=None,
+        _account_generation=None,_account_revision=None)
+
+def account_order():
+    # Observation completion order is shared by the daemon's account/actor
+    # threads. UTC remains a displayed time, not the ordering mechanism; a new
+    # process generation also supersedes persisted observations after restart.
+    return dict(_account_generation=ACCOUNT_GENERATION,_account_revision=next(ACCOUNT_REVISION))
+
+def current_account_revision(value):
+    revision=value.get('_account_revision')
+    return revision if value.get('_account_generation')==ACCOUNT_GENERATION and type(revision) is int and revision>0 else None
+
+def account_timestamp(value):
+    try:
+        value=datetime.fromisoformat(value)
+        if value.tzinfo is None:return None
+        return value.astimezone(timezone.utc).isoformat(timespec='microseconds')
+    except (TypeError,ValueError):return None
+
+def account_observation(account,reason=None,stamp=False):
+    value=empty_account()
+    if account:value.update({k:account[k] for k in ACCOUNT_FIELDS if k in account})
+    checked=account_timestamp(account.get('account_checked_at')) if account else None
+    if account:value.update({k:account[k] for k in ACCOUNT_ORDER_FIELDS if k in account})
+    if stamp and checked is None:value.update(account_order())
+    value.update(account_checked_at=checked or (account_timestamp(now()) if stamp else None),
+        account_failure_code=reason if reason is not None else (account.get('account_failure_code') if account else None))
+    return value
+
+def newer_account(observation,previous):
+    revision=current_account_revision(observation);older=current_account_revision(previous)
+    if revision is not None:return older is None or revision>=older
+    if older is not None:return False
+    # Legacy observations lack a source ordering token. Use their actual GET
+    # timestamps only until this daemon publishes its first ordered observation.
+    checked=account_timestamp(observation.get('account_checked_at'))
+    prior=account_timestamp(previous.get('account_checked_at'))
+    return prior is None or checked is not None and checked>=prior
+
+def newer_account_json(observation,previous):
+    return newer_account(json.loads(observation),json.loads(previous))
 
 def screening_contract(count):
     if count==1:return SCREENING_ONE,SCREEN_ONE_SCHEMA
@@ -29,8 +82,10 @@ def screening_contract(count):
 def slots(running,entries):return max(0,min(2-running,2-entries))
 
 class RobotStore:
-    def __init__(self,db):
+    def __init__(self,db,initialize=True):
         self.db=db
+        db.create_function('robot_account_newer',2,newer_account_json)
+        if not initialize:return
         db.executescript('''
         CREATE TABLE IF NOT EXISTS robot_settings(id INTEGER PRIMARY KEY CHECK(id=1),enabled INTEGER NOT NULL,risk TEXT NOT NULL);
         INSERT OR IGNORE INTO robot_settings VALUES(1,0,'5');
@@ -72,7 +127,9 @@ class RobotStore:
         except Exception:raise Review('ROBOT_SETUP_UNVERIFIED') from None
     def snapshot(self):
         row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
-        value=json.loads(row[0]) if row else dict(bot_status='WAITING',running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None,checked_at=None)
+        value=empty_account()
+        value.update(json.loads(row[0]) if row else dict(bot_status='WAITING',checked_at=None))
+        for key in ACCOUNT_ORDER_FIELDS:value.pop(key,None)
         value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False,simulation_mode='LOCAL',manual_submission_required=True)
         value.setdefault('wait_reason',None)
         if not value['robot_on']:value.update(bot_status='WAITING',wait_reason='ROBOT_OFF')
@@ -88,7 +145,7 @@ class RobotStore:
                         ticket=build_ticket(self.db,plan,row['id'],row['status'])
                         details['ticket']=ticket
                         details['account_review']=dict(
-                            review_required=True,checked_at=value.get('account_checked_at') or value.get('checked_at'),
+                            review_required=True,checked_at=value.get('account_checked_at'),
                             available_slots=value.get('available_slots'),
                             symbol_exposed=(row['symbol'] in value['running_symbols']) if isinstance(value.get('running_symbols'),list) else None,
                             setup_from_current_day=(ticket['business_day']==day()))
@@ -128,24 +185,29 @@ class RobotStore:
         snapshot=self.snapshot();snapshot['simulation']=result
         return snapshot
     def report(self,state,account=None,reason=None,wait_reason=None):
-        value=dict(bot_status=state,failure_code=reason,wait_reason=wait_reason,checked_at=now())
-        if account:value.update(account)
-        else:value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
-        self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
+        observation=account_observation(account) if account else empty_account()
+        encoded=json.dumps(observation)
+        # One SQLite statement reads/merges/writes under the write lock. The
+        # provider may have occupied this actor for minutes while the account
+        # thread published a newer success or failure; preserve that observation.
+        self.db.execute('''INSERT OR REPLACE INTO robot_status
+          SELECT 1,json_set(
+            CASE WHEN ? AND robot_account_newer(?,previous)
+            THEN json_patch(previous,?) ELSE previous END,
+            '$.bot_status',?,'$.failure_code',?,'$.wait_reason',?,'$.checked_at',?)
+          FROM (SELECT COALESCE((SELECT data FROM robot_status WHERE id=1),?) AS previous)''',
+          (bool(account),encoded,encoded,state,reason,wait_reason,now(),json.dumps(empty_account())))
         return self.snapshot()
     def report_account(self,account=None,reason=None):
         # The account poll and coordinator use separate SQLite connections.
         # Hold the write lock while merging so a newer coordinator status cannot
         # be overwritten by an account snapshot read before that status changed.
+        observation=account_observation(account,reason,stamp=True)
         self.db.execute('BEGIN IMMEDIATE')
         try:
             row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
             value=json.loads(row[0]) if row else dict(bot_status='WAITING',failure_code=None,wait_reason=None,checked_at=None)
-            if account:
-                value.update(account)
-            else:
-                value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
-            value.update(account_failure_code=reason,account_checked_at=now())
+            if newer_account(observation,value):value.update(observation)
             self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
@@ -190,7 +252,8 @@ def account_state(client,store,today):
     return dict(running_positions=len(running),running_symbols=sorted(running),manual_exposure=sorted(running-owned),
         bot_entries_today=entries,available_slots=slots(len(running),entries),
         usdt_wallet_balance=config.get('usdt_wallet_balance'),
-        usdt_available_balance=config.get('usdt_available_balance'))
+        usdt_available_balance=config.get('usdt_available_balance'),account_checked_at=now(),account_failure_code=None,
+        **account_order())
 
 class Coordinator:
     def __init__(self,ledger,neuro,market,account_factory,stopping=None):
@@ -199,9 +262,12 @@ class Coordinator:
     def tick(self):
         # Shares the CLI cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
-        with path.open('a') as lock:
+        try:lock=path.open('a')
+        except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
+        with lock:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return self.store.report('WAITING',reason='WORKER_BUSY')
+            except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
             try:return self._tick()
             except Exception as error:
                 reason=str(error)
@@ -209,6 +275,21 @@ class Coordinator:
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
+    def screened_exclusions(self,cycle,data,results):
+        # Recover a missing legacy partial-screen marker only from a completed
+        # claimed screen with completed provider evidence. Never retry its ID.
+        rows=self.db.execute("SELECT j.operation,a.state,a.output FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation WHERE j.cycle=? AND j.kind='SCREENING' AND j.state='COMPLETE'",(cycle,))
+        prefix=cycle+':screening:'+str(data['screen'])+':'
+        resolved={r['symbol'] for r in results}
+        for row in rows:
+            if row['state']!='COMPLETE' or row['operation'] not in (prefix+'1',prefix+'2'):continue
+            try:
+                output=json.loads(row['output']);symbols=output['symbols'];count=int(row['operation'][-1])
+                if set(output)!={'symbols'} or not isinstance(symbols,list) or len(symbols)!=count or len(set(symbols))!=count:continue
+                if any(not isinstance(s,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',s) for s in symbols):continue
+                if any(s in data['seen'] and s not in resolved for s in symbols):return True
+            except (TypeError,ValueError,KeyError):continue
+        return False
     def allowed(self,today):return not (self.stopping and self.stopping.is_set()) and self.store.settings()['robot_on'] and day()==today
     def pause_reason(self):
         if self.stopping and self.stopping.is_set():return 'ROBOT_STOPPING'
@@ -247,12 +328,16 @@ class Coordinator:
         # Older persisted cycles can lack the replacement marker after a screen
         # yielded no usable symbols. Recover both states within the original cap;
         # unresolved paid jobs were already checked above and are never replayed.
-        if old and old['state'] in ('ACTIVE','COMPLETE') and not results and not data['queue'] and data['screen']>=0:
+        if old and old['state'] in ('ACTIVE','COMPLETE') and not data['queue'] and data['screen']>=0 and (not results or self.screened_exclusions(cycle,data,results)):
             data['replacement_due']=True
             self.save_cycle(cycle,data,'ACTIVE' if data['replacements']<MAX_REPLACEMENTS else 'COMPLETE')
         ready=sum(r['status'] in ('SETUP_READY','APPROVED') for r in results)
+        ready_unexposed=sum(r['status'] in ('SETUP_READY','APPROVED') and r['symbol'] not in account['running_symbols'] for r in results)
         technical=sum(r['status']=='REJECTED' for r in results)
-        remaining=min(available,data['target'])-ready-technical
+        # A rejected research opportunity uses budget, not a live account slot.
+        # Ready tickets reserve current free slots; the original target stays fixed.
+        # A matching running position already occupies its real account slot.
+        remaining=min(available-ready_unexposed,data['target']-ready-technical)
         if remaining<=0:
             self.save_cycle(cycle,data,'COMPLETE')
             return self.store.report('SETUP_READY' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')

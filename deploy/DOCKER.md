@@ -7,24 +7,25 @@ image MCR. Docker Hub masih harus dapat diakses untuk base Python saat build per
 
 ## Update VPS existing
 
-Untuk perubahan tiket manual/simulasi pada branch yang sudah dipakai VPS:
+Untuk worker simulasi/tiket manual yang sudah digabungkan ke main:
 
 ```sh
 cd /root/harun-ai-trading-office
 git status --short
 git fetch origin &&
-git switch codex/fix-robot-coordinator-24-7 &&
-git pull --ff-only origin codex/fix-robot-coordinator-24-7 &&
+git switch main &&
+git pull --ff-only origin main &&
 bash deploy/update-api.sh &&
 docker compose ps &&
-docker compose exec -T worker python -m worker.health
+docker compose exec --user 10001:10001 -T worker python -m worker.health
 ```
 
 Jangan reset paksa bila Git menolak perubahan lokal. Tidak perlu key baru untuk
 simulasi lokal. Frontend GitHub Pages harus mendapat perubahan `assets/` yang sama
 melalui PR merge ke configured source branch; update Docker tidak mempublish UI.
-Source Pages aktual belum diverifikasi. Panduan lengkap:
-[MANUAL_SIMULATION.md](MANUAL_SIMULATION.md).
+Frontend kantor terbaru sudah digabungkan ke main dan deployment Pages diperiksa
+berhasil. Panduan operasi serta pemeriksaan coordinator:
+[ROBOT_24_7.md](ROBOT_24_7.md).
 
 Setelah perubahan sudah digabungkan ke `main`, update rutin memakai:
 
@@ -79,7 +80,8 @@ volume trading. State lama di volume dibiarkan untuk audit/rekonsiliasi.
 
 ## Health / restart
 
-`docker compose ps`; `docker compose exec -T worker python -m worker.health`.
+`docker compose ps`;
+`docker compose exec --user 10001:10001 -T worker python -m worker.health`.
 API menyediakan /health, /snapshot, /neuroapi/status (GET), /neuroapi/check dan
 /neuroapi/run (POST), dengan bearer authorization, origin allowlist untuk mutasi,
 no-store, tanpa log headers/body. Tidak ada endpoint untuk menerima provider key.
@@ -104,6 +106,57 @@ lokal idempotent untuk setup terverifikasi. Tidak ada provider calls/order, key
 baru, mutasi akun atau counter entry. GET `/robot/status` menyertakan tiket manual
 dan hasil simulasi terbaru. Screening tetap memakai key NeuroAPI existing dan
 approval unresolved tetap membatasi riset.
+
+## CLI worker dan pemulihan izin cycle lock
+
+Selalu gunakan `docker compose exec --user 10001:10001 -T worker python -m worker ...`
+untuk CLI worker, termasuk `api-check`, `diagnostics`, `binance-check`,
+`binance-shadow` dan health. Bootstrap container dimulai sebagai root lalu
+menurunkan user proses service ke UID/GID 10001; Docker exec tanpa `--user`
+tetap memakai user root dari konfigurasi image. CLI tersebut dapat membuat
+`/data/trading/cycle.lock` ber-owner root dengan mode 0600. Service UID10001
+kemudian tidak dapat membuka lock, sehingga coordinator berhenti sebelum screening
+meskipun account/balance dan health container masih terbaca.
+
+Versi bootstrap yang diperbaiki memulihkan ownership direktori trading dan file
+state bernama yang dikenali: lock, SQLite beserta sidecar, hasil migrasi, dan
+snapshot. File/direktori lain tidak diperbaiki secara rekursif; inode dan data
+dipertahankan. Symlink, hardlink dan file bukan regular ditolak.
+Untuk memulihkan lock instalasi lama sekali tanpa menghapus state, jalankan
+perbaikan berikut. Ini satu-satunya contoh worker exec yang sengaja memakai root:
+
+```sh
+docker compose exec --user 0:0 -T worker python - <<'PY'
+import os
+import stat
+from pathlib import Path
+
+directory = Path('/data/trading')
+if not stat.S_ISDIR(directory.lstat().st_mode):
+    raise SystemExit('LOCK_DIRECTORY_NOT_REGULAR')
+path = directory / 'cycle.lock'
+try:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+except FileNotFoundError:
+    print('cycle.lock belum ada; tidak ada file diubah')
+else:
+    try:
+        value = os.fstat(descriptor)
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1:
+            raise SystemExit('CYCLE_LOCK_NOT_REGULAR')
+        os.fchown(descriptor, 10001, 10001)
+        os.fchmod(descriptor, 0o600)
+        print('cycle.lock owner 10001:10001, mode 0600')
+    finally:
+        os.close(descriptor)
+PY
+```
+
+Symlink dan file selain regular file ditolak. Perintah hanya mengubah owner/mode
+lock existing; tidak menghapus, mengisi ulang atau truncate file, database,
+claim/request journal maupun approval. Sesudah itu periksa ROBOT ON/status
+dan alasan coordinator pada Office; jangan mengulang paid research melalui CLI
+untuk menguji izin. Perbaikan lock tidak mengaktifkan order Binance.
 
 Spesifikasi awal: 1 vCPU, RAM 1 GB (2 GB disarankan), storage 10 GB, Ubuntu 24.04,
 Docker Engine + Compose plugin. Ini perkiraan operasional, bukan benchmark VPS.

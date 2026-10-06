@@ -1,6 +1,6 @@
 # Sanitized request diagnostics
 
-Run `docker compose exec -T worker python -m worker diagnostics`.
+Run `docker compose exec --user 10001:10001 -T worker python -m worker diagnostics`.
 This command opens the existing SQLite database with `mode=ro` and `query_only`;
 it never loads a provider key, invokes network requests, claims a cycle, migrates,
 resets records or replays research. It selects only operation/state/attempts/code.

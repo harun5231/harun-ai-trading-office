@@ -60,6 +60,8 @@ Fees/slippage tidak disimulasikan; gap SL dapat membuat paper PNL melampaui 5 US
 
 Baca [deploy/DOCKER.md](deploy/DOCKER.md). API key hanya di secret VPS; dashboard
 menerima token kontrol worker yang berbeda dan hanya menyimpannya di memori tab.
+Untuk update main, verifikasi slot HYPEUSDT, dan pemeriksaan worker tanpa riset
+berbayar, ikuti [deploy/ROBOT_24_7.md](deploy/ROBOT_24_7.md).
 CEK API memanggil health provider tanpa prompt. JALANKAN DRY RUN meminta evaluasi
 coordinator; ROBOT OFF tetap menghalangi riset. Aktifkan riset hanya lewat kontrol
 ROBOT pada Office. Flag jadwal lama tidak membypass OFF. Tidak ada opsi LIVE.
