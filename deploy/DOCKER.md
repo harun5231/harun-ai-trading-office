@@ -16,6 +16,15 @@ image MCR. Docker Hub masih harus dapat diakses untuk base Python saat build per
    CEK API → NEUROAPI CONNECTED membuktikan authenticated health, bukan hasil riset.
    Jalankan DRY RUN untuk siklus berbayar; periksa laporan/REJECTED bila gagal.
 
+Saat stop/update, worker menghentikan request riset baru dan menunggu operasi
+yang sedang berjalan hingga 600 detik untuk menyimpan hasil. `stop_grace_period`
+dan script `docker compose stop -t` memakai 660 detik; update bisa menunggu selama
+drain ini. Jangan memaksa kill agar journal berbayar sempat diselesaikan. Bila
+outcome masih belum pasti, request tetap fail-closed untuk review setelah restart.
+Pilihan ROBOT ON/OFF persisten. Script update tidak mengaktifkan ROBOT, tetapi
+worker baru dapat melanjutkan riset bila pilihan sebelumnya ON. Matikan ROBOT lewat
+Office sebelum maintenance bila riset harus tetap berhenti.
+
 Key disimpan mode 0600 di `${OFFICE_PRIVATE_DIR}/secrets/neuroapi_key`, dimount
 sebagai Docker secret, disalin ke tmpfs 0600 milik UID10001. Environment
 NEUROBRO_API_KEY_FILE menunjuk file; mode noncontainer juga mendukung
@@ -54,6 +63,20 @@ API menyediakan /health, /snapshot, /neuroapi/status (GET), /neuroapi/check dan
 /neuroapi/run (POST), dengan bearer authorization, origin allowlist untuk mutasi,
 no-store, tanpa log headers/body. Tidak ada endpoint untuk menerima provider key.
 Restart Compose tidak menghapus counter, claim cycle atau request journal.
+`restart: unless-stopped` memulihkan worker yang keluar dan setelah reboot VPS
+ketika Docker berjalan; worker yang sengaja dihentikan memerlukan `compose up`.
+Health memakai umur heartbeat dan thread hidup. Watchdog menghentikan proses bila
+heartbeat actor lebih dari 600 detik atau pembacaan account lebih dari 120 detik,
+sehingga restart policy dapat memulihkannya. Status Docker unhealthy sendiri
+tidak menjalankan restart; recovery dilakukan watchdog. Unknown paid request
+tetap membutuhkan review, tanpa replay otomatis.
+
+ROBOT ON membangunkan coordinator segera, lalu polling riset setiap 45 detik
+dengan maksimum satu operasi NeuroAPI per tick. Private GET account berjalan
+terpisah dan memasok posisi serta saldo USDT nyata. `/robot/status` memakai
+`wait_reason` untuk menjelaskan WAITING normal dan blocker lifecycle. Lihat
+[ROBOT_WORKFLOW.md](ROBOT_WORKFLOW.md) untuk kapasitas, pengecualian HYPEUSDT dan
+recovery screening yang dibatasi tiga replacement. Live order tetap OFF.
 
 Spesifikasi awal: 1 vCPU, RAM 1 GB (2 GB disarankan), storage 10 GB, Ubuntu 24.04,
 Docker Engine + Compose plugin. Ini perkiraan operasional, bukan benchmark VPS.
