@@ -5,7 +5,7 @@
         X-Frame-Options DENY
         Cache-Control no-store
     }
-    @api path /health /neuroapi/status /neuroapi/check /neuroapi/run /snapshot /binance/status /robot/status /robot/settings /robot/approval
+    @api path /health /neuroapi/status /neuroapi/check /neuroapi/run /snapshot /binance/status /robot/status /robot/settings /robot/approval /robot/simulation
     handle @api {
         reverse_proxy worker:8787
     }

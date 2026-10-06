@@ -4,6 +4,13 @@ Build ini **tidak dapat mengirim order Binance**. Transport production tetap
 GET-only, binance-arm/execute tidak bisa diaktifkan, live scheduler OFF. ROBOT ON
 hanya mengizinkan riset NeuroAPI berbayar dan pembuatan setup untuk review.
 
+SETUP_READY/APPROVED terverifikasi menyediakan tiket entry/TP/SL yang dapat disalin
+untuk pengiriman manual, serta lima skenario simulasi lokal. Parameter berasal
+dari proof immutable dengan risk target default 5 USDT. Simulasi tidak memanggil
+provider, tidak perlu key baru, dan tidak mengubah account/PnL/counter entry atau
+approval. Jejak SL/TP sintetis bukan acknowledgment Binance. Lihat
+[MANUAL_SIMULATION.md](MANUAL_SIMULATION.md) untuk penggunaan dan batas hasil.
+
 ## Office
 
 MENU → ROBOT TRADING memakai koneksi worker/token kontrol yang sama dengan panel
@@ -11,6 +18,10 @@ NeuroAPI. Token hanya berada di memori tab; secret provider tetap di VPS.
 
 - Default instalasi: ROBOT OFF, risk target 5 USDT. ON/OFF dan risk disimpan di
   SQLite privat pada volume worker. Restart tidak mengubah pilihan.
+- Perubahan OFF → ON segera membangunkan coordinator. Pembacaan account
+  terpisah mulai mengikuti pilihan ON pada poll berikutnya.
+  Operasi yang sudah berjalan diselesaikan dahulu; ON tidak menambah actor atau
+  melewati claim persistent.
 - Risk menerima decimal positif sampai **100 USDT**; tidak menerima float/NaN,
   infinity, input eksponen atau nilai negatif. Perubahan berlaku untuk analisis
   yang baru dimulai; analisis in-flight memakai target yang sudah disnapshot.
@@ -26,7 +37,8 @@ NeuroAPI. Token hanya berada di memori tab; secret provider tetap di VPS.
 
 ## Kapasitas dan loop
 
-Poll coordinator setiap 45 detik; maksimum satu operasi NeuroAPI per tick.
+Setelah wake saat ON, poll coordinator setiap 45 detik; maksimum satu operasi
+NeuroAPI per tick. Ini jadwal riset dan approval, bukan jadwal eksekusi live.
 Pembacaan account USD-M Futures menggunakan private GET dengan autentikasi yang
 sudah ada. Kegagalan autentikasi/data menghentikan riset. Hanya ONE_WAY dan
 single-asset account yang diterima. Jumlah posisi adalah jumlah symbol unik
@@ -47,15 +59,45 @@ pada hari dan epoch entry nyata; polling/restart tidak membuat cycle baru untuk
 kesempatan yang sama. Cycle complete/rejected tidak diulang otomatis. Cycle baru
 memerlukan kapasitas, epoch/hari baru, dan tidak ada setup/lifecycle unresolved.
 Tidak ada infinite quota loop ketika tidak ada order live yang dapat mengisi slot.
+Pengecualian recovery: cycle lama ACTIVE/COMPLETE tanpa setup, tanpa antrean dan dengan
+screening tercatat boleh mencari replacement selama batas tiga replacement belum
+tercapai. Claim/request lama tetap dipertahankan dan tidak dikirim ulang.
 
 Screening memakai literal 1 coin untuk satu slot, literal lama 2 coin untuk dua
 slot. Schema memaksa jumlah persis, unique uppercase USDT; catalog exchangeInfo
 harus active USD-M perpetual. Tidak menambahkan suffix atau memperbaiki symbol.
 HOLD/TIDAK memicu replacement sesuai slot yang tersisa, maksimal tiga screening
-replacement per cycle. Symbol yang sudah dianalisis tidak diulang. Technical
-REJECT bukan alasan replacement. Unknown/pending paid request menghentikan cycle
+replacement per cycle. HYPEUSDT, symbol yang sedang terbuka dan kandidat yang
+sudah dipakai dikecualikan. Jika screening dua coin mengandung HYPEUSDT dan satu
+kandidat valid, kandidat valid tetap dianalisis dan slot tersisa dapat mencari
+replacement dengan batas yang sama. Jika tidak ada kandidat eligible, replacement
+juga dibatasi tiga; setelah habis status INSUFFICIENT_ACTIONABLE_SETUPS.
+Symbol yang sudah dianalisis tidak diulang. Technical REJECT bukan alasan
+replacement. Unknown/pending paid request menghentikan cycle
 untuk review, bukan dikirim ulang setelah restart. Retry provider tetap 429/503
 bounded sesuai implementasi lama.
+
+GET `/robot/status` menyertakan `wait_reason` agar WAITING dapat dibedakan:
+ROBOT OFF, kapasitas penuh, menunggu analisis/replacement pada tick berikutnya,
+atau lifecycle lama yang perlu review. Menunggu tick berikutnya adalah alur normal.
+Blocker lifecycle tidak menghapus model/proof lama dan tidak mengirim order.
+Kegagalan account/request tetap dilaporkan dengan kode kegagalan yang aman.
+
+| `wait_reason` | Arti |
+| --- | --- |
+| `ROBOT_OFF` | Riset dinonaktifkan. |
+| `ROBOT_CAPACITY_FULL` | Tidak ada slot posisi atau entry harian tersisa. |
+| `SCREENING_COMPLETE_ANALYSIS_PENDING` | Screening berhasil; analisis pada tick berikutnya. |
+| `SCREENING_REPLACEMENT_REQUIRED` | Kandidat dikecualikan; replacement pada tick berikutnya selama batas tersedia. |
+| `ROBOT_CYCLE_COMPLETE` | Kesempatan riset ini selesai atau menunggu setup/approval tersimpan. |
+| `ROBOT_LIFECYCLE_NEEDS_REVIEW` | Model lifecycle lama unresolved; blocker memerlukan review. |
+| `ROBOT_STOPPING` | Worker berhenti; tidak menerima request riset baru. |
+| `ROBOT_DAY_CHANGED` | Hari bisnis berubah sebelum operasi baru diklaim. |
+
+Panel robot membaca wallet dan available balance USDT nyata dari private GET.
+Pembacaan account berjalan terpisah dari actor riset, sekitar setiap 15 detik
+saat ON, sehingga hasil saldo tidak menunggu request NeuroAPI selesai. Kegagalan
+account mengosongkan saldo dan melaporkan alasan; snapshot paper tetap terpisah.
 
 ## Risiko, bukti dan kompatibilitas
 
@@ -88,10 +130,16 @@ Legacy `OFFICE_AUTO_DRY_RUN` tidak lagi menjadi trigger di service.
   1024 byte, hanya `robot_on` (boolean) / `risk_target_usdt` (string decimal).
 - POST `/robot/approval`: control token + exact Origin, hanya `setup_id` dan
   `decision` (`APPROVED`/`USER_REJECTED`). Duplicate retry tidak menggandakan approval.
+- POST `/robot/simulation`: control token + exact Origin, JSON maksimum 1024 byte,
+  hanya `setup_id` dan `scenario` (`FULL_TP`, `FULL_SL`, `PARTIAL_TP`,
+  `PROTECTION_FAILURE`, `UNCERTAIN_ENTRY`). SETUP_READY/APPROVED harus diverifikasi;
+  tiket dibangun ulang server-side. Hasil persisten idempotent per setup/skenario/
+  hash tiket; replay tidak menambah record dan tidak mengirim provider request.
+  GET status memuat tiket, account review dan simulasi terbaru terverifikasi.
 
 Tidak ada endpoint arm/order/execution. Caddy hanya meneruskan path eksplisit.
 
-## Deployment (tanpa aktivasi atau request NeuroAPI)
+## Deployment dan maintenance
 
 Di direktori repository VPS:
 
@@ -100,11 +148,29 @@ git pull --ff-only origin main
 bash deploy/update-api.sh
 ```
 
+Jika masih mengikuti branch PR existing `codex/fix-robot-coordinator-24-7`, gunakan
+perintah branch dan health check di [MANUAL_SIMULATION.md](MANUAL_SIMULATION.md).
+Frontend GitHub Pages juga memerlukan file UI baru: merge PR ke source branch
+yang tercantum di Settings → Pages dan tunggu publish berhasil. Configured source
+belum diverifikasi; build worker tidak menerbitkan frontend.
+
 Script build worker lalu recreate worker/proxy, memakai volume dan secret yang
-sama. Tidak menjalankan screening/analysis, tidak reset ledger dan tidak memakai
-`down -v`. Pada upgrade pertama default ROBOT OFF. Pada upgrade selanjutnya pilihan
+sama. Pada SIGTERM worker menghentikan claim/request riset baru dan memberi operasi
+yang sedang berjalan hingga 600 detik untuk menyimpan hasil. Compose dan script
+stop memakai grace 660 detik. Bila proses tetap terputus sebelum hasil pasti,
+journal PENDING/NEEDS_REVIEW tetap memblokir riset untuk review setelah restart.
+Script tidak mengaktifkan ROBOT atau reset ledger dan tidak memakai `down -v`.
+Pada upgrade pertama default ROBOT OFF. Pada upgrade selanjutnya pilihan
 ON/OFF persisten: matikan lewat Office dahulu jika ingin menghentikan riset selama
-maintenance. Jangan mengaktifkan ROBOT ON sebelum siap memakai kuota riset.
+maintenance; jika tetap ON, riset otomatis dapat berlanjut setelah worker baru
+boot. Jangan mengaktifkan ROBOT ON sebelum siap memakai kuota riset.
+
+Health memeriksa thread dan umur heartbeat actor/account. Watchdog menghentikan
+proses bila actor tidak memberi heartbeat selama 600 detik atau pembacaan account
+selama 120 detik; `restart: unless-stopped` kemudian menjalankan worker kembali.
+Heartbeat memakai jam monotonic agar koreksi jam sistem tidak menyebabkan restart
+palsu. Restart tidak mereplay request dengan outcome belum pasti. Gangguan monitor
+paper tidak mematikan actor riset.
 
 Tests memakai account/provider sintetis serta browser UI lokal. Tidak membuktikan
 service VPS sudah terpasang atau meminta NeuroAPI nyata. Google/DOM/browser login

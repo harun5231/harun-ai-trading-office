@@ -2,19 +2,35 @@
 
 Kantor 3D + worker privat NeuroAPI Starter (`smart`) dan Binance Futures public
 market data. **DRY RUN ONLY**: tidak ada eksekutor atau route order Binance.
-Autentikasi private Binance tersedia hanya untuk preflight GET read-only. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
+Autentikasi private Binance memakai GET read-only untuk preflight, posisi dan
+saldo USDT nyata. Kantor/animasi/menu tetap; koneksi provider kini lewat API resmi.
 
 Office kini memiliki **ROBOT TRADING ON/OFF**, risk target dan kartu approval.
-Default OFF; pilihan persistent. ON menjalankan coordinator riset setiap 45 detik,
-setelah membaca posisi Futures nyata melalui GET. Semua posisi manual termasuk
-HYPE memakai concurrent capacity, tetapi tidak dianggap bot entry.
+Default OFF; pilihan persistent. Perubahan OFF → ON segera membangunkan
+coordinator, lalu riset dipoll setiap 45 detik, maksimum satu operasi NeuroAPI
+per tick setelah membaca posisi Futures nyata melalui GET. Semua posisi manual
+termasuk HYPE memakai concurrent capacity, tetapi tidak dianggap bot entry.
+Polling ini menjalankan riset; live order tetap dinonaktifkan.
+
+Setup v7 terverifikasi kini menyediakan **SALIN TIKET** entry LIMIT, TP dan SL
+untuk ditinjau dan dikirim sendiri di Binance, serta **UJI SIMULASI** lokal untuk
+lima skenario lifecycle. Tiket memakai quantity dan level immutable dari proof,
+risk target default 5 USDT; OK/APPROVED maupun salin tiket tidak mengirim order.
+Simulasi memakai jejak fill/proteksi sintetis, tanpa API key baru atau panggilan
+provider. Hasilnya tidak mengubah saldo, posisi, PnL akun atau counter entry nyata.
+Setup unresolved tetap membatasi riset berbayar berikutnya. Rincian penggunaan
+dan pembaruan frontend: [deploy/MANUAL_SIMULATION.md](deploy/MANUAL_SIMULATION.md).
 
 Alur: kapasitas nyata (maksimal 2 posisi dan 2 bot entry/hari Asia/Bangkok) →
 screening literal 1 atau 2 coin sesuai slot → active USDT perpetual catalog →
 realtime 1h/15m + contract rules → ANALYSIS literal → LONG/SHORT/HOLD → deterministic
 Risk Manager → SETUP_READY → OK/APPROVED atau TIDAK/USER_REJECTED. **OK tidak mengirim
 order.** HOLD/TIDAK dapat mencari replacement sesuai slot tersisa, maksimal tiga
-screening replacement/cycle. Technical failure tidak memicu replacement.
+screening replacement/cycle. HYPEUSDT dan symbol yang sedang terbuka dikecualikan
+dari analisis; kandidat lain yang valid tetap dilanjutkan. Hasil screening yang
+seluruhnya dikecualikan atau cycle lama yang selesai tanpa hasil pulih melalui
+replacement bounded yang sama. Technical failure tidak memicu replacement.
+`wait_reason` menjelaskan WAITING normal, kapasitas penuh atau blocker lifecycle.
 
 Risk target default 5 USDT, editable positif sampai 100. Worker memilih quantity
 legal terbesar dengan loss harga ke SL tidak melebihi target, memakai Decimal /
@@ -33,9 +49,11 @@ Rincian state machine, provenance dan endpoint:
 Default lookback 100 candle/frame, configurable 20–500; context freshness 180s
 (default, 30–300s), mark ≤60s, jam server diperiksa. Data diperoleh dari API publik
 langsung setiap analisis; filter kontrak diambil ulang sebelum reservasi. Data yang
-kedaluwarsa selama analisis ditolak. Dashboard tidak menunjukkan saldo Binance
-palsu; balance masih null. Monitoring memakai sampel mark price tiap ~30s saat
-actor idle: paper fill/exit simulasi, bukan histori tick lengkap atau fill exchange.
+kedaluwarsa selama analisis ditolak. Panel robot menampilkan wallet/available
+balance USDT dari private GET Binance; saldo menjadi null bila account tidak
+tersedia. Snapshot paper tetap memiliki balance null. Monitoring memakai sampel
+mark price tiap ~30s saat actor idle: paper fill/exit simulasi, bukan histori tick
+lengkap atau fill exchange.
 Fees/slippage tidak disimulasikan; gap SL dapat membuat paper PNL melampaui 5 USDT.
 
 ## Menjalankan
@@ -45,6 +63,9 @@ menerima token kontrol worker yang berbeda dan hanya menyimpannya di memori tab.
 CEK API memanggil health provider tanpa prompt. JALANKAN DRY RUN meminta evaluasi
 coordinator; ROBOT OFF tetap menghalangi riset. Aktifkan riset hanya lewat kontrol
 ROBOT pada Office. Flag jadwal lama tidak membypass OFF. Tidak ada opsi LIVE.
+Worker pulih melalui restart Compose dan watchdog heartbeat. Saat update/SIGTERM,
+request baru dihentikan dan operasi berjalan ditunggu hingga 600 detik; Docker
+memberi grace 660 detik. Outcome yang belum pasti tetap memerlukan review.
 
 ## Dokumentasi resmi yang diperiksa 2026-10-05
 

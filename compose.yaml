@@ -4,7 +4,7 @@ services:
     build: .
     init: true
     restart: unless-stopped
-    stop_grace_period: 120s
+    stop_grace_period: 660s
     read_only: true
     cap_drop: [ALL]
     cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]

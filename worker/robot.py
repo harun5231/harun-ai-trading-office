@@ -40,6 +40,10 @@ class RobotStore:
         CREATE TABLE IF NOT EXISTS robot_decisions(setup_id TEXT PRIMARY KEY,decision TEXT NOT NULL,at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT NOT NULL,entry_day TEXT NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS robot_status(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS robot_simulations(
+          setup_id TEXT NOT NULL,scenario TEXT NOT NULL,ticket_sha256 TEXT NOT NULL,
+          result TEXT NOT NULL,created_at TEXT NOT NULL,last_requested_at TEXT NOT NULL,
+          PRIMARY KEY(setup_id,scenario,ticket_sha256));
         ''')
     def settings(self):
         r=self.db.execute('SELECT * FROM robot_settings WHERE id=1').fetchone()
@@ -59,37 +63,92 @@ class RobotStore:
         return self.snapshot()
     def entries(self,today):return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?',(today,)).fetchone()[0]
     def results(self,cycle):return list(self.db.execute('SELECT * FROM robot_setups WHERE cycle=?',(cycle,)))
+    def verified_plan(self,row):
+        try:
+            plan=json.loads(row['plan'])
+            if not isinstance(plan,dict) or row['symbol']!=plan.get('symbol') or row['cycle']!=row['id'].rsplit(':analysis-v7:',1)[0]:raise ValueError
+            verify(self.db,plan,row['id'])
+            return plan
+        except Exception:raise Review('ROBOT_SETUP_UNVERIFIED') from None
     def snapshot(self):
         row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
         value=json.loads(row[0]) if row else dict(bot_status='WAITING',running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None,checked_at=None)
-        value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False)
-        if not value['robot_on']:value['bot_status']='WAITING'
+        value.update(self.settings(),bot_entries_today=self.entries(day()),mode='DRY_RUN',live_enabled=False,live_execution=False,would_submit=False,scheduler_enabled=False,simulation_mode='LOCAL',manual_submission_required=True)
+        value.setdefault('wait_reason',None)
+        if not value['robot_on']:value.update(bot_status='WAITING',wait_reason='ROBOT_OFF')
         value['setups']=[]
         for row in self.db.execute("SELECT * FROM robot_setups ORDER BY rowid DESC LIMIT 50"):
             item=dict(id=row['id'],symbol=row['symbol'],status=row['status'],failure_code=row['failure_code'])
             if row['plan']:
                 try:
-                    plan=json.loads(row['plan'])
-                    verify(self.db,plan,row['id'])
-                    item.update({k:plan[k] for k in ('side','entry','tp','sl','execution_quantity','risk_target_usdt','risk','rr')})
+                    plan=self.verified_plan(row)
+                    details={k:plan[k] for k in ('side','entry','tp','sl','execution_quantity','risk_target_usdt','risk','rr')}
+                    if row['status'] in ('SETUP_READY','APPROVED'):
+                        from .manual_ticket import build_ticket
+                        ticket=build_ticket(self.db,plan,row['id'],row['status'])
+                        details['ticket']=ticket
+                        details['account_review']=dict(
+                            review_required=True,checked_at=value.get('account_checked_at') or value.get('checked_at'),
+                            available_slots=value.get('available_slots'),
+                            symbol_exposed=(row['symbol'] in value['running_symbols']) if isinstance(value.get('running_symbols'),list) else None,
+                            setup_from_current_day=(ticket['business_day']==day()))
+                    item.update(details)
                 except Exception:item.update(status='REJECTED',failure_code='ROBOT_SETUP_UNVERIFIED')
+            if 'ticket' in item:
+                from .manual_ticket import simulate_ticket
+                recorded=self.db.execute('SELECT scenario,result FROM robot_simulations WHERE setup_id=? AND ticket_sha256=? ORDER BY last_requested_at DESC,rowid DESC LIMIT 1',(row['id'],item['ticket']['ticket_sha256'])).fetchone()
+                if recorded:
+                    try:
+                        simulation=json.loads(recorded['result'])
+                        if simulation!=simulate_ticket(item['ticket'],recorded['scenario']):raise Review('ROBOT_SIMULATION_UNVERIFIED')
+                        item['simulation']=simulation
+                    except Exception:item['simulation_failure_code']='ROBOT_SIMULATION_UNVERIFIED'
             value['setups'].append(item)
         return value
-    def report(self,state,account=None,reason=None):
-        value=dict(bot_status=state,failure_code=reason,checked_at=now())
+    def simulate(self,value):
+        from .manual_ticket import build_ticket,simulate_ticket,SCENARIOS
+        if not isinstance(value,dict) or set(value)!={'setup_id','scenario'}:raise Review('INVALID_SIMULATION_REQUEST')
+        setup_id=value['setup_id'];scenario=value['scenario']
+        if not isinstance(setup_id,str) or not setup_id or len(setup_id)>160 or not isinstance(scenario,str) or scenario not in SCENARIOS:raise Review('INVALID_SIMULATION_REQUEST')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.db.execute('SELECT * FROM robot_setups WHERE id=?',(setup_id,)).fetchone()
+            if not row:raise Review('SETUP_NOT_FOUND')
+            if row['status'] not in ('SETUP_READY','APPROVED') or not row['plan']:raise Review('SETUP_NOT_READY')
+            ticket=build_ticket(self.db,self.verified_plan(row),setup_id,row['status'])
+            result=simulate_ticket(ticket,scenario)
+            key=(setup_id,scenario,ticket['ticket_sha256'])
+            old=self.db.execute('SELECT result FROM robot_simulations WHERE setup_id=? AND scenario=? AND ticket_sha256=?',key).fetchone()
+            if old and json.loads(old['result'])!=result:raise Review('ROBOT_SIMULATION_UNVERIFIED')
+            at=now()
+            if old:self.db.execute('UPDATE robot_simulations SET last_requested_at=? WHERE setup_id=? AND scenario=? AND ticket_sha256=?',(at,*key))
+            else:self.db.execute('INSERT INTO robot_simulations VALUES(?,?,?,?,?,?)',(*key,json.dumps(result),at,at))
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        snapshot=self.snapshot();snapshot['simulation']=result
+        return snapshot
+    def report(self,state,account=None,reason=None,wait_reason=None):
+        value=dict(bot_status=state,failure_code=reason,wait_reason=wait_reason,checked_at=now())
         if account:value.update(account)
         else:value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
         self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
         return self.snapshot()
     def report_account(self,account=None,reason=None):
-        row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
-        value=json.loads(row[0]) if row else dict(bot_status='WAITING',failure_code=None,checked_at=None)
-        if account:
-            value.update(account)
-        else:
-            value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
-        value.update(account_failure_code=reason,account_checked_at=now())
-        self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
+        # The account poll and coordinator use separate SQLite connections.
+        # Hold the write lock while merging so a newer coordinator status cannot
+        # be overwritten by an account snapshot read before that status changed.
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            row=self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
+            value=json.loads(row[0]) if row else dict(bot_status='WAITING',failure_code=None,wait_reason=None,checked_at=None)
+            if account:
+                value.update(account)
+            else:
+                value.update(running_positions=None,available_slots=None,manual_exposure=[],usdt_wallet_balance=None,usdt_available_balance=None)
+            value.update(account_failure_code=reason,account_checked_at=now())
+            self.db.execute('INSERT OR REPLACE INTO robot_status VALUES(1,?)',(json.dumps(value),))
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
         return self.snapshot()
     def approve(self,setup_id,decision):
         if not isinstance(setup_id,str) or len(setup_id)>160 or decision not in ('APPROVED','USER_REJECTED'):raise Review('INVALID_APPROVAL')
@@ -102,7 +161,7 @@ class RobotStore:
                 if old[0]!=decision:raise Review('DECISION_ALREADY_RECORDED')
             else:
                 if row['status']!='SETUP_READY':raise Review('SETUP_NOT_READY')
-                verify(self.db,json.loads(row['plan']),setup_id)
+                self.verified_plan(row)
                 self.db.execute('INSERT INTO robot_decisions VALUES(?,?,?)',(setup_id,decision,now()))
                 self.db.execute('UPDATE robot_setups SET status=? WHERE id=?',(decision,setup_id))
             self.db.execute('COMMIT')
@@ -134,9 +193,9 @@ def account_state(client,store,today):
         usdt_available_balance=config.get('usdt_available_balance'))
 
 class Coordinator:
-    def __init__(self,ledger,neuro,market,account_factory):
+    def __init__(self,ledger,neuro,market,account_factory,stopping=None):
         self.ledger=ledger;self.db=ledger.db;self.store=RobotStore(self.db)
-        self.neuro=neuro;self.market=market;self.account_factory=account_factory
+        self.neuro=neuro;self.market=market;self.account_factory=account_factory;self.stopping=stopping
     def tick(self):
         # Shares the CLI cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
@@ -150,7 +209,10 @@ class Coordinator:
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
-    def allowed(self,today):return self.store.settings()['robot_on'] and day()==today
+    def allowed(self,today):return not (self.stopping and self.stopping.is_set()) and self.store.settings()['robot_on'] and day()==today
+    def pause_reason(self):
+        if self.stopping and self.stopping.is_set():return 'ROBOT_STOPPING'
+        return 'ROBOT_OFF' if not self.store.settings()['robot_on'] else 'ROBOT_DAY_CHANGED'
     def lifecycle_blocked(self):
         names={r[0] for r in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         if 'shadow_plans' in names:
@@ -161,10 +223,12 @@ class Coordinator:
             return bool(self.db.execute("SELECT 1 FROM live_records WHERE state NOT IN ('CLOSED','REJECTED') LIMIT 1").fetchone())
         return False
     def _tick(self):
-        if not self.store.settings()['robot_on']:return self.store.report('WAITING')
+        if not self.store.settings()['robot_on']:return self.store.report('WAITING',wait_reason='ROBOT_OFF')
+        if self.stopping and self.stopping.is_set():return self.store.report('WAITING',wait_reason='ROBOT_STOPPING')
         today=day();account=account_state(self.account_factory(),self.store,today)
         available=account['available_slots']
-        if not available or self.lifecycle_blocked():return self.store.report('WAITING',account)
+        if not available:return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        if self.lifecycle_blocked():return self.store.report('WAITING',account,wait_reason='ROBOT_LIFECYCLE_NEEDS_REVIEW')
         # An interrupted paid request cannot be automatically replayed under a new ID.
         if self.db.execute("SELECT 1 FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
@@ -172,24 +236,27 @@ class Coordinator:
         cycle=today+':robot-v7:'+str(account['bot_entries_today'])
         old=self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(cycle,)).fetchone()
         if not old:
-            if self.db.execute("SELECT 1 FROM robot_setups WHERE status IN ('SETUP_READY','APPROVED') LIMIT 1").fetchone():return self.store.report('SETUP_READY',account)
-            if not self.allowed(today):return self.store.report('WAITING',account)
+            if self.db.execute("SELECT 1 FROM robot_setups WHERE status IN ('SETUP_READY','APPROVED') LIMIT 1").fetchone():return self.store.report('SETUP_READY',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+            if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             data=dict(target=available,queue=[],seen=[],screen=-1,replacements=0)
             self.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,today,account['bot_entries_today'],'ACTIVE',json.dumps(data)))
         else:
             data=json.loads(old['data'])
             if old['state']=='NEEDS_REVIEW':return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         results=self.store.results(cycle)
-        if old and old['state']=='COMPLETE' and not results and not data['queue'] and data['screen']>=0 and data['replacements']<MAX_REPLACEMENTS:
+        # Older persisted cycles can lack the replacement marker after a screen
+        # yielded no usable symbols. Recover both states within the original cap;
+        # unresolved paid jobs were already checked above and are never replayed.
+        if old and old['state'] in ('ACTIVE','COMPLETE') and not results and not data['queue'] and data['screen']>=0:
             data['replacement_due']=True
-            self.save_cycle(cycle,data,'ACTIVE')
+            self.save_cycle(cycle,data,'ACTIVE' if data['replacements']<MAX_REPLACEMENTS else 'COMPLETE')
         ready=sum(r['status'] in ('SETUP_READY','APPROVED') for r in results)
         technical=sum(r['status']=='REJECTED' for r in results)
         remaining=min(available,data['target'])-ready-technical
         if remaining<=0:
             self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('SETUP_READY' if ready else 'REJECTED',account)
-        if not self.allowed(today):return self.store.report('WAITING',account)
+            return self.store.report('SETUP_READY' if ready else 'REJECTED',account,wait_reason='ROBOT_CYCLE_COMPLETE')
+        if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if data['queue']:
             symbol=data['queue'][0]
             if symbol in account['running_symbols'] or symbol in MANUAL_ONLY_SYMBOLS:
@@ -200,12 +267,13 @@ class Coordinator:
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
         held=any(r['status'] in ('HOLD','USER_REJECTED') for r in results)
-        # A replacement that returned only seen/exposed symbols can try again within cap.
+        # Filtered screening symbols leave capacity for a bounded replacement,
+        # including after other eligible symbols in that screen were analyzed.
         replacement_due=bool(data.get('replacement_due'))
-        if not initial and not held and not replacement_due:return self.store.report('REJECTED' if technical else 'WAITING',account)
+        if not initial and not held and not replacement_due:return self.store.report('REJECTED' if technical else 'WAITING',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         if not initial and data['replacements']>=MAX_REPLACEMENTS:
             self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account)
+            return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         return self.screen(cycle,data,remaining,account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None):
         self.db.execute('BEGIN IMMEDIATE')
@@ -217,7 +285,7 @@ class Coordinator:
     def screen(self,cycle,data,count,account,today,initial):
         catalog=self.market.catalog();prompt,schema=screening_contract(count)
         index=data['screen']+1;operation=cycle+':screening:'+str(index)+':'+str(count)
-        if not self.claim(operation,cycle,'SCREENING',None,today):return self.store.report('WAITING',account)
+        if not self.claim(operation,cycle,'SCREENING',None,today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         self.store.report('SCREENING',account)
         try:
             value=self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),catalog=catalog)
@@ -229,12 +297,12 @@ class Coordinator:
             for symbol in rejected:
                 if symbol not in data['seen']:data['seen'].append(symbol)
             data['queue']=eligible
-            data['replacement_due']=bool(rejected and not eligible)
+            data['replacement_due']=bool(rejected)
             self.db.execute('BEGIN IMMEDIATE')
             self.save_cycle(cycle,data,'ACTIVE')
             self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=?",(operation,))
             self.db.execute('COMMIT')
-            return self.store.report('WAITING',account,'SCREENING_REPLACEMENT_REQUIRED' if data['replacement_due'] else None)
+            return self.store.report('WAITING',account,wait_reason='SCREENING_COMPLETE_ANALYSIS_PENDING' if eligible else 'SCREENING_REPLACEMENT_REQUIRED')
         except Exception:
             if self.db.in_transaction:self.db.execute('ROLLBACK')
             self.db.execute("UPDATE robot_jobs SET state='NEEDS_REVIEW' WHERE operation=?",(operation,))
@@ -249,7 +317,7 @@ class Coordinator:
             context,_=analysis_context(self.market,symbol,target)
         except Exception:
             return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
-        if not self.claim(operation,cycle,'ANALYSIS',symbol,today,target):return self.store.report('WAITING',account)
+        if not self.claim(operation,cycle,'ANALYSIS',symbol,today,target):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         self.store.report('ANALYZING',account)
         plan=None;state='REJECTED';reason=None;unknown=False
         try:

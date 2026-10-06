@@ -2,6 +2,7 @@
 import copy
 import json
 import tempfile
+import threading
 import unittest
 from dataclasses import replace
 from pathlib import Path
@@ -12,7 +13,13 @@ from worker.robot_provenance import verify,stamp,VERSION,SIZING
 from worker.neuroapi import NeuroAPI,SCREEN_SCHEMA,SCREEN_ONE_SCHEMA,SETUP_SCHEMA,selections
 from worker.prompts import SCREENING,ANALYSIS
 from test_decisions import ExpandedMarket,hold
-from test_neuroapi import GOOD,RULES
+from test_neuroapi import GOOD,RULES,row
+
+class RobotMarket(ExpandedMarket):
+    def respond(self,method,url,headers=None,body=None,timeout=None):
+        code,response_headers,value=super().respond(method,url,headers,body,timeout)
+        if 'exchangeInfo' in url:value['symbols'].append(row('HYPEUSDT'))
+        return code,response_headers,value
 
 class Account:
     def __init__(self):self.positions=[];self.calls=[]
@@ -26,7 +33,7 @@ class RobotTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.path=Path(self.tmp.name)/'ledger.sqlite3';self.ledger=Ledger(self.path);self.addCleanup(lambda:self.ledger.db.close())
-        self.calls=[];self.screens=[['BTCUSDT','ETHUSDT']];self.decisions={};self.account=Account();self.market=ExpandedMarket()
+        self.calls=[];self.screens=[['BTCUSDT','ETHUSDT']];self.decisions={};self.account=Account();self.market=RobotMarket()
         def transport(method,url,headers,body,timeout):
             self.calls.append(copy.deepcopy(body));schema=body['output_schema']
             if schema in (SCREEN_SCHEMA,SCREEN_ONE_SCHEMA):value={'symbols':self.screens.pop(0)}
@@ -51,7 +58,8 @@ class RobotTests(unittest.TestCase):
     def entries(self,n,today=None):
         for i in range(n):self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',(str(i),'ETHUSDT',today or day(),'offline-fixture'))
     def test_off_zero_screen_and_analysis_and_account(self):
-        self.ticks();self.assertEqual(self.calls,[]);self.assertEqual(self.account.calls,[])
+        r=self.ticks();self.assertEqual(self.calls,[]);self.assertEqual(self.account.calls,[])
+        self.assertEqual(r['wait_reason'],'ROBOT_OFF');self.assertIsNone(r['failure_code'])
     def test_off_ignores_legacy_environment_scheduler_flag(self):
         with patch.dict('os.environ',{'OFFICE_AUTO_DRY_RUN':'true'}):self.ticks()
         self.assertFalse(self.store.settings()['robot_on']);self.assertEqual(self.calls,[])
@@ -68,6 +76,13 @@ class RobotTests(unittest.TestCase):
     def test_slots_two_running_zero_requests(self):
         self.account.position('BTCUSDT',1);self.account.position('HYPEUSDT',2);self.on();r=self.ticks()
         self.assertEqual(self.calls,[]);self.assertEqual(r['available_slots'],0)
+        self.assertEqual(r['wait_reason'],'ROBOT_CAPACITY_FULL');self.assertIsNone(r['failure_code'])
+    def test_lifecycle_block_reports_reason_without_new_request(self):
+        self.account.position('HYPEUSDT',1);self.on()
+        with patch.object(self.robot,'lifecycle_blocked',return_value=True):r=self.robot.tick()
+        self.assertEqual(r['bot_status'],'WAITING');self.assertEqual(r['available_slots'],1)
+        self.assertEqual(r['wait_reason'],'ROBOT_LIFECYCLE_NEEDS_REVIEW');self.assertIsNone(r['failure_code'])
+        self.assertEqual(self.calls,[])
     def test_daily_two_closed_entries_still_block(self):
         self.entries(2);self.on();r=self.ticks();self.assertEqual(self.calls,[]);self.assertEqual(r['available_slots'],0)
     def test_yesterday_carried_position_not_today_entry(self):
@@ -95,6 +110,49 @@ class RobotTests(unittest.TestCase):
         self.assertEqual(r['running_positions'],1)
         self.assertEqual(r['manual_exposure'],['HYPEUSDT'])
         self.assertEqual(r['usdt_wallet_balance'],'117.25')
+    def test_account_merge_cannot_overwrite_concurrent_screening_status(self):
+        self.on();self.store.report('WAITING',wait_reason='SCREENING_COMPLETE_ANALYSIS_PENDING')
+        read=threading.Event();writer_attempted=threading.Event();writer_finished=threading.Event();ready=threading.Event();errors=[]
+        class Connection:
+            def __init__(proxy,db,account_writer):proxy.db=db;proxy.account_writer=account_writer
+            def __getattr__(proxy,name):return getattr(proxy.db,name)
+            def execute(proxy,sql,*args):
+                if not proxy.account_writer and sql.startswith('INSERT OR REPLACE INTO robot_status'):
+                    writer_attempted.set()
+                cursor=proxy.db.execute(sql,*args)
+                if proxy.account_writer and sql=='SELECT data FROM robot_status WHERE id=1':
+                    class Cursor:
+                        def fetchone(cursor_proxy):
+                            value=cursor.fetchone();read.set()
+                            if not writer_attempted.wait(2):raise RuntimeError('writer did not reach status update')
+                            # Without the merge transaction the other connection
+                            # publishes SCREENING here and the stale merge erases it.
+                            writer_finished.wait(.15)
+                            return value
+                    return Cursor()
+                return cursor
+        def publish():
+            ledger=None
+            try:
+                ledger=Ledger(self.path);store=RobotStore(ledger.db);store.db=Connection(ledger.db,False);ready.set()
+                if not read.wait(2):raise RuntimeError('account merge did not read status')
+                store.report('SCREENING');writer_finished.set()
+            except Exception as error:errors.append(error)
+            finally:
+                if ledger:ledger.db.close()
+        def merge():
+            ledger=None
+            try:
+                ledger=Ledger(self.path);store=RobotStore(ledger.db);store.db=Connection(ledger.db,True)
+                store.report_account(dict(running_positions=1,available_slots=1,manual_exposure=['HYPEUSDT']))
+            except Exception as error:errors.append(error)
+            finally:
+                if ledger:ledger.db.close()
+        writer=threading.Thread(target=publish,daemon=True);writer.start();self.assertTrue(ready.wait(2))
+        account_writer=threading.Thread(target=merge,daemon=True);account_writer.start()
+        account_writer.join(3);writer.join(3)
+        self.assertFalse(account_writer.is_alive());self.assertFalse(writer.is_alive());self.assertEqual(errors,[])
+        self.assertEqual(self.store.snapshot()['bot_status'],'SCREENING')
 
     def test_hype_cannot_be_analyzed_even_if_returned(self):
         self.account.position('HYPEUSDT',1);self.screens=[['HYPEUSDT'],['BTCUSDT']];self.on();r=self.ticks()
@@ -110,6 +168,70 @@ class RobotTests(unittest.TestCase):
         r=self.ticks(3)
         self.assertEqual(self.calls[0]['prompt'],SCREENING_ONE)
         self.assertTrue(any(s['symbol']=='BTCUSDT' for s in r['setups']))
+    def test_persisted_active_empty_screen_cycle_recovers(self):
+        self.account.position('HYPEUSDT',1);self.screens=[['BTCUSDT']];self.on()
+        cycle=day()+':robot-v7:0';data=dict(target=1,queue=[],seen=[],screen=0,replacements=0)
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,day(),0,'ACTIVE',json.dumps(data)))
+        r=self.ticks(3)
+        self.assertEqual(self.calls[0]['prompt'],SCREENING_ONE)
+        self.assertEqual(r['bot_status'],'SETUP_READY');self.assertEqual(len(r['setups']),1)
+    def test_persisted_empty_screen_cycle_exhaustion_is_stable(self):
+        self.account.position('HYPEUSDT',1);self.on();cycle=day()+':robot-v7:0'
+        for state in ('ACTIVE','COMPLETE'):
+            with self.subTest(state=state):
+                data=dict(target=1,queue=[],seen=[],screen=3,replacements=3)
+                self.ledger.db.execute('INSERT OR REPLACE INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,day(),0,state,json.dumps(data)))
+                r=self.ticks(4)
+                self.assertEqual(r['bot_status'],'INSUFFICIENT_ACTIONABLE_SETUPS')
+                self.assertEqual(r['wait_reason'],'ROBOT_CYCLE_COMPLETE');self.assertIsNone(r['failure_code'])
+                self.assertEqual(self.calls,[])
+                saved=self.ledger.db.execute('SELECT state,data FROM robot_cycles WHERE id=?',(cycle,)).fetchone()
+                self.assertEqual(saved['state'],'COMPLETE');self.assertEqual(json.loads(saved['data'])['replacements'],3)
+    def test_persisted_empty_cycle_with_pending_paid_job_is_not_recovered(self):
+        self.account.position('HYPEUSDT',1);self.on();cycle=day()+':robot-v7:0'
+        data=dict(target=1,queue=[],seen=[],screen=0,replacements=0)
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',(cycle,day(),0,'ACTIVE',json.dumps(data)))
+        self.ledger.db.execute('INSERT INTO robot_jobs VALUES(?,?,?,?,?,?)',('uncertain',cycle,'SCREENING',None,'PENDING',None))
+        r=self.ticks(3)
+        self.assertEqual(r['failure_code'],'ROBOT_REQUEST_NEEDS_REVIEW');self.assertEqual(self.calls,[])
+        self.assertEqual(json.loads(self.ledger.db.execute('SELECT data FROM robot_cycles WHERE id=?',(cycle,)).fetchone()[0]),data)
+    def test_partial_manual_only_exclusion_replaces_one_after_restart(self):
+        self.screens=[['HYPEUSDT','BTCUSDT'],['ETHUSDT']];self.on();screen=self.robot.tick()
+        self.assertEqual(screen['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING');self.assertIsNone(screen['failure_code'])
+        self.ledger.db.close();self.ledger=Ledger(self.path);self.make();r=self.ticks(4)
+        screens=[b for b in self.calls if b['output_schema']!=SETUP_SCHEMA]
+        self.assertEqual([b['prompt'] for b in screens],[SCREENING,SCREENING_ONE])
+        self.assertEqual({s['symbol'] for s in r['setups']},{'BTCUSDT','ETHUSDT'})
+        self.assertTrue(all(s['status']=='SETUP_READY' for s in r['setups']))
+        self.assertEqual(r['wait_reason'],'ROBOT_CYCLE_COMPLETE')
+        self.ledger.db.close();self.ledger=Ledger(self.path);self.make();self.ticks(5)
+        self.assertEqual(len(self.calls),4);self.assertEqual(self.store.entries(day()),0)
+    def test_one_manual_slot_screen_analysis_and_restart_without_replay(self):
+        self.account.position('HYPEUSDT','4.16');self.screens=[['BTCUSDT']];self.on();screen=self.robot.tick()
+        self.assertEqual(screen['available_slots'],1);self.assertEqual(screen['manual_exposure'],['HYPEUSDT'])
+        self.assertEqual(screen['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING');self.assertIsNone(screen['failure_code'])
+        self.ledger.db.close();self.ledger=Ledger(self.path);self.make();r=self.ticks(3)
+        self.assertEqual(r['bot_status'],'SETUP_READY');self.assertEqual(r['wait_reason'],'ROBOT_CYCLE_COMPLETE')
+        self.assertEqual(len(r['setups']),1);self.assertEqual(r['setups'][0]['symbol'],'BTCUSDT')
+        self.assertEqual(r['setups'][0]['risk_target_usdt'],'5');self.assertEqual(D(r['setups'][0]['risk']),D('5'))
+        self.assertFalse(r['live_execution']);self.assertFalse(r['would_submit']);self.assertEqual(len(self.calls),2)
+        self.ledger.db.close();self.ledger=Ledger(self.path);self.make();self.ticks(8)
+        self.assertEqual(len(self.calls),2);self.assertTrue(all(method=='GET' for method,_ in self.account.calls))
+    def test_shutdown_during_screen_preflight_claims_no_paid_operation(self):
+        self.robot.stopping=threading.Event();catalog=self.market.catalog
+        def stop_after_catalog():
+            result=catalog();self.robot.stopping.set();return result
+        self.market.catalog=stop_after_catalog;self.on();r=self.robot.tick()
+        self.assertEqual(r['wait_reason'],'ROBOT_STOPPING');self.assertEqual(self.calls,[])
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_jobs').fetchone()[0],0)
+    def test_shutdown_during_analysis_preflight_claims_no_paid_operation(self):
+        self.on();self.robot.tick();self.robot.stopping=threading.Event()
+        from worker.robot import analysis_context
+        def stop_after_context(*args):
+            result=analysis_context(*args);self.robot.stopping.set();return result
+        with patch('worker.robot.analysis_context',side_effect=stop_after_context):r=self.robot.tick()
+        self.assertEqual(r['wait_reason'],'ROBOT_STOPPING');self.assertEqual(len(self.calls),1)
+        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0],0)
 
     def test_prompt_two_exact(self):
         self.ready();self.assertEqual(self.calls[0]['prompt'].encode(),SCREENING.encode())
