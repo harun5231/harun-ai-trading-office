@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit
-from .core import Ledger,Review
+from .core import Ledger,Review,validated_risk_target
 from .market import Market
 from .neuroapi import NeuroAPI
 from .state import directory
@@ -30,6 +30,14 @@ SERVICE_FAILURE_CODES=frozenset(('WORKER_STATE_INITIALIZATION_FAILED',
 ACCOUNT_FAILURE_CODES=frozenset(('ROBOT_ACCOUNT_UNAVAILABLE','BINANCE_NOT_CONFIGURED',
     'BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED','BINANCE_PERMISSION_DENIED',
     'BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'))
+
+def validate_settings(value):
+    if not isinstance(value,dict) or not value or set(value)-{'robot_on','risk_target_usdt'}:
+        raise Review('INVALID_ROBOT_SETTING')
+    if 'robot_on' in value and type(value['robot_on']) is not bool:raise Review('INVALID_ROBOT_SETTING')
+    if 'risk_target_usdt' in value:
+        if type(value['risk_target_usdt']) is not str:raise Review('INVALID_RISK_TARGET')
+        validated_risk_target(value['risk_target_usdt'])
 
 def robot_snapshot(controller,result):
     """Show a fixed error instead of a stale successful service observation."""
@@ -122,13 +130,13 @@ class Controller:
         finally:db.close()
     def robot(self,value=None):
         if value is None:return self.read_state()
-        if not isinstance(value,dict) or set(value)!={'robot_on'} or type(value['robot_on']) is not bool:
-            raise Review('INVALID_ROBOT_SETTING')
+        validate_settings(value)
         ledger=self.open_ledger()
         try:
-            with self.state_lock:store=RobotStore(ledger.db)
-            was_on=store.settings()['robot_on'];result=store.configure(value)
-            if result['robot_on'] and not was_on:self.robot_wakeup.set()
+            with self.state_lock:
+                store=RobotStore(ledger.db)
+                was_on=store.settings()['robot_on'];result=store.configure(value)
+                if result['robot_on'] and not was_on:self.robot_wakeup.set()
             return robot_snapshot(self,result)
         finally:ledger.db.close()
     def office(self):return self.read_state(office=True)
@@ -225,7 +233,7 @@ def handler(controller,read_token,control_token,origin):
                 if self.headers.get('Transfer-Encoding') or not length.isdigit() or not 0<int(length)<=1024 or self.headers.get('Content-Type')!='application/json':raise ValueError
                 self.connection.settimeout(5)
                 value=json.loads(self.rfile.read(int(length)),object_pairs_hook=unique)
-                if not isinstance(value,dict) or set(value)!={'robot_on'} or type(value['robot_on']) is not bool:raise ValueError
+                validate_settings(value)
                 return self.reply(200,controller.robot(value))
             except Exception:return self.reply(400,{'error':'ROBOT_CONTROL_REJECTED'})
     return Handler

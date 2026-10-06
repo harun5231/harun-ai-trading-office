@@ -30,6 +30,17 @@ writable, serta lock regular owner10001 mode0600. Lock yang belum ada normal
 sebelum tick pertama. Waktu coordinator dan pembacaan account memiliki arti
 berbeda; saldo/posisi harus mengikuti observasi account terbaru.
 
+Pemeriksaan key/koneksi provider tetap tersedia melalui GET tanpa request riset:
+
+```sh
+docker compose exec --user 10001:10001 -T worker python -m worker api-check
+docker compose exec --user 10001:10001 -T worker python -m worker binance-check
+```
+
+Pengaturan risiko masih tersedia di panel Robot Trading; default 5 USDT dan
+perubahan hanya dipakai analisis baru. URL Office lama diarahkan ke halaman utama
+yang sama, sehingga bookmark lama tetap menuju dashboard terbaru.
+
 Jika hanya HYPEUSDT manual aktif, harapkan posisi1/2, slot1, dan HYPEUSDT berada
 dalam manual exposure. Symbol manual tidak diambil alih. Laporan dan riwayat
 akun berasal dari Binance; aktivitas riset tidak dicatat sebagai fill akun.

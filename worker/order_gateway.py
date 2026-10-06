@@ -4,7 +4,7 @@ This build cannot submit, acknowledge, fill, or protect an exchange order. There
 is no test/paper/manual executor fallback and no switch that enables submission.
 """
 import hashlib
-from .core import D, Review, number, RISK
+from .core import D, Review, number, validated_risk_target
 
 NOT_CONNECTED = 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'
 
@@ -15,9 +15,13 @@ class GatewayUnavailable(Review):
 
 def build_intent(plan, operation):
     """Immutable internal order command, never a user ticket or exchange receipt."""
-    if plan.get('mode') != 'ORDER_INTENT' or plan.get('symbol') == 'HYPEUSDT':
+    if not isinstance(plan, dict) or plan.get('mode') != 'ORDER_INTENT' or plan.get('symbol') == 'HYPEUSDT':
         raise Review('INVALID_ORDER_CONTRACT')
-    if plan.get('side') not in ('LONG', 'SHORT') or not D('0') < number(plan['risk']) <= RISK:
+    try:
+        target = validated_risk_target(plan['risk_target_usdt'])
+        risk = number(plan['risk'])
+    except (KeyError, TypeError, Review): raise Review('INVALID_ORDER_CONTRACT') from None
+    if plan.get('side') not in ('LONG', 'SHORT') or not D('0') < risk <= target:
         raise Review('INVALID_ORDER_CONTRACT')
     entry_side = 'BUY' if plan['side'] == 'LONG' else 'SELL'
     client_id = 'hao-' + hashlib.sha256(operation.encode()).hexdigest()[:28]

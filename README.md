@@ -26,6 +26,10 @@ slot; HYPEUSDT selalu manual-only. Jika HYPEUSDT merupakan satu-satunya posisi
 aktif, screening meminta satu coin lain. Robot tidak mengambil alih posisi
 manual atau memakai hasil analisis sebagai bukti adanya order Binance.
 
+Pengaturan risiko tetap tersedia di panel Robot Trading, dengan nilai positif
+sampai 100 USDT seperti sebelumnya. Perubahan hanya berlaku untuk analisis baru;
+level, quantity, dan risiko intent yang sudah dibuat tetap mengikuti buktinya.
+
 Worker memakai NeuroAPI Starter `smart`, context market terbaru, dan aturan
 kontrak Binance. Quantity dihitung deterministik menggunakan Decimal; risiko
 harga ke SL tidak melebihi target dan RR aktual minimal 2. Request berbayar
@@ -38,6 +42,10 @@ tanpa replay otomatis setelah restart.
 - [Operasi dan pemeriksaan 24/7](deploy/ROBOT_24_7.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
+
+Diagnostics koneksi `python -m worker api-check` dan
+`python -m worker binance-check` tetap tersedia. Keduanya hanya membaca koneksi
+provider/akun, tanpa screening berbayar atau pengiriman order.
 
 Worker memakai Python standard library; frontend Three.js diterbitkan melalui
 GitHub Pages. Secret Binance, NeuroAPI, dan token worker tetap berada di VPS,

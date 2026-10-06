@@ -39,6 +39,17 @@ def api_key():
         return key
     except OSError:return ''
 
+def health_check(key=None,transport=request):
+    """Authenticated provider health GET without opening or initializing state."""
+    key=api_key() if key is None else key
+    if not key:raise Review('NEUROAPI_NOT_CONFIGURED')
+    try:
+        headers={'X-API-Key':key,'Accept':'application/json','User-Agent':'harun-office/1.0'}
+        code,_,data=transport('GET',BASE+'/health',headers,timeout=15)
+        if code!=200 or not isinstance(data,dict) or data.get('authenticated') is not True or data.get('status')!='healthy':raise Review('NEUROAPI_UNAVAILABLE')
+        return 'NEUROAPI_CONNECTED'
+    except Exception:raise Review('NEUROAPI_UNAVAILABLE') from None
+
 def selections(output,catalog,count=2):
     if type(count) is not int or count not in (1,2):raise Review("INVALID_SCREENING_COUNT")
     if not isinstance(output,dict) or set(output)!={'symbols'}:raise Review('INVALID_SCREENING_SCHEMA')
@@ -106,12 +117,7 @@ class NeuroAPI:
         if json_body:headers['Content-Type']='application/json'
         return headers
     def health(self):
-        self.require_key()
-        try:
-            code,_,data=self.transport('GET',BASE+'/health',self._headers(),timeout=15)
-            if code!=200 or not isinstance(data,dict) or data.get('authenticated') is not True or data.get('status')!='healthy':raise Review('NEUROAPI_UNAVAILABLE')
-            return 'NEUROAPI_CONNECTED'
-        except Exception:raise Review('NEUROAPI_UNAVAILABLE') from None
+        return health_check(self._key,self.transport)
     def ask(self,operation,prompt,schema,validate,context=None,*,catalog=None):
         self.require_key()
         if screening_count(schema) is not None and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')

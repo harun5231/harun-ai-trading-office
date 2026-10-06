@@ -1,7 +1,7 @@
 """Persistent research/order journal and read-only Binance office snapshots."""
 import json
 from datetime import datetime, timezone
-from .core import D, Review, day, now
+from .core import D, Review, day, now, validated_risk_target
 from .account_state import (empty_account, account_observation, newer_account,
                             newer_account_json, account_order, account_timestamp, slots)
 from .migration import retire_previous_runtime
@@ -55,14 +55,27 @@ class RobotStore:
         ''')
 
     def settings(self):
-        row = self.db.execute('SELECT enabled FROM robot_settings WHERE id=1').fetchone()
-        return dict(robot_on=bool(row['enabled']), risk_target_usdt='5')
+        row = self.db.execute('SELECT enabled,risk FROM robot_settings WHERE id=1').fetchone()
+        return dict(robot_on=bool(row['enabled']), risk_target_usdt=format(validated_risk_target(row['risk']), 'f'))
 
     def configure(self, value):
-        if not isinstance(value, dict) or set(value) != {'robot_on'} or type(value['robot_on']) is not bool:
+        if not isinstance(value, dict) or not value or set(value) - {'robot_on', 'risk_target_usdt'}:
             raise Review('INVALID_ROBOT_SETTING')
-        self.db.execute('UPDATE robot_settings SET enabled=? WHERE id=1', (int(value['robot_on']),))
-        self.event('ON' if value['robot_on'] else 'OFF', 'Coordinator', 'Pilihan robot disimpan.')
+        if 'robot_on' in value and type(value['robot_on']) is not bool:
+            raise Review('INVALID_ROBOT_SETTING')
+        if 'risk_target_usdt' in value:
+            if not isinstance(value['risk_target_usdt'], str): raise Review('INVALID_RISK_TARGET')
+            target = format(validated_risk_target(value['risk_target_usdt']), 'f')
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            if 'robot_on' in value:
+                self.db.execute('UPDATE robot_settings SET enabled=? WHERE id=1', (int(value['robot_on']),))
+                self.event('ON' if value['robot_on'] else 'OFF', 'Coordinator', 'Pilihan robot disimpan.')
+            if 'risk_target_usdt' in value:
+                self.db.execute('UPDATE robot_settings SET risk=? WHERE id=1', (target,))
+                self.event('RISK_UPDATED', 'Risk Manager', 'Risk per SL disimpan: ' + target + ' USDT.')
+            self.db.execute('COMMIT')
+        except BaseException: self.db.execute('ROLLBACK'); raise
         return self.snapshot()
 
     def entries(self, today):
