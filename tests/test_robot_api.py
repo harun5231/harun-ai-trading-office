@@ -15,7 +15,7 @@ class RobotAPITests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.c=Mock();self.c.directory=Path(self.tmp.name)
         self.c.robot=lambda value=None,approval=False:Controller.robot(self.c,value,approval)
-        self.c.thread.is_alive.return_value=True
+        self.c.thread.is_alive.return_value=True;self.c.account_thread.is_alive.return_value=True
         self.origin='https://office.example';self.read='R'*32;self.control='C'*32
         self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.c,self.read,self.control,self.origin))
         self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
