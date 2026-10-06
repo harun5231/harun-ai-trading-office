@@ -24,16 +24,20 @@ class OfficeUI(unittest.TestCase):
                 path=Path(url.replace('https://office.test/','') or 'index.html');kind='application/javascript' if path.suffix=='.js' else 'text/css' if path.suffix=='.css' else 'application/json' if path.suffix=='.json' else 'text/html'
             if not path.is_file():return route.fulfill(status=404,body='')
             body=path.read_text()
-            if path.name=='index.html':body=body.replace('// Read-only diagnostics',"cancelAnimationFrame(raf);window.testAdvance=(seconds)=>{for(let t=0;t<seconds;t+=1/60){elapsed+=1/60;actors.forEach(a=>updateActor(a,1/60,elapsed));}}; // Read-only diagnostics")
             route.fulfill(content_type=kind,body=body)
         self.page.route('**/*',local);self.page.goto('https://office.test/');self.page.wait_for_function('typeof officeDiagnostics === "function"')
     def tearDown(self):self.page.close()
-    def test_seven_avatars_all_menus_portrait_and_natural_animation(self):
-        p=self.page;d=p.evaluate('officeDiagnostics()');self.assertEqual(d['actors'],7);self.assertTrue(d['finite'])
+    def test_eight_avatars_all_menus_portrait_and_read_only_activity(self):
+        p=self.page;d=p.evaluate('officeDiagnostics()');self.assertEqual(d['actors'],8);self.assertTrue(d['finite'])
+        self.assertEqual(d['collisionViolations'],[])
         for view in ('office','market','trading','reports','staff','settings'):
             p.click('#menuToggle');p.click('[data-view='+view+']');self.assertTrue(p.locator('#infoPanel').is_visible());p.click('#panelClose')
         self.assertFalse(p.evaluate('document.body.scrollWidth>innerWidth'))
-        p.evaluate('testAdvance(90)');d=p.evaluate('officeDiagnostics()');self.assertTrue(d['finite']);self.assertTrue(all(a['visits']>=1 for a in d['states'][:6]))
+        p.evaluate("document.getElementById('neuroapiMenu').textContent='WORKER ONLINE · NEUROAPI_UNCHECKED';document.getElementById('robotMenu').textContent='ROBOT ON · SCREENING'")
+        p.wait_for_function("officeDiagnostics().states.find(a=>a.id==='market').active")
+        d=p.evaluate('officeDiagnostics()');self.assertTrue(d['finite']);self.assertEqual(d['collisionViolations'],[])
+        self.assertTrue(next(a for a in d['states'] if a['id']=='neuro')['active'])
+        self.assertFalse(next(a for a in d['states'] if a['id']=='trading')['active'])
         self.assertEqual(self.errors,[])
     def test_api_panel_and_report_xss_protection(self):
         p=self.page;p.click('#menuToggle');p.click('#neuroapiMenu');self.assertTrue(p.locator('#apiCheck').is_disabled());self.assertTrue(p.locator('#apiRun').is_disabled())

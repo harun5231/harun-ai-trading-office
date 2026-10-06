@@ -1,0 +1,8 @@
+#scene{isolation:isolate;overflow:hidden}
+#scene .office-webgl{width:100%;height:100%;outline:none}
+#scene .office-speech-layer{position:absolute;inset:0;pointer-events:none;overflow:hidden;z-index:1}
+#scene .office-speech{position:absolute;left:0;top:0;max-width:190px;padding:7px 11px;border:1px solid rgba(123,204,218,.48);border-radius:10px 10px 10px 2px;background:rgba(12,35,46,.93);box-shadow:0 5px 16px #102d3c22;color:#eaf9fc;font:600 10px/1.35 Inter,system-ui,sans-serif;white-space:nowrap;will-change:transform;backdrop-filter:blur(6px);text-overflow:ellipsis;overflow:hidden}
+#scene .office-speech[data-active="true"]{border-color:var(--speech-accent,#73cde1);box-shadow:0 0 12px #57d9e81a}
+#scene .office-speech[hidden]{display:none}
+@media(max-width:700px){#scene .office-speech{max-width:126px;padding:5px 7px;font-size:8px;border-radius:7px 7px 7px 2px}}
+@media(prefers-reduced-motion:reduce){#scene .office-speech{will-change:auto}}
