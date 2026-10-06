@@ -26,10 +26,9 @@ def screening_count(schema):
 NUM={'type':'number','exclusiveMinimum':0}
 PRICE={**NUM,'type':['number','null'],'description':'Price must conform exactly to Binance tickSize and applicable price limits supplied in context; do not round after generation.'}
 SETUP_SCHEMA={'type':'object','description':'LONG/SHORT require positive entry, TP, SL and declared reward/risk. HOLD requires all numeric fields null and creates no order.','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT','HOLD']},
- 'position_size':{**NUM,'type':['number','null'],'description':'Informational base-asset quantity only; worker Risk Manager independently computes execution quantity. Null for HOLD.'},
  'limit_entry':PRICE,'take_profit':PRICE,'stop_loss':PRICE,
  'risk_reward':{**NUM,'type':['number','null'],'description':'Reward divided by risk; 2 means risk:reward 1:2'}},
- 'required':['symbol','side','position_size','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}
+ 'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}
 
 def api_key():
     try:
@@ -58,7 +57,7 @@ def selections(output,catalog,count=2):
     if any(not re.fullmatch(SYMBOL_PATTERN,v) or v not in catalog for v in values):raise Review('INVALID_SCREENING_SYMBOL')
     return values
 
-NUMERIC_FIELDS=('position_size','limit_entry','take_profit','stop_loss','risk_reward')
+NUMERIC_FIELDS=('limit_entry','take_profit','stop_loss','risk_reward')
 def setup_number(value):
     # Real transport parses JSON decimals directly into Decimal, never binary float.
     if isinstance(value,bool) or not isinstance(value,(int,D)):raise Review('INVALID_NUMERIC_TYPE')
@@ -78,12 +77,11 @@ def setup(output,expected):
     if output['side']=='HOLD':
         if any(output[k] is not None for k in NUMERIC_FIELDS):raise Review('INVALID_SETUP_SCHEMA')
         return Hold(expected)
-    q=setup_number(output['position_size']) if output['position_size'] is not None else None
-    e,tp,sl,rr=[setup_number(output[k]) for k in NUMERIC_FIELDS[1:]]
+    e,tp,sl,rr=[setup_number(output[k]) for k in NUMERIC_FIELDS]
     if not (sl<e<tp if output['side']=='LONG' else tp<e<sl):raise Review('INVALID_ENTRY_TP_SL')
     # Compare distances exactly; no rounding/equality assumption for declared RR.
     if abs(tp-e)<2*abs(e-sl):raise Review('RISK_REWARD_BELOW_2')
-    return Signal(expected,output['side'],e,tp,sl,q)
+    return Signal(expected,output['side'],e,tp,sl)
 
 def canonical_output(value,schema,catalog=None):
     # Cache only reconstructed validated fields, never provider envelope/prose.

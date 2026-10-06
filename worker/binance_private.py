@@ -6,13 +6,17 @@ import os
 import re
 import stat
 import time
+from datetime import datetime, timezone
+from decimal import Decimal
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit, parse_qsl
 from urllib.request import Request, build_opener, ProxyHandler
 from .http_client import NoRedirect, unique
 
 BASE='https://fapi.binance.com'
-SYMBOL_PATHS=frozenset(('/fapi/v1/symbolConfig','/fapi/v3/positionRisk','/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v1/leverageBracket'))
+COMMISSION_PATH='/fapi/v1/commissionRate'
+COMMISSION_SOURCE='BINANCE_FUTURES_COMMISSION_RATE'
+SYMBOL_PATHS=frozenset(('/fapi/v1/symbolConfig','/fapi/v3/positionRisk','/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v1/leverageBracket',COMMISSION_PATH))
 OPTIONAL_SYMBOL_PATHS=frozenset(('/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v3/positionRisk'))
 HISTORY_PATHS=frozenset(('/fapi/v1/income','/fapi/v1/userTrades'))
 PRIVATE_PATHS=frozenset(('/fapi/v3/account','/fapi/v1/accountConfig')) | SYMBOL_PATHS | HISTORY_PATHS
@@ -159,6 +163,26 @@ class BinanceReadOnly:
         query=urlencode(params)
         return self._get(BASE+path+'?'+query+'&signature='+signature(self._secret,query),
             {'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'})
+    def commission_rate(self,symbol):
+        """Fresh account/symbol commission evidence, never an assumed fee tier."""
+        try:_query_options(COMMISSION_PATH,symbol,{},10**16-1)
+        except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
+        self.sync_time()
+        data=self.signed_get(COMMISSION_PATH,symbol)
+        checked_at_ms=self.server_time_ms()
+        try:
+            if not isinstance(data,dict) or data.get('symbol')!=symbol:raise ValueError()
+            rates={}
+            for source,target in (('makerCommissionRate','maker'),('takerCommissionRate','taker')):
+                value=data[source]
+                if not isinstance(value,str) or len(value)>64 or not re.fullmatch(r'\d+(?:\.\d+)?',value):raise ValueError()
+                rate=Decimal(value)
+                if not rate.is_finite() or not Decimal(0)<=rate<Decimal(1):raise ValueError()
+                rates[target]=value
+            checked_at=datetime.fromtimestamp(checked_at_ms/1000,timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
+            return dict(symbol=symbol,**rates,source=COMMISSION_SOURCE,checked_at=checked_at,checked_at_ms=checked_at_ms)
+        except Exception:raise BinanceCheckError('BINANCE_ACCOUNT_UNAVAILABLE') from None
+    commission_rates=commission_rate
     def check(self):
         self.sync_time()
         account=self.signed_get('/fapi/v3/account')

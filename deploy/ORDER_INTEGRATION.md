@@ -30,13 +30,15 @@ koneksi tidak membuktikan bahwa autentikasi atau kesehatan exchange sudah benar.
 
 `ROBOT ON → Binance account → screening sesuai slot → analisis → validasi → intent → gateway`
 
-- Risiko harga entry ke SL tidak melampaui target tersimpan; default 5 USDT.
+- Estimasi risiko net ke SL tidak melampaui target tersimpan; default 5 USDT,
+  termasuk fee entry dan SL memakai taker commission akun per symbol dari
+  signed GET Binance. Model menghasilkan side dan Entry/TP/SL, tanpa quantity.
   Pengaturan menerima target positif sampai 100 USDT seperti sebelumnya.
-  Quantity memakai Decimal dan RR aktual minimal 2. Perubahan pengaturan hanya
+  Quantity memakai Decimal dan net RR setelah fee minimal 2. Perubahan pengaturan hanya
   memengaruhi analisis baru, bukan intent yang telah dibuat dan diverifikasi.
-  Batas ini tidak mencakup fee, funding, slippage, atau gap harga saat eksekusi.
-- Maksimal dua posisi bersamaan dan dua entry bot terkonfirmasi per hari
-  Asia/Bangkok. Pending entry ikut mencadangkan kapasitas. Counter entry hanya
+  Estimasi ini tidak menjamin fee aktual, funding, slippage, atau gap harga.
+- Maksimal dua posisi bersamaan; tidak ada batas entry harian.
+  Pending entry ikut mencadangkan kapasitas. Counter entry hanya
   berasal dari observasi fill yang lolos kontrak, bukan dari ACK.
 - HYPEUSDT selalu dikecualikan. Setiap symbol yang sudah memiliki posisi aktif
   dikecualikan, termasuk posisi manual. Label exposure tidak memberi hak
@@ -45,9 +47,12 @@ koneksi tidak membuktikan bahwa autentikasi atau kesehatan exchange sudah benar.
 - One-way, single-asset, CROSS, leverage 75, entry LIMIT GTC. Coordinator
   memeriksa ulang kontrak market sebelum submit. Harga entry/TP/SL tidak
   diubah untuk membuat setup yang ditolak menjadi lolos.
-- Intent harus berasal dari bukti `analysis-v8` yang lengkap, hari yang sama,
+- Intent harus berasal dari bukti `analysis-v9` yang lengkap, hari yang sama,
   dan aturan yang diperiksa maksimal lima menit sebelumnya. Setup lama tidak
   otomatis menjadi order saat gateway disambungkan.
+- Cycle `robot-v9` memakai candle Binance 1h/15m nyata, rules, dan fee akun
+  terbaru. Hanya HOLD memicu replacement, maksimal tiga screening tambahan
+  sesudah awal. Dua HOLD meminta dua pengganti; satu HOLD meminta satu.
 - Claim riset dan status `SUBMITTING` disimpan sebelum pemanggilan eksternal.
   Maksimal satu operasi NeuroAPI per tick; worker tidak bergantung pada tab web.
 
@@ -65,12 +70,22 @@ Semua nilai harga dan quantity tetap string Decimal.
 | `entry` | `order_type`, `side`, `price`, `quantity`, `time_in_force` |
 | `protection` | `exit_side`, `stop_loss`, `take_profit`, `working_type` |
 | `margin_mode`, `leverage` | Konfigurasi yang sudah divalidasi |
-| `risk_target_usdt`, `risk_usdt` | Target dan risiko hasil sizing |
+| `risk_target_usdt`, `risk_usdt` | Target dan estimasi risiko net SL, termasuk fee entry/SL |
+| `gross_risk_usdt` | Estimasi loss harga ke SL sebelum fee |
+| `entry_fee_usdt`, `sl_exit_fee_usdt`, `tp_exit_fee_usdt` | Fee entry, SL, dan TP pada taker rate akun |
+| `net_reward_usdt`, `net_reward_risk` | Estimasi profit TP sesudah fee dan net RR |
+| `fee_evidence` | `source`, `symbol`, `observed_at`, `taker_rate` dari signed GET Binance |
+| `excluded_costs` | `SLIPPAGE`, `FUNDING`, `GAPS` yang tidak dijamin model biaya |
 | `evidence_sha256` | Digest bukti analisis terverifikasi |
 
 Payload journal dibandingkan ulang dengan intent dari bukti sebelum dipakai.
 Preflight submission memakai target yang terikat pada bukti intent tersebut,
 bukan mengganti quantity saat pengaturan risiko berikutnya berubah.
+Taker commission sumber sizing berasal dari signed
+`GET /fapi/v1/commissionRate?symbol=...`, bukan tarif tetap atau tebakan model.
+Entry LIMIT dapat mendapat fee maker yang lebih rendah; sizing tetap konservatif
+menggunakan taker untuk entry/exit. Worker memerlukan net RR minimal 2 sesudah
+fee entry/TP dan tidak menggeser Entry/TP/SL agar setup yang gagal menjadi lolos.
 Adapter harus memeriksa posisi dan open orders terbaru tepat sebelum POST,
 agar perubahan manual setelah account snapshot tidak melampaui kapasitas.
 Jangan membatalkan order, mengganti konfigurasi akun, atau memasang proteksi
@@ -156,6 +171,13 @@ menghapus tabel runtime lama, membersihkan cache lama, dan mengembalikan robot
 ke OFF. Archive hanya audit; runtime tidak membacanya. Journal NeuroAPI dan
 receipt entry nyata dipertahankan. Request lama dengan outcome tidak pasti tetap
 menghentikan riset sampai ditinjau. Setup dari namespace lama tidak dipromosikan.
+
+Upgrade v8→v9 hanya mengganti constraint identitas cycle melalui transaksi
+schema version 2. Semua cycle dan rowid, request berbayar, candidate lama,
+intent termasuk `SUBMITTING`/`NEEDS_REVIEW`, receipt, ON/OFF, risiko tersimpan,
+serta observasi exposure dipertahankan. Namespace baru dapat mulai pada
+hari/epoch sama tanpa memakai request/proof gross-risk sebelumnya; bukti lama
+tidak otomatis mendapat fee baru atau dipromosikan menjadi order.
 
 Laporan Office memakai GET Binance account/income/userTrades. Riwayat berisi
 fill, bukan inferensi posisi tertutup; scope parsial ditandai dan total transaksi

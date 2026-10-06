@@ -5,7 +5,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from worker.migration import retire_previous_runtime
+from worker.migration import retire_previous_runtime, upgrade_cycle_namespaces
 
 
 class MigrationTests(unittest.TestCase):
@@ -193,6 +193,141 @@ class MigrationTests(unittest.TestCase):
         self.assertIn('office_schema', self.tables())
         self.assertFalse(self.archive.exists())
         self.assertFalse((self.root / 'snapshot.json').exists())
+
+
+class CycleNamespaceUpgradeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.path = Path(self.temporary.name) / 'ledger.sqlite3'
+        self.db = sqlite3.connect(self.path, isolation_level=None)
+        self.db.executescript('''
+            CREATE TABLE office_schema(version INTEGER NOT NULL);
+            INSERT INTO office_schema VALUES(1);
+            CREATE TABLE robot_cycles(id TEXT PRIMARY KEY,day TEXT NOT NULL,entry_epoch INTEGER NOT NULL,
+                state TEXT NOT NULL,data TEXT NOT NULL,UNIQUE(day,entry_epoch));
+            INSERT INTO robot_cycles(rowid,id,day,entry_epoch,state,data)
+                VALUES(42,'2026-10-06:robot-v8:0','2026-10-06',0,'ACTIVE','old gross-risk cycle');
+            CREATE TABLE robot_settings(id INTEGER PRIMARY KEY,enabled INTEGER,risk TEXT);
+            INSERT INTO robot_settings VALUES(1,1,'13.37');
+            CREATE TABLE api_requests(operation TEXT PRIMARY KEY,state TEXT,output TEXT);
+            INSERT INTO api_requests VALUES('old paid request','NEEDS_REVIEW','original proof');
+            CREATE TABLE order_intents(id TEXT PRIMARY KEY,state TEXT,payload TEXT);
+            INSERT INTO order_intents VALUES('old submitted','SUBMITTING','original intent');
+            INSERT INTO order_intents VALUES('old unknown','NEEDS_REVIEW','original unknown');
+            CREATE TABLE robot_candidates(id TEXT PRIMARY KEY,status TEXT,plan TEXT);
+            INSERT INTO robot_candidates VALUES('old gross candidate','READY_FOR_EXECUTION','immutable old plan');
+            CREATE TABLE robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT);
+            INSERT INTO robot_entry_receipts VALUES('real fill','BTCUSDT');
+            CREATE TABLE office_cache(id INTEGER PRIMARY KEY,data TEXT);
+            INSERT INTO office_cache VALUES(1,'manual exposure HYPEUSDT');
+            CREATE TABLE operator_audit(data TEXT);
+        ''')
+
+    def tearDown(self):
+        self.db.close()
+        self.temporary.cleanup()
+
+    def snapshot(self):
+        names = ('robot_cycles', 'robot_settings', 'api_requests', 'order_intents',
+                 'robot_candidates', 'robot_entry_receipts', 'office_cache', 'operator_audit')
+        return {name: self.db.execute('SELECT rowid,* FROM ' + name).fetchall() for name in names}
+
+    def test_upgrade_preserves_every_row_and_allows_v9_at_same_epoch(self):
+        before = self.snapshot()
+        upgrade_cycle_namespaces(self.db)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (2,))
+        self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-06',0,'ACTIVE','new fee-inclusive cycle')")
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_cycles').fetchone()[0], 2)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-07',1,'ACTIVE','duplicate ID')")
+
+    def test_upgrade_is_idempotent_and_never_resets_settings(self):
+        upgrade_cycle_namespaces(self.db)
+        before = self.snapshot()
+        upgrade_cycle_namespaces(self.db)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.db.execute('SELECT enabled,risk FROM robot_settings').fetchone(), (1, '13.37'))
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchall(), [(2,)])
+
+    def test_ordinary_indexes_and_triggers_survive_without_running_during_copy(self):
+        self.db.executescript('''
+            CREATE INDEX robot_cycle_state ON robot_cycles(state) WHERE state='ACTIVE';
+            CREATE TRIGGER cycle_updated AFTER UPDATE ON robot_cycles
+                BEGIN INSERT INTO operator_audit VALUES(NEW.id); END;
+        ''')
+        upgrade_cycle_namespaces(self.db)
+        self.assertEqual(self.db.execute('SELECT * FROM operator_audit').fetchall(), [])
+        definitions = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE tbl_name='robot_cycles'")}
+        self.assertIn('robot_cycle_state', definitions)
+        self.assertIn('cycle_updated', definitions)
+        self.db.execute("UPDATE robot_cycles SET state='COMPLETE' WHERE id='2026-10-06:robot-v8:0'")
+        self.assertEqual(self.db.execute('SELECT * FROM operator_audit').fetchall(), [('2026-10-06:robot-v8:0',)])
+
+    def test_explicit_day_epoch_unique_index_is_removed(self):
+        self.db.execute('CREATE UNIQUE INDEX extra_cycle_epoch ON robot_cycles(entry_epoch,day)')
+        upgrade_cycle_namespaces(self.db)
+        self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-06',0,'ACTIVE','new fee-inclusive cycle')")
+        indexes = {row[1] for row in self.db.execute('PRAGMA index_list(robot_cycles)')}
+        self.assertNotIn('extra_cycle_epoch', indexes)
+
+    def test_interruption_rolls_back_original_table_and_schema_flag(self):
+        before = self.snapshot()
+        db = self.db
+
+        class InterruptedUpgrade:
+            def execute(self, sql, *args):
+                if sql.startswith('ALTER TABLE robot_cycles_namespace_upgrade'):
+                    raise KeyboardInterrupt()
+                return db.execute(sql, *args)
+
+        with self.assertRaises(KeyboardInterrupt):
+            upgrade_cycle_namespaces(InterruptedUpgrade())
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (1,))
+        names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('robot_cycles_namespace_upgrade', names)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-06',0,'ACTIVE','still old unique constraint')")
+        upgrade_cycle_namespaces(self.db)
+        self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-06',0,'ACTIVE','retry completed')")
+
+    def test_absent_cycles_upgrade_does_not_create_or_reset_runtime_tables(self):
+        self.db.execute('DROP TABLE robot_cycles')
+        upgrade_cycle_namespaces(self.db)
+        names = {row[0] for row in self.db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('robot_cycles', names)
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (2,))
+        self.assertEqual(self.db.execute('SELECT enabled,risk FROM robot_settings').fetchone(), (1, '13.37'))
+
+    def test_fresh_store_creates_namespace_safe_cycles(self):
+        from worker.robot_store import RobotStore
+
+        self.db.close()
+        self.path.unlink()
+        self.db = sqlite3.connect(self.path, isolation_level=None)
+        RobotStore(self.db)
+        self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v8:0','2026-10-06',0,'COMPLETE','retained namespace')")
+        self.db.execute("INSERT INTO robot_cycles VALUES('2026-10-06:robot-v9:0','2026-10-06',0,'ACTIVE','new namespace')")
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_cycles').fetchone()[0], 2)
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (2,))
+
+    def test_unknown_extended_cycle_schema_is_preserved_and_refused(self):
+        self.db.execute('ALTER TABLE robot_cycles ADD COLUMN operator_note TEXT')
+        before = self.snapshot()
+        with self.assertRaisesRegex(RuntimeError, '^WORKER_CYCLE_SCHEMA_UNSUPPORTED$'):
+            upgrade_cycle_namespaces(self.db)
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (1,))
+
+    def test_referenced_cycles_never_trigger_foreign_key_deletion(self):
+        self.db.execute('PRAGMA foreign_keys=ON')
+        self.db.execute('CREATE TABLE external_references(cycle TEXT REFERENCES robot_cycles(id) ON DELETE CASCADE)')
+        self.db.execute("INSERT INTO external_references VALUES('2026-10-06:robot-v8:0')")
+        with self.assertRaisesRegex(RuntimeError, '^WORKER_CYCLE_SCHEMA_UNSUPPORTED$'):
+            upgrade_cycle_namespaces(self.db)
+        self.assertEqual(self.db.execute('SELECT * FROM external_references').fetchall(), [('2026-10-06:robot-v8:0',)])
+        self.assertEqual(self.db.execute('SELECT version FROM office_schema').fetchone(), (1,))
 
 
 if __name__ == '__main__':

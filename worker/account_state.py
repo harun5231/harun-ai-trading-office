@@ -69,7 +69,10 @@ def screening_contract(count):
     if count==2:return SCREENING,SCREEN_SCHEMA
     raise Review('INVALID_SCREENING_COUNT')
 
-def slots(running,entries):return max(0,min(2-running,2-entries))
+def slots(running,entries=None):
+    # Entry receipts are history, not a daily trading limit. Only currently
+    # running positions consume one of the two concurrent Futures slots.
+    return max(0,2-running)
 
 def account_state(client,store,today):
     config=client.check()

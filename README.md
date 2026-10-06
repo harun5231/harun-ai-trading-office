@@ -27,8 +27,9 @@ Riset dan kejadian worker ditampilkan sebagai aktivitas, bukan transaksi akun.
 Animasi karyawan mengikuti status worker; browser dapat ditutup tanpa
 menghentikan worker VPS.
 
-Default robot OFF dan risiko harga ke SL 5 USDT. Maksimal dua posisi bersamaan
-dan dua entry bot terkonfirmasi per hari Asia/Bangkok. Posisi manual mengurangi
+Default robot OFF dan target risiko net ke SL 5 USDT, termasuk fee entry dan
+fee exit SL memakai taker commission per symbol dari signed GET Binance.
+Maksimal dua posisi bersamaan; jumlah entry per hari tidak dibatasi. Posisi manual mengurangi
 slot; HYPEUSDT selalu manual-only. Jika HYPEUSDT merupakan satu-satunya posisi
 aktif, screening meminta satu coin lain. Robot tidak mengambil alih posisi
 manual atau memakai hasil analisis sebagai bukti adanya order Binance.
@@ -37,9 +38,14 @@ Pengaturan risiko tetap tersedia di panel Robot Trading, dengan nilai positif
 sampai 100 USDT seperti sebelumnya. Perubahan hanya berlaku untuk analisis baru;
 level, quantity, dan risiko intent yang sudah dibuat tetap mengikuti buktinya.
 
-Worker memakai NeuroAPI Starter `smart`, context market terbaru, dan aturan
-kontrak Binance. Quantity dihitung deterministik menggunakan Decimal; risiko
-harga ke SL tidak melebihi target dan RR aktual minimal 2. Request berbayar
+Worker memakai NeuroAPI Starter `smart`, data Binance 15m/1h nyata, serta aturan
+kontrak dan commission akun terbaru. Model menentukan side dan harga Entry/TP/SL;
+quantity ditentukan worker menggunakan Decimal agar estimasi loss SL termasuk
+fee tidak melebihi target. Net RR sesudah fee minimal 2. Funding, slippage,
+perubahan fee, dan gap harga dapat membuat loss nyata melampaui estimasi tersebut.
+Entry tetap LIMIT, margin CROSS, dan leverage 75; worker tidak menggeser level.
+Hanya HOLD meminta kandidat pengganti, maksimal tiga screening tambahan per cycle.
+Request berbayar
 memiliki claim persisten. Outcome yang belum pasti dihentikan untuk rekonsiliasi,
 tanpa replay otomatis setelah restart.
 
@@ -63,6 +69,12 @@ Upgrade pertama membuat backup audit privat dari ledger lama, menghapus tabel
 alur lama dari database aktif, dan mengembalikan robot ke OFF. Backup tidak dibaca
 oleh jalur runtime. Journal request berbayar serta bukti entry Binance yang
 terkonfirmasi dipertahankan. Tidak ada promosi setup lama menjadi order.
+
+Upgrade alur fee-inclusive memakai namespace `robot-v9` dan `analysis-v9`.
+Schema version 2 mengizinkan cycle baru pada hari/epoch yang sama dengan cycle
+lama sambil mempertahankan semua baris lama, settings ON/OFF, journal, intent,
+receipt, dan observasi exposure. Bukti risiko harga tanpa fee lama tidak dipromosikan;
+order dengan outcome belum pasti tetap memblokir sampai direkonsiliasi.
 
 Pengujian lokal menggunakan fixtures tanpa key atau uang nyata. Test lulus
 tidak membuktikan adapter Binance sudah tersambung. Status default `NOT_CONNECTED`

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
 from urllib.error import HTTPError
-from worker.binance_private import BinanceReadOnly,BinanceCheckError,BASE,PRIVATE_PATHS,read_only_get,read_secret,signature,check
+from worker.binance_private import BinanceReadOnly,BinanceCheckError,BASE,PRIVATE_PATHS,COMMISSION_PATH,COMMISSION_SOURCE,read_only_get,read_secret,signature,check
 
 KEY='synthetic-key-not-a-real-credential'
 SECRET='synthetic-secret-not-a-real-credential'
@@ -151,3 +151,88 @@ class PrivateTests(unittest.TestCase):
             result=check()
         self.assertEqual(result['status'],'BINANCE_ACCOUNT_UNAVAILABLE');self.assertEqual(out.getvalue(),'');self.assertEqual(err.getvalue(),'')
         for value in (KEY,SECRET):self.assertNotIn(value,json.dumps(result))
+    def fee_client(self,body=None,clock=lambda:10):
+        body=body if body is not None else dict(symbol='BTCUSDT',makerCommissionRate='0.00020000',takerCommissionRate='0.00050000',private=KEY+SECRET)
+        client=self.client(clock=clock);original=client._transport
+        def transport(url,headers):
+            if url.startswith(BASE+COMMISSION_PATH+'?'):
+                self.calls.append((url,headers));return body
+            return original(url,headers)
+        client._transport=transport
+        return client
+    def test_real_account_symbol_fee_evidence_exact_rates_safe_fields_and_hmac(self):
+        client=self.fee_client();result=client.commission_rate('BTCUSDT')
+        self.assertEqual(result,dict(symbol='BTCUSDT',maker='0.00020000',taker='0.00050000',source=COMMISSION_SOURCE,
+                                     checked_at='2023-11-14T22:13:20.000Z',checked_at_ms=1700000000000))
+        self.assertEqual(self.calls[0],(BASE+'/fapi/v1/time',{}));self.assertEqual(len(self.calls),2)
+        url,headers=self.calls[1]
+        query='recvWindow=5000&timestamp=1700000000000&symbol=BTCUSDT'
+        self.assertEqual(url,BASE+COMMISSION_PATH+'?'+query+'&signature='+signature(SECRET,query))
+        self.assertEqual(headers['X-MBX-APIKEY'],KEY)
+        for value in (KEY,SECRET,'private','signature'):self.assertNotIn(value,json.dumps(result))
+    def test_zero_actual_commission_is_allowed_without_a_default(self):
+        client=self.fee_client(dict(symbol='BTCUSDT',makerCommissionRate='0',takerCommissionRate='0.00000000'))
+        result=client.commission_rates('BTCUSDT')
+        self.assertEqual(result['maker'],'0');self.assertEqual(result['taker'],'0.00000000')
+    def test_fee_evidence_refreshes_trusted_clock_and_marks_response_completion(self):
+        client=self.fee_client(clock=Mock(side_effect=[10,10,11,12]))
+        with patch('time.time',side_effect=AssertionError('VPS wall time')):result=client.commission_rate('BTCUSDT')
+        self.assertIn('timestamp=1700000001000',self.calls[1][0])
+        self.assertEqual(result['checked_at_ms'],1700000002000)
+        self.assertEqual(result['checked_at'],'2023-11-14T22:13:22.000Z')
+    def test_fee_query_requires_strict_usdt_symbol_before_any_request(self):
+        client=self.fee_client()
+        for symbol in (None,'btcusdt','BTCUSDT&side=BUY','../../order','BTCUSDT_261225','BTCUSDC',True):
+            with self.assertRaisesRegex(BinanceCheckError,'^BINANCE_ENDPOINT_DENIED$'):client.commission_rate(symbol)
+        self.assertEqual(self.calls,[])
+        client.sync_time();before=len(self.calls)
+        for options in ({},{'symbol':'BTCUSDT','limit':1},{'symbol':'BTCUSDT','from_id':0},
+                        {'symbol':'BTCUSDT','start_time':1699999999000,'end_time':1700000000000}):
+            with self.assertRaisesRegex(BinanceCheckError,'BINANCE_ENDPOINT_DENIED'):client.signed_get(COMMISSION_PATH,**options)
+        self.assertEqual(len(self.calls),before)
+    def test_missing_mismatched_or_invalid_rates_are_not_assumed_zero(self):
+        valid=dict(symbol='BTCUSDT',makerCommissionRate='0.0002',takerCommissionRate='0.0005')
+        bodies=[[],{},dict(valid,symbol='ETHUSDT'),dict(symbol='BTCUSDT',makerCommissionRate='0.0002')]
+        for field in ('makerCommissionRate','takerCommissionRate'):
+            for value in ('NaN','Infinity','-0.0001','1','1.000','1e-3','0.'+'0'*64,'0. 01',0.0005,0,True,KEY):
+                bodies.append(dict(valid,**{field:value}))
+        for body in bodies:
+            self.calls=[]
+            with self.assertRaisesRegex(BinanceCheckError,'^BINANCE_ACCOUNT_UNAVAILABLE$'):self.fee_client(body).commission_rate('BTCUSDT')
+    def test_stale_or_slow_fee_clock_does_not_return_evidence(self):
+        for clock in (Mock(side_effect=[10,13]),Mock(side_effect=[10,10,11,41])):
+            self.calls=[]
+            with self.assertRaisesRegex(BinanceCheckError,'^BINANCE_CLOCK_ERROR$'):self.fee_client(clock=clock).commission_rate('BTCUSDT')
+    def test_fee_transport_origin_canonical_query_and_extra_keys_guarded(self):
+        prefix='recvWindow=5000&timestamp=1700000000000'
+        queries=[prefix,prefix+'&symbol=BTCUSDT&symbol=ETHUSDT',prefix+'&symbol=BTCUSDT&side=BUY',
+                 prefix+'&symbol=BTCUSDT&limit=1',prefix+'&symbol=%42TCUSDT',prefix+'&symbol=BTCUSDT&fromId=1']
+        headers={'X-MBX-APIKEY':KEY,'Accept':'application/json','User-Agent':'test'}
+        with patch('worker.binance_private.build_opener',side_effect=AssertionError('No network')):
+            for query in queries:
+                with self.assertRaisesRegex(BinanceCheckError,'^BINANCE_ENDPOINT_DENIED$'):
+                    read_only_get(BASE+COMMISSION_PATH+'?'+query+'&signature='+'0'*64,headers)
+    def test_fee_actual_transport_fixed_get_no_body_and_no_extra_state(self):
+        responses=[self.response(200,b'{"serverTime":1700000000000}'),
+                   self.response(200,b'{"symbol":"BTCUSDT","makerCommissionRate":"0.0002","takerCommissionRate":"0.0005"}')]
+        before=set(self.root.iterdir())
+        with patch('worker.binance_private.build_opener') as opener,patch('worker.order_gateway.OrderGateway.submit',side_effect=AssertionError('Order')):
+            opener.return_value.open.side_effect=responses
+            result=BinanceReadOnly(clock=lambda:10).commission_rate('BTCUSDT')
+            self.assertEqual(result['taker'],'0.0005')
+            self.assertEqual(len(opener.return_value.open.call_args_list),2)
+            for call in opener.return_value.open.call_args_list:
+                request=call.args[0];self.assertEqual(request.get_method(),'GET');self.assertIsNone(request.data)
+        self.assertEqual(set(self.root.iterdir()),before)
+    def test_fee_transport_error_chain_never_exposes_credentials_or_url(self):
+        import traceback
+        client=self.fee_client();original=client._transport
+        def fail(url,headers):
+            if COMMISSION_PATH in url:raise RuntimeError('PRIVATE_TRANSPORT_URL'+url+KEY+SECRET)
+            return original(url,headers)
+        client._transport=fail
+        try:client.commission_rate('BTCUSDT')
+        except BinanceCheckError as error:
+            self.assertEqual(str(error),'BINANCE_ACCOUNT_UNAVAILABLE');trace=traceback.format_exc()
+            for value in (KEY,SECRET,'PRIVATE_TRANSPORT_URL',BASE+COMMISSION_PATH):self.assertNotIn(value,trace)
+        else:self.fail('Expected sanitized exception')
