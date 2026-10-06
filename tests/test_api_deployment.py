@@ -64,7 +64,7 @@ class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.control='C'*32;self.read='R'*32;self.origin='https://office.example'
-        self.c=Mock();self.c.directory=Path(self.temp.name);self.c.snapshot.return_value={'status':'NEUROAPI_NOT_CONFIGURED','mode':'DRY_RUN','live_enabled':False,'busy':False};self.c.thread.is_alive.return_value=True
+        self.c=Mock();self.c.directory=Path(self.temp.name);self.c.snapshot.return_value={'status':'NEUROAPI_NOT_CONFIGURED','mode':'DRY_RUN','live_enabled':False,'busy':False};self.c.thread.is_alive.return_value=True;self.c.account_thread.is_alive.return_value=True
         self.server=ThreadingHTTPServer(('127.0.0.1',0),handler(self.c,self.read,self.control,self.origin));self.thread=threading.Thread(target=self.server.serve_forever,daemon=True);self.thread.start()
     def tearDown(self):self.server.shutdown();self.server.server_close()
     def call(self,path,token=None,method='GET',origin=None,data=None):
