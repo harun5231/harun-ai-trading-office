@@ -154,6 +154,15 @@ Frontend GitHub Pages juga memerlukan file UI baru: merge PR ke source branch
 yang tercantum di Settings → Pages dan tunggu publish berhasil. Configured source
 belum diverifikasi; build worker tidak menerbitkan frontend.
 
+Untuk pemeriksaan CLI selalu gunakan `docker compose exec --user 10001:10001 -T
+worker python -m worker ...`. Docker exec default tetap root walaupun service
+sudah berjalan sebagai UID10001. Lock `/data/trading/cycle.lock` yang dibuat root
+dengan mode 0600 dapat menghalangi coordinator sebelum screening; balance dan
+status healthy saja tidak membuktikan lock dapat dibuka. Bootstrap baru memulihkan
+owner lock saat start. Pemulihan manual satu kali hanya mengubah owner/mode pada
+regular file existing, tanpa menghapus/truncate state, tersedia di
+[DOCKER.md](DOCKER.md#cli-worker-dan-pemulihan-izin-cycle-lock).
+
 Script build worker lalu recreate worker/proxy, memakai volume dan secret yang
 sama. Pada SIGTERM worker menghentikan claim/request riset baru dan memberi operasi
 yang sedang berjalan hingga 600 detik untuk menyimpan hasil. Compose dan script

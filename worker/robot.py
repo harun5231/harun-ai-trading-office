@@ -199,9 +199,12 @@ class Coordinator:
     def tick(self):
         # Shares the CLI cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
-        with path.open('a') as lock:
+        try:lock=path.open('a')
+        except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
+        with lock:
             try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
             except BlockingIOError:return self.store.report('WAITING',reason='WORKER_BUSY')
+            except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
             try:return self._tick()
             except Exception as error:
                 reason=str(error)

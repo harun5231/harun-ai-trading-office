@@ -65,7 +65,7 @@ git switch codex/fix-robot-coordinator-24-7 &&
 git pull --ff-only origin codex/fix-robot-coordinator-24-7 &&
 bash deploy/update-api.sh &&
 docker compose ps &&
-docker compose exec -T worker python -m worker.health
+docker compose exec --user 10001:10001 -T worker python -m worker.health
 ```
 
 Jika Git menolak karena perubahan lokal atau history berbeda, berhenti dan
