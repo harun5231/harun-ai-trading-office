@@ -90,7 +90,7 @@
   document.getElementById('robotRiskSave').onclick=()=>robotAction('/robot/settings',{risk_target_usdt:document.getElementById('robotRisk').value});
   document.getElementById('apiCheck').onclick=()=>action('check');document.getElementById('apiRun').onclick=()=>action('run');
   document.getElementById('apiConnect').onclick=()=>{
-   try{const u=validOrigin(document.getElementById('apiOrigin').value),t=document.getElementById('apiToken').value;if(t.length<32)throw Error('Token kontrol minimal 32 karakter.');disconnect();origin=u;token=t;document.getElementById('apiToken').value='';poll();timer=setInterval(poll,4000);}catch(e){note=e.message;paint();}
+   try{const u=validOrigin(document.getElementById('apiOrigin').value),t=document.getElementById('apiToken').value.trim();if(t.length<32)throw Error('Token kontrol minimal 32 karakter.');disconnect();origin=u;token=t;document.getElementById('apiToken').value='';poll();timer=setInterval(poll,4000);}catch(e){note=e.message;paint();}
   };
   document.getElementById('apiDisconnect').onclick=()=>{disconnect();note='Dashboard terputus; worker tetap berjalan.';paint();};paint();
  };
