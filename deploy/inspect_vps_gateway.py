@@ -25,7 +25,7 @@ FLOW_FILES = (
 
 # These are public protocol tokens, not a pattern matching arbitrary strings.
 PUBLIC_STRINGS = frozenset({
-    "", "https://fapi.binance.com",
+    "", "https://fapi.binance.com", "https://fapi.binance.com/",
     "/fapi/v1/order", "/fapi/v1/openOrders", "/fapi/v1/allOrders",
     "/fapi/v1/algoOrder", "/fapi/v1/openAlgoOrders", "/fapi/v1/allAlgoOrders",
     "/fapi/v1/leverage", "/fapi/v1/marginType", "/fapi/v1/positionSide/dual",
@@ -35,13 +35,14 @@ PUBLIC_STRINGS = frozenset({
     "/fapi/v2/account", "/fapi/v3/account", "/fapi/v2/positionRisk",
     "/fapi/v3/positionRisk", "/fapi/v1/apiTradingStatus",
     "GET", "POST", "PUT", "DELETE", "get", "post", "put", "delete",
-    "&", "=", "?", "utf-8", "ascii", "LONG", "SHORT", "BUY", "SELL",
+    "&", "=", "?", "/", "&signature=", "utf-8", "ascii", "0", "true", "false",
+    "LONG", "SHORT", "BUY", "SELL",
     "BOTH", "CROSS", "CROSSED", "ISOLATED", "75", "LIMIT", "MARKET",
     "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET",
     "CONDITIONAL", "GTC", "IOC", "FOK", "GTX", "MARK_PRICE", "CONTRACT_PRICE",
     "NEW", "PARTIALLY_FILLED", "FILLED", "CANCELED", "CANCELLED",
     "REJECTED", "EXPIRED", "EXPIRED_IN_MATCH", "PENDING", "SUBMITTING",
-    "ENTRY_PENDING", "PROTECTED", "CLOSED", "NEEDS_REVIEW", "UNKNOWN",
+    "ENTRY_PENDING", "POSITION_PROTECTED", "PROTECTED", "CLOSED", "NEEDS_REVIEW", "UNKNOWN",
     "CONFIGURED", "NOT_CONNECTED", "CONNECTED", "BINANCE_NOT_CONFIGURED",
     "BINANCE_ORDER_GATEWAY_NOT_CONNECTED", "ORDER_INTENT",
     "BINANCE_API_KEY_FILE", "BINANCE_API_SECRET_FILE", "BINANCE_API_KEY",
@@ -58,11 +59,11 @@ PUBLIC_STRINGS = frozenset({
     "newClientAlgoId", "clientAlgoId", "algoId", "algoType", "algoStatus",
     "timestamp", "recvWindow", "signature", "dualSidePosition", "marginType",
     "leverage", "margin_mode", "entry", "protection", "exit_side", "stop_loss",
-    "take_profit", "intent_id", "client_order_id", "entry_order_id",
+    "take_profit", "intent_id", "client_order_id", "order_id", "entry_order_id",
     "sl_order_id", "tp_order_id", "entry_filled_qty", "first_fill_at",
     "sl_confirmed", "tp_confirmed", "closed_at", "exit_order_id",
     "entry_price", "entry_quantity", "position_quantity", "protected_quantity",
-    "observed_at", "checked_at", "updateTime", "time", "transactTime",
+    "observed_at", "checked_at", "updateTime", "time", "transactTime", "serverTime",
     "code", "msg", "data", "orders", "positions", "order", "success",
     "receipt", "state", "mode", "sl", "tp", "execution_quantity",
     "risk_target_usdt", "risk", "risk_usdt", "gross_risk", "gross_risk_usdt",
@@ -73,7 +74,7 @@ PUBLIC_STRINGS = frozenset({
     "submit", "reconcile", "__func__",
 })
 # Keep a small explicit operational set; account IDs and arbitrary numbers vanish.
-PUBLIC_INTEGERS = frozenset({0, 1, 2, 5, 15, 30, 60, 75, 100, 5000, 10000, 60000})
+PUBLIC_INTEGERS = frozenset({0, 1, 2, 3, 5, 10, 15, 28, 30, 36, 60, 75, 100, 1000, 5000, 10000, 60000})
 PUBLIC_BYTES = frozenset(text.encode("ascii") for text in PUBLIC_STRINGS)
 REDACTED = "<REDACTED>"
 REDACTED_IDENTIFIER = "_redacted_identifier"

@@ -83,7 +83,7 @@ class DashboardContract(unittest.TestCase):
 
     def test_account_connection_switch_and_read_only_sections(self):
         self.run_dom(r"""
-assert.deepEqual(statValues(),['—','—','—','—']);open('robot');assert.equal(document.getElementById('robotToggle').disabled,true);
+assert.deepEqual(statValues(),['—','—','—','—']);open('robot');assert.equal(document.getElementById('robotToggle').disabled,true);assert.match(content.textContent,/Status gateway belum tersedia dari worker/);assert.doesNotMatch(content.textContent,/BINANCE_ORDER_GATEWAY_NOT_CONNECTED/);
 await connect();assert.equal(document.getElementById('apiToken').value,'');assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.match(content.textContent,/HYPEUSDT/);assert.match(content.textContent,/Transport pengiriman order Binance belum tersedia/);assert.match(content.textContent,/Worker belum dapat mengirim order ke Binance/);assert.doesNotMatch(content.textContent,/Eksekusi Binance diblokir/);
 document.getElementById('robotToggle').click();await flush();assert.match(document.getElementById('robotToggle').textContent,/: ON/);
 const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{robot_on:true});

@@ -258,6 +258,46 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(report["gateway"]["order_gateway_methods"], [tool.REDACTED_IDENTIFIER])
         ast.parse(report["gateway"]["sanitized_source"])
 
+    def test_exact_receipt_abi_signing_and_operational_values_are_visible(self):
+        receipt_fields = (
+            "source", "state", "symbol", "client_order_id", "order_id", "filled_quantity",
+            "observed_at", "first_fill_at", "sl_confirmed", "tp_confirmed", "sl_order_id",
+            "tp_order_id", "exit_order_id", "closed_at",
+        )
+        source = (
+            "class OrderGateway:\n"
+            "    def __init__(self, base_url='https://fapi.binance.com/'):\n"
+            "        self.base_url = base_url.rstrip('/')\n"
+            "    source = 'BINANCE_FUTURES'\n"
+            "    state = 'POSITION_PROTECTED'\n"
+            "    receipt_keys = " + repr(receipt_fields) + "\n"
+            "    signing = ['&signature=', '0', 'true', 'false', 'serverTime']\n"
+            "    operations = [3, 10, 28, 36, 1000]\n"
+            "    close = {'closePosition': 'true'}\n"
+            "    def submit(self, intent): return str(intent)[3:28:36]\n"
+        )
+        self.gateway.write_text(source)
+        code, report, _ = self.invoke()
+        self.assertEqual(code, 0)
+        rendered = report["gateway"]["sanitized_source"]
+        for field in receipt_fields:
+            self.assertIn(repr(field), rendered)
+        for token in ("BINANCE_FUTURES", "POSITION_PROTECTED", "https://fapi.binance.com/",
+                      "/", "&signature=", "0", "true", "false", "serverTime"):
+            self.assertIn(repr(token), rendered)
+        self.assertIn("[3, 10, 28, 36, 1000]", rendered)
+        self.assertIn("[3:28:36]", rendered)
+        self.assertNotIn("<REDACTED>", rendered)
+
+    def test_unknown_and_credential_bearing_urls_still_redact(self):
+        for url in (f"https://fapi.binance.com/{SECRET}", f"https://{API_KEY}@fapi.binance.com/", "https://unknown.example.invalid/"):
+            with self.subTest(url=url):
+                self.gateway.write_text("class OrderGateway:\n    base_url = " + repr(url) + "\n")
+                code, report, output = self.invoke()
+                self.assertEqual(code, 0)
+                self.assertNotIn(url, output)
+                self.assertIn("<REDACTED>", report["gateway"]["sanitized_source"])
+
 
 if __name__ == "__main__":
     unittest.main()

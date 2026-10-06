@@ -4,13 +4,20 @@ Dashboard kantor 3D dan worker privat Binance USD-M Futures untuk satu alur:
 
 `ROBOT ON → account Binance → screening NeuroAPI → analisis → validasi risiko → OrderGateway.submit(intent) → Binance Futures`
 
-**Sambungan pengiriman order belum diimplementasikan.** Ujung alur saat ini
+**Gateway bawaan belum memiliki sambungan pengiriman order.** Ujung alur instalasi bawaan
 berhenti dengan status `EXECUTION_BLOCKED` dan kode
 `BINANCE_ORDER_GATEWAY_NOT_CONNECTED`; gateway menampilkan `NOT_CONNECTED`.
 Entry, TP, dan SL belum terkirim. Developer manusia menyambungkan satu adapter
 [`worker/order_gateway.py`](worker/order_gateway.py), sesuai kontrak dalam
 [panduan integrasi](deploy/ORDER_INTEGRATION.md). Tidak ada transport trading
 alternatif atau tombol yang dapat melewati adapter tersebut.
+
+Untuk adapter existing yang hanya berada di VPS, tersedia
+[perbaikan terarah berdasarkan source yang telah diaudit](deploy/VPS_ORDER_FIX.md).
+Prosedur mempertahankan helper dan file lain, mengganti hanya class gateway
+terverifikasi, dan memperbarui lima file coordinator tanpa pull/reset proyek.
+Template deployment tidak dipilih sebagai executor runtime lain. Pengujian
+offline belum membuktikan penerimaan entry atau SL/TP oleh Binance produksi.
 
 Coordinator memeriksa implementasi `submit` dan `reconcile` sebelum menyimpan
 claim `SUBMITTING`. Metode yang sudah diimplementasikan dipanggil setelah
@@ -75,6 +82,7 @@ tanpa replay otomatis setelah restart.
 - [Operasi dan pemeriksaan 24/7](deploy/ROBOT_24_7.md)
 - [Panduan Termius untuk VPS existing dan adapter Futures 24/7](deploy/TERMIUS_24_7.md)
 - [Audit source container sebelum ROBOT ON tanpa mengubah adapter VPS](deploy/AUDIT_BEFORE_ON.md)
+- [Perbaikan adapter VPS dan coordinator dengan backup, tanpa mengganti fungsi lain](deploy/VPS_ORDER_FIX.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
 

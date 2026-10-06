@@ -120,6 +120,7 @@
   }
   function gatewayNote(robot) {
     const gateway = robot?.execution_gateway;
+    if (!online || !gateway) return notice('Status gateway belum tersedia dari worker.', 'warning');
     if (!gateway?.connected || ['NOT_CONNECTED', 'BLOCKED', 'UNAVAILABLE'].includes(gateway.status)) {
       return notice('Transport pengiriman order Binance belum tersedia · '+(gateway?.failure_code || 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED')+'. Worker belum dapat mengirim order ke Binance.', 'warning');
     }
