@@ -86,8 +86,9 @@ class Coordinator:
             return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
         if not self.execution_slots(account,today):return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         try:
-            context,rules=analysis_context(self.market,row['symbol'],'5')
-            self.market.fresh(context,row['symbol']);preflight(plan,rules,D('5'))
+            target=plan['risk_target_usdt']
+            context,rules=analysis_context(self.market,row['symbol'],target)
+            self.market.fresh(context,row['symbol']);preflight(plan,rules,target)
         except Exception:return self.reject_intent(row,account,'ORDER_PREFLIGHT_REJECTED')
         self.db.execute('BEGIN IMMEDIATE')
         try:

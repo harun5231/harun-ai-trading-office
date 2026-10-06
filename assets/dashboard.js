@@ -10,6 +10,7 @@
   const FRESH_MS = 120000;
   let origin = '', configuredOrigin = '', token = '', timer = null, snapshot = null;
   let view = 'robot', generation = 0, revision = 0, polling = false, saving = false;
+  let riskDraft = null, resetRiskOnRefresh = null;
   let online = false, refreshRequested = false, message = 'Hubungkan worker untuk membaca akun dan status robot.';
 
   function element(tag, text, className) {
@@ -35,6 +36,16 @@
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/') throw Error('Gunakan origin HTTPS worker tanpa path atau kredensial.');
     return url.origin;
+  }
+  function validRisk(value) {
+    const draft = value.trim(), match = /^(\d+)(?:\.(\d+))?$/.exec(draft);
+    if (!match || draft.length > 64) throw Error('Risiko harus angka desimal lebih dari 0 sampai 100 USDT.');
+    const whole = match[1].replace(/^0+/, '') || '0', fraction = match[2] || '';
+    if (!/[1-9]/.test(whole+fraction) || whole.length > 3 ||
+        (whole.length === 3 && (whole > '100' || (whole === '100' && /[1-9]/.test(fraction))))) {
+      throw Error('Risiko harus lebih dari 0 dan maksimal 100 USDT.');
+    }
+    return draft;
   }
   const configUrl = new URL('worker-config.json', document.currentScript?.src || document.baseURI);
   fetch(configUrl, { credentials: 'omit', cache: 'no-store' }).then(response => response.ok ? response.json() : null).then(config => {
@@ -121,8 +132,23 @@
     const toggle = element('button', 'ROBOT TRADING: '+(robot ? robot.robot_on ? 'ON' : 'OFF' : 'BELUM TERHUBUNG'));
     toggle.id = 'robotToggle'; toggle.disabled = !origin || !online || saving || !robot;
     toggle.setAttribute('aria-pressed', String(robot?.robot_on === true));
-    toggle.onclick = () => setRobot(!snapshot.robot.robot_on); actions.append(toggle); main.append(actions);
+    toggle.onclick = () => saveSettings({ robot_on: !snapshot.robot.robot_on }); actions.append(toggle); main.append(actions);
     main.append(element('p', message, 'dashboard-message'));
+    const riskControls = element('div', undefined, 'dashboard-connection dashboard-risk');
+    const riskLabel = element('label', 'RISK PER SL (USDT, lebih dari 0 sampai 100)');
+    const risk = element('input'); risk.id = 'robotRisk'; risk.type = 'number'; risk.inputMode = 'decimal';
+    risk.min = '0'; risk.max = '100'; risk.step = 'any'; risk.value = riskDraft ?? robot?.risk_target_usdt ?? '5';
+    risk.disabled = !origin || !online || saving || !robot; risk.oninput = () => { riskDraft = risk.value; };
+    riskLabel.append(risk);
+    const riskActions = element('div', undefined, 'dashboard-actions'), riskSave = element('button', 'SIMPAN RISIKO');
+    riskSave.id = 'robotRiskSave'; riskSave.disabled = risk.disabled;
+    riskSave.onclick = () => {
+      try { riskDraft = risk.value; saveSettings({ risk_target_usdt: validRisk(risk.value) }); }
+      catch (error) { message = error.message; paint(); }
+    };
+    riskActions.append(riskSave); riskControls.append(riskLabel, riskActions,
+      notice('Perubahan risiko berlaku hanya untuk analisis baru. Setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
+    main.append(riskControls);
     const status = element('p', robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
     status.id = 'robotStatus'; status.setAttribute('role', 'status'); main.append(status);
     const metrics = element('div', undefined, 'dashboard-metrics');
@@ -215,9 +241,13 @@
     paintStats();
     if (panel.hidden) return;
     const focused = document.activeElement;
-    // Preserve an unfinished connection form while read-only polls refresh the other panels.
-    if (view === 'robot' && ['apiOrigin', 'apiToken'].includes(focused?.id)) {
+    // Keep unfinished credential/risk input intact while worker facts refresh.
+    if (view === 'robot' && ['apiOrigin', 'apiToken', 'robotRisk'].includes(focused?.id)) {
       const toggle = document.getElementById('robotToggle'); if (toggle) toggle.disabled = !origin || !online || saving || !snapshot;
+      for (const id of ['robotRisk', 'robotRiskSave']) {
+        const control = document.getElementById(id); if (control) control.disabled = !origin || !online || saving || !snapshot;
+      }
+      const note = content.querySelector('.dashboard-message'); if (note) note.textContent = message;
       return;
     }
     title.textContent = views[view]; content.replaceChildren();
@@ -237,7 +267,12 @@
     try {
       const data = validate(await request('/office/status'));
       if (currentGeneration !== generation || currentRevision !== revision || saving) return;
-      snapshot = data; online = true; message = 'Worker terhubung · Diperiksa '+date(data.generated_at); publish(); paint();
+      snapshot = data; online = true;
+      if (resetRiskOnRefresh !== null) {
+        if (riskDraft === resetRiskOnRefresh) riskDraft = null;
+        resetRiskOnRefresh = null;
+      }
+      message = 'Worker terhubung · Diperiksa '+date(data.generated_at); publish(); paint();
     } catch (error) {
       if (currentGeneration !== generation || currentRevision !== revision) return;
       online = false; message = error.message+'. Data terakhir bukan pembaruan terkini.'; publish(); paint();
@@ -248,14 +283,16 @@
       }
     }
   }
-  async function setRobot(robotOn) {
+  async function saveSettings(value) {
     if (!origin || !online || saving || !snapshot) return;
-    const currentGeneration = generation; revision++; saving = true; message = 'Menyimpan status robot…'; paint();
+    const riskChange = typeof value.risk_target_usdt === 'string';
+    const currentGeneration = generation; revision++; saving = true; message = riskChange ? 'Menyimpan risiko untuk analisis baru…' : 'Menyimpan status robot…'; paint();
     try {
-      await request('/robot/settings', 'POST', { robot_on: robotOn });
+      await request('/robot/settings', 'POST', value);
       if (currentGeneration !== generation) return;
-      message = 'Status tersimpan. Membaca pembaruan worker…';
-    } catch (error) { if (currentGeneration === generation) message = error.message+'. Status robot belum dapat dipastikan.'; }
+      if (riskChange) resetRiskOnRefresh = value.risk_target_usdt;
+      message = riskChange ? 'Risiko tersimpan untuk analisis baru. Membaca pembaruan worker…' : 'Status tersimpan. Membaca pembaruan worker…';
+    } catch (error) { if (currentGeneration === generation) message = error.message+'. Pengaturan belum dapat dipastikan.'; }
     finally {
       if (currentGeneration === generation) {
         saving = false; refreshRequested = true; paint();
@@ -266,6 +303,7 @@
   function disconnect() {
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
     polling = false; saving = false; refreshRequested = false; online = false;
+    riskDraft = null; resetRiskOnRefresh = null;
     const field = document.getElementById('apiToken'); if (field) field.value = ''; publish();
   }
   menuToggle.addEventListener('click', () => { drawer.hidden = !drawer.hidden; menuToggle.setAttribute('aria-expanded', String(!drawer.hidden)); });

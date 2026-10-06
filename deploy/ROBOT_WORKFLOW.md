@@ -33,6 +33,10 @@ step size, batas quantity, dan min notional. Target default 5 USDT, RR aktual
 minimal2; leverage tidak memperbesar budget loss. Data stale atau konfigurasi
 tidak valid menghentikan alur sebelum gateway.
 
+Pengaturan risiko positif sampai 100 USDT tetap tersedia di panel Robot Trading.
+Target ditangkap sebelum analisis dan disimpan pada claim serta bukti intent.
+Perubahan hanya dipakai analisis berikutnya; intent lama tidak diubah ukurannya.
+
 Proof mengikat operation, request/output hash, level, quantity, risk target,
 dan rules yang dipakai sizing. Claim persisten dibuat sebelum request berbayar.
 Polling/restart tidak membuat replay claim yang outcome-nya belum pasti.
@@ -46,10 +50,15 @@ saldo/posisi yang sudah diamati lebih baru.
 | GET `/health` | Health thread/heartbeat worker. |
 | GET `/robot/status` | Status coordinator dan konfigurasi ON/OFF. |
 | GET `/office/status` | Data account, laporan, aktivitas, dan riwayat Binance. |
-| POST `/robot/settings` | Pengaturan robot dengan control token dan exact Origin. |
+| POST `/robot/settings` | ON/OFF dan risiko dengan control token dan exact Origin. |
 
 Read token hanya membaca; control token dapat mengubah pengaturan. Proxy tidak
 meneruskan endpoint lain. Dashboard tidak menerima provider key.
+
+Body pengaturan adalah subset tidak kosong dari `robot_on` (boolean) dan
+`risk_target_usdt` (string Decimal positif sampai 100). Kedua nilai divalidasi
+sebelum pembaruan atomik. Pemeriksaan koneksi CLI `api-check` dan `binance-check`
+hanya menjalankan GET provider/akun, tanpa analisis atau order.
 
 OFF menghentikan claim baru. Request berjalan ditunggu saat shutdown;
 outcome belum pasti memerlukan rekonsiliasi dan tetap fail-closed. Entry hanya

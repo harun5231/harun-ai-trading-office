@@ -59,12 +59,12 @@ class WorkerCLITests(unittest.TestCase):
                         result = exit_code.code
                 self.assertEqual(result, 0)
                 self.assertIn('usage:', out.getvalue())
-                for command in ('health', 'status', 'diagnostics'):
+                for command in ('health', 'status', 'diagnostics', 'api-check', 'binance-check'):
                     self.assertIn(command, out.getvalue())
 
     def test_old_paid_live_and_simulation_commands_are_rejected_before_runtime_import(self):
-        retired = ('api-dry-run', 'api-check', 'screening-once', 'analysis-once',
-                   'binance-check', 'binance-shadow', 'binance-live-preflight',
+        retired = ('api-dry-run', 'screening-once', 'analysis-once',
+                   'binance-shadow', 'binance-live-preflight',
                    'binance-arm', 'binance-execute', 'binance-scheduler', 'simulation', 'approval')
         with self.no_runtime():
             module = self.isolated_cli()
@@ -73,6 +73,95 @@ class WorkerCLITests(unittest.TestCase):
                      self.assertRaises(SystemExit) as caught:
                     module.main([command])
                 self.assertEqual(caught.exception.code, 2)
+
+    def response(self, data, code=200):
+        response=Mock();response.code=code;response.headers={};response.read.return_value=json.dumps(data).encode()
+        response.__enter__=Mock(return_value=response);response.__exit__=Mock(return_value=False)
+        return response
+
+    def test_api_check_is_authenticated_get_without_journal_ask_or_state(self):
+        key='synthetic-cli-provider-key'
+        with tempfile.TemporaryDirectory() as root, \
+             patch.dict(os.environ, {'NEUROBRO_API_KEY':key,'NEUROBRO_API_KEY_FILE':''}), \
+             patch('worker.http_client.build_opener') as factory, \
+             patch('sqlite3.connect',side_effect=AssertionError('Diagnostic opened DB')), \
+             patch('worker.core.Ledger',side_effect=AssertionError('Diagnostic created ledger')), \
+             patch('worker.neuroapi.NeuroAPI.__init__',side_effect=AssertionError('Diagnostic initialized client')), \
+             patch('worker.neuroapi.NeuroAPI.ask',side_effect=AssertionError('Diagnostic made paid ask')), \
+             patch('worker.order_gateway.OrderGateway.submit',side_effect=AssertionError('Diagnostic sent an order')):
+            factory.return_value.open.return_value=self.response({'status':'healthy','authenticated':True,'private':key})
+            code,output,errors=self.invoke(['api-check','--data-dir',root])
+            request=factory.return_value.open.call_args.args[0]
+            self.assertEqual(factory.return_value.open.call_count,1)
+            self.assertEqual(request.get_method(),'GET');self.assertIsNone(request.data)
+            self.assertEqual(request.full_url,'https://api.neurobro.ai/api/v1/health')
+            self.assertEqual(request.get_header('X-api-key'),key)
+            self.assertEqual(factory.return_value.open.call_args.kwargs['timeout'],15)
+            self.assertEqual((code,json.loads(output),errors),(0,{'status':'NEUROAPI_CONNECTED'},''))
+            self.assertEqual(list(Path(root).iterdir()),[]);self.assertNotIn(key,output)
+
+    def test_api_check_missing_key_and_all_bad_responses_are_fixed_errors(self):
+        key='synthetic-cli-provider-key'
+        with patch.dict(os.environ,{'NEUROBRO_API_KEY':'','NEUROBRO_API_KEY_FILE':''}), \
+             patch('worker.http_client.build_opener',side_effect=AssertionError('Missing key made HTTP')):
+            code,output,errors=self.invoke(['api-check'])
+        self.assertEqual((code,json.loads(output),errors),(1,{'status':'NEUROAPI_NOT_CONFIGURED'},''))
+        invalid=((200,{'status':'healthy','authenticated':False}),
+                 (200,{'status':'unknown','authenticated':True}),
+                 (401,{'status':'healthy','authenticated':True}),
+                 (200,{'status':'healthy','authenticated':key}))
+        for status,body in invalid:
+            with self.subTest(status=status,body=body), \
+                 patch.dict(os.environ,{'NEUROBRO_API_KEY':key,'NEUROBRO_API_KEY_FILE':''}), \
+                 patch('worker.http_client.build_opener') as factory:
+                factory.return_value.open.return_value=self.response(body,status)
+                code,output,errors=self.invoke(['api-check'])
+            self.assertEqual((code,json.loads(output),errors),(1,{'status':'NEUROAPI_UNAVAILABLE'},''))
+            self.assertNotIn(key,output)
+        with patch.dict(os.environ,{'NEUROBRO_API_KEY':key,'NEUROBRO_API_KEY_FILE':''}), \
+             patch('worker.http_client.build_opener',side_effect=RuntimeError(key+' PRIVATE_RESPONSE')):
+            code,output,errors=self.invoke(['api-check'])
+        self.assertEqual((code,json.loads(output),errors),(1,{'status':'NEUROAPI_UNAVAILABLE'},''))
+        self.assertNotIn(key,output);self.assertNotIn('PRIVATE_RESPONSE',output)
+
+    def test_binance_check_is_only_authenticated_read_only_get_and_no_state(self):
+        key='synthetic-cli-binance-key-00000000';secret='synthetic-cli-binance-secret-00000000'
+        with tempfile.TemporaryDirectory() as root:
+            key_path=Path(root)/'key';secret_path=Path(root)/'secret'
+            key_path.write_text(key);key_path.chmod(0o600);secret_path.write_text(secret);secret_path.chmod(0o600)
+            before={path:path.read_bytes() for path in Path(root).iterdir()}
+            with patch.dict(os.environ,{'BINANCE_API_KEY_FILE':str(key_path),'BINANCE_API_SECRET_FILE':str(secret_path)}), \
+                 patch('worker.binance_private.build_opener') as factory, \
+                 patch('sqlite3.connect',side_effect=AssertionError('Diagnostic opened DB')), \
+                 patch('worker.neuroapi.NeuroAPI.ask',side_effect=AssertionError('Diagnostic made paid ask')), \
+                 patch('worker.order_gateway.OrderGateway.submit',side_effect=AssertionError('Diagnostic sent an order')):
+                factory.return_value.open.side_effect=[self.response({'serverTime':1700000000000}),
+                    self.response({'assets':[{'asset':'USDT','walletBalance':'116.928','availableBalance':'100'}]}),
+                    self.response({'canTrade':True,'dualSidePosition':False,'multiAssetsMargin':False,'private':secret})]
+                code,output,errors=self.invoke(['binance-check','--data-dir',root])
+                requests=[call.args[0] for call in factory.return_value.open.call_args_list]
+                self.assertEqual(len(requests),3)
+                self.assertTrue(all(request.get_method()=='GET' and request.data is None for request in requests))
+                self.assertEqual([request.full_url.split('?')[0].rsplit('/',1)[-1] for request in requests],['time','account','accountConfig'])
+                self.assertTrue(all(request.get_header('X-mbx-apikey')==key for request in requests[1:]))
+                self.assertEqual(code,0);self.assertEqual(json.loads(output)['status'],'BINANCE_CONNECTED');self.assertEqual(errors,'')
+            self.assertEqual({path:path.read_bytes() for path in Path(root).iterdir()},before)
+            for private in (key,secret,'signature'):self.assertNotIn(private,output)
+
+    def test_binance_check_missing_config_and_unknown_errors_never_print_secrets(self):
+        from worker.binance_private import BinanceCheckError,CODES
+        cases=[(RuntimeError('PRIVATE_KEY RAW_SIGNATURE'),'BINANCE_ACCOUNT_UNAVAILABLE'),
+               (BinanceCheckError('PRIVATE_KEY RAW_SIGNATURE'),'BINANCE_ACCOUNT_UNAVAILABLE')]
+        cases.extend((BinanceCheckError(status),status) for status in sorted(CODES))
+        for cause,status in cases:
+            with patch('worker.binance_private.BinanceReadOnly',side_effect=cause):
+                code,output,errors=self.invoke(['binance-check'])
+            self.assertEqual((code,json.loads(output)['status'],errors),(1,status,''))
+            self.assertNotIn('PRIVATE_KEY',output);self.assertNotIn('RAW_SIGNATURE',output)
+        with patch.dict(os.environ,{'BINANCE_API_KEY_FILE':'/missing-cli-key','BINANCE_API_SECRET_FILE':'/missing-cli-secret'}), \
+             patch('worker.binance_private.build_opener',side_effect=AssertionError('Unconfigured check made HTTP')):
+            code,output,errors=self.invoke(['binance-check'])
+        self.assertEqual((code,json.loads(output)['status'],errors),(1,'BINANCE_NOT_CONFIGURED',''))
 
     def test_health_reports_online_offline_and_sanitizes_probe_errors(self):
         for online in (True, False):

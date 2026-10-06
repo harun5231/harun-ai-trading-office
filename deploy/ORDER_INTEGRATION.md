@@ -16,7 +16,10 @@ jalur tiket, approval browser, atau sakelar environment pengiriman order.
 
 `ROBOT ON → Binance account → screening sesuai slot → analisis → validasi → intent → gateway`
 
-- Risiko harga entry ke SL maksimum 5 USDT, quantity Decimal, RR aktual minimal 2.
+- Risiko harga entry ke SL tidak melampaui target tersimpan; default 5 USDT.
+  Pengaturan menerima target positif sampai 100 USDT seperti sebelumnya.
+  Quantity memakai Decimal dan RR aktual minimal 2. Perubahan pengaturan hanya
+  memengaruhi analisis baru, bukan intent yang telah dibuat dan diverifikasi.
   Batas ini tidak mencakup fee, funding, slippage, atau gap harga saat eksekusi.
 - Maksimal dua posisi bersamaan dan dua entry bot terkonfirmasi per hari
   Asia/Bangkok. Pending entry ikut mencadangkan kapasitas. Counter entry hanya
@@ -52,6 +55,8 @@ Semua nilai harga dan quantity tetap string Decimal.
 | `evidence_sha256` | Digest bukti analisis terverifikasi |
 
 Payload journal dibandingkan ulang dengan intent dari bukti sebelum dipakai.
+Preflight submission memakai target yang terikat pada bukti intent tersebut,
+bukan mengganti quantity saat pengaturan risiko berikutnya berubah.
 Adapter harus memeriksa posisi dan open orders terbaru tepat sebelum POST,
 agar perubahan manual setelah account snapshot tidak melampaui kapasitas.
 Jangan membatalkan order, mengganti konfigurasi akun, atau memasang proteksi

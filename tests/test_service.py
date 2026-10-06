@@ -61,18 +61,38 @@ class ServiceTests(unittest.TestCase):
             time.sleep(.01)
         self.fail('Local service condition did not complete')
 
-    def test_only_boolean_robot_control_is_supported_and_authenticated(self):
+    def test_robot_control_is_strict_and_authenticated(self):
         controller=self.dormant()
         for token,origin in (('read','https://office.example'),('control',None),('control','https://evil.example')):
             self.assertEqual(self.call(controller,'/robot/settings','POST',{'robot_on':True},token=token,origin=origin)[0],403)
         for raw in (b'{"robot_on":"true"}',b'{"robot_on":1}',b'{"robot_on":true,"robot_on":false}',
-                    b'{"robot_on":true,"risk_target_usdt":"10"}',b'{"mode":"LIVE"}',b'x'*1025):
+                    b'{"robot_on":true,"risk_target_usdt":10}',b'{}',b'{"mode":"LIVE"}',b'x'*1025):
             self.assertEqual(self.call(controller,'/robot/settings','POST',raw=raw)[0],400)
         self.assertFalse(controller.robot()['robot_on'])
         code,value=self.call(controller,'/robot/settings','POST',{'robot_on':True})
         self.assertEqual(code,200);self.assertTrue(value['robot_on']);self.assertTrue(controller.robot_wakeup.is_set())
         controller.robot_wakeup.clear();controller.robot({'robot_on':True});self.assertFalse(controller.robot_wakeup.is_set())
         self.assertFalse(controller.robot({'robot_on':False})['robot_on']);self.assertEqual(self.provider_calls,[])
+
+    def test_risk_only_save_never_wakes_actor_and_mixed_changes_are_atomic(self):
+        controller=self.dormant()
+        code,value=self.call(controller,'/robot/settings','POST',{'risk_target_usdt':'7.25'})
+        self.assertEqual(code,200);self.assertEqual(value['risk_target_usdt'],'7.25');self.assertFalse(value['robot_on'])
+        self.assertFalse(controller.robot_wakeup.is_set())
+        for risk in ('0','-1','100.000001','NaN','Infinity','',True,5,None):
+            code,_=self.call(controller,'/robot/settings','POST',{'robot_on':True,'risk_target_usdt':risk})
+            self.assertEqual(code,400,risk)
+            value=controller.robot();self.assertFalse(value['robot_on']);self.assertEqual(value['risk_target_usdt'],'7.25')
+            self.assertFalse(controller.robot_wakeup.is_set())
+        code,value=self.call(controller,'/robot/settings','POST',{'robot_on':True,'risk_target_usdt':'10'})
+        self.assertEqual(code,200);self.assertTrue(value['robot_on']);self.assertEqual(value['risk_target_usdt'],'10')
+        self.assertTrue(controller.robot_wakeup.is_set());controller.robot_wakeup.clear()
+        code,value=self.call(controller,'/robot/settings','POST',{'risk_target_usdt':'100'})
+        self.assertEqual(code,200);self.assertTrue(value['robot_on']);self.assertEqual(value['risk_target_usdt'],'100')
+        self.assertFalse(controller.robot_wakeup.is_set())
+        code,_=self.call(controller,'/robot/settings','POST',{'robot_on':False,'risk_target_usdt':'101'})
+        self.assertEqual(code,400);self.assertTrue(controller.robot()['robot_on'])
+        self.assertEqual(controller.robot()['risk_target_usdt'],'100');self.assertEqual(self.provider_calls,[])
 
     def test_legacy_routes_are_absent_and_health_identifies_pipeline(self):
         controller=self.dormant()

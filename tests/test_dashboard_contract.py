@@ -49,7 +49,7 @@ const now=()=>new Date().toISOString();
 const data={schema_version:2,source:'BINANCE_FUTURES',generated_at:now(),robot:{robot_on:false,bot_status:'OFF',checked_at:now(),risk_target_usdt:'5',running_positions:1,available_slots:1,manual_exposure:['HYPEUSDT'],bot_entries_today:0,execution_gateway:{connected:false,status:'NOT_CONNECTED',failure_code:'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'}},account:{status:'CONNECTED',checked_at:now(),usdt_wallet_balance:'116.928',usdt_available_balance:'105.25',active_positions:1,positions:[{symbol:'HYPEUSDT',side:'LONG',position_side:'BOTH',quantity:'1.5',entry_price:'28',mark_price:'29',unrealized_pnl:'1.5'}]},reports:{status:'AVAILABLE',checked_at:now(),period_start:now(),period_end:now(),pnl_today_usdt:'3.75',realized_pnl_today_usdt:'4',commission_today_usdt:'-0.25',funding_today_usdt:'0',trades_today:2,complete:true},position_history:{status:'AVAILABLE',kind:'BINANCE_FILLS',checked_at:now(),period_start:now(),period_end:now(),items:[{id:'fill-1',symbol:'BTCUSDT',order_id:'order-1',side:'SELL',position_side:'BOTH',quantity:'0.001',price:'64000',realized_pnl:'4',commission:'0.25',commission_asset:'USDT',time:now()}],complete:true},employees:[{id:'neuro',name:'NeuroAPI Analyst',status:'WAITING'}],activity:[{at:now(),state:'SCREENING',agent:'Coordinator',message:'<img src=x onerror="window.pwned=true">'}]};
 let responseOverride=null;
 const response=value=>({ok:true,status:200,json:async()=>structuredClone(value)});
-async function fetch(url,options={}){url=String(url);calls.push({url,...options});if(url.endsWith('/worker-config.json'))return response({worker_origin:''});if(responseOverride){const handled=responseOverride(url,options);if(handled)return handled;}if(url.endsWith('/office/status'))return response(data);if(url.endsWith('/robot/settings')){const value=JSON.parse(options.body);data.robot.robot_on=value.robot_on;data.robot.bot_status=value.robot_on?'WAITING':'OFF';return response(data.robot);}throw Error('Unexpected route: '+url);}
+async function fetch(url,options={}){url=String(url);calls.push({url,...options});if(url.endsWith('/worker-config.json'))return response({worker_origin:''});if(responseOverride){const handled=responseOverride(url,options);if(handled)return handled;}if(url.endsWith('/office/status'))return response(data);if(url.endsWith('/robot/settings')){const value=JSON.parse(options.body);Object.assign(data.robot,value);if(Object.hasOwn(value,'robot_on'))data.robot.bot_status=value.robot_on?'WAITING':'OFF';return response(data.robot);}throw Error('Unexpected route: '+url);}
 vm.runInNewContext(fs.readFileSync('assets/dashboard.js','utf8'),{document,window,location:{protocol:'https:',origin:'https://office.test'},fetch,URL,Date,AbortSignal,CustomEvent:class{constructor(type,{detail}){this.type=type;this.detail=detail;}},setInterval:fn=>{intervals.set(++intervalId,fn);return intervalId;},clearInterval:id=>intervals.delete(id)});
 const flush=async()=>{for(let i=0;i<12;i++)await new Promise(resolve=>setImmediate(resolve));};
 const open=view=>drawer.children.find(button=>button.dataset.view===view).click();
@@ -120,6 +120,45 @@ document.getElementById('apiDisconnect').click();assert.equal(bridge.getTelemetr
         self.run_dom(r"""
 await connect();const previous=structuredClone(data);let finish;let intercepted=false;responseOverride=url=>url.endsWith('/office/status')&&!intercepted?(intercepted=true,new Promise(resolve=>{finish=()=>resolve(response(previous));})):null;[...intervals.values()][0]();await flush();document.getElementById('robotToggle').click();await flush();finish();await flush();assert.match(document.getElementById('robotToggle').textContent,/: ON/);assert.equal(calls.filter(call=>call.url.endsWith('/office/status')).length,3);assert.equal(snapshots.at(-1).robot_on,true);
 """)
+
+    def test_risk_settings_preserve_decimal_string_and_only_affect_new_analysis(self):
+        self.run_dom(r"""
+open('robot');assert.equal(document.getElementById('robotRisk').value,'5');assert.equal(document.getElementById('robotRisk').disabled,true);await connect();assert.equal(document.getElementById('robotRisk').value,'5');
+const risk=document.getElementById('robotRisk');risk.value='7.50000000000000001';risk.oninput();document.getElementById('robotRiskSave').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);await flush();
+const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{risk_target_usdt:'7.50000000000000001'});assert.equal(document.getElementById('robotRisk').value,'7.50000000000000001');assert.equal(data.robot.robot_on,false);assert.match(content.textContent,/hanya untuk analisis baru/);assert.match(content.textContent,/intent yang sudah dibuat tetap/);
+document.getElementById('apiDisconnect').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);
+""")
+
+    def test_risk_draft_survives_focused_poll_and_panel_reopen(self):
+        self.run_dom(r"""
+await connect();const risk=document.getElementById('robotRisk');risk.value='6.125';risk.oninput();document.activeElement=risk;data.robot.risk_target_usdt='8';[...intervals.values()][0]();await flush();assert.equal(document.getElementById('robotRisk'),risk);assert.equal(risk.value,'6.125');
+open('reports');open('robot');assert.equal(document.getElementById('robotRisk').value,'6.125');document.getElementById('robotRiskSave').click();await flush();assert.equal(data.robot.risk_target_usdt,'6.125');
+""")
+
+    def test_invalid_risk_values_never_send_setting_mutations(self):
+        self.run_dom(r"""
+await connect();for(const value of ['0','0.0000','-1','101','100.0000000000000000001','Infinity','1e2','not-a-number','']){const risk=document.getElementById('robotRisk');risk.value=value;risk.oninput();document.getElementById('robotRiskSave').click();await flush();assert.equal(calls.filter(call=>call.method==='POST').length,0);assert.match(content.textContent,/Risiko harus/);}
+const risk=document.getElementById('robotRisk');risk.value='100.000';risk.oninput();document.getElementById('robotRiskSave').click();await flush();assert.equal(data.robot.risk_target_usdt,'100.000');
+""")
+
+    def test_new_risk_draft_is_not_erased_by_post_save_refresh(self):
+        self.run_dom(r"""
+await connect();let finish;responseOverride=url=>url.endsWith('/office/status')?new Promise(resolve=>{finish=()=>resolve(response(data));}):null;
+document.getElementById('robotRisk').value='9.25';document.getElementById('robotRisk').oninput();document.getElementById('robotRiskSave').click();await flush();const next=document.getElementById('robotRisk');next.value='10.75';next.oninput();document.activeElement=next;finish();await flush();assert.equal(next.value,'10.75');open('reports');open('robot');assert.equal(document.getElementById('robotRisk').value,'10.75');assert.equal(data.robot.risk_target_usdt,'9.25');
+""")
+
+    def test_risk_post_refresh_wins_over_old_get_and_disconnect_generation(self):
+        self.run_dom(r"""
+await connect();const previous=structuredClone(data);let finish;let intercepted=false;responseOverride=url=>url.endsWith('/office/status')&&!intercepted?(intercepted=true,new Promise(resolve=>{finish=()=>resolve(response(previous));})):null;[...intervals.values()][0]();await flush();const risk=document.getElementById('robotRisk');risk.value='9.25';risk.oninput();document.getElementById('robotRiskSave').click();await flush();finish();await flush();assert.equal(document.getElementById('robotRisk').value,'9.25');
+let finishSave;responseOverride=(url,options)=>url.endsWith('/robot/settings')?new Promise(resolve=>{finishSave=()=>resolve(response(data.robot));}):null;document.getElementById('robotRisk').value='10';document.getElementById('robotRiskSave').click();await flush();document.getElementById('apiDisconnect').click();finishSave();await flush();assert.equal(document.getElementById('robotRiskSave').disabled,true);assert.deepEqual(statValues(),['—','—','—','—']);assert.equal(snapshots.at(-1).status,'OFFLINE');
+""")
+
+    def test_old_office_url_is_a_relative_alias_without_duplicate_renderer(self):
+        alias = (ROOT / 'harun_ai_trading_office_3d_detailed.html').read_text()
+        self.assertIn('http-equiv="refresh" content="0;url=./"', alias)
+        self.assertIn('href="./"', alias)
+        self.assertNotIn('<script', alias)
+        self.assertNotIn('SIMULATION', alias)
 
 
 if __name__ == '__main__':
