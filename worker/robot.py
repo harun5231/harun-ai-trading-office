@@ -224,13 +224,17 @@ class Coordinator:
             coins=selections(value,catalog,count)
             data['screen']=index
             if not initial:data['replacements']+=1
-            data['queue']=[s for s in coins if s not in data['seen'] and s not in account['running_symbols'] and s not in MANUAL_ONLY_SYMBOLS]
+            eligible=[s for s in coins if s not in data['seen'] and s not in account['running_symbols'] and s not in MANUAL_ONLY_SYMBOLS]
+            rejected=[s for s in coins if s not in eligible]
+            for symbol in rejected:
+                if symbol not in data['seen']:data['seen'].append(symbol)
+            data['queue']=eligible
+            data['replacement_due']=bool(rejected and not eligible)
             self.db.execute('BEGIN IMMEDIATE')
-            self.save_cycle(cycle,data)
+            self.save_cycle(cycle,data,'ACTIVE')
             self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=?",(operation,))
             self.db.execute('COMMIT')
-            if not data['queue'] and initial:self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('WAITING',account)
+            return self.store.report('WAITING',account,'SCREENING_REPLACEMENT_REQUIRED' if data['replacement_due'] else None)
         except Exception:
             if self.db.in_transaction:self.db.execute('ROLLBACK')
             self.db.execute("UPDATE robot_jobs SET state='NEEDS_REVIEW' WHERE operation=?",(operation,))
