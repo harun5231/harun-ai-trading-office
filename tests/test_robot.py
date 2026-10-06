@@ -86,6 +86,7 @@ class RobotTests(unittest.TestCase):
         self.screens=[['ETHUSDT']];self.on();r=self.robot.tick()
         self.assertEqual(r['running_positions'],1);self.assertEqual(r['running_symbols'],['HYPEUSDT']);self.assertEqual(r['available_slots'],1)
     def test_account_report_preserves_robot_state(self):
+        self.on()
         self.robot.store.report('REJECTED',reason='ROBOT_REQUEST_NEEDS_REVIEW')
         account=dict(running_positions=1,running_symbols=['HYPEUSDT'],manual_exposure=['HYPEUSDT'],bot_entries_today=0,available_slots=1,usdt_wallet_balance='117.25',usdt_available_balance='109.50')
         r=self.robot.store.report_account(account)
