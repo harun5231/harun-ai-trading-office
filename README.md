@@ -83,6 +83,7 @@ tanpa replay otomatis setelah restart.
 - [Panduan Termius untuk VPS existing dan adapter Futures 24/7](deploy/TERMIUS_24_7.md)
 - [Audit source container sebelum ROBOT ON tanpa mengubah adapter VPS](deploy/AUDIT_BEFORE_ON.md)
 - [Perbaikan adapter VPS dan coordinator dengan backup, tanpa mengganti fungsi lain](deploy/VPS_ORDER_FIX.md)
+- [Pemulihan journal riset lama dengan backup, tanpa replay atau perubahan adapter](deploy/LEGACY_RESEARCH_RECOVERY.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
 

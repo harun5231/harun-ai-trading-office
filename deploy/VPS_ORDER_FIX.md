@@ -107,6 +107,13 @@ menghapus atau mengirim ulang intent tersebut. Pemulihan membutuhkan bukti GET
 berdasarkan client/order IDs yang ada, termasuk fill dan proteksi. Order/posisi
 lama tidak diadopsi hanya karena mempunyai symbol atau prefix yang sama.
 
+Jika gateway sudah `CONFIGURED` tetapi coordinator melaporkan
+`ROBOT_REQUEST_NEEDS_REVIEW`, periksa journal NeuroAPI melalui `worker diagnostics`.
+Request historis tetap tersimpan terpisah dari journal order. Untuk format
+riset lama yang terverifikasi dan tidak terkait bukti order aktif, tersedia
+[pemulihan journal riset lama](LEGACY_RESEARCH_RECOVERY.md) tanpa mengganti source
+VPS atau mengirim ulang request.
+
 Penerimaan entry nyata dibuktikan oleh GET entry dengan ID, side, price,
 quantity, dan konfigurasi symbol yang cocok. Proteksi dibuktikan oleh GET algo
 dan fill sebenarnya, termasuk trigger, reduce-only, quantity coverage, dan
