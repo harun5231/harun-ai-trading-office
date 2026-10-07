@@ -85,6 +85,7 @@ tanpa replay otomatis setelah restart.
 - [Perbaikan adapter VPS dan coordinator dengan backup, tanpa mengganti fungsi lain](deploy/VPS_ORDER_FIX.md)
 - [Pemulihan journal riset lama dengan backup, tanpa replay atau perubahan adapter](deploy/LEGACY_RESEARCH_RECOVERY.md)
 - [Pemulihan entry yang tidak ditemukan di Binance dan diagnostics callback](deploy/UNKNOWN_ORDER_RECOVERY.md)
+- [Pemulihan satu slot setelah penolakan entry yang telah diverifikasi](deploy/ONE_SLOT_RECOVERY.md)
 - [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
 - [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
 
