@@ -71,10 +71,11 @@ class RetirementTests(unittest.TestCase):
     def names(self):
         return {path.relative_to(self.root).as_posix() for path in self.root.rglob('*')}
 
-    def invoke(self, apply=False):
+    def invoke(self, apply=False, prove=False):
         output = io.StringIO()
         with redirect_stdout(output):
-            result = tool.main(['--data-dir', str(self.root), *(['--apply'] if apply else [])])
+            result = tool.main(['--data-dir', str(self.root), *(['--apply'] if apply else []),
+                *(['--prove-pre-order-screening-rejection'] if prove else [])])
         self.assertNotIn(SECRET, output.getvalue())
         for operation in LEGACY: self.assertNotIn(operation, output.getvalue())
         return result, json.loads(output.getvalue())
@@ -454,6 +455,350 @@ class RetirementTests(unittest.TestCase):
         status, error = self.invoke(True)
         self.assertEqual((status, error['error']), (1, 'RETIREMENT_MARKER_INVALID'))
         self.assertEqual(self.requests(), before)
+
+
+class PreOrderProofTests(unittest.TestCase):
+    insert = RetirementTests.insert
+    requests = RetirementTests.requests
+    names = RetirementTests.names
+    invoke = RetirementTests.invoke
+    unchanged = RetirementTests.unchanged
+
+    def setUp(self):
+        RetirementTests.setUp(self)
+        self.db.execute('DELETE FROM api_requests WHERE operation=?', (LEGACY[2],))
+        self.db.execute('ALTER TABLE robot_cycles ADD COLUMN data TEXT')
+        self.opaque = 'historic-screening-probe-' + SECRET
+        self.insert(self.opaque, 'NEEDS_REVIEW', 'INVALID_SCREENING_SYMBOL')
+        self.db.execute('UPDATE api_requests SET output=NULL,body_hash=?,attempts=1 WHERE operation=?',
+            ('a' * 64, self.opaque))
+        self.snapshot = self.trading / 'ledger-pre-order.sqlite3'
+        self.make_snapshot()
+
+    def make_snapshot(self):
+        # Independent published old core.py schemas; no Git-history dependency.
+        with sqlite3.connect(self.snapshot) as archive:
+            archive.executescript('''
+                CREATE TABLE trades(id TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL,
+                  state TEXT NOT NULL, plan TEXT NOT NULL, exit_price TEXT, pnl TEXT, created TEXT NOT NULL, closed_day TEXT);
+                CREATE TABLE events(seq INTEGER PRIMARY KEY,at TEXT,state TEXT,agent TEXT,message TEXT);
+                CREATE TABLE robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT NOT NULL,
+                  entry_day TEXT NOT NULL,confirmed_at TEXT NOT NULL);
+            ''')
+            archive.execute(self.db.execute("SELECT sql FROM sqlite_master WHERE name='api_requests'").fetchone()[0])
+            for row in self.requests():
+                if ':robot-v9:' not in row[0]: archive.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?,?)', row)
+            archive.execute('INSERT INTO events VALUES(1,?,?,?,?)', (SECRET, 'REJECTED', SECRET, SECRET))
+        self.snapshot.chmod(0o600)
+
+    def archive_change(self, command, values=()):
+        with sqlite3.connect(self.snapshot) as archive: archive.execute(command, values)
+
+    def test_default_still_refuses_opaque_claim_even_when_snapshot_is_available(self):
+        before, names = self.requests(), self.names()
+        _, report = self.invoke()
+        self.assertEqual(report['eligible_count'], 2)
+        self.assertNotIn('pre_order_proof', report)
+        self.assertIn('CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED', report['refusal_reasons'])
+        status, error = self.invoke(True)
+        self.assertEqual((status, error['error']), (1, 'CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED'))
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_opt_in_inspection_verifies_full_proof_without_changing_files_or_claiming_scope(self):
+        before, names, snapshot = self.requests(), self.names(), self.snapshot.read_bytes()
+        _, report = self.invoke(prove=True)
+        self.assertTrue(report['can_apply'])
+        self.assertEqual(report['eligible_count'], 3)
+        self.assertEqual(report['eligible_scopes']['pre_order_archive'], 1)
+        self.assertEqual(report['pre_order_proof']['status'], 'VERIFIED')
+        self.assertEqual(report['pre_order_proof']['matched_count'], 1)
+        self.assertEqual(report['pre_order_proof']['archive_sha256'], tool.checksum(snapshot))
+        opaque = next(item for item in report['unresolved_requests'] if item['operation_sha256'] == tool.checksum(self.opaque.encode()))
+        self.assertEqual(opaque['scope_category'], 'UNRECOGNIZED')
+        self.assertEqual(self.snapshot.read_bytes(), snapshot)
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_one_atomic_apply_preserves_complete_rows_typed_archive_private_backup_and_marker(self):
+        before, snapshot = self.requests(), self.snapshot.read_bytes()
+        status, report = self.invoke(True, True)
+        self.assertEqual((status, report['status'], report['retired_count']), (0, 'RETIRED_LEGACY', 3))
+        columns = tuple(row[1] for row in self.db.execute('PRAGMA table_info(api_requests)'))
+        source = next(row for row in before if row[0] == self.opaque)
+        scope, payload = self.db.execute('SELECT scope,original_row FROM legacy_research_archive WHERE operation=?', (self.opaque,)).fetchone()
+        self.assertEqual(scope, 'pre_order_archive:' + tool.checksum(snapshot))
+        self.assertEqual(payload, tool.encoded(columns, source))
+        self.assertEqual([row for row in self.requests() if row[3] == 'COMPLETE'], [row for row in before if row[3] == 'COMPLETE'])
+        self.assertFalse(self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW')").fetchone())
+        self.assertEqual(self.db.execute('SELECT enabled FROM robot_settings').fetchone(), (0,))
+        self.assertEqual(self.snapshot.read_bytes(), snapshot)
+        with sqlite3.connect(report['backup']) as backup: self.assertEqual(self.requests(backup), before)
+        names, archived = self.names(), self.db.execute('SELECT * FROM legacy_research_archive ORDER BY operation').fetchall()
+        for prove in (False, True):
+            _, inspect = self.invoke(prove=prove)
+            self.assertEqual(inspect['pre_order_proof']['matched_count'], 1)
+            status, repeat = self.invoke(True, prove)
+            self.assertEqual((status, repeat), (0, {'status': 'UNCHANGED', 'retired_count': 0}))
+        self.assertEqual(self.names(), names)
+        self.assertEqual(self.db.execute('SELECT * FROM legacy_research_archive ORDER BY operation').fetchall(), archived)
+
+    def test_missing_snapshot_is_refused_without_mutation(self):
+        self.snapshot.unlink()
+        before, names = self.requests(), self.names()
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'STATE_FILE_MISSING'))
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_schema_and_typed_full_row_mismatch_refuse_even_when_identity_and_state_match(self):
+        cases = (
+            ('UPDATE api_requests SET unknown_field=? WHERE operation=?', (b'altered-private-byte', self.opaque), 'PRE_ORDER_REQUEST_ROW_MISMATCH'),
+            ('UPDATE api_requests SET created=created+0.000001 WHERE operation=?', (self.opaque,), 'PRE_ORDER_REQUEST_ROW_MISMATCH'),
+            ('ALTER TABLE api_requests ADD COLUMN unexpected TEXT', (), 'PRE_ORDER_API_SCHEMA_MISMATCH'),
+        )
+        original = self.snapshot.read_bytes()
+        for command, values, expected in cases:
+            with self.subTest(command=command):
+                self.archive_change(command, values)
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, expected))
+                self.unchanged(before)
+                self.snapshot.write_bytes(original)
+
+    def test_target_absent_from_snapshot_has_specific_safe_refusal_without_mutation(self):
+        self.archive_change('DELETE FROM api_requests WHERE operation=?', (self.opaque,))
+        before, names = self.requests(), self.names()
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error), (1, {'error': 'PRE_ORDER_REQUEST_NOT_IN_ARCHIVE'}))
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_snapshot_core_schema_new_runtime_tables_triggers_foreign_keys_and_orders_refuse(self):
+        cases = (
+            ('ALTER TABLE events ADD COLUMN extra TEXT', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE office_schema(version INTEGER)', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE order_intents(id TEXT)', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE robot_candidates(id TEXT)', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE office_cache(id TEXT)', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE office_activity(id TEXT)', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TRIGGER changed AFTER UPDATE ON events BEGIN SELECT 1; END', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ('CREATE TABLE cycles(day TEXT REFERENCES api_requests(operation))', 'PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED'),
+            ("INSERT INTO trades VALUES('id','day','source','state','{}',NULL,NULL,'time',NULL)", 'PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT'),
+            ("INSERT INTO robot_entry_receipts VALUES('receipt','BTCUSDT','day','time')", 'PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT'),
+            ("CREATE TABLE live_actions(id TEXT)", None),
+        )
+        original = self.snapshot.read_bytes()
+        for command, expected in cases:
+            with self.subTest(command=command):
+                self.archive_change(command)
+                if expected is None:
+                    self.archive_change("INSERT INTO live_actions VALUES('unknown execution')")
+                    expected = 'PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT'
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, expected))
+                self.unchanged(before)
+                self.snapshot.write_bytes(original)
+
+    def test_literal_sql_differences_in_api_constraints_are_not_normalized_away(self):
+        with sqlite3.connect(self.snapshot) as archive:
+            schema = archive.execute("SELECT sql FROM sqlite_master WHERE name='api_requests'").fetchone()[0]
+            rows = self.requests(archive)
+            archive.execute('DROP TABLE api_requests')
+            archive.execute(schema.replace('unknown_field BLOB', "unknown_field BLOB CHECK(unknown_field IS NOT NULL OR output='AB')"))
+            archive.executemany('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?,?)', rows)
+        schema = self.db.execute("SELECT sql FROM sqlite_master WHERE name='api_requests'").fetchone()[0]
+        rows = self.requests()
+        self.db.execute('DROP TABLE api_requests')
+        self.db.execute(schema.replace('unknown_field BLOB', "unknown_field BLOB CHECK(unknown_field IS NOT NULL OR output='a b')"))
+        self.db.executemany('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?,?)', rows)
+        before = self.requests()
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'PRE_ORDER_API_SCHEMA_MISMATCH'))
+        self.unchanged(before)
+
+    def test_real_migration_snapshot_from_wal_historical_database_passes_closed_proof(self):
+        from worker.migration import retire_previous_runtime
+        historical = self.root / 'historical'
+        historical.mkdir(mode=0o700)
+        path = historical / 'ledger.sqlite3'
+        source = sqlite3.connect(path, isolation_level=None)
+        try:
+            self.assertEqual(source.execute('PRAGMA journal_mode=WAL').fetchone(), ('wal',))
+            source.executescript('''CREATE TABLE trades(id TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL,
+                state TEXT NOT NULL, plan TEXT NOT NULL, exit_price TEXT, pnl TEXT, created TEXT NOT NULL, closed_day TEXT);
+                CREATE TABLE events(seq INTEGER PRIMARY KEY,at TEXT,state TEXT,agent TEXT,message TEXT);''')
+            source.execute(self.db.execute("SELECT sql FROM sqlite_master WHERE name='api_requests'").fetchone()[0])
+            source.executemany('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?,?)',
+                [row for row in self.requests() if ':robot-v9:' not in row[0]])
+            retire_previous_runtime(source)
+            migrated = historical / 'ledger-pre-order.sqlite3'
+            header = migrated.read_bytes()[:100]
+            self.assertEqual(header[18:20], b'\x02\x02')
+            self.assertTrue(source.execute("SELECT 1 FROM sqlite_master WHERE name='office_schema'").fetchone())
+            self.snapshot.write_bytes(migrated.read_bytes())
+        finally: source.close()
+        self.assertFalse(any(Path(str(self.snapshot) + suffix).exists() for suffix in ('-wal', '-shm', '-journal')))
+        before = self.requests()
+        status, report = self.invoke(True, True)
+        self.assertEqual((status, report['retired_count']), (0, 3))
+        self.assertEqual([row for row in self.requests() if row[3] == 'COMPLETE'], [row for row in before if row[3] == 'COMPLETE'])
+
+    def test_exact_old_and_current_direct_or_json_provenance_links_refuse(self):
+        original = self.snapshot.read_bytes()
+        cases = (
+            ('archive', 'CREATE TABLE robot_jobs(operation TEXT PRIMARY KEY,cycle TEXT,state TEXT)',
+                'INSERT INTO robot_jobs VALUES(?,?,?)', (self.opaque, 'old', 'COMPLETE')),
+            ('archive', 'CREATE TABLE analysis_checks(operation TEXT PRIMARY KEY,day TEXT,state TEXT,result TEXT)',
+                'INSERT INTO analysis_checks VALUES(?,?,?,?)', (self.opaque, 'day', 'COMPLETE', '{}')),
+            ('archive', 'CREATE TABLE robot_setups(id TEXT PRIMARY KEY,cycle TEXT,plan TEXT)',
+                'INSERT INTO robot_setups VALUES(?,?,?)', (self.opaque, 'old', None)),
+            ('archive', 'CREATE TABLE robot_simulations(setup_id TEXT,scenario TEXT,ticket_sha256 TEXT,result TEXT,created_at TEXT,last_requested_at TEXT)',
+                'INSERT INTO robot_simulations VALUES(?,?,?,?,?,?)',
+                ('other', 'SCENARIO', 'hash', json.dumps({'operation': self.opaque}), 'time', 'time')),
+            ('archive', 'CREATE TABLE cycles(day TEXT PRIMARY KEY,state TEXT,created REAL,data TEXT)',
+                'INSERT INTO cycles VALUES(?,?,?,?)', ('other', 'COMPLETE', 1, json.dumps({'operation': self.opaque}))),
+            ('live', None, 'INSERT INTO robot_jobs VALUES(?,?,?)', (self.opaque, 'current', 'COMPLETE')),
+            ('live', None, 'INSERT INTO robot_candidates VALUES(?,?,?,?)',
+                ('other', 'current', 'REJECTED', json.dumps({'provenance': {'operation': self.opaque}}))),
+        )
+        for location, create, command, values in cases:
+            with self.subTest(location=location, command=command):
+                if location == 'archive':
+                    if create: self.archive_change(create)
+                    self.archive_change(command, values)
+                else: self.db.execute(command, values)
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, 'PRE_ORDER_REQUEST_REFERENCED'))
+                self.unchanged(before)
+                self.snapshot.write_bytes(original)
+                self.db.execute('DELETE FROM robot_jobs'); self.db.execute('DELETE FROM robot_candidates')
+
+    def test_second_unknown_or_current_request_never_shares_the_proof_exception(self):
+        for operation in ('second-private-opaque', '2026-10-06:robot-v8:0:screening:0:1', '2026-10-06:robot-v9:12:analysis-v9:SOLUSDT'):
+            with self.subTest(operation=operation):
+                self.insert(operation, 'NEEDS_REVIEW', 'INVALID_SCREENING_SYMBOL')
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, 'PRE_ORDER_CANDIDATE_REQUIRED'))
+                self.unchanged(before)
+                self.db.execute('DELETE FROM api_requests WHERE operation=?', (operation,))
+
+    def test_pending_on_job_cycle_or_live_order_evidence_still_refuses(self):
+        for mutation, expected in (
+                ("UPDATE robot_settings SET enabled=1", 'ROBOT_OFF_REQUIRED'),
+                ("INSERT INTO robot_jobs VALUES('job','cycle','NEEDS_REVIEW')", 'ROBOT_JOB_UNRESOLVED'),
+                ("INSERT INTO robot_cycles VALUES('cycle','day','NEEDS_REVIEW','{}')", 'ROBOT_CYCLE_UNRESOLVED'),
+                ("INSERT INTO order_intents VALUES('order','candidate','SUBMITTING','{}')", 'ORDER_EVIDENCE_PRESENT'),
+                ("INSERT INTO robot_entry_receipts VALUES('receipt','HYPEUSDT')", 'ORDER_EVIDENCE_PRESENT')):
+            with self.subTest(mutation=mutation):
+                self.db.execute(mutation)
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, expected))
+                self.unchanged(before)
+                self.db.execute('UPDATE robot_settings SET enabled=0')
+                for table in ('robot_jobs', 'robot_cycles', 'order_intents', 'robot_entry_receipts'): self.db.execute('DELETE FROM ' + table)
+        self.insert('pending-private', 'PENDING')
+        before = self.requests()
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'PENDING_REQUEST_PRESENT'))
+        self.unchanged(before)
+
+    def test_invalid_candidate_properties_are_never_inferred_from_date_or_filename(self):
+        original = dict(zip((row[1] for row in self.db.execute('PRAGMA table_info(api_requests)')),
+            self.db.execute('SELECT * FROM api_requests WHERE operation=?', (self.opaque,)).fetchone()))
+        for field, value in (('output', '{}'), ('attempts', 2), ('body_hash', SECRET), ('created', -1),
+                ('failure_code', 'NETWORK_UNCERTAIN'), ('operation', ''), ('operation', 'private:opaque'),
+                ('operation', 'private-robot-v1-marker'), ('operation', 'private-analysis-v9-marker')):
+            with self.subTest(field=field, value=value):
+                self.db.execute('UPDATE api_requests SET ' + field + '=? WHERE operation=?', (value, self.opaque))
+                before = self.requests()
+                status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, 'PRE_ORDER_CANDIDATE_UNSUPPORTED'))
+                self.unchanged(before)
+                self.db.execute('UPDATE api_requests SET ' + field + '=? WHERE operation=?',
+                    (original[field], value if field == 'operation' else self.opaque))
+
+    def test_existing_opaque_archive_entry_is_a_conflict_before_backup_or_state_changes(self):
+        self.db.execute('''CREATE TABLE legacy_research_archive(operation TEXT PRIMARY KEY,
+            original_row BLOB NOT NULL,row_sha256 TEXT NOT NULL,scope TEXT NOT NULL,retired_at TEXT NOT NULL)''')
+        self.db.execute('INSERT INTO legacy_research_archive VALUES(?,?,?,?,?)',
+            (self.opaque, b'private previous marker', 'a' * 64, 'pre_order_archive:' + tool.checksum(self.snapshot.read_bytes()), 'old'))
+        before, names = self.requests(), self.names()
+        status, report = self.invoke(prove=True)
+        self.assertEqual(status, 0)
+        self.assertFalse(report['can_apply'])
+        self.assertIn('RETIREMENT_MARKER_CONFLICT', report['refusal_reasons'])
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'RETIREMENT_MARKER_CONFLICT'))
+        self.assertEqual(self.requests(), before)
+        self.assertEqual(self.names(), names)
+
+    def test_archive_replacement_or_in_place_change_between_backup_and_writer_refuses(self):
+        original_backup = tool.create_backup
+        for replacement in (True, False):
+            with self.subTest(replacement=replacement):
+                original = self.snapshot.read_bytes()
+                before = self.requests()
+                def race(*args, **kwargs):
+                    saved = original_backup(*args, **kwargs)
+                    if replacement:
+                        changed = self.trading / 'replacement.sqlite3'
+                        changed.write_bytes(original); changed.chmod(0o600); changed.replace(self.snapshot)
+                    else: self.archive_change('UPDATE events SET message=?', (SECRET + ' changed',))
+                    return saved
+                with patch.object(tool, 'create_backup', side_effect=race): status, error = self.invoke(True, True)
+                self.assertEqual((status, error['error']), (1, 'PRE_ORDER_ARCHIVE_CHANGED'))
+                self.unchanged(before)
+                self.snapshot.write_bytes(original)
+
+    def test_archive_change_after_state_updates_rolls_back_every_row_and_marker(self):
+        before, original_apply = self.requests(), tool.apply_rows
+        def changed(db, observation):
+            original_apply(db, observation)
+            self.archive_change('UPDATE events SET message=?', ('concurrent changed snapshot',))
+        with patch.object(tool, 'apply_rows', side_effect=changed): status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'PRE_ORDER_ARCHIVE_CHANGED'))
+        self.unchanged(before)
+
+    def test_marker_requires_unchanged_original_row_and_snapshot_on_repeat(self):
+        self.invoke(True, True)
+        self.db.execute('UPDATE legacy_research_archive SET row_sha256=? WHERE operation=?', ('b' * 64, self.opaque))
+        before = self.requests()
+        status, error = self.invoke(True)
+        self.assertEqual((status, error['error']), (1, 'RETIREMENT_MARKER_INVALID'))
+        self.assertEqual(self.requests(), before)
+        self.db.execute('UPDATE legacy_research_archive SET row_sha256=lower(hex(randomblob(32))) WHERE operation=?', (self.opaque,))
+        self.archive_change('UPDATE events SET message=?', ('snapshot changed',))
+        status, error = self.invoke(True)
+        self.assertEqual((status, error['error']), (1, 'RETIREMENT_MARKER_INVALID'))
+
+    def test_archive_sidecar_symlink_hardlink_public_permissions_and_bad_integrity_refuse(self):
+        original = self.snapshot.read_bytes()
+        before = self.requests()
+        for suffix in ('-wal', '-shm', '-journal'):
+            sidecar = Path(str(self.snapshot) + suffix); sidecar.write_bytes(b'private')
+            status, error = self.invoke(True, True)
+            self.assertEqual((status, error['error']), (1, 'PRE_ORDER_ARCHIVE_SIDECAR_PRESENT'))
+            self.unchanged(before); sidecar.unlink()
+        linked = self.trading / 'linked.sqlite3'; os.link(self.snapshot, linked)
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'UNSAFE_STATE_FILE')); linked.unlink()
+        self.snapshot.chmod(0o644)
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'PRE_ORDER_ARCHIVE_NOT_PRIVATE')); self.snapshot.chmod(0o600)
+        self.snapshot.unlink(); self.snapshot.symlink_to(self.path)
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error['error']), (1, 'UNSAFE_STATE_FILE'))
+        self.snapshot.unlink(); self.snapshot.write_bytes(original); self.snapshot.chmod(0o600)
+        with self.snapshot.open('r+b') as archive: archive.seek(100); archive.write(b'\xff' * 100)
+        status, _ = self.invoke(True, True)
+        self.assertEqual(status, 1)
+        self.unchanged(before)
 
 
 class GrammarTests(unittest.TestCase):

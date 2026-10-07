@@ -32,6 +32,23 @@ PUBLIC_FAILURES = frozenset(('NETWORK_UNCERTAIN', 'LOCAL_PROCESSING_FAILED',
 MAX_ROWS = 10000
 MAX_ROW_BYTES = 2 * 1024 * 1024
 MAX_UNRESOLVED_DETAILS = 50
+MAX_PRE_ORDER_ARCHIVE_BYTES = 64 * 1024 * 1024
+PRE_ORDER_ARCHIVE = 'ledger-pre-order.sqlite3'
+PRE_ORDER_SCOPE = re.compile(r'pre_order_archive:([0-9a-f]{64})')
+# Published pre-order core.py (1b6b6b2); these anchors cannot be inferred from
+# a filename, timestamp, or an opaque operation ID.
+PRE_ORDER_CORE_SQL = '''
+CREATE TABLE trades(id TEXT PRIMARY KEY, day TEXT NOT NULL, source TEXT NOT NULL,
+  state TEXT NOT NULL, plan TEXT NOT NULL, exit_price TEXT, pnl TEXT, created TEXT NOT NULL, closed_day TEXT);
+CREATE TABLE events(seq INTEGER PRIMARY KEY,at TEXT,state TEXT,agent TEXT,message TEXT);
+'''
+PRE_ORDER_TABLES = frozenset(('trades', 'events', 'cycles', 'analysis_checks',
+    'api_requests', 'robot_settings', 'robot_cycles', 'robot_jobs', 'robot_setups',
+    'robot_decisions', 'robot_simulations', 'robot_status', 'robot_entry_receipts',
+    'shadow_plans', 'shadow_events', 'live_records', 'live_actions', 'live_events',
+    'live_settings', 'live_requests', 'live_arms', 'live_scheduler', 'sqlite_stat1', 'sqlite_stat4'))
+PRE_ORDER_EMPTY_TABLES = ('trades', 'robot_entry_receipts', 'shadow_plans', 'shadow_events',
+    'live_records', 'live_actions', 'live_events', 'live_requests', 'live_arms', 'live_scheduler')
 PUBLIC_OPERATION_TOKENS = {
     **{'robot-v' + str(version): 'ROBOT_V' + str(version) for version in range(1, 10)},
     **{'analysis-v' + str(version): 'ANALYSIS_V' + str(version) for version in range(1, 10)},
@@ -254,7 +271,174 @@ def unsafe_schema(db, names):
     return False
 
 
-def observe(db):
+def table_schema(db, name, normalize_core=False):
+    """Exact ordered schema, including indexes, without exposing SQL in output."""
+    info = db.execute('PRAGMA table_xinfo(' + quoted(name) + ')').fetchall()
+    definitions = db.execute('SELECT type,name,sql FROM sqlite_master WHERE tbl_name=? ORDER BY type,name', (name,)).fetchall()
+    if not info or any(row[6] != 0 for row in info): raise Refuse('PRE_ORDER_SCHEMA_UNSUPPORTED')
+    definitions = [(kind, item, ''.join(sql.split()).upper() if normalize_core and sql else sql) for kind, item, sql in definitions]
+    indexes = []
+    for row in db.execute('PRAGMA index_list(' + quoted(name) + ')').fetchall():
+        indexes.append((row, db.execute('PRAGMA index_xinfo(' + quoted(row[1]) + ')').fetchall()))
+    foreign = db.execute('PRAGMA foreign_key_list(' + quoted(name) + ')').fetchall()
+    return json.dumps([info, definitions, indexes, foreign], ensure_ascii=True, separators=(',', ':')).encode('ascii')
+
+
+def screening_rejection(columns, row):
+    values = dict(zip(columns, row))
+    operation = values.get('operation')
+    created = values.get('created')
+    body_hash = values.get('body_hash')
+    return (isinstance(operation, str) and 1 <= len(operation) <= 120 and ':' not in operation
+        and 'robot-v' not in operation.lower() and 'analysis-v' not in operation.lower()
+        and values.get('state') == 'NEEDS_REVIEW' and values.get('failure_code') == 'INVALID_SCREENING_SYMBOL'
+        and type(values.get('attempts')) is int and values['attempts'] == 1
+        and 'output' in values and values['output'] is None
+        and isinstance(body_hash, str) and bool(re.fullmatch(r'[0-9a-fA-F]{64}', body_hash))
+        and type(created) in (int, float) and 0 < created <= 4102444800)
+
+
+def contains_operation(value, operation):
+    pending = [value]
+    count = 0
+    while pending:
+        item = pending.pop()
+        count += 1
+        if count > MAX_ROWS: raise Refuse('PRE_ORDER_REFERENCE_TOO_LARGE')
+        if isinstance(item, str) and item == operation: return True
+        if isinstance(item, dict): pending.extend(item.keys()); pending.extend(item.values())
+        elif isinstance(item, list): pending.extend(item)
+    return False
+
+
+def no_operation_references(db, operation):
+    names = tables(db)
+    references = {
+        'robot_jobs': ('operation', 'cycle'), 'robot_setups': ('id', 'cycle'),
+        'robot_candidates': ('id', 'cycle'), 'robot_cycles': ('id',),
+        'analysis_checks': ('operation',), 'robot_decisions': ('setup_id',),
+        'robot_simulations': ('setup_id',), 'cycles': ('day',),
+    }
+    for name, expected in references.items():
+        if name not in names: continue
+        columns = {row[1] for row in db.execute('PRAGMA table_info(' + quoted(name) + ')')}
+        if not set(expected).issubset(columns): raise Refuse('PRE_ORDER_REFERENCE_SCHEMA_UNSUPPORTED')
+        condition = ' OR '.join(quoted(column) + '=?' for column in expected)
+        if db.execute('SELECT 1 FROM ' + quoted(name) + ' WHERE ' + condition + ' LIMIT 1', (operation,) * len(expected)).fetchone():
+            raise Refuse('PRE_ORDER_REQUEST_REFERENCED')
+    for name, field, required in (('robot_setups', 'plan', True), ('robot_candidates', 'plan', True),
+            ('robot_cycles', 'data', True), ('analysis_checks', 'result', True),
+            ('robot_simulations', 'result', True), ('cycles', 'data', False)):
+        if name not in names: continue
+        columns = {row[1] for row in db.execute('PRAGMA table_info(' + quoted(name) + ')')}
+        if field not in columns:
+            if required: raise Refuse('PRE_ORDER_REFERENCE_SCHEMA_UNSUPPORTED')
+            continue
+        values = db.execute('SELECT ' + quoted(field) + ' FROM ' + quoted(name) + ' WHERE ' + quoted(field) + ' IS NOT NULL LIMIT ?', (MAX_ROWS + 1,)).fetchall()
+        if len(values) > MAX_ROWS: raise Refuse('PRE_ORDER_REFERENCE_TOO_LARGE')
+        for (value,) in values:
+            if not isinstance(value, str) or len(value.encode('utf-8')) > MAX_ROW_BYTES:
+                raise Refuse('PRE_ORDER_REFERENCE_SCHEMA_UNSUPPORTED')
+            try: parsed = json.loads(value)
+            except (ValueError, RecursionError): raise Refuse('PRE_ORDER_REFERENCE_SCHEMA_UNSUPPORTED') from None
+            if contains_operation(parsed, operation): raise Refuse('PRE_ORDER_REQUEST_REFERENCED')
+
+
+class PreOrderArchive:
+    def __init__(self, parent):
+        self.parent, self.fd, self.db = parent, None, None
+        try:
+            self.fd = checked_file(parent, PRE_ORDER_ARCHIVE)
+            info = os.fstat(self.fd)
+            if stat.S_IMODE(info.st_mode) & 0o077: raise Refuse('PRE_ORDER_ARCHIVE_NOT_PRIVATE')
+            if not 100 <= info.st_size <= MAX_PRE_ORDER_ARCHIVE_BYTES: raise Refuse('PRE_ORDER_ARCHIVE_SIZE_UNSUPPORTED')
+            self.signature = (identity(info), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            self.digest = self.file_hash()
+            self.scope = 'pre_order_archive:' + self.digest
+            header = os.pread(self.fd, 100, 0)
+            page_size = int.from_bytes(header[16:18], 'big')
+            if page_size == 1: page_size = 65536
+            if (header[:16] != b'SQLite format 3\x00' or page_size not in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536)
+                    or int.from_bytes(header[28:32], 'big') * page_size != info.st_size
+                    or header[24:28] != header[92:96]):
+                raise Refuse('PRE_ORDER_ARCHIVE_NOT_SELF_CONTAINED')
+            self.validate_stable()
+            self.db = sqlite3.connect('file:/proc/self/fd/' + str(self.fd) + '?mode=ro&immutable=1', uri=True)
+            self.db.execute('PRAGMA query_only=ON')
+            self.db.execute('PRAGMA trusted_schema=OFF')
+            if self.db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]: raise Refuse('PRE_ORDER_ARCHIVE_INVALID')
+            names = tables(self.db)
+            if not {'trades', 'events', 'api_requests'}.issubset(names) or not names.issubset(PRE_ORDER_TABLES):
+                raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
+            if self.db.execute("SELECT 1 FROM sqlite_master WHERE type IN ('view','trigger') LIMIT 1").fetchone():
+                raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
+            for name in names:
+                if self.db.execute('PRAGMA foreign_key_list(' + quoted(name) + ')').fetchone():
+                    raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
+            expected = sqlite3.connect(':memory:')
+            try:
+                expected.executescript(PRE_ORDER_CORE_SQL)
+                for name in ('trades', 'events'):
+                    if table_schema(self.db, name, normalize_core=True) != table_schema(expected, name, normalize_core=True):
+                        raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
+            finally: expected.close()
+            for name in PRE_ORDER_EMPTY_TABLES:
+                if name in names and self.db.execute('SELECT 1 FROM ' + quoted(name) + ' LIMIT 1').fetchone():
+                    raise Refuse('PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT')
+            self.columns, self.rows = rowset(self.db)
+            index = self.columns.index('operation')
+            if any(isinstance(row[index], str) and re.search(r'(?:robot|analysis)-v(?:[89]|[1-9][0-9]+)', row[index]) for row in self.rows):
+                raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
+            self.api_schema = table_schema(self.db, 'api_requests')
+            self.validate_stable()
+        except BaseException as error:
+            self.close()
+            if isinstance(error, (sqlite3.Error, OSError)):
+                raise Refuse('PRE_ORDER_ARCHIVE_INVALID') from None
+            raise
+
+    def file_hash(self):
+        digest = hashlib.sha256()
+        offset = 0
+        size = self.signature[1]
+        while offset < size:
+            data = os.pread(self.fd, min(65536, size - offset), offset)
+            if not data: raise Refuse('PRE_ORDER_ARCHIVE_CHANGED')
+            digest.update(data)
+            offset += len(data)
+        return digest.hexdigest()
+
+    def validate_stable(self):
+        for suffix in ('-wal', '-shm', '-journal'):
+            try: os.stat(PRE_ORDER_ARCHIVE + suffix, dir_fd=self.parent, follow_symlinks=False)
+            except FileNotFoundError: continue
+            raise Refuse('PRE_ORDER_ARCHIVE_SIDECAR_PRESENT')
+        try: info = os.stat(PRE_ORDER_ARCHIVE, dir_fd=self.parent, follow_symlinks=False)
+        except OSError: raise Refuse('PRE_ORDER_ARCHIVE_CHANGED') from None
+        signature = (identity(info), info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        held = os.fstat(self.fd)
+        if signature != self.signature or signature != (identity(held), held.st_size, held.st_mtime_ns, held.st_ctime_ns) or self.file_hash() != self.digest:
+            raise Refuse('PRE_ORDER_ARCHIVE_CHANGED')
+
+    def match(self, db, columns, row):
+        if not screening_rejection(columns, row): raise Refuse('PRE_ORDER_CANDIDATE_UNSUPPORTED')
+        if columns != self.columns or table_schema(db, 'api_requests') != self.api_schema:
+            raise Refuse('PRE_ORDER_API_SCHEMA_MISMATCH')
+        operation = row[columns.index('operation')]
+        archived = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if not archived: raise Refuse('PRE_ORDER_REQUEST_NOT_IN_ARCHIVE')
+        if encoded(columns, row) != encoded(self.columns, archived):
+            raise Refuse('PRE_ORDER_REQUEST_ROW_MISMATCH')
+        no_operation_references(self.db, operation)
+        no_operation_references(db, operation)
+        return checksum(encoded(columns, row))
+
+    def close(self):
+        if self.db is not None: self.db.close(); self.db = None
+        if self.fd is not None: os.close(self.fd); self.fd = None
+
+
+def observe(db, proof=None, prove_pre_order=False):
     names = tables(db)
     columns, rows = rowset(db)
     index = {name: offset for offset, name in enumerate(columns)}
@@ -279,6 +463,18 @@ def observe(db):
         else:
             archive_rows = {row[0]: row for row in db.execute('SELECT operation,original_row,row_sha256,scope,retired_at FROM ' + ARCHIVE)}
     if unsafe_schema(db, names): reasons.add('UNSAFE_RETIREMENT_SCHEMA')
+    opaque = None
+    proof_hashes = []
+    if prove_pre_order:
+        unknown = [row for row in rows if row[index['state']] == 'NEEDS_REVIEW' and not classify(row[index['operation']])]
+        markers = [row for row in rows if row[index['state']] == 'RETIRED_LEGACY'
+            and row[index['operation']] in archive_rows and isinstance(archive_rows[row[index['operation']]][3], str)
+            and PRE_ORDER_SCOPE.fullmatch(archive_rows[row[index['operation']]][3])]
+        if len(unknown) != 1 and not (not unknown and markers): raise Refuse('PRE_ORDER_CANDIDATE_REQUIRED')
+        if unknown:
+            if proof is None: raise Refuse('PRE_ORDER_ARCHIVE_REQUIRED')
+            opaque = unknown[0][index['operation']]
+            proof_hashes.append(proof.match(db, columns, unknown[0]))
     for row in rows:
         operation, state = row[index['operation']], row[index['state']]
         recognized = classify(operation)
@@ -292,18 +488,29 @@ def observe(db):
                 days[recognized[1]] += 1
                 failure = row[index['failure_code']] if 'failure_code' in index else None
                 failures[failure if failure in PUBLIC_FAILURES else 'UNAVAILABLE' if failure is None else 'REDACTED'] += 1
+            elif proof is not None and operation == opaque:
+                selected.append((operation, proof.scope, tuple(row)))
+                scopes['pre_order_archive'] += 1
             else: reasons.add('CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED')
         if state == 'RETIRED_LEGACY':
             original = list(row)
             original[index['state']] = 'NEEDS_REVIEW'
             payload = encoded(columns, original)
             archived = archive_rows.get(operation)
-            if (not recognized or not archived or archived[1] != payload
-                    or archived[2] != checksum(payload) or archived[3] != recognized[0]):
+            archive_scope = PRE_ORDER_SCOPE.fullmatch(archived[3]) if archived and isinstance(archived[3], str) else None
+            if archive_scope:
+                if proof is None or archive_scope[1] != proof.digest:
+                    reasons.add('RETIREMENT_MARKER_INVALID')
+                else:
+                    proof_hashes.append(proof.match(db, columns, original))
+            elif not recognized or not archived or archived[3] != recognized[0]:
                 reasons.add('RETIREMENT_MARKER_INVALID')
+            if not archived or archived[1] != payload or archived[2] != checksum(payload): reasons.add('RETIREMENT_MARKER_INVALID')
     for operation, scope, source in selected:
-        cycle = classify(operation)[2]
         if operation in archive_rows: reasons.add('RETIREMENT_MARKER_CONFLICT')
+        recognized = classify(operation)
+        if not recognized: continue # Proven opaque row already passed both reference checks.
+        cycle = recognized[2]
         for table, condition, arguments in (
             ('robot_jobs', 'operation=? OR cycle=?', (operation, cycle)),
             ('robot_candidates', 'id=? OR cycle=?', (operation, cycle)),
@@ -319,10 +526,13 @@ def observe(db):
         failure_codes=dict(failures), journal_sha256=fingerprint, robot_off=off,
         can_apply=not reasons and bool(selected), refusal_reasons=sorted(reasons))
     report.update(unresolved_details(columns, rows))
+    if proof is not None:
+        report['pre_order_proof'] = dict(status='VERIFIED', matched_count=len(proof_hashes),
+            archive_sha256=proof.digest, api_schema_sha256=checksum(proof.api_schema), row_sha256=sorted(proof_hashes))
     return dict(columns=columns, selected=selected, report=report, fingerprint=fingerprint)
 
 
-def create_backup(source, directory_fd, path, observation):
+def create_backup(source, directory_fd, path, observation, proof=None, prove_pre_order=False):
     try: os.mkdir('legacy-research-backups', 0o700, dir_fd=directory_fd)
     except FileExistsError: pass
     destination = os.open('legacy-research-backups', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory_fd)
@@ -338,7 +548,7 @@ def create_backup(source, directory_fd, path, observation):
         output = sqlite3.connect('file:/proc/self/fd/' + str(fd) + '?mode=rw', uri=True)
         source.backup(output)
         if output.execute('PRAGMA integrity_check').fetchall() != [('ok',)]: raise Refuse('BACKUP_VERIFICATION_FAILED')
-        copied = observe(output)
+        copied = observe(output, proof, prove_pre_order)
         if copied['fingerprint'] != observation['fingerprint'] or copied['report'] != observation['report']:
             raise Refuse('BACKUP_VERIFICATION_FAILED')
         output.close()
@@ -372,11 +582,12 @@ def apply_rows(db, observation):
             raise Refuse('REQUEST_JOURNAL_CHANGED')
 
 
-def run(data_dir, apply=False):
+def run(data_dir, apply=False, prove_pre_order=False):
     root, root_fd = directory(data_dir)
     parent = None
     source = None
     writer = None
+    proof = None
     files = {}
     try:
         parent = os.open('trading', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
@@ -393,9 +604,16 @@ def run(data_dir, apply=False):
             raise Refuse('WAL_STATE_UNAVAILABLE')
         source = connect(path / 'ledger.sqlite3')
         source.execute('BEGIN')
-        observation = observe(source)
+        rowset(source) # Preserve baseline schema errors before optional marker lookup.
+        archive_columns = tuple(row[1] for row in source.execute('PRAGMA table_info(' + ARCHIVE + ')')) if ARCHIVE in tables(source) else ()
+        has_marker = archive_columns == ARCHIVE_COLUMNS and source.execute(
+            'SELECT 1 FROM ' + ARCHIVE + " a JOIN api_requests r ON r.operation=a.operation WHERE r.state='RETIRED_LEGACY' AND a.scope LIKE ? LIMIT 1",
+            ('pre_order_archive:%',)).fetchone()
+        if prove_pre_order or has_marker: proof = PreOrderArchive(parent)
+        observation = observe(source, proof, prove_pre_order)
         validate_directories(root, root_fd, parent)
         validate_files(parent, files)
+        if proof is not None: proof.validate_stable()
         if not apply: return observation['report']
         if observation['report']['refusal_reasons']: raise Refuse(observation['report']['refusal_reasons'][0])
         if not observation['selected']: return dict(status='UNCHANGED', retired_count=0)
@@ -409,24 +627,27 @@ def run(data_dir, apply=False):
         # Re-read under the cycle lock before creating the private backup.
         source.execute('ROLLBACK')
         source.execute('BEGIN')
-        locked = observe(source)
+        locked = observe(source, proof, prove_pre_order)
         if locked != observation: raise Refuse('REQUEST_JOURNAL_CHANGED')
         validate_directories(root, root_fd, parent)
-        saved = create_backup(source, parent, path, observation)
+        if proof is not None: proof.validate_stable()
+        saved = create_backup(source, parent, path, observation, proof, prove_pre_order) if proof is not None else create_backup(source, parent, path, observation)
         source.close()
         source = None
         validate_directories(root, root_fd, parent)
         validate_files(parent, files)
+        if proof is not None: proof.validate_stable()
         writer = connect(path / 'ledger.sqlite3', readonly=False)
         writer.execute('BEGIN IMMEDIATE')
         try:
             validate_directories(root, root_fd, parent)
             validate_files(parent, files, writing=True)
-            current = observe(writer)
+            current = observe(writer, proof, prove_pre_order)
             if current != observation: raise Refuse('REQUEST_JOURNAL_CHANGED')
             apply_rows(writer, current)
             validate_directories(root, root_fd, parent)
             validate_files(parent, files, writing=True)
+            if proof is not None: proof.validate_stable()
             writer.execute('COMMIT')
         except BaseException:
             writer.execute('ROLLBACK')
@@ -436,6 +657,7 @@ def run(data_dir, apply=False):
     finally:
         if writer is not None: writer.close()
         if source is not None: source.close()
+        if proof is not None: proof.close()
         for fd in files.values():
             if fd is not None: os.close(fd)
         if parent is not None: os.close(parent)
@@ -446,8 +668,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', type=Path, default=Path('/data'))
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--prove-pre-order-screening-rejection', action='store_true',
+        help='Require matching pre-order snapshot proof for one opaque screening rejection; never replay it.')
     args = parser.parse_args(argv)
-    try: result = run(args.data_dir, args.apply)
+    try: result = run(args.data_dir, args.apply, args.prove_pre_order_screening_rejection)
     except Refuse as error:
         print(json.dumps({'error': str(error)}, sort_keys=True))
         return 1
