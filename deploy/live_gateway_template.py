@@ -224,7 +224,7 @@ class OrderGateway(_MissingOrderImplementation):
             side = 'BUY' if intent['side'] == 'LONG' else 'SELL'
             if entry['side'] != side or entry['order_type'] != 'LIMIT' or entry['time_in_force'] != 'GTC':
                 raise ValueError()
-            if protection['exit_side'] != ('SELL' if side == 'BUY' else 'BUY') or protection['working_type'] != 'MARK_PRICE':
+            if protection['exit_side'] != ('SELL' if side == 'BUY' else 'BUY') or protection['working_type'] not in ('MARK_PRICE', 'CONTRACT_PRICE'):
                 raise ValueError()
             e, q, sl, tp = (Fraction(self._decimal(v, positive=True)) for v in
                              (entry['price'], entry['quantity'], protection['stop_loss'], protection['take_profit']))
@@ -238,6 +238,20 @@ class OrderGateway(_MissingOrderImplementation):
             gross = q * abs(e - sl)
             entry_fee, sl_fee, tp_fee = q*e*rate, q*sl*rate, q*tp*rate
             risk, reward = gross + entry_fee + sl_fee, q*abs(tp-e) - entry_fee - tp_fee
+            if ('reward_risk_policy' in intent) != ('tp_tick_size' in intent):
+                raise ValueError()
+            if 'reward_risk_policy' in intent:
+                if intent['reward_risk_policy'] != 'NET_1_TO_2_NEAREST_TICK':
+                    raise ValueError()
+                tick = Fraction(self._decimal(intent['tp_tick_size'], positive=True))
+                if reward < 2*risk:
+                    raise Review('NET_RISK_REWARD_BELOW_2')
+                loss = risk/q
+                tp_target = (e*(1+rate)+2*loss)/(1-rate) if side == 'BUY' else (e*(1-rate)-2*loss)/(1+rate)
+                steps = tp_target/tick
+                count = -(-steps.numerator//steps.denominator) if side == 'BUY' else steps.numerator//steps.denominator
+                if count*tick <= 0 or tp != count*tick:
+                    raise Review('NET_RISK_REWARD_NOT_TARGET_2')
             expected = {'risk_usdt': risk, 'gross_risk_usdt': gross,
                         'entry_fee_usdt': entry_fee, 'sl_exit_fee_usdt': sl_fee,
                         'tp_exit_fee_usdt': tp_fee, 'net_reward_usdt': reward}
@@ -252,6 +266,10 @@ class OrderGateway(_MissingOrderImplementation):
                 raise ValueError()
             if not re.fullmatch(r'[a-f0-9]{64}', intent['evidence_sha256']):
                 raise ValueError()
+        except Review as error:
+            if str(error) in ('NET_RISK_REWARD_BELOW_2', 'NET_RISK_REWARD_NOT_TARGET_2'):
+                raise
+            raise Review('BINANCE_ORDER_INTENT_INVALID') from None
         except Exception:
             raise Review('BINANCE_ORDER_INTENT_INVALID') from None
 
@@ -444,7 +462,7 @@ class OrderGateway(_MissingOrderImplementation):
         expected = dict(symbol=intent['symbol'], algoType='CONDITIONAL',
                         orderType='STOP_MARKET' if kind == 'sl' else 'TAKE_PROFIT_MARKET',
                         side=intent['protection']['exit_side'], positionSide='BOTH',
-                        workingType='MARK_PRICE', reduceOnly=True, closePosition=False,
+                        workingType=intent['protection']['working_type'], reduceOnly=True, closePosition=False,
                         clientAlgoId=self._algo_id(intent, kind, quantity))
         if not isinstance(row, dict) or any(row.get(k) != v for k, v in expected.items()):
             raise Review('BINANCE_ORDER_PROTECTION_PROOF_INVALID')
@@ -608,7 +626,7 @@ class OrderGateway(_MissingOrderImplementation):
             'type': 'STOP_MARKET' if kind == 'sl' else 'TAKE_PROFIT_MARKET',
             'quantity': self._quantity_text(quantity), 'reduceOnly': 'true',
             'triggerPrice': intent['protection']['stop_loss' if kind == 'sl' else 'take_profit'],
-            'workingType': 'MARK_PRICE', 'clientAlgoId': client,
+            'workingType': intent['protection']['working_type'], 'clientAlgoId': client,
             'newOrderRespType': 'ACK'})
         proof = self._request('GET', '/fapi/v1/algoOrder', {'clientAlgoId': client})
         return self._algo_proof(intent, kind, quantity, proof, active=True)
@@ -622,11 +640,20 @@ class OrderGateway(_MissingOrderImplementation):
             if current['algoStatus'] not in ('CANCELED', 'EXPIRED', 'REJECTED') or current.get('actualOrderId') not in ('', '0', 0, None):
                 raise Review('BINANCE_ORDER_EXIT_RACE')
             return
-        self._request('DELETE', '/fapi/v1/algoOrder', {'algoId': self._id(current['algoId'])})
-        after = self._request('GET', '/fapi/v1/algoOrder', {'clientAlgoId': algo['clientAlgoId']})
-        self._algo_proof(intent, kind, quantity, after)
-        if after['algoStatus'] != 'CANCELED' or after.get('actualOrderId') not in ('', '0', 0, None):
+        if current.get('actualOrderId') not in ('', '0', 0, None):
             raise Review('BINANCE_ORDER_EXIT_RACE')
+        self._request('DELETE', '/fapi/v1/algoOrder', {'algoId': self._id(current['algoId'])})
+        import time
+        for attempt in range(3):
+            after = self._request('GET', '/fapi/v1/algoOrder', {'clientAlgoId': algo['clientAlgoId']})
+            self._algo_proof(intent, kind, quantity, after)
+            if after['algoStatus'] == 'CANCELED' and after.get('actualOrderId') in ('', '0', 0, None):
+                return
+            if after['algoStatus'] != 'NEW' or after.get('actualOrderId') not in ('', '0', 0, None) or attempt == 2:
+                raise Review('BINANCE_ORDER_EXIT_RACE')
+            delay = (0.5, 1.0)[attempt]
+            self._time_left(delay)
+            time.sleep(delay)
 
     def _cancel_entry_remainder(self, intent, entry):
         if entry['status'] not in ('NEW', 'PARTIALLY_FILLED'):

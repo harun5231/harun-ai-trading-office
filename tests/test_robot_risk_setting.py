@@ -195,8 +195,8 @@ class RobotRiskSettingTests(unittest.TestCase):
         original=f.client.transport
         def transport(*args,**kwargs):
             status,headers,body=original(*args,**kwargs)
-            body['output']['take_profit']=106
-            body['output']['risk_reward']=3
+            body['output']['take_profit']=D('104.31')
+            body['output']['risk_reward']=D('2.155')
             return status,headers,body
         f.client.transport=transport
         self.assertEqual(f.robot.tick()['bot_status'],'READY_FOR_EXECUTION')

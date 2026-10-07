@@ -3,9 +3,11 @@ import time
 import re
 from dataclasses import replace
 from datetime import datetime
-from .core import D,Review,number,RISK,validated_risk_target,validated_fee_rate,FEE_SOURCE
+from .core import D,Review,number,RISK,validated_risk_target,validated_fee_rate,FEE_SOURCE,REWARD_RISK_POLICY
 
-SIZING_CONTRACT='Target planned net loss at stop loss is 5 USDT including entry and stop-loss exit fees. The worker computes the largest legal Binance base-asset quantity such that quantity × (abs(limit_entry - stop_loss) + limit_entry × taker_fee_rate + stop_loss × taker_fee_rate) <= 5 USDT. Use the supplied per-symbol account taker commission for entry, SL exit, and TP exit. Net TP reward after entry and TP exit fees must be at least twice the fee-inclusive SL loss. Slippage, funding, and price gaps are outside this calculation. The provider determines entry, TP, SL, or HOLD; the worker alone sizes quantity.'
+SIZING_CONTRACT='Target planned net loss at stop loss is 5 USDT including entry and stop-loss exit fees. The worker computes the largest legal Binance base-asset quantity such that quantity × (abs(limit_entry - stop_loss) + limit_entry × taker_fee_rate + stop_loss × taker_fee_rate) <= 5 USDT. Use the supplied per-symbol account taker commission for entry, SL exit, and TP exit. Select TP targeting net reward/risk 1:2 after entry and exit fees, with only the unavoidable legal price-tick rounding: the first LONG TP tick at or above the exact net 1:2 target, or the first SHORT TP tick at or below it. Do not select an arbitrarily larger reward/risk. Slippage, funding, and price gaps are outside this calculation. The provider determines entry, TP, SL, or HOLD; the worker alone sizes quantity and rejects noncanonical TP without rewriting model prices.'
+
+TP_CONTRACT='Let E=limit_entry, S=stop_loss, f=the supplied account taker_fee_rate, and L=abs(E-S)+f*(E+S). LONG exact TP=(E*(1+f)+2*L)/(1-f), rounded up to the next valid tickSize. SHORT exact TP=(E*(1-f)-2*L)/(1+f), rounded down to the previous valid tickSize. Return that first legal TP tick only; net reward after entry and TP fees must reach twice the fee-inclusive SL loss. If no accurate profitable setup meets this policy, return HOLD. The worker does not rewrite TP.'
 
 def account_fee_rules(rules,symbol,client):
     """Attach a fresh account commission GET, without assuming a fallback rate."""
@@ -51,6 +53,8 @@ def analysis_context(market,symbol,risk_target=RISK,account_client=None):
     return {**data,'contract_rules':contract,'risk_constraints':{'quantity_unit':'base_asset',
         'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(risk_target),
         'minimum_actual_reward_risk':2,'reward_risk_basis':'NET_AFTER_ENTRY_AND_EXIT_FEES',
+        'target_actual_reward_risk':2,'reward_risk_policy':REWARD_RISK_POLICY,
+        'take_profit_contract':TP_CONTRACT,'take_profit_tick_rounding':{'LONG':'CEILING','SHORT':'FLOOR'},
         'entry_fee_rate':format(rules.taker_fee_rate,'f'),'sl_exit_fee_rate':format(rules.taker_fee_rate,'f'),
         'tp_exit_fee_rate':format(rules.taker_fee_rate,'f'),'fee_source':rules.fee_source,
         'fee_symbol':rules.fee_symbol,'fee_observed_at':rules.fee_observed_at,

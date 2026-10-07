@@ -10,6 +10,7 @@ from pathlib import Path
 from .core import Review,number,Signal,D
 from .diagnostics import safe_code,validation_code
 from .http_client import request
+from .neuroapi_request import build_request_body
 
 BASE='https://api.neurobro.ai/api/v1'
 SYMBOL_PATTERN=r'^[A-Z0-9]{2,18}USDT$'
@@ -130,8 +131,7 @@ class NeuroAPI:
         if not permitted():raise ResearchPaused('RESEARCH_PAUSED')
         self.require_key()
         if screening_count(schema) is not None and (not isinstance(catalog,dict) or not catalog):raise Review('SCREENING_CATALOG_REQUIRED')
-        body={'prompt':prompt,'mode':'smart','stream':False,'output_schema':schema}
-        if context is not None:body['message_history']=[{'role':'user','content':json.dumps(context,separators=(',',':'))}]
+        body=build_request_body(prompt,schema,context)
         digest=hashlib.sha256(json.dumps(body,sort_keys=True).encode()).hexdigest()
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -185,5 +185,8 @@ class NeuroAPI:
             if failure=='VALIDATION_REJECTED':failure=validation_code(exc)
             elif failure=='NETWORK_UNCERTAIN' and isinstance(exc,Review) and str(exc)=='INVALID_RESPONSE_ENVELOPE':failure='INVALID_RESPONSE_ENVELOPE'
             failure=safe_code(failure)
-            self.db.execute("UPDATE api_requests SET state='NEEDS_REVIEW',failure_code=? WHERE operation=?",(failure,operation))
+            # A received 422 is a terminal rejection of this request body.
+            # Preserve it for audit; never replay it or invent model output.
+            state='REJECTED_REQUEST_VALIDATION' if failure=='HTTP_422' else 'NEEDS_REVIEW'
+            self.db.execute('UPDATE api_requests SET state=?,failure_code=? WHERE operation=?',(state,failure,operation))
             raise Review('NEUROAPI_REQUEST_NEEDS_REVIEW' if failure=='NETWORK_UNCERTAIN' else failure) from None

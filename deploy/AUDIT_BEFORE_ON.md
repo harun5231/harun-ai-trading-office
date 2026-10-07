@@ -60,10 +60,10 @@ mentah. Kirim output teks pemeriksaan untuk review versi yang sama dengan VPS.
 | Kapasitas | Maksimum dua posisi bersamaan, termasuk manual dan carryover. Pending entry juga mencadangkan kapasitas. HYPEUSDT tidak boleh diambil alih. |
 | Kuota harian | Maksimum dua entry bot pada hari WIB dari first fill terverifikasi. Partial fill dihitung sekali; restart mempertahankan receipt. Posisi close tidak mengembalikan kuota hari itu. |
 | Screening | Minta sebanyak slot tersedia, satu atau dua coin. Analisis memakai chart Binance USD-M Futures 1h dan 15m. |
-| HOLD | Pengganti hanya untuk HOLD, sebanyak slot yang masih tersedia; maksimum tiga screening tambahan setelah screening awal. |
-| Risiko | Target dapat diubah di Office. Quantity legal terbesar menghasilkan estimasi loss SL termasuk fee entry dan SL exit tidak melebihi target; net RR sesudah fee minimal dua. |
+| Pengganti | HOLD dan penolakan lokal `REJECTED` dengan kode `NET_RISK_REWARD_BELOW_2` atau `NET_RISK_REWARD_NOT_TARGET_2` tanpa plan/intent order berbagi maksimum tiga screening tambahan. Hanya putaran terakhir, sesuai slot; status penolakan dan journal dipertahankan. Kegagalan lain/unknown tidak diganti. |
+| Risiko | Target dapat diubah di Office. Quantity legal terbesar menghasilkan estimasi loss SL termasuk fee entry dan SL exit tidak melebihi target. Plan baru memakai `NET_1_TO_2_NEAREST_TICK`: TP tepat pada tick legal terdekat yang mencapai net RR 1:2; plan lama tanpa kebijakan ini tetap memerlukan net RR minimal dua. |
 | Konfigurasi exchange | Adapter memastikan CROSS dan leverage 75 pada symbol terpilih sebelum entry. Menyimpan nilai tersebut dalam intent saja belum mengubah konfigurasi Binance. |
-| Entry dan proteksi | LIMIT GTC LONG/SHORT memakai harga dan quantity intent; SL/TP lawan side, hanya mengurangi exposure bot. Identitas order dan quantity terisi diverifikasi dari Binance. |
+| Entry dan proteksi | LIMIT GTC LONG/SHORT memakai harga dan quantity intent; SL/TP lawan side, hanya mengurangi exposure bot. Plan baru memakai pemicu Terakhir (`CONTRACT_PRICE`); plan lama tanpa field tersebut tetap `MARK_PRICE`. Identitas order, basis pemicu, dan quantity terisi diverifikasi dari Binance. |
 | Outcome belum pasti | Tidak mengirim ulang entry otomatis setelah timeout/restart. Kegagalan proteksi dilaporkan, bukan ditelan atau dianggap berhasil. |
 | OFF | Tidak memulai request riset, submit, atau rekonsiliasi gateway berikutnya; tidak close/cancel posisi dan order. Request yang sudah terkirim boleh selesai dan dijournal. Polling saldo/posisi tetap tersedia. |
 
@@ -76,7 +76,7 @@ perlu membuat order baru hanya untuk menjalankan collector.
 
 Antrean hasil screening kini tetap tersimpan ketika kapasitas menyusut sementara.
 Antrean v9 pada hari yang sama yang sebelumnya salah ditandai COMPLETE dapat
-diteruskan sesuai anggaran awal dan batas HOLD; cycle yang benar-benar habis
+diteruskan sesuai anggaran awal dan batas bersama putaran pengganti; cycle yang benar-benar habis
 tidak dibuka kembali. Setup siap dari seluruh cycle mencadangkan slot sebelum
 analisis tambahan.
 
@@ -96,8 +96,16 @@ dapat menyelesaikan request-nya dan dijournal; OFF mencegah pemanggilan callback
 berikutnya. Exception adapter tetap menghasilkan outcome belum pasti, tanpa
 reset atau replay entry otomatis.
 
-Perbaikan repository belum berarti container VPS sudah diperbarui. Bandingkan
-fingerprint dahulu dan persiapkan update terarah yang mempertahankan adapter
-lokal; jangan memakai pull/reset atau updater standar untuk menggantinya dengan
-gateway bawaan. Rincian kontrak adapter ada di
+Pembaruan gabungan enam file pada VPS existing telah diverifikasi pada
+7 Oktober 2026: package, patch gateway, dan fingerprint source host/container
+cocok; worker healthy setelah restart 10:04 UTC. ETH lama tetap memakai
+`MARK_PRICE`, SL 2585 / TP 2730, quantity 0.181, dan satu receipt. Snapshot bot
+10:03:37 UTC mendahului restart, sehingga belum membuktikan putaran pengganti
+baru atau order baru. Observasi cycle, kandidat, serta order setelah restart
+tetap diperlukan.
+
+Untuk instalasi lain atau perubahan berikutnya, bandingkan fingerprint dahulu
+dan gunakan update terarah yang mempertahankan adapter lokal; jangan memakai
+pull/reset atau updater standar untuk menggantinya dengan gateway bawaan.
+Rincian kontrak adapter ada di
 [ORDER_INTEGRATION.md](ORDER_INTEGRATION.md).

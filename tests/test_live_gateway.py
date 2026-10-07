@@ -261,6 +261,75 @@ class LiveGatewayTests(unittest.TestCase):
                     self.assertNotIn('newClientOrderId',q)
                     self.assertEqual(q['side'],gateway.command['protection']['exit_side'])
 
+    def test_contract_price_long_short_protections_match_actual_full_or_partial_fill(self):
+        for side in ('LONG', 'SHORT'):
+            for fill in ('2', '4'):
+                with self.subTest(side=side, fill=fill):
+                    gateway = Exchange(fill=fill, side=side)
+                    gateway.command['protection']['working_type'] = 'CONTRACT_PRICE'
+                    result = gateway.submit(gateway.command)
+                    self.assertEqual(result['state'], 'POSITION_PROTECTED')
+                    self.assertEqual(result['filled_quantity'], fill)
+                    self.assertTrue(result['sl_confirmed'])
+                    self.assertTrue(result['tp_confirmed'])
+                    posts = [params for method, path, params in gateway.calls
+                             if method == 'POST' and path == '/fapi/v1/algoOrder']
+                    self.assertEqual([params['type'] for params in posts], ['STOP_MARKET', 'TAKE_PROFIT_MARKET'])
+                    for params in posts:
+                        self.assertEqual(params['workingType'], 'CONTRACT_PRICE')
+                        self.assertEqual(params['quantity'], fill)
+                        self.assertEqual(params['reduceOnly'], 'true')
+                        self.assertEqual(params['side'], gateway.command['protection']['exit_side'])
+                        self.assertEqual(params['positionSide'], 'BOTH')
+                        self.assertNotIn('closePosition', params)
+                    active = [algo for algo in gateway.algos.values() if algo['algoStatus'] == 'NEW']
+                    self.assertEqual(len(active), 2)
+                    self.assertEqual({algo['quantity'] for algo in active}, {fill})
+                    self.assertEqual({algo['workingType'] for algo in active}, {'CONTRACT_PRICE'})
+                    self.assertTrue(all(algo['reduceOnly'] is True and algo['closePosition'] is False for algo in active))
+
+    def test_contract_price_partial_growth_replaces_only_owned_legs_at_actual_quantity(self):
+        gateway = Exchange(fill='2')
+        gateway.command['protection']['working_type'] = 'CONTRACT_PRICE'
+        first = gateway.submit(gateway.command)
+        gateway.fill('4')
+        result = gateway.reconcile(gateway.command)
+        self.assertEqual(result['first_fill_at'], first['first_fill_at'])
+        self.assertEqual(result['filled_quantity'], '4')
+        active = [algo for algo in gateway.algos.values() if algo['algoStatus'] == 'NEW']
+        self.assertEqual(len(active), 2)
+        self.assertEqual({algo['quantity'] for algo in active}, {'4'})
+        self.assertEqual({algo['workingType'] for algo in active}, {'CONTRACT_PRICE'})
+        self.assertTrue(all(algo['reduceOnly'] is True for algo in active))
+        self.assertEqual(len(gateway.post_entries()), 1)
+        posts = [params for method, path, params in gateway.calls
+                 if method == 'POST' and path == '/fapi/v1/algoOrder']
+        self.assertEqual([params['quantity'] for params in posts], ['2', '2', '4', '4'])
+        self.assertTrue(all(params['workingType'] == 'CONTRACT_PRICE' for params in posts))
+
+    def test_contract_price_intent_rejects_mark_price_protection_proof(self):
+        for side in ('LONG', 'SHORT'):
+            with self.subTest(side=side):
+                gateway = Exchange(fill='2', side=side)
+                gateway.command['protection']['working_type'] = 'CONTRACT_PRICE'
+                gateway.bad_proof = {'workingType': 'MARK_PRICE'}
+                with self.assertRaisesRegex(Review, 'PROTECTION_OUTCOME_UNKNOWN'):
+                    gateway.submit(gateway.command)
+                self.assertEqual(gateway.entry['status'], 'CANCELED')
+                self.assertEqual(len(gateway.post_entries()), 1)
+                self.assertFalse([params for method, path, params in gateway.calls
+                                  if method == 'POST' and path == '/fapi/v1/algoOrder'
+                                  and params['type'] == 'TAKE_PROFIT_MARKET'])
+
+    def test_invalid_trigger_price_basis_refused_before_any_request(self):
+        for working_type in ('', 'LAST_PRICE', 'contract_price', None, True, [], {}):
+            with self.subTest(working_type=working_type):
+                gateway = Exchange(fill='4')
+                gateway.command['protection']['working_type'] = working_type
+                with self.assertRaisesRegex(Review, 'INTENT_INVALID'):
+                    gateway.submit(gateway.command)
+                self.assertEqual(gateway.calls, [])
+
     def test_partial_first_fill_stable_across_growth_restart_and_midnight(self):
         gateway = Exchange(fill='2')
         first = gateway.submit(gateway.command)
