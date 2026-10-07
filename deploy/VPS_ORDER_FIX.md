@@ -93,6 +93,11 @@ Metadata gateway `CONFIGURED` berarti credential terbaca, bukan bukti order
 atau proteksi diterima exchange. `can_trade:true` pada reader hanya membuktikan
 permission yang dilaporkan akun.
 
+Untuk VPS yang sudah memperoleh pemulihan entry dan diagnostics setelah
+instalasi ini, lihat [catatan pemulihan unknown order](UNKNOWN_ORDER_RECOVERY.md).
+Jangan menjalankan ulang pemasangan historis ini untuk mengambil diagnostics:
+updater tetap dipin ke source release sebelum perubahan tersebut.
+
 ## Koneksi Office dan bukti penerimaan Binance
 
 Origin worker yang teramati adalah `https://103-147-33-13.sslip.io`. Akses HTTPS

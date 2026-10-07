@@ -94,7 +94,7 @@ class Coordinator:
             try:
                 # A started adapter transaction may need reads to finish protection.
                 with gateway_transaction_reads():result=self.gateway.reconcile(intent)
-            except Exception:return self.mark_unknown(row['id'],row['candidate_id'],account)
+            except Exception as error:return self.mark_unknown(row['id'],row['candidate_id'],account,reason=self.gateway_failure_code(error))
             observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
             if observed['bot_status']=='NEEDS_REVIEW':return observed
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -160,7 +160,7 @@ class Coordinator:
             # A transport that might have sent a request must report an unknown
             # outcome, never claim this pre-send NOT_CONNECTED exception.
             return self.mark_unknown(row['id'],row['id'],account)
-        except Exception:return self.mark_unknown(row['id'],row['id'],account)
+        except Exception as error:return self.mark_unknown(row['id'],row['id'],account,reason=self.gateway_failure_code(error))
         return self.record_gateway_observation(row['id'],row['id'],result,account)
     def reject_intent(self,row,account,reason):
         self.db.execute("UPDATE order_intents SET state='REJECTED',failure_code=?,updated=? WHERE id=?",(reason,now(),row['id']))
@@ -170,6 +170,27 @@ class Coordinator:
         self.db.execute("UPDATE order_intents SET state='NEEDS_REVIEW',failure_code=?,updated=? WHERE id=?",(reason,now(),intent_id))
         self.db.execute("UPDATE robot_candidates SET status='NEEDS_REVIEW',failure_code=? WHERE id=?",(reason,candidate_id))
         return self.store.report('NEEDS_REVIEW',account,reason)
+    def gateway_failure_code(self,error):
+        # Gateway diagnostics v1; uncertainty remains NEEDS_REVIEW and never retries.
+        known=frozenset("ACCOUNT_MODE_INVALID CALLBACK_DEADLINE CAPACITY_FULL CLOCK_INVALID CONFIG_NOT_CONFIRMED ENDPOINT_DENIED ENTRY_ALREADY_EXISTS ENTRY_CANCEL_RACE ENTRY_PROOF_INVALID EXIT_CANCEL_OUTCOME_UNKNOWN EXIT_OUTCOME_UNKNOWN EXIT_PROOF_INVALID EXIT_RACE EXIT_RESAMPLE FEE_CHANGED FILL_PROOF_INVALID FILL_RESAMPLE FOREIGN_EXPOSURE FOREIGN_PENDING_ORDER HISTORY_INCOMPLETE INTENT_INVALID LEVERAGE_CONFIG_INVALID LEVERAGE_UNSUPPORTED LIFECYCLE_UNSTABLE LIQUIDATION_BEFORE_SL MARGIN_CONFIG_INVALID MARGIN_INSUFFICIENT NOT_CONFIGURED ORIGIN_DENIED OUTCOME_UNKNOWN PARAMETERS_INVALID PROOF_INVALID PROTECTION_OUTCOME_UNKNOWN PROTECTION_PROOF_INVALID REQUEST_FAILED SYMBOL_OCCUPIED".split())
+        phases={'VALIDATE':{'_validate_intent'},'PROTECTION':{'_algo_proof','_ensure_algo','_cancel_algo','_cancel_exit_remainder','_exits','_ownership','_inventory','_reconcile_filled'},'PREFLIGHT':{'_preflight','_bracket','_account_config'},'CONFIGURE':{'_configure'},'ENTRY':{'_submit_once','_entry','_cancel_entry_remainder','_cleanup_entry'}}
+        found=set();trace=error.__traceback__
+        expected=Path(__file__).with_name('order_gateway.py').absolute()
+        while trace is not None:
+            code=trace.tb_frame.f_code
+            if Path(code.co_filename).absolute()==expected:
+                found.update(phase for phase,names in phases.items() if code.co_name in names)
+            trace=trace.tb_next
+        phase=next((value for value in ('VALIDATE','PROTECTION','PREFLIGHT','CONFIGURE','ENTRY') if value in found),None)
+        if phase is None:return 'ORDER_OUTCOME_UNKNOWN'
+        exchange=getattr(error,'code',None)
+        if type(exchange) is int and -999999<=exchange<=999999 and exchange!=0:
+            return 'ORDER_UNKNOWN_'+phase+'_C'+str(abs(exchange))
+        if isinstance(error,Review):
+            text=str(error)
+            if text.startswith('BINANCE_ORDER_') and text[14:] in known:
+                return text+('_'+phase if text[14:] in {'OUTCOME_UNKNOWN','REQUEST_FAILED','PROOF_INVALID'} else '')
+        return 'ORDER_UNKNOWN_'+phase
     def record_gateway_observation(self,intent_id,candidate_id,result,account):
         row=self.db.execute('SELECT * FROM order_intents WHERE id=?',(intent_id,)).fetchone()
         try:
