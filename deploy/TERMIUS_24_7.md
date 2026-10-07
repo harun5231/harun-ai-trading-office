@@ -20,6 +20,57 @@ melalui [audit source container](AUDIT_BEFORE_ON.md) dahulu. Utility file-secret
 memperbaiki binding dan metadata; developer tetap perlu memverifikasi kontrak
 bagian 5. Gateway standar GitHub tetap stub; gateway kustom berada di VPS.
 
+Setelah pemulihan, ETH telah diverifikasi terisi 0.181 pada entry 2610,
+terlindungi SL 2585 dan TP 2730 dengan `MARK_PRICE`, serta tercatat satu receipt.
+Ini bukti historis: audit GET 10:45 UTC kemudian membuktikan posisi sudah
+ditutup SL pada 10:07:39.052 UTC dengan average fill 2575.81. TP pasangan
+`CANCELED`, tanpa posisi, open order, atau open algo ETH. Level dan basis
+pemicu intent historis tidak diubah oleh pembaruan untuk order baru.
+Untuk target net RR 1:2 pada tick terdekat dan pemicu Terakhir, gunakan
+[pemasangan gabungan enam file](RR_REPLACEMENT.md); helper seed satu slot tidak
+perlu dijalankan lagi. Pemasangan pembaruan tersebut telah diverifikasi di VPS
+sebelum publikasi GitHub: `PACKAGE_SHA256_OK`, `GATEWAY_PATCH_VERIFIED`,
+`SOURCE_MATCH`, dan `VPS_RR_TARGET_LAST_PRICE_VERIFIED`, dengan worker healthy
+setelah restart 7 Oktober 2026 pukul 10:04 UTC. Robot ON, akun tersambung,
+satu posisi, satu receipt, satu slot tersedia, dan risiko 5 USDT teramati.
+Snapshot bot 10:03:37 UTC mendahului restart, sehingga hasil pengganti atau
+order baru sesudah pemasangan masih perlu dibuktikan dari observasi terbaru.
+
+Audit sesudah restart telah menunjukkan pergantian BTCUSDT yang ditolak RR
+ke BNBUSDT yang ditolak target tick, lalu SOLUSDT yang menerima HTTP 422 pada
+analisis sebelum order. Lihat
+[pemulihan request HTTP 422 tanpa replay](NEUROAPI_422_RECOVERY.md) untuk
+partisi context lengkap dan helper satu kasus tersebut. Installer sebelumnya
+berhenti pada `UNRESOLVED_ORDER` setelah `SOURCE_MATCH`, sebelum mengubah source.
+Pada audit tersebut journal ETH masih `NEEDS_REVIEW / BINANCE_ORDER_EXIT_RACE`
+meskipun Binance sudah membuktikan exit. Paket lanjutan telah dijalankan
+melalui Termius pada 7 Oktober 2026 pukul 11:14 UTC: closure GET-only tercatat,
+receipt tetap satu, source cocok, dan worker healthy. Output mencakup
+`ETH_CLOSED_JOURNAL_VERIFIED`, `SOL_HTTP_422_SETTLED`,
+`NEUROAPI_422_RECOVERY_VERIFIED`, serta
+`ETH_CLOSED_AND_NEUROAPI_FIX_INSTALLED`. Request SOL menjadi
+`REJECTED_REQUEST_VALIDATION`, job `REQUEST_REJECTED`, cycle `ACTIVE`, dan
+replacement counter tetap dua; pemeriksaan settlement tidak menemukan
+unresolved order.
+
+Pemeriksaan terbaru pada 11:19 UTC telah membuktikan request/job
+`PENDING`/`NEEDS_REVIEW` kosong, ETH asli `CLOSED` tanpa failure, satu receipt,
+dan posisi aktif nol. Cycle epoch 0 `COMPLETE` (target 2, replacement 0,
+queue 0); epoch 1 `COMPLETE` (target 1, replacement 3, queue 0). Kandidat
+terakhir epoch 1 adalah ETHUSDT baru yang ditolak
+`NET_RISK_REWARD_NOT_TARGET_2` sebelum order.
+
+Robot ON menampilkan `INSUFFICIENT_ACTIONABLE_SETUPS`,
+`wait_reason=ROBOT_CYCLE_COMPLETE`, tanpa failure robot atau akun, dengan
+`checked_at=2026-10-07T11:19:25.463839+00:00`. Akun `CONNECTED` pada
+`2026-10-07T11:19:52.454Z`; gateway `CONFIGURED` dan source terverifikasi.
+Satu slot tersisa karena satu receipt masih mengurangi kuota dua entry harian.
+Batas tiga putaran sudah habis tanpa setup valid, sehingga menunggu bukan
+blok teknis yang belum dipulihkan. Laporan dan riwayat masih `PARTIAL`.
+Pemeriksaan ini belum membuktikan order baru `CONTRACT_PRICE` atau partial
+fill versi baru diterima Binance. Jangan mengulang script gabungan RR atau HTTP 422,
+mengirim entry ETH ulang, maupun mereset cycle dan receipt.
+
 ## 1. Periksa instalasi yang sedang berjalan
 
 Masuk melalui Termius lalu salin blok berikut. Output tidak menampilkan secret.
@@ -193,8 +244,8 @@ Dokumentasi resmi Binance diperiksa pada 6 Oktober 2026:
 | Akun dan kepemilikan | GET akun/posisi/open orders terbaru; One-way, single-asset, izin Futures, kapasitas dan margin tersedia. HYPEUSDT dan semua symbol dengan exposure manual dikecualikan. Hindari perubahan global mode akun yang memengaruhi posisi manual. |
 | CROSS dan 75x | GET `/fapi/v1/symbolConfig` serta `/fapi/v1/leverageBracket`. Jika perlu, signed POST `/fapi/v1/marginType` dengan `marginType=CROSSED` dan `/fapi/v1/leverage` dengan `leverage=75`, hanya untuk symbol bot yang telah dipastikan bebas exposure lain. Baca ulang config dan batas notional sebelum entry. |
 | Entry | Signed POST `/fapi/v1/order`: `type=LIMIT`, `timeInForce=GTC`, `positionSide=BOTH`, `price=intent.entry.price`, `quantity=intent.entry.quantity`, `newClientOrderId=intent.client_order_id`. LONG memakai BUY; SHORT memakai SELL. |
-| SL | Signed POST `/fapi/v1/algoOrder`: `algoType=CONDITIONAL`, `type=STOP_MARKET`, `triggerPrice=intent.protection.stop_loss`, `workingType=MARK_PRICE`, sisi exit berlawanan dengan entry, `positionSide=BOTH`, ID `clientAlgoId` deterministik. Proteksi dengan quantity harus mengurangi exposure bot yang terisi (`reduceOnly=true`), tanpa `closePosition=true`. |
-| TP | Endpoint algo yang sama dengan `type=TAKE_PROFIT_MARKET` dan `triggerPrice=intent.protection.take_profit`; sisi, ownership, dan quantity proteksi diverifikasi seperti SL. |
+| SL | Signed POST `/fapi/v1/algoOrder`: `algoType=CONDITIONAL`, `type=STOP_MARKET`, `triggerPrice=intent.protection.stop_loss`, `workingType=intent.protection.working_type`, sisi exit berlawanan dengan entry, `positionSide=BOTH`, ID `clientAlgoId` deterministik. Plan baru memakai Terakhir (`CONTRACT_PRICE`); plan lama tanpa field pemicu tetap `MARK_PRICE`. Proteksi dengan quantity harus mengurangi exposure bot yang terisi (`reduceOnly=true`), tanpa `closePosition=true`. |
+| TP | Endpoint algo yang sama dengan `type=TAKE_PROFIT_MARKET` dan `triggerPrice=intent.protection.take_profit`; basis pemicu, sisi, ownership, dan quantity proteksi diverifikasi seperti SL. |
 | Konfirmasi | GET `/fapi/v1/order` berdasarkan client/order ID dan GET `/fapi/v1/algoOrder` berdasarkan clientAlgo/algo ID. Cocokkan symbol, sisi, quantity, harga/trigger, `workingType`, status, dan ID dengan intent serta fill aktual. |
 
 Target internal `CROSS` dipetakan ke nilai Binance `CROSSED`. Menaruh field
@@ -214,8 +265,13 @@ q = floor_ke_stepSize(q_raw), dibatasi maxQty
 planned_loss_SL = q * abs(E - S) + q * E * f + q * S * f <= R
 ```
 
-Lot minimum, minimum notional, tick harga, fee aktual yang dibaca, dan net RR
-minimal 2 juga harus lolos. Leverage 75 tidak mengalikan quantity atau target
+Lot minimum, minimum notional, tick harga, dan fee aktual yang dibaca harus lolos.
+Plan baru memakai `NET_1_TO_2_NEAREST_TICK`: TP model harus tepat pada tick legal
+terdekat yang mencapai net RR 1:2 sesudah fee. TP di bawah net RR 2 ditolak dengan
+`NET_RISK_REWARD_BELOW_2`; TP yang sudah melewati minimum tetapi tidak cocok
+dengan target tick ditolak dengan `NET_RISK_REWARD_NOT_TARGET_2`. Worker tidak
+menggeser harga model. Plan lama tanpa kebijakan ini tetap memakai net RR
+minimal 2, termasuk ETH yang telah terisi. Leverage 75 tidak mengalikan quantity atau target
 risiko. Panel Robot Trading menyimpan target risiko; default 5 USDT, perubahan
 berlaku untuk analisis baru. Funding, slippage, gap, serta likuidasi tidak
 tercakup dalam estimasi 5 USDT; adapter harus memeriksa kecukupan margin dan
@@ -250,9 +306,13 @@ termasuk posisi manual dan carryover. Pending entry mencadangkan kuota serta
 slot. Dengan satu HYPEUSDT manual, paling banyak satu coin lain diambil.
 Dua posisi aktif menyisakan nol slot. Pergantian hari tidak menutup posisi lama;
 posisi yang selesai tidak mengembalikan kuota harian yang sudah dipakai.
-Hanya HOLD meminta pengganti, maksimal tiga screening tambahan.
+HOLD dan penolakan lokal `NET_RISK_REWARD_BELOW_2` atau
+`NET_RISK_REWARD_NOT_TARGET_2` tanpa plan/intent order
+meminta pengganti dari putaran terakhir, dengan maksimum tiga screening
+tambahan bersama dan tetap mengikuti slot. Penolakan tetap `REJECTED`;
+kegagalan teknis lain serta unknown tidak diganti.
 Setelah cycle selesai pada hari dan jumlah entry terkonfirmasi yang sama,
-screening berbayar tidak diulang tanpa batas. Jika putaran HOLD habis tanpa
+screening berbayar tidak diulang tanpa batas. Jika putaran pengganti habis tanpa
 setup/fill, cycle menunggu hari baru atau fill terkonfirmasi yang mengubah
 epoch. Polling 45 detik tetap berjalan selama menunggu.
 

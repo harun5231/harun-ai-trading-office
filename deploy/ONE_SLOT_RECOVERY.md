@@ -3,17 +3,56 @@
 VPS mengonfirmasi `ONE_REPAIR_CYCLE_SEEDED`, `target:1`, `epoch:1`.
 Pemeriksaan berikutnya mengonfirmasi satu job `SCREENING` dan satu job
 `ANALYSIS` berstatus `COMPLETE`, tanpa intent order baru saat snapshot dibaca.
-Kandidat baru BTC berstatus `REJECTED / NET_RISK_REWARD_BELOW_2`: setup tidak
+Pada snapshot tersebut, kandidat baru BTC berstatus `REJECTED / NET_RISK_REWARD_BELOW_2`: setup tidak
 memenuhi reward/risk bersih minimal 1:2 setelah fee. Penjadwalan dan riset
-berhasil; order baru ditolak sebelum submission. ETH tetap pending dengan
-fill nol, sehingga entry terisi dan TP/SL baru belum terbukti di Binance.
+berhasil; order baru ditolak sebelum submission. ETH saat itu masih pending
+dengan fill nol.
+
+Pemeriksaan sebelum exit mengonfirmasi ETH `POSITION_PROTECTED`: LONG 0.181
+pada entry 2610, SL 2585, TP 2730, keduanya memakai `MARK_PRICE`, serta satu
+receipt entry terverifikasi. Pemulihan journal tidak mengubah level, quantity,
+atau basis pemicu intent ETH tersebut.
 
 Pada pemeriksaan sebelumnya, cycle hari itu berstatus `COMPLETE` dengan target
 2: BTC ditolak secara teknis setelah pemulihan absent order, sedangkan ETH
 `ENTRY_PENDING` dengan fill nol. Penolakan BTC memakai satu kesempatan riset;
 ETH memakai satu kesempatan lainnya. Budget cycle habis, tetapi slot posisi
 masih tersedia. ETH pending tetap mencadangkan satu slot dan kuota harian,
-meskipun counter posisi dan entry terisi masih nol.
+meskipun pada snapshot itu counter posisi dan entry terisi masih nol.
+
+Pembaruan aturan baru telah terpasang dan source container terverifikasi:
+plan baru memakai
+`NET_1_TO_2_NEAREST_TICK`, sehingga TP harus tepat pada tick legal terdekat yang
+mencapai net RR 1:2 sesudah fee. Penolakan lokal `NET_RISK_REWARD_BELOW_2` atau
+`NET_RISK_REWARD_NOT_TARGET_2` tanpa plan/intent order akan meminta screening
+pengganti seperti HOLD, dengan batas bersama tiga putaran. Kandidat tetap
+`REJECTED`; risiko default net 5 USDT termasuk fee tetap berlaku. Proteksi plan
+baru memakai pemicu Terakhir (`CONTRACT_PRICE`). Plan lama tanpa field baru
+tetap memakai net RR minimal 2 dan `MARK_PRICE`; ETH di atas tetap dipertahankan.
+Pemasangan menghasilkan `PACKAGE_SHA256_OK`, `GATEWAY_PATCH_VERIFIED`,
+`SOURCE_MATCH`, dan `VPS_RR_TARGET_LAST_PRICE_VERIFIED`. Worker healthy setelah
+restart 7 Oktober 2026 pukul 10:04 UTC, dengan robot ON, satu posisi, satu
+receipt, satu slot tersedia, dan target risiko 5 USDT. Snapshot bot
+10:03:37 UTC masih berasal dari sebelum restart. Pemulihan closure ETH dan
+request SOL kemudian terverifikasi pada 11:14 UTC. Pemeriksaan terbaru
+11:19 UTC membuktikan ETH asli `CLOSED` tanpa failure, receipt tetap satu,
+posisi aktif nol, dan request/job pending atau needs-review kosong.
+
+Cycle epoch 1 telah `COMPLETE`, target 1, replacements 3, queue 0; kandidat
+terakhir ETHUSDT baru ditolak `NET_RISK_REWARD_NOT_TARGET_2` sebelum order.
+Epoch 0 juga `COMPLETE`, target 2, replacements 0, queue 0. Robot ON menunggu
+`INSUFFICIENT_ACTIONABLE_SETUPS / ROBOT_CYCLE_COMPLETE` tanpa failure robot
+atau akun. Satu slot tersisa dari kuota dua entry dengan satu receipt harian,
+tetapi tiga putaran pengganti sudah habis tanpa setup valid. Belum ada order
+pengganti diterima, sehingga `CONTRACT_PRICE` dan partial fill versi baru belum
+dibuktikan. Laporan akun masih `PARTIAL`.
+
+Cycle epoch 1 yang sudah dibuat telah dilanjutkan oleh coordinator yang
+diperbarui, tanpa menjalankan helper seed lagi, menambah cycle, atau mereset
+journal. Pemasangan gabungan enam file telah diverifikasi dengan backup di VPS;
+publikasi GitHub mengikuti verifikasi source tersebut. Fungsi lain pada adapter lokal
+tetap dipertahankan. Panduan tersedia pada
+[target net RR 1:2, pengganti, dan pemicu Terakhir](RR_REPLACEMENT.md).
 
 ## Lingkup helper
 
@@ -53,35 +92,37 @@ masih exposed disaring; BTC dapat dipilih kembali melalui analisis baru dan
 client ID baru, tanpa mengirim ulang intent BTC lama.
 
 Coordinator memakai cycle numerik ini sebelum dan sesudah first fill menaikkan
-epoch ke 1. Budget tidak direset, maksimum tiga penggantian HOLD tetap berlaku,
+epoch ke 1. Budget tidak direset; batas bersama tiga putaran pengganti tetap berlaku,
 dan batas dua entry per hari serta dua posisi/pending tetap diperiksa. Posisi
 carryover dan manual tetap menggunakan kapasitas yang sama.
 
 ## Inspeksi dan penerapan melalui Termius
 
-Kasus ini sudah berhasil diterapkan; jangan membuat cycle tambahan. Helper
+Kasus ini sudah berhasil diterapkan; jangan menjalankan helper seed lagi atau
+membuat cycle tambahan. Pin dan perintah berikut mendokumentasikan prosedur asal,
+bukan langkah pembaruan setelah ETH fill atau perubahan source. Helper
 mempertahankan ON dan tidak melakukan restart. Rekonsiliasi proteksi ETH tetap
 bergantung pada worker yang berjalan dan polling normal, saat ini 45 detik.
 Cycle lock dapat menunda satu tick; jika worker sedang sibuk, helper menunggu
 maksimum 15 detik lalu menolak dengan `WORKER_BUSY`.
 
-Untuk file helper yang sudah disalin ke `/tmp/seed_one_slot.py` pada VPS,
-jalankan inspeksi tanpa perubahan:
+Dalam prosedur asal, file helper disalin ke `/tmp/seed_one_slot.py` pada VPS
+dan inspeksi tanpa perubahan dilakukan dengan:
 
 ```bash
 cd /root/harun-ai-trading-office
 docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S - --data-dir /data < /tmp/seed_one_slot.py
 ```
 
-`--apply` hanya digunakan ketika inspeksi menghasilkan `REPAIR_READY` dan
-pemulihan memang belum diterapkan:
+Penerapan asal menggunakan `--apply` hanya ketika inspeksi menghasilkan
+`REPAIR_READY` dan pemulihan memang belum diterapkan:
 
 ```bash
 docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S - --data-dir /data --apply < /tmp/seed_one_slot.py
 ```
 
-Setelah helper tersedia pada GitHub, file dapat diambil langsung dari remote
-untuk inspeksi, tanpa `git pull` atau mengganti adapter lokal:
+Cara pengambilan helper dari GitHub untuk inspeksi asal, tanpa `git pull`
+atau mengganti adapter lokal, dicatat berikut:
 
 ```bash
 (
@@ -117,8 +158,11 @@ terjadi setelah OFF tidak mendapat proteksi baru dari coordinator yang berhenti.
 
 Jika job analisis `COMPLETE` tetapi intent baru belum ada, baca `status` dan
 `failure_code` kandidat pada cycle pemulihan. `COMPLETE` pada job berarti
-respons sudah diproses, bukan setup lolos validasi. `REJECTED` memakai budget
-analisis, sedangkan `HOLD` mengikuti batas penggantian normal. Status utama
+respons sudah diproses, bukan setup lolos validasi. Pada versi VPS saat observasi
+tersebut, `REJECTED / NET_RISK_REWARD_BELOW_2` menghabiskan budget analisis.
+Aturan baru di atas mengecualikan kedua kode penolakan net RR sebelum plan/intent
+order dan memakai batas pengganti yang sama dengan HOLD. Penolakan lain tetap
+memakai aturan sebelumnya. Status utama pada observasi tersebut
 dapat kembali menampilkan cycle epoch 0 sebagai `ROBOT_CYCLE_COMPLETE`; alasan
 kandidat terbaru tetap tersedia pada kandidat dan `last_decision`. Jangan
 menambahkan cycle lain untuk melewati penolakan atau mengirim payload lama.

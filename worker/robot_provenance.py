@@ -2,7 +2,7 @@
 import json
 import re
 from dataclasses import fields as rule_fields
-from .core import Review,D,number,validated_risk_target,Rules,maximum_risk_quantity,verified_rr,risk_costs
+from .core import Review,D,number,validated_risk_target,validated_protection_working_type,Rules,maximum_risk_quantity,verified_rr,risk_costs,validate_reward_risk_policy
 from .provenance import digest,request_digest
 from .neuroapi import setup
 
@@ -13,6 +13,13 @@ OPERATION=r'\d{4}-\d{2}-\d{2}:robot-v9:(?:0|[1-9]\d{0,11}):analysis-v9:'
 def stamp(db,plan,operation):
     try:
         symbol=plan['symbol']
+        validated_protection_working_type(plan.get('protection_working_type','MARK_PRICE'))
+        if 'reward_risk_policy' in plan:
+            sizing=plan['sizing_rules']
+            if not isinstance(sizing,dict) or set(sizing)!={field.name for field in rule_fields(Rules)}:raise ValueError
+            rules=Rules(**{key:(D(value) if isinstance(value,str) and key not in ('fee_source','fee_symbol') else value)
+                for key,value in sizing.items()})
+            validate_reward_risk_policy(plan,rules)
         if plan.get('mode')!='ORDER_INTENT' or not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',symbol):raise ValueError
         if not isinstance(operation,str) or not re.fullmatch(OPERATION+re.escape(symbol),operation):raise ValueError
         previous=plan.get('provenance')
@@ -30,6 +37,7 @@ def stamp(db,plan,operation):
 
 def verify(db,plan,operation):
     try:
+        validated_protection_working_type(plan.get('protection_working_type','MARK_PRICE'))
         proof=plan['provenance'];copy={k:v for k,v in plan.items() if k!='provenance'}
         stamp(db,copy,operation)
         if proof!=copy['provenance'] or not proof['request_output_sha256'] or not proof['request_body_sha256']:raise ValueError
@@ -46,6 +54,7 @@ def verify(db,plan,operation):
         rules=Rules(**{k:(D(v) if isinstance(v,str) and k not in ('fee_source','fee_symbol') else v) for k,v in fields.items()})
         for v in (rules.step,rules.minimum,rules.maximum,rules.tick):number(v)
         if not rules.min_notional.is_finite() or rules.min_notional<0:raise ValueError
+        validate_reward_risk_policy(plan,rules)
         if qty!=maximum_risk_quantity(signal.entry,signal.sl,rules,target,check_fresh=False):raise ValueError
         costs=risk_costs(signal.entry,signal.tp,signal.sl,qty,rules,symbol=signal.symbol,check_fresh=False)
         if any(plan.get(key)!=value for key,value in costs.items()):raise ValueError

@@ -12,7 +12,7 @@ CODES=frozenset(('NETWORK_UNCERTAIN','INVALID_RESPONSE_ENVELOPE','INVALID_OUTPUT
  'MARKET_DATA_REJECTED','LOCAL_PROCESSING_FAILED','STALE_CONTRACT_CONTEXT','INVALID_CONTRACT_CONTEXT',
  'INVALID_ORDER_CONTRACT','INVALID_RISK_REWARD','INVALID_RISK_TARGET','INVALID_EXECUTION_QUANTITY',
  'INVALID_SIDE','INVALID_RULES','RISK_ABOVE_TARGET','FEE_EVIDENCE_UNAVAILABLE','INVALID_FEE_EVIDENCE',
- 'STALE_FEE_EVIDENCE','NET_RISK_REWARD_BELOW_2','ORDER_COSTS_CHANGED','INVALID_COST_MODEL','RESEARCH_PAUSED'))
+ 'STALE_FEE_EVIDENCE','NET_RISK_REWARD_BELOW_2','NET_RISK_REWARD_NOT_TARGET_2','ORDER_COSTS_CHANGED','INVALID_COST_MODEL','RESEARCH_PAUSED','NEUROAPI_REQUEST_LIMIT_EXCEEDED'))
 # Old operation IDs remain readable audit metadata, never executable requests.
 OPERATION_PATTERN=(r'\d{4}-\d{2}-\d{2}:(?:robot-v8:[0-2]:(?:screening:[0-3]:[12]|analysis-v8:[A-Z0-9]{2,18}USDT)'
     r'|robot-v9:(?:0|[1-9]\d{0,11}):(?:screening:[0-3]:[12]|analysis-v9:[A-Z0-9]{2,18}USDT))')
@@ -42,7 +42,7 @@ def read_records(root):
         result=[]
         for operation,state,attempts,failure in rows:
             operation=operation if isinstance(operation,str) and re.fullmatch(OPERATION_PATTERN,operation) else 'OPERATION_REDACTED'
-            state=state if state in ('PENDING','COMPLETE','NEEDS_REVIEW') else 'STATE_REDACTED'
+            state=state if state in ('PENDING','COMPLETE','NEEDS_REVIEW','REJECTED_REQUEST_VALIDATION') else 'STATE_REDACTED'
             reason=safe_code(failure) if failure else ('FAILURE_CODE_UNAVAILABLE' if state=='NEEDS_REVIEW' else None)
             result.append(dict(operation=operation,state=state,attempts=attempts if type(attempts) is int and 0<=attempts<=1000000 else None,failure_code=reason))
         return result

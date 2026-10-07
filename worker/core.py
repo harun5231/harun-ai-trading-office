@@ -16,6 +16,7 @@ TZ = ZoneInfo('Asia/Bangkok')
 RISK = D('5')
 FEE_SOURCE = 'BINANCE_FUTURES_COMMISSION_RATE'
 SIZING_METHOD = 'MAX_LOT_ENTRY_SL_TAKER_FEES_V2'
+REWARD_RISK_POLICY = 'NET_1_TO_2_NEAREST_TICK'
 class Review(Exception): pass
 
 def now(): return datetime.now(timezone.utc).isoformat()
@@ -71,6 +72,11 @@ def validated_risk_target(value):
         value=format(value,'f')
     value=number(value)
     if value>D("100"):raise Review("INVALID_RISK_TARGET")
+    return value
+
+def validated_protection_working_type(value):
+    if not isinstance(value,str) or value not in ('MARK_PRICE','CONTRACT_PRICE'):
+        raise Review('INVALID_ORDER_CONTRACT')
     return value
 
 def _exact_decimal(value):
@@ -156,7 +162,33 @@ def risk_costs(entry,tp,sl,quantity,rules,*,symbol=None,check_fresh=True):
         excluded_costs=['SLIPPAGE','FUNDING','GAPS'])
 
 
-def risk_check(signal, rules, risk_target=RISK):
+def target_reward_risk_tp(entry,stop_loss,side,rules,*,symbol=None):
+    """Exact first legal tick reaching net 1:2; never change an analyzed level."""
+    e,sl,tick=(Fraction(number(value)) for value in (entry,stop_loss,rules.tick))
+    fee=Fraction(validated_fee_rate(rules,symbol,check_fresh=False))
+    if side not in ('LONG','SHORT'):raise Review('INVALID_SIDE')
+    if not (sl<e if side=='LONG' else sl>e):raise Review('INVALID_ENTRY_TP_SL')
+    loss=abs(e-sl)+fee*(e+sl)
+    target=(e*(1+fee)+2*loss)/(1-fee) if side=='LONG' else (e*(1-fee)-2*loss)/(1+fee)
+    steps=target/tick
+    count=-(-steps.numerator//steps.denominator) if side=='LONG' else steps.numerator//steps.denominator
+    if count*tick<=0:raise Review('INVALID_ENTRY_TP_SL')
+    return _exact_decimal(count*tick)
+
+def validate_reward_risk_policy(plan,rules):
+    if 'reward_risk_policy' not in plan:return True
+    if not isinstance(plan['reward_risk_policy'],str) or plan['reward_risk_policy']!=REWARD_RISK_POLICY:
+        raise Review('INVALID_RISK_REWARD')
+    e,tp,sl=(Fraction(number(plan[key])) for key in ('entry','tp','sl'))
+    fee=Fraction(validated_fee_rate(rules,plan['symbol'],check_fresh=False))
+    target=target_reward_risk_tp(plan['entry'],plan['sl'],plan['side'],rules,symbol=plan['symbol'])
+    reward=(tp-e if plan['side']=='LONG' else e-tp)-fee*(e+tp)
+    loss=abs(e-sl)+fee*(e+sl)
+    if reward<2*loss:raise Review('NET_RISK_REWARD_BELOW_2')
+    if tp!=Fraction(target):raise Review('NET_RISK_REWARD_NOT_TARGET_2')
+    return True
+
+def risk_check(signal, rules, risk_target=RISK,*,reward_risk_policy=None):
     risk_target=validated_risk_target(risk_target)
     if not 0 <= time.time()-rules.observed_at <= 300: raise Review('NEEDS_REVIEW: filter pasar kedaluwarsa')
     for v in (rules.step,rules.minimum,rules.maximum,rules.tick): number(v)
@@ -180,13 +212,18 @@ def risk_check(signal, rules, risk_target=RISK):
             raise Review('REJECT_PERCENT_PRICE')
     costs=risk_costs(signal.entry,signal.tp,signal.sl,qty,rules,symbol=signal.symbol)
     if not Fraction(0)<Fraction(D(costs['risk']))<=Fraction(risk_target):raise Review('NEEDS_REVIEW: risiko melampaui batas')
-    return dict(symbol=signal.symbol,side=signal.side,entry=format(signal.entry,'f'),tp=format(signal.tp,'f'),sl=format(signal.sl,'f'),
+    plan=dict(symbol=signal.symbol,side=signal.side,entry=format(signal.entry,'f'),tp=format(signal.tp,'f'),sl=format(signal.sl,'f'),
                 quantity=format(qty,'f'),execution_quantity=format(qty,'f'),margin_mode='CROSS',leverage=75,order_type='LIMIT',
                 mode='ORDER_INTENT',risk_target_usdt=format(risk_target,'f'),rules_checked_at=rules.observed_at,**costs)
+    if reward_risk_policy is not None:
+        plan['reward_risk_policy']=reward_risk_policy
+        validate_reward_risk_policy(plan,rules)
+    return plan
 
 
 def preflight(plan, rules, risk_target=RISK):
     if not isinstance(plan,dict) or plan.get('mode')!='ORDER_INTENT': raise Review('INVALID_ORDER_CONTRACT')
+    validated_protection_working_type(plan.get('protection_working_type','MARK_PRICE'))
     if plan.get('margin_mode')!='CROSS' or plan.get('leverage')!=75 or plan.get('order_type')!='LIMIT':
         raise Review('NEEDS_REVIEW: konfigurasi order salah')
     sig=Signal(plan['symbol'],plan['side'],number(plan['entry']),number(plan['tp']),number(plan['sl']),number(plan['quantity']))
@@ -203,6 +240,7 @@ def preflight(plan, rules, risk_target=RISK):
     if not 0<=time.time()-intent_observed<=300:raise Review('STALE_FEE_EVIDENCE')
     for key in (*risk_costs(sig.entry,sig.tp,sig.sl,D(plan['quantity']),rules,symbol=sig.symbol), 'risk_target_usdt'):
         if key!='fee_observed_at' and plan.get(key)!=verified[key]:raise Review('ORDER_COSTS_CHANGED')
+    validate_reward_risk_policy(plan,rules)
 
 def verified_rr(plan):
     """Verify derived RR against exact levels without repricing or resizing.

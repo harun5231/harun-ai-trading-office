@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from datetime import datetime,timezone
 from zoneinfo import ZoneInfo
-from .core import D,Review,day,now,risk_check,preflight
+from .core import D,Review,day,now,risk_check,preflight,REWARD_RISK_POLICY
 from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS)
 from .robot_store import RobotStore
 from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent,require_implementation
@@ -43,17 +43,31 @@ class Coordinator:
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
+    def replaceable_result(self,row):
+        if row['status']=='HOLD':return True
+        if row['status']!='REJECTED' or row['plan'] is not None or self.db.execute(
+                'SELECT 1 FROM order_intents WHERE candidate_id=? LIMIT 1',(row['id'],)).fetchone():return False
+        # Only local RR failures or a recorded request-body rejection may
+        # select another coin. An unknown outcome never qualifies.
+        if row['failure_code'] in ('NET_RISK_REWARD_BELOW_2','NET_RISK_REWARD_NOT_TARGET_2'):return True
+        if row['failure_code']!='HTTP_422':return False
+        return bool(self.db.execute('''SELECT 1 FROM api_requests a JOIN robot_jobs j ON j.operation=a.operation
+            WHERE a.operation=? AND a.state='REJECTED_REQUEST_VALIDATION' AND a.failure_code='HTTP_422'
+            AND a.output IS NULL AND a.idempotency IS NULL AND a.attempts=1
+            AND j.cycle=? AND j.symbol=? AND j.kind='ANALYSIS' AND j.state='REQUEST_REJECTED' ''',
+            (row['id'],row['cycle'],row['symbol'])).fetchone())
+    def replacement_count(self,data,results):
+        return sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
     def research_budget(self,data,results):
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
-        technical=sum(r['status']=='REJECTED' for r in results)
+        technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
         return data['target']-ready-technical
     def unfinished_cycle(self,row):
         data=json.loads(row['data']);results=self.store.results(row['id'])
         if self.research_budget(data,results)<=0:return False
         if data['queue']:return True
         if row['state']=='ACTIVE' and data['screen']==-1:return True
-        held=any(r['status']=='HOLD' and r['symbol'] in data.get('round_symbols',[]) for r in results)
-        return held and data['replacements']<MAX_REPLACEMENTS
+        return self.replacement_count(data,results)>0 and data['replacements']<MAX_REPLACEMENTS
     def reject_queued_symbol(self,cycle,data,symbol,account,reason):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -303,8 +317,8 @@ class Coordinator:
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
         unsent=self.db.execute("SELECT symbol FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')")
         ready_unexposed=sum(r['symbol'] not in account['running_symbols'] for r in unsent)
-        technical=sum(r['status']=='REJECTED' for r in results)
-        # A rejected research opportunity uses budget, not a live account slot.
+        technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
+        # Other rejected research opportunities use budget, not a live account slot.
         # Ready intents reserve current free slots; the original target stays fixed.
         # A matching running position already occupies its real account slot.
         budget=self.research_budget(data,results)
@@ -323,17 +337,16 @@ class Coordinator:
                 return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
-        # Only HOLD decisions from the just-analyzed round are replaceable.
-        # A rejected/duplicate/exposed screening result is not a new HOLD, and
-        # historical HOLDs must not trigger another paid round after rejection.
-        held=sum(r['status']=='HOLD' and r['symbol'] in data.get('round_symbols',[]) for r in results)
-        if not initial and not held:
+        # HOLD and local fee/RR rejections share the same three replacement rounds.
+        # Only the latest round triggers screening; other failures consume budget.
+        replaceable=self.replacement_count(data,results)
+        if not initial and not replaceable:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         if not initial and data['replacements']>=MAX_REPLACEMENTS:
             self.save_cycle(cycle,data,'COMPLETE')
             return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
-        return self.screen(cycle,data,remaining if initial else min(remaining,held),account,today,initial)
+        return self.screen(cycle,data,remaining if initial else min(remaining,replaceable),account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -354,7 +367,10 @@ class Coordinator:
             self.unclaim_unsent_research(operation)
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         try:
-            value=self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),catalog=catalog,
+            context=None if initial else dict(requested_count=count,
+                excluded_symbols=sorted(set(data['seen'])|self.exposed_symbols(account)|MANUAL_ONLY_SYMBOLS),
+                replacement_instruction='Choose different Binance USD-M USDT perpetual coins that are not in excluded_symbols.')
+            value=self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),context,catalog=catalog,
                 continue_if=lambda:self.allowed(today))
             coins=selections(value,catalog,count)
             data['screen']=index
@@ -416,7 +432,10 @@ class Coordinator:
                     try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory())
                     except ResearchReadPaused:pass
                     else:rules=refreshed
-                plan=risk_check(signal,rules,target);plan['risk_target_usdt']=target
+                plan=risk_check(signal,rules,target,reward_risk_policy=REWARD_RISK_POLICY);plan['risk_target_usdt']=target
+                # New Binance TP/SL use the requested Last Price trigger.
+                # Historical plans remain immutable and retain their own trigger.
+                plan['protection_working_type']='CONTRACT_PRICE'
                 plan['sizing_rules']={k:str(v) if isinstance(v,D) else v for k,v in asdict(rules).items()}
                 preflight(plan,rules,target);stamp(self.db,plan,operation);verify(self.db,plan,operation)
                 state='READY_FOR_EXECUTION'
@@ -425,8 +444,10 @@ class Coordinator:
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         except Exception as error:
             reason=validation_code(error)
-            row=self.db.execute('SELECT state FROM api_requests WHERE operation=?',(operation,)).fetchone()
-            unknown=not row or row[0]!='COMPLETE'
+            row=self.db.execute('SELECT state,failure_code FROM api_requests WHERE operation=?',(operation,)).fetchone()
+            request_rejected=bool(row and row['state']=='REJECTED_REQUEST_VALIDATION' and row['failure_code']=='HTTP_422')
+            local_rejected=not row and reason=='NEUROAPI_REQUEST_LIMIT_EXCEEDED'
+            unknown=not (row and row['state']=='COMPLETE' or request_rejected or local_rejected)
             if row and row[0]=='COMPLETE':self.neuro.record_validation(operation,error)
             plan=None
         data['queue'].pop(0);data['seen'].append(symbol)
@@ -434,7 +455,8 @@ class Coordinator:
         try:
             self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',(operation,cycle,symbol,state,json.dumps(plan) if plan else None,reason))
             self.save_cycle(cycle,data,'NEEDS_REVIEW' if unknown else 'ACTIVE')
-            self.db.execute('UPDATE robot_jobs SET state=? WHERE operation=?',('NEEDS_REVIEW' if unknown else 'COMPLETE',operation))
+            job_state='NEEDS_REVIEW' if unknown else 'REQUEST_REJECTED' if state=='REJECTED' and reason in ('HTTP_422','NEUROAPI_REQUEST_LIMIT_EXCEEDED') else 'COMPLETE'
+            self.db.execute('UPDATE robot_jobs SET state=? WHERE operation=?',(job_state,operation))
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
         return self.store.report(state,account,reason)
