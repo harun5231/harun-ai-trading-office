@@ -6,7 +6,8 @@ import unittest
 from unittest.mock import patch
 
 import test_order_pipeline as pipeline
-from worker.core import D, Review, Rules, preflight
+from worker.core import D, Review, Rules, preflight, risk_check
+from worker.neuroapi import setup
 from worker.order_gateway import build_intent
 from worker.robot_provenance import stamp, verify
 
@@ -40,18 +41,20 @@ class ProtectionTriggerContractTests(unittest.TestCase):
         self.fixture.ticks(2)
         self.row = self.fixture.ledger.db.execute('SELECT * FROM robot_candidates').fetchone()
         self.operation = self.row['id']
-        self.plan = json.loads(self.row['plan'])
-        # Emulate the pre-upgrade plan precisely: no new flag, no rewritten
-        # default, original provider response and original sizing evidence.
-        self.plan.pop('protection_working_type', None)
-        self.plan.pop('reward_risk_policy', None)
-        self.plan.pop('provenance', None)
+        current = json.loads(self.row['plan'])
+        # Reconstruct the actual archived fee-only policy from its original
+        # provider output and rules, without carrying V3 normalized evidence.
+        self.rules = Rules(**{key: D(value) if isinstance(value, str) and
+            key not in ('fee_source', 'fee_symbol') else value
+            for key, value in current['sizing_rules'].items()})
+        source = self.fixture.ledger.db.execute('SELECT output FROM api_requests WHERE operation=?',
+            (self.operation,)).fetchone()[0]
+        signal = setup(json.loads(source, parse_float=D), 'ETHUSDT', require_declared_rr=False)
+        self.plan = risk_check(signal, self.rules, current['risk_target_usdt'])
+        self.plan['sizing_rules'] = copy.deepcopy(current['sizing_rules'])
         stamp(self.fixture.ledger.db, self.plan, self.operation)
         self.fixture.ledger.db.execute('UPDATE robot_candidates SET plan=? WHERE id=?',
             (json.dumps(self.plan), self.operation))
-        self.rules = Rules(**{key: D(value) if isinstance(value, str) and
-            key not in ('fee_source', 'fee_symbol') else value
-            for key, value in self.plan['sizing_rules'].items()})
 
     def test_legacy_eth_verified_payload_is_byte_identical_to_old_command(self):
         before = json.dumps(self.plan)

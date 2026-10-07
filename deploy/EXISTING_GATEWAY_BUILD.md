@@ -1,14 +1,19 @@
 # Build gateway kustom yang sudah ada di VPS
 
-Panduan ini menyiapkan file gateway kustom yang sudah ditempel di
-`/root/harun-ai-trading-office`, lalu mengganti container worker sambil menjaga
-volume data, secret, dan proxy. Jalankan dari Termius; Codex belum menjalankan
-langkah ini di VPS. Pilih **ROBOT OFF** di Office dan pertahankan OFF.
-Jangan menjalankan `git pull`, `git reset`, atau updater yang menimpa file kustom.
+Utility ini menyiapkan dependency/helper pada gateway kustom sederhana yang
+sudah ada di `/root/harun-ai-trading-office`. Ia bukan installer revisi alur V3.
+Untuk pembaruan alur current, gunakan package terarah yang diaudit di
+[panduan Termius](TERMIUS_24_7.md), verifikasi VPS dahulu, lalu publikasi GitHub.
 
-File kustom menggantikan ekspor `build_intent` dan `require_implementation` yang
-dibutuhkan coordinator, serta mengimpor `requests` yang belum ada pada image
-standar. Utility memulihkan hanya helper yang hilang dari source Git HEAD dengan
+Jalankan utility dari Termius dengan **ROBOT OFF** dan pertahankan OFF. Source
+privat, volume data, secret, dan proxy harus tetap utuh. Jangan menjalankan
+`git pull`, `git reset`, atau updater yang menimpa file kustom. Guard menolak
+source yang tidak sesuai; jangan memakai utility ini untuk melewati guard
+installer alur atau memulihkan versi lain.
+
+Jika file kustom kehilangan ekspor `build_intent` dan `require_implementation`
+yang dibutuhkan coordinator, utility memulihkan hanya helper yang hilang dari
+source Git HEAD dengan
 SHA-256 `ba15012f49b7eafbac729f2e509590e4b03a4ba3544124d073c14c924f81642e`,
 tanpa mengganti metode kustom. Jika ada import `requests`, utility menambahkan
 instalasi `requests==2.32.5` pada Dockerfile lokal. Source dibaca dengan AST;
@@ -117,14 +122,12 @@ entry terisi, atau SL/TP sudah terpasang di Binance. Periksa metadata
 secret. Field `connected` adalah metadata, bukan sakelar eksekusi. Robot harus
 tetap OFF sesudah seluruh pemeriksaan; polling read-only Office tetap berjalan.
 
-Adapter kustom yang dibahas masih menelan exception TP/SL sesudah entry dan belum
-menunjukkan konfigurasi CROSS/leverage 75 secara eksplisit. Wiring file secret
-tidak memperbaiki kedua hal tersebut. Bukti fill pertama serta
-lifecycle/rekonsiliasi juga belum diverifikasi. Developer manusia perlu
-memperbaiki bagian tersebut sesuai [ORDER_INTEGRATION.md](ORDER_INTEGRATION.md)
-sebelum penggunaan nyata. Credential yang dimuat dapat dipakai SDK kustom saat
-ROBOT ON, sehingga pertahankan OFF sampai bagian tersebut selesai ditinjau dan
-diperbaiki. Panduan build ini tidak mengaktifkan ON atau mengirim order entry/TP/SL.
+Build dan wiring file secret hanya menyiapkan dependency/configuration lokal.
+Verifikasi versi adapter current terhadap [ORDER_INTEGRATION.md](ORDER_INTEGRATION.md):
+CROSS/75×, immutable intent, risk V3, strict OFF mutation guard, dan lifecycle
+entry/protection/exit. Gunakan [audit source](AUDIT_BEFORE_ON.md) serta bukti GET
+Binance untuk order existing. Pertahankan OFF sampai verifikasi selesai;
+panduan build ini tidak mengaktifkan ON atau mengirim order entry/TP/SL.
 
 Untuk mengembalikan dua file lokal, gunakan path backup yang dicetak utility:
 

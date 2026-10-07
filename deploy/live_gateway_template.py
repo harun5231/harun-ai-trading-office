@@ -107,6 +107,10 @@ class OrderGateway(_MissingOrderImplementation):
             return result
         if self.base_url != 'https://fapi.binance.com':
             raise Review('BINANCE_ORDER_ORIGIN_DENIED')
+        if method in ('POST', 'DELETE'):
+            from .research_guard import gateway_mutations_allowed
+            if not gateway_mutations_allowed():
+                raise Review('BINANCE_ORDER_ROBOT_OFF')
         timeout = min(15, self._time_left())
         self._request_count = getattr(self, '_request_count', 0)+1
         url = self.base_url + path
@@ -123,6 +127,8 @@ class OrderGateway(_MissingOrderImplementation):
             request = Request(url, data=body, headers=headers, method=method)
             opener = build_opener(ProxyHandler({}), NoRedirect())
             try:
+                if method in ('POST', 'DELETE') and not gateway_mutations_allowed():
+                    raise Review('BINANCE_ORDER_ROBOT_OFF')
                 response = opener.open(request, timeout=timeout)
             except HTTPError as error:
                 response = error
@@ -149,6 +155,10 @@ class OrderGateway(_MissingOrderImplementation):
                 return data
         except self._ExchangeError:
             raise
+        except Review as error:
+            if str(error) == 'BINANCE_ORDER_ROBOT_OFF':
+                raise
+            raise Review('BINANCE_ORDER_OUTCOME_UNKNOWN') from None
         except Exception:
             raise Review('BINANCE_ORDER_OUTCOME_UNKNOWN') from None
 
@@ -177,6 +187,10 @@ class OrderGateway(_MissingOrderImplementation):
         if any(not isinstance(k, str) or not isinstance(v, (str, int)) or isinstance(v, bool)
                for k, v in params.items()) or {'timestamp', 'signature', 'recvWindow'} & set(params):
             raise Review('BINANCE_ORDER_PARAMETERS_INVALID')
+        if method in ('POST', 'DELETE'):
+            from .research_guard import gateway_mutations_allowed
+            if not gateway_mutations_allowed():
+                raise Review('BINANCE_ORDER_ROBOT_OFF')
         values = dict(params, timestamp=self._get_server_time(), recvWindow=5000)
         query = urlencode(sorted(values.items()))
         return self._wire(method, path, query + '&signature=' + self._sign(query), True)
@@ -238,9 +252,19 @@ class OrderGateway(_MissingOrderImplementation):
             gross = q * abs(e - sl)
             entry_fee, sl_fee, tp_fee = q*e*rate, q*sl*rate, q*tp*rate
             risk, reward = gross + entry_fee + sl_fee, q*abs(tp-e) - entry_fee - tp_fee
+            v3 = 'risk_model' in intent
+            if v3:
+                costs = self._validate_v3_costs(intent, e, q, sl, tp, rate)
+                risk, reward = costs['risk_usdt'], costs['net_reward_usdt']
+                gross, entry_fee = costs['gross_risk_usdt'], costs['entry_fee_usdt']
+                sl_fee, tp_fee = costs['sl_exit_fee_usdt'], costs['tp_exit_fee_usdt']
+            elif any(key in intent for key in ('exit_slippage_rate', 'entry_slippage_rate',
+                     'sl_slippage_usdt', 'tp_slippage_usdt', 'sl_execution_price',
+                     'tp_execution_price', 'cost_evidence', 'tp_normalization')):
+                raise ValueError()
             if ('reward_risk_policy' in intent) != ('tp_tick_size' in intent):
                 raise ValueError()
-            if 'reward_risk_policy' in intent:
+            if 'reward_risk_policy' in intent and not v3:
                 if intent['reward_risk_policy'] != 'NET_1_TO_2_NEAREST_TICK':
                     raise ValueError()
                 tick = Fraction(self._decimal(intent['tp_tick_size'], positive=True))
@@ -262,7 +286,8 @@ class OrderGateway(_MissingOrderImplementation):
             ratio = intent['net_reward_risk']
             if not isinstance(ratio, str) or len(ratio) > 256 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:E[+-]?[0-9]{1,3})?', ratio):
                 raise ValueError()
-            if not Decimal(ratio).is_finite() or Fraction(Decimal(ratio)) < 2 or intent['excluded_costs'] != ['SLIPPAGE', 'FUNDING', 'GAPS']:
+            exclusions = ['FUNDING', 'GAPS_BEYOND_RESERVE', 'FEE_CHANGES_AFTER_OBSERVATION'] if v3 else ['SLIPPAGE', 'FUNDING', 'GAPS']
+            if not Decimal(ratio).is_finite() or Fraction(Decimal(ratio)) < 2 or intent['excluded_costs'] != exclusions:
                 raise ValueError()
             if not re.fullmatch(r'[a-f0-9]{64}', intent['evidence_sha256']):
                 raise ValueError()
@@ -272,6 +297,79 @@ class OrderGateway(_MissingOrderImplementation):
             raise Review('BINANCE_ORDER_INTENT_INVALID') from None
         except Exception:
             raise Review('BINANCE_ORDER_INTENT_INVALID') from None
+
+    def _validate_v3_costs(self, intent, e, q, sl, tp, rate):
+        from fractions import Fraction
+        from decimal import Context, ROUND_HALF_EVEN
+        import math
+        model = 'FEE_SLIPPAGE_RISK_V3'
+        policy = 'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE'
+        exclusions = ['FUNDING', 'GAPS_BEYOND_RESERVE', 'FEE_CHANGES_AFTER_OBSERVATION']
+        if (intent['risk_model'] != model or intent['reward_risk_policy'] != policy
+                or intent['exit_slippage_rate'] != '0.005' or intent['entry_slippage_rate'] != '0'
+                or intent['protection']['working_type'] != 'CONTRACT_PRICE'):
+            raise ValueError()
+        tick = Fraction(self._decimal(intent['tp_tick_size'], positive=True))
+        reserve = Fraction(5, 1000)
+        long = intent['side'] == 'LONG'
+        sl_execution = sl*(1-reserve if long else 1+reserve)
+        tp_execution = tp*(1-reserve if long else 1+reserve)
+        gross, slippage, tp_slippage = q*abs(e-sl), q*sl*reserve, q*tp*reserve
+        entry_fee, sl_fee, tp_fee = q*e*rate, q*sl_execution*rate, q*tp_execution*rate
+        risk = gross+slippage+entry_fee+sl_fee
+        reward = q*(tp_execution-e if long else e-tp_execution)-entry_fee-tp_fee
+        expected = dict(risk_usdt=risk, net_reward_usdt=reward, gross_risk_usdt=gross,
+                        entry_fee_usdt=entry_fee, sl_exit_fee_usdt=sl_fee,
+                        tp_exit_fee_usdt=tp_fee, sl_slippage_usdt=slippage,
+                        tp_slippage_usdt=tp_slippage, sl_execution_price=sl_execution,
+                        tp_execution_price=tp_execution)
+        if any(Fraction(self._decimal(intent[key])) != value for key, value in expected.items()):
+            raise ValueError()
+        normalization = intent['tp_normalization']
+        if not isinstance(normalization, dict) or set(normalization) != {
+                'version', 'source', 'model_entry', 'model_tp', 'model_sl', 'model_gross_rr',
+                'execution_tp', 'tick_size', 'risk_model', 'exit_slippage_rate', 'taker_fee_rate'}:
+            raise ValueError()
+        if (normalization['version'] != 'TP_NET_RR_NORMALIZATION_V1'
+                or normalization['source'] != 'WORKER_DERIVED' or normalization['risk_model'] != model
+                or normalization['exit_slippage_rate'] != '0.005'
+                or Fraction(self._decimal(normalization['taker_fee_rate'])) != rate
+                or Fraction(self._decimal(normalization['model_entry'], positive=True)) != e
+                or Fraction(self._decimal(normalization['model_sl'], positive=True)) != sl
+                or Fraction(self._decimal(normalization['execution_tp'], positive=True)) != tp
+                or Fraction(self._decimal(normalization['tick_size'], positive=True)) != tick):
+            raise ValueError()
+        original_tp = Fraction(self._decimal(normalization['model_tp'], positive=True))
+        if not (sl < e < original_tp if long else original_tp < e < sl):
+            raise ValueError()
+        model_rr = abs(original_tp-e)/abs(e-sl)
+        if model_rr < 2:
+            raise Review('NET_RISK_REWARD_BELOW_2')
+        def ratio_text(value):
+            return format(Context(prec=160, rounding=ROUND_HALF_EVEN).divide(
+                Decimal(value.numerator), Decimal(value.denominator)), 'f')
+        if normalization['model_gross_rr'] != ratio_text(model_rr) or intent['net_reward_risk'] != ratio_text(reward/risk):
+            raise ValueError()
+        evidence = intent['cost_evidence']
+        observed = intent['fee_evidence']['observed_at']
+        if type(observed) not in (int, float) or not math.isfinite(observed) or observed < 0:
+            raise ValueError()
+        expected_evidence = dict(version=model, fee_source='BINANCE_FUTURES_COMMISSION_RATE',
+            fee_symbol=intent['symbol'], fee_observed_at=observed,
+            taker_fee_rate=intent['fee_evidence']['taker_rate'], exit_slippage_rate='0.005',
+            entry_slippage_rate='0', reserve_source='CONFIGURED_ADVERSE_EXIT_RATE', excluded_costs=exclusions)
+        if not isinstance(evidence, dict) or evidence != expected_evidence:
+            raise ValueError()
+        if reward < 2*risk:
+            raise Review('NET_RISK_REWARD_BELOW_2')
+        loss = risk/q
+        raw_tp = ((e*(1+rate)+2*loss)/((1-reserve)*(1-rate)) if long else
+                  (e*(1-rate)-2*loss)/((1+reserve)*(1+rate)))
+        steps = raw_tp/tick
+        count = -(-steps.numerator//steps.denominator) if long else steps.numerator//steps.denominator
+        if count*tick <= 0 or tp != count*tick:
+            raise Review('NET_RISK_REWARD_NOT_TARGET_2')
+        return expected
 
     def _list(self, data):
         if not isinstance(data, list) or len(data) > 10_000 or any(not isinstance(row, dict) for row in data):

@@ -28,8 +28,8 @@ def screening_count(schema):
 NUM={'type':'number','exclusiveMinimum':0}
 PRICE={**NUM,'type':['number','null'],'description':'Price must conform exactly to Binance tickSize and applicable price limits supplied in context; do not round after generation.'}
 SETUP_SCHEMA={'type':'object','description':'LONG/SHORT require positive entry, TP, SL and declared reward/risk. HOLD requires all numeric fields null and creates no order.','properties':{'symbol':{'type':'string'},'side':{'type':'string','enum':['LONG','SHORT','HOLD']},
- 'limit_entry':PRICE,'take_profit':PRICE,'stop_loss':PRICE,
- 'risk_reward':{**NUM,'type':['number','null'],'description':'Reward divided by risk; 2 means risk:reward 1:2'}},
+ 'limit_entry':PRICE,'take_profit':{**PRICE,'description':'Original model TP proposal; preserve this price. The worker normalizes the final order TP to net risk:reward 1:2 using fees and the supplied adverse exit reserve.'},'stop_loss':PRICE,
+ 'risk_reward':{**NUM,'type':['number','null'],'description':'Declared gross reward divided by risk; LONG/SHORT require at least 2. HOLD requires null.'}},
  'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}
 
 def api_key():
@@ -73,7 +73,7 @@ class Hold:
     symbol: str
     side: str = 'HOLD'
 
-def setup(output,expected):
+def setup(output,expected,*,require_declared_rr=True,require_gross_rr=True):
     if not isinstance(output,dict) or set(output)!=set(SETUP_SCHEMA['required']):raise Review('INVALID_SETUP_SCHEMA')
     if output['symbol']!=expected or not isinstance(expected,str) or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',expected) or output['side'] not in ('LONG','SHORT','HOLD'):raise Review('INVALID_SETUP_SYMBOL_SIDE')
     if output['side']=='HOLD':
@@ -81,8 +81,9 @@ def setup(output,expected):
         return Hold(expected)
     e,tp,sl,rr=[setup_number(output[k]) for k in NUMERIC_FIELDS]
     if not (sl<e<tp if output['side']=='LONG' else tp<e<sl):raise Review('INVALID_ENTRY_TP_SL')
+    if require_declared_rr and rr<2:raise Review('RISK_REWARD_BELOW_2')
     # Compare distances exactly; no rounding/equality assumption for declared RR.
-    if abs(Fraction(tp)-Fraction(e))<2*abs(Fraction(e)-Fraction(sl)):raise Review('RISK_REWARD_BELOW_2')
+    if require_gross_rr and abs(Fraction(tp)-Fraction(e))<2*abs(Fraction(e)-Fraction(sl)):raise Review('RISK_REWARD_BELOW_2')
     return Signal(expected,output['side'],e,tp,sl)
 
 def canonical_output(value,schema,catalog=None):
@@ -92,7 +93,7 @@ def canonical_output(value,schema,catalog=None):
         symbols=selections(value,catalog,screening_count(schema))
         return json.dumps({'symbols':list(symbols)})
     if schema==SETUP_SCHEMA:
-        signal=setup(value,value.get('symbol'))
+        signal=setup(value,value.get('symbol'),require_declared_rr=False,require_gross_rr=False)
         fields={'symbol':signal.symbol,'side':signal.side,**{k:setup_number(value[k]) if value[k] is not None else None for k in NUMERIC_FIELDS}}
         return '{'+','.join(json.dumps(k)+':'+(format(v,'f') if isinstance(v,D) else json.dumps(v)) for k,v in fields.items())+'}'
     raise Review('INVALID_OUTPUT_SCHEMA')

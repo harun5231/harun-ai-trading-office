@@ -2,21 +2,22 @@
 from dataclasses import asdict
 import fcntl
 import json
+import math
 import re
 import time
 from pathlib import Path
 from datetime import datetime,timezone
 from zoneinfo import ZoneInfo
-from .core import D,Review,day,now,risk_check,preflight,REWARD_RISK_POLICY
+from .core import D,Review,day,now,risk_check,preflight,RISK_MODEL,NORMALIZED_REWARD_RISK_POLICY,validated_risk_target
 from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS)
 from .robot_store import RobotStore
 from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent,require_implementation
 from .neuroapi import SETUP_SCHEMA,ResearchPaused,selections,setup
-from .prompts import ANALYSIS
+from .prompts import ANALYSIS,REPLACEMENT_SCREENING
 from .analysis import analysis_context
 from .diagnostics import validation_code
 from .robot_provenance import VERSION,stamp,verify
-from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads
+from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads,gateway_mutations
 
 class Coordinator:
     def __init__(self,ledger,neuro,market,account_factory,stopping=None,gateway=None):
@@ -43,13 +44,114 @@ class Coordinator:
                 return self.store.report('REJECTED',reason=reason if reason in allowed else 'ROBOT_PREFLIGHT_NEEDS_REVIEW')
     def save_cycle(self,cycle,data,state='ACTIVE'):
         self.db.execute('UPDATE robot_cycles SET data=?,state=? WHERE id=?',(json.dumps(data),state,cycle))
+    def completed_research(self,operation,cycle,kind,symbol):
+        job=self.db.execute('SELECT * FROM robot_jobs WHERE operation=?',(operation,)).fetchone()
+        if not job:return None
+        row=self.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone()
+        if (job['cycle']!=cycle or job['kind']!=kind or job['symbol']!=symbol
+                or job['state'] not in ('PENDING','COMPLETE') or not row
+                or row['state']!='COMPLETE' or not isinstance(row['output'],str) or not row['output']
+                or not isinstance(row['body_hash'],str) or not re.fullmatch(r'[a-f0-9]{64}',row['body_hash'])
+                or type(row['attempts']) is not int or not 1<=row['attempts']<=3
+                or type(row['created']) not in (int,float) or not math.isfinite(row['created']) or row['created']<=0):
+            raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        if kind=='ANALYSIS':validated_risk_target(job['risk_target'])
+        elif job['risk_target'] is not None:raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        return row,job
+    def research_job(self,job):
+        cycle=self.db.execute("SELECT * FROM robot_cycles WHERE id=? AND state IN ('ACTIVE','COMPLETE')",(job['cycle'],)).fetchone()
+        if not cycle or not re.fullmatch(r'\d{4}-\d{2}-\d{2}:robot-v9:(?:0|[1-9]\d{0,11})',cycle['id']):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        if cycle['day']!=cycle['id'].split(':',1)[0] or cycle['entry_epoch']!=int(cycle['id'].rsplit(':',1)[1]):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        datetime.strptime(cycle['day'],'%Y-%m-%d')
+        data=json.loads(cycle['data'])
+        if job['kind']=='ANALYSIS':
+            if not data['queue'] or data['queue'][0]!=job['symbol'] or job['operation']!=cycle['id']+':'+VERSION+':'+job['symbol']:raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        elif job['kind']=='SCREENING':
+            if data['queue'] or job['symbol'] is not None or job['operation'] not in (
+                    cycle['id']+':screening:'+str(data['screen']+1)+':1',
+                    cycle['id']+':screening:'+str(data['screen']+1)+':2'):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        else:raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        if not self.completed_research(job['operation'],job['cycle'],job['kind'],job['symbol']):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+        return cycle,data
+    def unresolved_research(self):
+        if self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():return True
+        for job in self.db.execute("SELECT * FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW')"):
+            if job['state']=='NEEDS_REVIEW':return True
+            try:self.research_job(job)
+            except Exception:return True
+        return False
+    def settle_previous_research(self,today,account):
+        # A complete paid response may outlive a crash at midnight. Its old
+        # scheduling/quota context never creates an order on the new day.
+        if self.unresolved_research():return None
+        for job in self.db.execute("SELECT * FROM robot_jobs WHERE state='PENDING' ORDER BY rowid"):
+            cycle,data=self.research_job(job)
+            if cycle['day']>=today:continue
+            try:
+                api,_=self.completed_research(job['operation'],job['cycle'],job['kind'],job['symbol'])
+                value=json.loads(api['output'],parse_float=D)
+                if job['kind']=='ANALYSIS':
+                    setup(value,job['symbol'],require_declared_rr=False,require_gross_rr=False)
+                    if self.db.execute('SELECT 1 FROM robot_candidates WHERE id=?',(job['operation'],)).fetchone():raise ValueError
+                    if self.db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?',(job['operation'],)).fetchone():raise ValueError
+                else:
+                    symbols=value.get('symbols',[]) if isinstance(value,dict) else []
+                    selections(value,{symbol:{} for symbol in symbols if isinstance(symbol,str)},int(job['operation'].rsplit(':',1)[1]))
+            except Exception:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+            self.db.execute('BEGIN IMMEDIATE')
+            try:
+                if not self.allowed(today):
+                    self.db.execute('ROLLBACK');return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+                if job['kind']=='ANALYSIS':
+                    self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',(job['operation'],cycle['id'],job['symbol'],'REJECTED',None,'STALE_MARKET_CONTEXT'))
+                    data['queue'].pop(0);data['seen'].append(job['symbol'])
+                else:data['screen']+=1
+                self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state='PENDING'",(job['operation'],))
+                self.save_cycle(cycle['id'],data,'COMPLETE');self.db.execute('COMMIT')
+            except BaseException:self.db.execute('ROLLBACK');raise
+            return self.store.report('REJECTED',account,'STALE_MARKET_CONTEXT')
+        return None
+    def context_witness(self,context,symbol):
+        self.market.fresh(context,symbol)
+        frames={tf:dict(symbol=frame['symbol'],timeframe=frame['timeframe'],last_close_time=frame['candles'][-1]['close_time'])
+            for tf,frame in context['timeframes'].items()}
+        return dict(version='ANALYSIS_CONTEXT_FRESHNESS_V1',source=context['source'],symbol=symbol,
+            fetched_at=context['fetched_at'],server_time=context['server_time'],timeframes=frames,claimed_at=time.time())
+    def original_context_fresh(self,row,job):
+        try:
+            data=json.loads(self.db.execute('SELECT data FROM robot_cycles WHERE id=?',(job['cycle'],)).fetchone()[0])
+            witness=data['analysis_contexts'][job['operation']]
+            if not isinstance(witness,dict) or set(witness)!={'version','source','symbol','fetched_at','server_time','timeframes','claimed_at'}:raise ValueError
+            if witness['version']!='ANALYSIS_CONTEXT_FRESHNESS_V1' or witness['symbol']!=job['symbol'] or witness['source']!='Binance Futures':raise ValueError
+            fetched,claimed=witness['fetched_at'],witness['claimed_at']
+            if any(type(value) not in (int,float) or not math.isfinite(value) or value<=0 for value in (fetched,claimed)):raise ValueError
+            if not fetched<=claimed<=row['created']<=time.time() or row['created']-fetched>self.market.max_age:raise ValueError
+            if type(witness['server_time']) is not int or witness['server_time']<=0:raise ValueError
+            if not isinstance(witness['timeframes'],dict) or set(witness['timeframes'])!={'1h','15m'}:raise ValueError
+            frames={}
+            for tf,frame in witness['timeframes'].items():
+                if not isinstance(frame,dict) or set(frame)!={'symbol','timeframe','last_close_time'}:raise ValueError
+                close=frame['last_close_time']
+                if type(close) is not int or close<=0:raise ValueError
+                frames[tf]=dict(symbol=frame['symbol'],timeframe=frame['timeframe'],candles=[dict(close_time=close)])
+            self.market.fresh(dict(source=witness['source'],symbol=witness['symbol'],fetched_at=fetched,timeframes=frames),job['symbol'])
+        except Exception:raise Review('STALE_MARKET_CONTEXT') from None
+    def completed_value(self,cached,validate):
+        row,job=cached
+        created=row['created']
+        if type(created) not in (int,float) or not 0<=time.time()-created<=self.market.max_age:
+            raise Review('STALE_MARKET_CONTEXT')
+        if job['kind']=='ANALYSIS':self.original_context_fresh(row,job)
+        value=json.loads(row['output'],parse_float=D)
+        validate(value)
+        return value
     def replaceable_result(self,row):
         if row['status']=='HOLD':return True
         if row['status']!='REJECTED' or row['plan'] is not None or self.db.execute(
                 'SELECT 1 FROM order_intents WHERE candidate_id=? LIMIT 1',(row['id'],)).fetchone():return False
         # Only local RR failures or a recorded request-body rejection may
         # select another coin. An unknown outcome never qualifies.
-        if row['failure_code'] in ('NET_RISK_REWARD_BELOW_2','NET_RISK_REWARD_NOT_TARGET_2'):return True
+        if row['failure_code'] in ('RISK_REWARD_BELOW_2','NET_RISK_REWARD_BELOW_2','NET_RISK_REWARD_NOT_TARGET_2'):return True
         if row['failure_code']!='HTTP_422':return False
         return bool(self.db.execute('''SELECT 1 FROM api_requests a JOIN robot_jobs j ON j.operation=a.operation
             WHERE a.operation=? AND a.state='REJECTED_REQUEST_VALIDATION' AND a.failure_code='HTTP_422'
@@ -74,6 +176,9 @@ class Coordinator:
             data['queue'].pop(0);data['seen'].append(symbol)
             self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',
                 (cycle+':'+VERSION+':'+symbol,cycle,symbol,'REJECTED',None,reason))
+            self.db.execute("""UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state='PENDING'
+                AND EXISTS (SELECT 1 FROM api_requests WHERE operation=robot_jobs.operation
+                    AND state='COMPLETE' AND output IS NOT NULL)""",(cycle+':'+VERSION+':'+symbol,))
             self.save_cycle(cycle,data)
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
@@ -87,16 +192,32 @@ class Coordinator:
     def execution_slots(self,account,today):
         # Recompute reservations/receipts after every gateway observation;
         # account GET snapshots may precede an actual pending entry fill.
-        return self.store.available_slots(account['running_positions'],account['running_symbols'],today)
+        return self.store.available_slots(account['running_positions'],account['running_symbols'],today,
+            pending_symbols=account.get('open_entry_symbols') or ())
     def exposed_symbols(self,account):
         # A confirmed adapter observation can precede the next account GET.
         # Reserve both its slot and symbol until that intent is closed/rejected.
         active=self.db.execute("SELECT symbol FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')")
-        return set(account['running_symbols'])|{row['symbol'] for row in active}
+        return set(account['running_symbols'])|set(account.get('open_entry_symbols') or ())|{row['symbol'] for row in active}
     def advance_execution(self,account,today):
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         row=self.db.execute("SELECT * FROM order_intents WHERE state IN ('SUBMITTING','NEEDS_REVIEW') ORDER BY rowid LIMIT 1").fetchone()
-        if row:return self.store.report('NEEDS_REVIEW',account,row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN')
+        if row:
+            # An uncertain submission is never sent again. While ON, existing
+            # owned exchange evidence may resolve it using GET-only reconciliation.
+            reason=row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN'
+            try:
+                require_implementation(self.gateway,'reconcile')
+                intent=self.verified_intent(row)
+            except Exception:return self.store.report('NEEDS_REVIEW',account,reason)
+            if not self.gateway_allowed():return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+            try:
+                with gateway_transaction_reads(),gateway_mutations(lambda:False):
+                    result=self.gateway.reconcile(intent)
+            except Exception:return self.store.report('NEEDS_REVIEW',account,reason)
+            if not isinstance(result,dict) or result.get('state') not in ('ENTRY_PENDING','POSITION_PROTECTED','CLOSED'):
+                return self.store.report('NEEDS_REVIEW',account,reason)
+            return self.record_gateway_observation(row['id'],row['candidate_id'],result,account,preserve_unknown=True)
         rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED') ORDER BY rowid LIMIT 2"))
         for row in rows:
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -107,7 +228,8 @@ class Coordinator:
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             try:
                 # A started adapter transaction may need reads to finish protection.
-                with gateway_transaction_reads():result=self.gateway.reconcile(intent)
+                with gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
+                    result=self.gateway.reconcile(intent)
             except Exception as error:return self.mark_unknown(row['id'],row['candidate_id'],account,reason=self.gateway_failure_code(error))
             observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
             if observed['bot_status']=='NEEDS_REVIEW':return observed
@@ -168,8 +290,9 @@ class Coordinator:
                 (previous_state,NOT_CONNECTED if previous_state=='EXECUTION_BLOCKED' else None,now(),row['id']))
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         try:
-            # OFF stops the next callback; an invoked entry/protection callback drains.
-            with gateway_transaction_reads():result=self.gateway.submit(intent)
+            # GET proofs can drain; every later SDK mutation checks current ON.
+            with gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
+                result=self.gateway.submit(intent)
         except GatewayUnavailable:
             # A transport that might have sent a request must report an unknown
             # outcome, never claim this pre-send NOT_CONNECTED exception.
@@ -205,7 +328,7 @@ class Coordinator:
             if text.startswith('BINANCE_ORDER_') and text[14:] in known:
                 return text+('_'+phase if text[14:] in {'OUTCOME_UNKNOWN','REQUEST_FAILED','PROOF_INVALID'} else '')
         return 'ORDER_UNKNOWN_'+phase
-    def record_gateway_observation(self,intent_id,candidate_id,result,account):
+    def record_gateway_observation(self,intent_id,candidate_id,result,account,*,preserve_unknown=False):
         row=self.db.execute('SELECT * FROM order_intents WHERE id=?',(intent_id,)).fetchone()
         try:
             intent=self.verified_intent(row)
@@ -254,7 +377,9 @@ class Coordinator:
             receipt=self.db.execute('SELECT * FROM robot_entry_receipts WHERE id=?',(intent['client_order_id'],)).fetchone()
             if receipt and (not filled or receipt['symbol']!=intent['symbol'] or receipt['entry_day']!=entry_day or
                 datetime.fromisoformat(receipt['confirmed_at'])!=entry_at):raise ValueError
-        except Exception:return self.mark_unknown(intent_id,candidate_id,account)
+        except Exception:
+            if preserve_unknown:return self.store.report('NEEDS_REVIEW',account,row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN')
+            return self.mark_unknown(intent_id,candidate_id,account)
         self.db.execute('BEGIN IMMEDIATE')
         try:
             self.db.execute('UPDATE order_intents SET state=?,result=?,failure_code=NULL,updated=? WHERE id=?',
@@ -268,7 +393,8 @@ class Coordinator:
         account=dict(account,bot_entries_today=self.store.entries(day()))
         account['available_slots']=self.execution_slots(account,day())
         return self.store.report(state,account)
-    def allowed(self,today):return not (self.stopping and self.stopping.is_set()) and self.store.settings()['robot_on'] and day()==today
+    def gateway_allowed(self):return not (self.stopping and self.stopping.is_set()) and self.store.settings()['robot_on']
+    def allowed(self,today):return self.gateway_allowed() and day()==today
     def pause_reason(self):
         if self.stopping and self.stopping.is_set():return 'ROBOT_STOPPING'
         return 'ROBOT_OFF' if not self.store.settings()['robot_on'] else 'ROBOT_DAY_CHANGED'
@@ -284,10 +410,12 @@ class Coordinator:
         # provider outcomes still stop the pipeline immediately.
         blocked=advanced if advanced is not None and advanced['bot_status']=='EXECUTION_BLOCKED' else None
         if advanced is not None and blocked is None:return advanced
+        settled=self.settle_previous_research(today,account)
+        if settled is not None:return settled
         available=self.execution_slots(account,today)
         if not available:return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
         # An interrupted paid request cannot be automatically replayed under a new ID.
-        if self.db.execute("SELECT 1 FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone() or self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():
+        if self.unresolved_research():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         self.neuro.require_key() # Configuration failure claims no paid operation.
         prefix=today+':robot-v9:'
@@ -316,7 +444,7 @@ class Coordinator:
         results=self.store.results(cycle)
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
         unsent=self.db.execute("SELECT symbol FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')")
-        ready_unexposed=sum(r['symbol'] not in account['running_symbols'] for r in unsent)
+        ready_unexposed=sum(r['symbol'] not in self.exposed_symbols(account) for r in unsent)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
         # Other rejected research opportunities use budget, not a live account slot.
         # Ready intents reserve current free slots; the original target stays fixed.
@@ -347,11 +475,16 @@ class Coordinator:
             self.save_cycle(cycle,data,'COMPLETE')
             return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         return self.screen(cycle,data,remaining if initial else min(remaining,replaceable),account,today,initial)
-    def claim(self,operation,cycle,kind,symbol,today,target=None):
+    def claim(self,operation,cycle,kind,symbol,today,target=None,*,data=None,context=None):
         self.db.execute('BEGIN IMMEDIATE')
         try:
             if not self.allowed(today):self.db.execute('ROLLBACK');return False
+            witness=self.context_witness(context,symbol) if kind=='ANALYSIS' else None
             self.db.execute('INSERT INTO robot_jobs VALUES(?,?,?,?,?,?)',(operation,cycle,kind,symbol,'PENDING',target))
+            if witness is not None:
+                if not isinstance(data,dict) or not data['queue'] or data['queue'][0]!=symbol:raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+                data.setdefault('analysis_contexts',{})[operation]=witness
+                self.save_cycle(cycle,data)
             self.db.execute('COMMIT');return True
         except BaseException:self.db.execute('ROLLBACK');raise
     def unclaim_unsent_research(self,operation):
@@ -360,8 +493,18 @@ class Coordinator:
     def screen(self,cycle,data,count,account,today,initial):
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         catalog=self.market.catalog();prompt,schema=screening_contract(count)
+        if not initial:prompt=REPLACEMENT_SCREENING.format(count=count)
         index=data['screen']+1;operation=cycle+':screening:'+str(index)+':'+str(count)
-        if not self.claim(operation,cycle,'SCREENING',None,today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        # A paid response received before a crash is drained without rebuilding
+        # its historical request body or sending another provider request.
+        matching=list(self.db.execute('SELECT operation FROM robot_jobs WHERE cycle=? AND kind=? AND operation IN (?,?)',
+            (cycle,'SCREENING',cycle+':screening:'+str(index)+':1',cycle+':screening:'+str(index)+':2')))
+        if len(matching)>1:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+        if matching:
+            operation=matching[0]['operation'];count=int(operation.rsplit(':',1)[1]);_,schema=screening_contract(count)
+        try:cached=self.completed_research(operation,cycle,'SCREENING',None)
+        except Exception:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+        if not cached and not self.claim(operation,cycle,'SCREENING',None,today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         self.store.report('SCREENING',account)
         if not self.allowed(today):
             self.unclaim_unsent_research(operation)
@@ -370,8 +513,9 @@ class Coordinator:
             context=None if initial else dict(requested_count=count,
                 excluded_symbols=sorted(set(data['seen'])|self.exposed_symbols(account)|MANUAL_ONLY_SYMBOLS),
                 replacement_instruction='Choose different Binance USD-M USDT perpetual coins that are not in excluded_symbols.')
-            value=self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),context,catalog=catalog,
-                continue_if=lambda:self.allowed(today))
+            value=(self.completed_value(cached,lambda v:selections(v,catalog,count)) if cached else
+                self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),context,catalog=catalog,
+                    continue_if=lambda:self.allowed(today)))
             coins=selections(value,catalog,count)
             data['screen']=index
             if not initial:data['replacements']+=1
@@ -391,15 +535,24 @@ class Coordinator:
         except ResearchPaused:
             self.unclaim_unsent_research(operation)
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
-        except Exception:
+        except Exception as error:
             if self.db.in_transaction:self.db.execute('ROLLBACK')
+            if cached and str(error)=='STALE_MARKET_CONTEXT':
+                self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=?",(operation,))
+                data['screen']=index
+                if not initial:data['replacements']+=1
+                data['queue']=[];data['round_symbols']=[]
+                self.save_cycle(cycle,data,'COMPLETE')
+                return self.store.report('REJECTED',account,'STALE_MARKET_CONTEXT')
             self.db.execute("UPDATE robot_jobs SET state='NEEDS_REVIEW' WHERE operation=?",(operation,))
             self.save_cycle(cycle,data,'NEEDS_REVIEW')
             return self.store.report('REJECTED',account,'SCREENING_NEEDS_REVIEW')
     def analyze(self,cycle,data,symbol,account,today):
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         operation=cycle+':'+VERSION+':'+symbol
-        target=self.store.settings()['risk_target_usdt']
+        try:cached=self.completed_research(operation,cycle,'ANALYSIS',symbol)
+        except Exception:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+        target=cached[1]['risk_target'] if cached else self.store.settings()['risk_target_usdt']
         # Symbol catalog/rules/context are read before the paid call, never guessed.
         try:
             catalog=self.market.catalog()
@@ -412,15 +565,17 @@ class Coordinator:
         except ResearchReadPaused:raise
         except Exception:
             return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
-        if not self.claim(operation,cycle,'ANALYSIS',symbol,today,target):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        if not cached and not self.claim(operation,cycle,'ANALYSIS',symbol,today,target,data=data,context=context):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         self.store.report('ANALYZING',account)
         if not self.allowed(today):
             self.unclaim_unsent_research(operation)
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         plan=None;state='REJECTED';reason=None;unknown=False
         try:
-            value=self.neuro.ask(operation,ANALYSIS,SETUP_SCHEMA,lambda v:setup(v,symbol),context,
-                continue_if=lambda:self.allowed(today))
+            validate=lambda v:setup(v,symbol,require_declared_rr=False,require_gross_rr=False)
+            value=(self.completed_value(cached,validate) if cached else
+                self.neuro.ask(operation,ANALYSIS,SETUP_SCHEMA,validate,context,
+                    continue_if=lambda:self.allowed(today)))
             signal=setup(value,symbol)
             if signal.side=='HOLD':state='HOLD'
             else:
@@ -432,7 +587,8 @@ class Coordinator:
                     try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory())
                     except ResearchReadPaused:pass
                     else:rules=refreshed
-                plan=risk_check(signal,rules,target,reward_risk_policy=REWARD_RISK_POLICY);plan['risk_target_usdt']=target
+                plan=risk_check(signal,rules,target,risk_model=RISK_MODEL,
+                    reward_risk_policy=NORMALIZED_REWARD_RISK_POLICY);plan['risk_target_usdt']=target
                 # New Binance TP/SL use the requested Last Price trigger.
                 # Historical plans remain immutable and retain their own trigger.
                 plan['protection_working_type']='CONTRACT_PRICE'

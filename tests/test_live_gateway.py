@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl
 
 from worker.core import D, Review, number, validated_risk_target
 from worker.order_gateway import _MissingOrderImplementation
+from worker.research_guard import gateway_mutations
 
 # Execute only the new reviewed template in a worker-relative test namespace.
 # Never import a VPS-supplied module or invoke its constructors.
@@ -656,7 +657,7 @@ class LiveGatewayTests(unittest.TestCase):
         gateway=OrderGateway(api_key='fixture-key-123456',api_secret='fixture-secret-123456')
         with patch('urllib.request.build_opener') as build:
             build.return_value.open.return_value=Response()
-            with gateway._operation():
+            with gateway._operation(), gateway_mutations(lambda: True):
                 self.assertEqual(gateway._wire('POST','/fapi/v1/order','symbol=BTCUSDT&signature=fixture',True),{'orderId':10})
             request=build.return_value.open.call_args.args[0]
             self.assertEqual(request.full_url,'https://fapi.binance.com/fapi/v1/order')

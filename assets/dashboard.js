@@ -136,7 +136,7 @@
     toggle.onclick = () => saveSettings({ robot_on: !snapshot.robot.robot_on }); actions.append(toggle); main.append(actions);
     main.append(element('p', message, 'dashboard-message'));
     const riskControls = element('div', undefined, 'dashboard-connection dashboard-risk');
-    const riskLabel = element('label', 'RISIKO PER SL TERMASUK FEE (USDT, lebih dari 0 sampai 100)');
+    const riskLabel = element('label', 'RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE (USDT, lebih dari 0 sampai 100)');
     const risk = element('input'); risk.id = 'robotRisk'; risk.type = 'number'; risk.inputMode = 'decimal';
     risk.min = '0'; risk.max = '100'; risk.step = 'any'; risk.value = riskDraft ?? robot?.risk_target_usdt ?? '5';
     risk.disabled = !origin || !online || saving || !robot; risk.oninput = () => { riskDraft = risk.value; };
@@ -148,7 +148,7 @@
       catch (error) { message = error.message; paint(); }
     };
     riskActions.append(riskSave); riskControls.append(riskLabel, riskActions,
-      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry dan exit SL pada harga setup. Slippage, gap harga, dan funding dapat mengubah kerugian aktual. Perubahan risiko berlaku hanya untuk analisis baru. Setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
+      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry, fee exit, dan cadangan slippage exit 0,5%. Gap atau slippage yang melampaui cadangan serta funding dapat membuat kerugian aktual melebihi batas. Perubahan risiko berlaku hanya untuk analisis baru; setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
     main.append(riskControls);
     const status = element('p', robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
     status.id = 'robotStatus'; status.setAttribute('role', 'status'); main.append(status);
@@ -158,8 +158,8 @@
     field(metrics, 'Slot tersedia', number(robot?.available_slots, 0));
     field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0)+' / 2');
     main.append(metrics, gatewayNote(robot));
-    main.append(notice('Maksimal 2 entry bot per hari. Posisi bawaan dari hari sebelumnya dan posisi manual tetap memakai slot dari kapasitas 2 posisi.'));
-    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset, pengiriman order baru, dan rekonsiliasi robot. Posisi serta order SL/TP yang sudah ada tetap di Binance; OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
+    main.append(notice('Maksimal 2 entry bot per hari WIB. Posisi bawaan dari hari sebelumnya dan posisi manual tetap memakai slot dari kapasitas 2 coin. Order entry yang belum terisi juga memakai slot.'));
+    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset, pengiriman order baru, dan rekonsiliasi robot. Pemasangan TP/SL serta pembatalan order oleh robot juga berhenti. Posisi serta order yang sudah ada tetap di Binance dan dapat terisi; OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
     if (robot?.last_decision) main.append(notice('Keputusan terakhir: '+robot.last_decision.symbol+' · '+robot.last_decision.status+(robot.last_decision.failure_code ? ' · '+robot.last_decision.failure_code : '')));
     content.append(main);
     const current = section('AKUN FUTURES'); source(current, account);

@@ -1,271 +1,158 @@
-# Sambungan tunggal order Binance Futures
+# Kontrak adapter Binance USD-M Futures
 
-Kode gateway publik dalam repository tetap menyediakan stub. Tanpa adapter
-produksi pada kelas tersebut, pengiriman berhenti pada `EXECUTION_BLOCKED`,
-dengan gateway `NOT_CONNECTED` dan kode
-`BINANCE_ORDER_GATEWAY_NOT_CONNECTED`. ON dapat memakai kuota NeuroAPI;
-status itu tidak menyatakan bahwa ada order di Binance.
+Runtime hanya mengirim order melalui `OrderGateway.submit(intent)` dan
+`reconcile(intent)`. Gateway bawaan repository tetap stub; template deploy
+bukan jalur eksekusi kedua. Adapter produksi VPS menggunakan class yang sama,
+secret privat yang sudah ada, dan journal coordinator yang sama.
 
-VPS pengguna memakai adapter privat yang telah mengirim entry ETH dan
-membuktikan proteksi Binance. Pemasangan pembaruan pada 7 Oktober 2026 pukul
-10:04 UTC menghasilkan `VPS_RR_TARGET_LAST_PRICE_VERIFIED`, source
-host/container cocok, dan worker sehat. Akun tersambung, robot ON, serta
-snapshot menunjukkan satu posisi, satu receipt entry, satu slot tersedia,
-dan tidak ada failure code. Pemulihan closure ETH dan request SOL kemudian
-terverifikasi pada 11:14 UTC. Pembacaan 11:19 UTC membuktikan ETH asli `CLOSED`
-tanpa failure, receipt tetap satu, posisi aktif nol, dan request/job pending
-atau needs-review kosong. Cycle epoch 1 `COMPLETE` setelah tiga putaran
-pengganti; kandidat terakhir ETHUSDT baru ditolak
-`NET_RISK_REWARD_NOT_TARGET_2` sebelum order. Robot ON menunggu
-`INSUFFICIENT_ACTIONABLE_SETUPS / ROBOT_CYCLE_COMPLETE` tanpa failure robot
-atau akun, dengan satu slot tersedia. Laporan tetap `PARTIAL`; belum ada order
-pengganti diterima, sehingga penerimaan `CONTRACT_PRICE` serta partial fill
-versi baru belum dibuktikan.
+`CONFIGURED` berarti secret/configuration lokal tersedia. Source match, health,
+ACK, tes `/order/test`, atau chart bukan bukti order terisi/terlindungi. Bukti
+produksi harus berasal dari GET Binance untuk ID, field, fills, dan exposure.
 
-Developer melanjutkan di satu kelas: [`OrderGateway`](../worker/order_gateway.py).
-Implementasikan `submit(intent)` dan `reconcile(intent)` beserta `status()` yang
-menggambarkan adapter dengan benar. Kedua metode bawaan sekarang melempar error
-dan belum memiliki transport produksi. Tidak ada engine kedua, jalur tiket,
-approval browser, atau sakelar environment pengiriman order.
+## Intent, provenance, dan plan lama
 
-`require_implementation(gateway)` memeriksa secara lokal bahwa `submit` dan
-`reconcile` tersedia, dapat dipanggil, dan bukan metode stub bawaan yang masih
-diwarisi dari `_MissingOrderImplementation`. Tambahkan kedua implementasi pada
-kelas publik `OrderGateway`; stub privat tetap menandai bagian yang belum diisi.
-Pemeriksaan ini tidak menjalankan request,
-membaca konfigurasi koneksi, atau menggunakan status sebagai sakelar. Adapter
-yang belum diimplementasikan dihentikan sebelum claim `SUBMITTING`.
+`build_intent()` mengikat operation, client ID deterministik, symbol/side,
+entry LIMIT GTC, SL/TP, quantity, margin CROSS, leverage 75, target risiko,
+fee evidence, cost evidence, dan hash analisis. Operation tetap
+`robot-v9`/`analysis-v9`; V3 bukan alasan memakai ID baru untuk replay.
 
-Coordinator meneruskan pemanggilan ke metode yang telah diimplementasikan setelah
-validasi alur, terlepas dari metadata `connected` pada `status()`. Status dipakai
-untuk laporan Office dan health, sedangkan adapter menangani autentikasi,
-transport, dan hasil exchange. Kelulusan pemeriksaan metode maupun status
-koneksi tidak membuktikan bahwa autentikasi atau kesehatan exchange sudah benar.
+Plan baru menyimpan `risk_model=FEE_SLIPPAGE_RISK_V3` dan
+`reward_risk_policy=NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE`, bersama TP model
+asli, TP eksekusi, tick, dan cadangan. Worker/provenance/gateway memverifikasi
+perhitungan itu kembali. Plan/intent lama tetap memakai model, level, trigger,
+quantity, dan hash aslinya. Existing order tidak diubah otomatis menjadi V3.
 
-## Batas coordinator yang sudah tersedia
+LONG/SHORT model memerlukan declared RR dan jarak harga minimal 1:2. Entry dan
+SL dipertahankan; TP eksekusi dinormalisasi ke net 1:2. RR model lebih besar
+dari dua tidak ditolak hanya karena TP terlalu jauh. HOLD dan penolakan
+RR di bawah dua sebelum plan/intent boleh mendapat pengganti sesuai slot,
+hanya putaran terakhir dan maksimum tiga putaran gabungan.
 
-`ROBOT ON → Binance account → screening sesuai slot → analisis → validasi → intent → gateway`
+## Model risiko dan size coin
 
-- Estimasi risiko net ke SL tidak melampaui target tersimpan; default 5 USDT,
-  termasuk fee entry dan SL memakai taker commission akun per symbol dari
-  signed GET Binance. Model menghasilkan side dan Entry/TP/SL, tanpa quantity.
-  Pengaturan menerima target positif sampai 100 USDT seperti sebelumnya.
-  Quantity memakai Decimal. Setup baru mengikat target net RR 1:2 sesudah fee
-  dengan `NET_1_TO_2_NEAREST_TICK`, pada tick legal pertama yang mencapai
-  rasio itu; plan lama tanpa kebijakan ini mempertahankan validasi minimum 2.
-  Perubahan pengaturan hanya memengaruhi analisis baru, bukan intent yang
-  telah dibuat dan diverifikasi.
-  Estimasi ini tidak menjamin fee aktual, funding, slippage, atau gap harga.
-- Maksimal dua entry bot baru per hari WIB (UTC+7) dan dua posisi bersamaan,
-  termasuk posisi manual serta posisi dari hari sebelumnya. Kapasitas adalah
-  `min(day_remaining, concurrency_remaining)`. Seluruh `ENTRY_PENDING` belum fill
-  mencadangkan kuota harian serta slot, termasuk order yang dibuat kemarin dan
-  masih mungkin fill hari ini. Exposure yang sudah tercermin pada posisi akun
-  tidak dihitung dua kali.
-  Counter entry berasal dari fill pertama yang terverifikasi, bukan ACK.
-  Partial fill dan tambahan fill entry yang sama tetap satu receipt pada hari
-  WIB dari fill pertama; receipt dan reservasi tetap persisten setelah restart.
-  Pergantian hari pukul 00:00 WIB memperbarui kuota tanpa menutup posisi lama.
-  Satu posisi lama yang masih aktif menyisakan paling banyak satu slot saat itu;
-  dua posisi lama menyisakan nol sampai slot bebas. Penutupan posisi membebaskan
-  slot bersamaan, tanpa mengembalikan kuota entry hari itu.
-- HYPEUSDT selalu dikecualikan. Setiap symbol yang sudah memiliki posisi aktif
-  dikecualikan, termasuk posisi manual. Label exposure tidak memberi hak
-  mengambil alih posisi. Receipt historis tidak membuktikan kepemilikan posisi
-  yang sekarang dibuka kembali secara manual.
-- One-way, single-asset, CROSS, leverage 75, entry LIMIT GTC. Coordinator
-  memeriksa ulang kontrak market sebelum submit. Harga entry/TP/SL tidak
-  diubah untuk membuat setup yang ditolak menjadi lolos. Plan baru mengikat
-  pemicu TP/SL `CONTRACT_PRICE` ("Terakhir" pada Binance) sebelum bukti distamp.
-  Plan lama tanpa field `protection_working_type` tetap memakai `MARK_PRICE`;
-  pembaruan tidak mengganti pemicu intent atau order yang sudah ada.
-- Intent harus berasal dari bukti `analysis-v9` yang lengkap, hari yang sama,
-  dan aturan yang diperiksa maksimal lima menit sebelumnya. Setup lama tidak
-  otomatis menjadi order saat gateway disambungkan.
-- Cycle `robot-v9` memakai candle Binance 1h/15m nyata, rules, dan fee akun
-  terbaru. HOLD dan penolakan lokal `NET_RISK_REWARD_BELOW_2` atau
-  `NET_RISK_REWARD_NOT_TARGET_2` sebelum plan/intent order dapat memicu
-  replacement; kandidat yang ditolak tetap `REJECTED`.
-  Keduanya berbagi maksimum tiga screening tambahan, hanya untuk putaran terakhir:
-  satu atau dua pengganti sesuai jumlah eligible dan slot tersedia. Penolakan
-  lain, intent yang sudah ada, dan unknown tidak diganti atau dikirim ulang.
-  Hanya screening pengganti memakai `message_history` existing untuk daftar
-  seen/exposed/pending/HYPEUSDT; prompt dan schema tetap, awal tanpa history.
-- Claim riset dan status `SUBMITTING` disimpan sebelum pemanggilan eksternal.
-  Maksimal satu operasi NeuroAPI per tick; worker tidak bergantung pada tab web.
+Target editable pada menu existing, default 5 USDT, positif sampai 100 USDT.
+Target ditangkap pada claim analisis, sehingga perubahan settings tidak
+mengubah intent yang sudah dibuat. `quantity` memakai unit base asset.
 
-## Input adapter
+Untuk entry E, trigger SL S, taker commission f, dan exit reserve r=0,005:
 
-`build_intent()` menghasilkan dict internal berikut. Ini bukan payload HTTP
-Binance; adapter harus melakukan pemetaan parameter dan signing di VPS.
-Semua nilai harga dan quantity tetap string Decimal.
-
-| Field | Arti |
-| --- | --- |
-| `intent_id` | ID operasi analisis persisten |
-| `client_order_id` | ID entry deterministik `hao-` + 28 karakter hash |
-| `symbol`, `position_side`, `side` | Kontrak, `BOTH`, `LONG`/`SHORT` |
-| `entry` | `order_type`, `side`, `price`, `quantity`, `time_in_force` |
-| `protection` | `exit_side`, `stop_loss`, `take_profit`, `working_type` |
-| `margin_mode`, `leverage` | Konfigurasi yang sudah divalidasi |
-| `risk_target_usdt`, `risk_usdt` | Target dan estimasi risiko net SL, termasuk fee entry/SL |
-| `gross_risk_usdt` | Estimasi loss harga ke SL sebelum fee |
-| `entry_fee_usdt`, `sl_exit_fee_usdt`, `tp_exit_fee_usdt` | Fee entry, SL, dan TP pada taker rate akun |
-| `net_reward_usdt`, `net_reward_risk` | Estimasi profit TP sesudah fee dan net RR |
-| `reward_risk_policy`, `tp_tick_size` | Khusus intent baru dengan target `NET_1_TO_2_NEAREST_TICK`: kebijakan RR dan tick harga dari rules sizing terverifikasi |
-| `fee_evidence` | `source`, `symbol`, `observed_at`, `taker_rate` dari signed GET Binance |
-| `excluded_costs` | `SLIPPAGE`, `FUNDING`, `GAPS` yang tidak dijamin model biaya |
-| `evidence_sha256` | Digest bukti analisis terverifikasi |
-
-Payload journal dibandingkan ulang dengan intent dari bukti sebelum dipakai.
-Preflight submission memakai target yang terikat pada bukti intent tersebut,
-bukan mengganti quantity saat pengaturan risiko berikutnya berubah.
-`protection.working_type` berasal dari `plan.protection_working_type` yang
-terikat pada bukti. Adapter menerima `CONTRACT_PRICE` atau `MARK_PRICE` sesuai
-intent dan memverifikasi nilai yang sama pada respons Binance. Fallback
-`MARK_PRICE` hanya menjaga identitas plan lama yang belum memiliki field ini.
-Taker commission sumber sizing berasal dari signed
-`GET /fapi/v1/commissionRate?symbol=...`, bukan tarif tetap atau tebakan model.
-Entry LIMIT dapat mendapat fee maker yang lebih rendah; sizing tetap konservatif
-menggunakan taker untuk entry/exit. Worker memeriksa TP model pada setup baru dengan
-target net RR 1:2, termasuk fee entry/SL pada risiko dan fee entry/TP pada
-reward. Harga pembanding dibulatkan ke tick pertama yang mencapai net RR 2:
-ke atas untuk LONG, ke bawah untuk SHORT. TP model harus sama dengan harga
-legal tersebut. Nilai di bawah minimum tetap menghasilkan
-`NET_RISK_REWARD_BELOW_2`; nilai yang tidak sesuai target tick menghasilkan
-`NET_RISK_REWARD_NOT_TARGET_2`. Worker tidak menggeser Entry/TP/SL agar setup
-yang gagal menjadi lolos. Plan dan intent lama tanpa field kebijakan tetap
-memakai kontrak minimum net RR 2; pembaruan tidak mengubah level atau hash
-bukti existing.
-Adapter harus memeriksa posisi dan open orders terbaru tepat sebelum POST,
-agar perubahan manual setelah account snapshot tidak melampaui kapasitas.
-Jangan membatalkan order, mengganti konfigurasi akun, atau memasang proteksi
-pada symbol yang tidak dapat dibuktikan berasal dari intent ini.
-
-## Endpoint yang perlu dihubungkan
-
-Dokumentasi resmi Binance diperiksa pada 6 Oktober 2026:
-
-- [Entry dan query order](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade):
-  `POST /fapi/v1/order` dan `GET /fapi/v1/order`.
-- [Conditional TP/SL dan query algo](https://developers.binance.com/docs/derivatives/usds-margined-futures/trade/rest-api/New-Algo-Order):
-  `POST /fapi/v1/algoOrder` dan `GET /fapi/v1/algoOrder`.
-
-Gunakan ID deterministik untuk entry serta kedua proteksi, signing, sinkronisasi
-server time, timeout terbatas, dan rate limit sesuai dokumentasi terkini.
-`BinanceReadOnly` tetap reader GET; transport order hanya berada di gateway.
-Helper HTTP publik juga tetap melayani pembacaan market. Developer menyediakan
-signed transport order pada gateway tunggal, dengan kontrak reader tersebut
-tetap dipertahankan.
-API key dan secret hanya dibaca di VPS, tidak masuk payload journal atau Office.
-
-ACK entry belum membuktikan fill atau proteksi. Adapter harus mengonfirmasi
-quantity yang benar-benar terisi, termasuk partial fill, serta SL dan TP di
-exchange untuk exposure tersebut. Verifikasi symbol, sisi exit, trigger,
-quantity proteksi, dan semantik reduce-only agar proteksi tidak membuka posisi
-baru. Sesudah fill terverifikasi, adapter template memasang SL terlebih dahulu,
-lalu TP, melalui `POST /fapi/v1/algoOrder`: `STOP_MARKET` untuk SL dan
-`TAKE_PROFIT_MARKET` untuk TP, `reduceOnly=true`, `closePosition=false`, dan
-`positionSide=BOTH`. Quantity melindungi 100% ukuran terisi yang dapat dibuktikan
-milik intent, bukan saldo tersedia atau posisi manual. Kedua order diverifikasi
-melalui GET sebelum status menjadi `POSITION_PROTECTED`.
-Order entry dan kedua proteksi bukan satu transaksi atomik. Worker memeriksa
-rekonsiliasi saat ON pada tick sekitar 45 detik; request Binance dapat menambah
-waktu, sehingga proteksi tidak dijanjikan terpasang pada milidetik fill.
-Developer harus menyelesaikan penanganan kegagalan proteksi,
-partial fill tambahan, cancel/expiry entry, serta pembatalan proteksi pasangan
-sesudah exit tanpa menyentuh order manual. Jangan melaporkan sukses pada
-exposure yang belum terlindungi.
-
-Pemetaan pilihan TP/SL pada aplikasi Binance dijelaskan di
-[TP_SL_AUTOMATIC.md](TP_SL_AUTOMATIC.md). Pembaruan VPS mempertahankan adapter
-privat dan bukti intent ETH historis, termasuk closure yang telah terverifikasi.
-Pemasangan source dan pengujian lokal tidak
-membuktikan penerimaan order baru; hasil produksi tetap memerlukan bukti Binance.
-
-## Hasil `submit` dan `reconcile`
-
-Kembalikan observasi Binance yang telah diverifikasi, bukan response karangan:
-
-| Field | Ketentuan |
-| --- | --- |
-| `source` | `BINANCE_FUTURES` |
-| `state` | `ENTRY_PENDING`, `POSITION_PROTECTED`, `CLOSED`, atau `REJECTED` |
-| `symbol`, `client_order_id` | Sama persis dengan intent |
-| `order_id` | ID entry Binance positif dalam string digit |
-| `filled_quantity` | Quantity kumulatif string Decimal, 0 sampai quantity intent |
-| `observed_at` | Waktu observasi ISO UTC bertimezone, maksimal 120 detik lalu |
-| `first_fill_at` | Wajib jika terisi; waktu fill pertama sesudah intent dibuat |
-| `sl_confirmed`, `tp_confirmed` | Harus boolean true untuk `POSITION_PROTECTED` |
-| `sl_order_id`, `tp_order_id` | ID proteksi exchange positif, wajib untuk posisi terlindungi |
-| `exit_order_id`, `closed_at` | Bukti exit dan waktu penutupan, wajib untuk `CLOSED` |
-
-`ENTRY_PENDING` dan `REJECTED` hanya menerima quantity terisi nol.
-`POSITION_PROTECTED` dan `CLOSED` harus memiliki fill positif. ID entry dan
-waktu fill pertama tidak boleh berubah, quantity kumulatif tidak boleh turun,
-observasi tidak boleh mundur, dan posisi terisi tidak boleh kembali menjadi
-pending/rejected. ID proteksi dan exit harus sesuai validasi coordinator.
-Field lain dibuang; raw response, secret, URL bertanda tangan, dan prose adapter
-tidak disimpan. Receipt entry ditulis satu kali berdasarkan waktu fill pertama
-Binance yang terverifikasi dan memakai hari WIB (UTC+7) dari waktu tersebut.
-Tambahan partial fill tidak membuat entry baru, sekalipun terjadi pada hari
-berikutnya. `ENTRY_PENDING` yang belum pernah fill tetap mencadangkan kuota
-harian yang baru, walaupun order dibuat pada hari sebelumnya.
-
-## Outcome tidak pasti dan operasi OFF
-
-Timeout, restart ketika `SUBMITTING`, hasil adapter yang salah, atau kegagalan
-proteksi menghasilkan `NEEDS_REVIEW`. Worker berhenti dan tidak mengirim ulang
-entry dengan ID baru. Sebelum menjalankan produksi, developer harus menyediakan
-prosedur rekonsiliasi berdasarkan client ID, order/fill Binance, dan proteksi,
-kemudian memperbarui journal secara terverifikasi. Jangan menghapus journal
-atau menganggap timeout berarti order gagal. Pemulihan outcome tidak pasti
-sengaja belum diotomatisasi pada build sambungan yang belum terhubung ini.
-
-Sesudah claim `SUBMITTING`, setiap exception dari metode adapter yang sudah
-diimplementasikan diperlakukan sebagai outcome tidak pasti, termasuk
-`GatewayUnavailable`. Worker tidak mengirim ulang claim tersebut otomatis.
-Metadata koneksi tidak mengubah penanganan ini.
-
-OFF menghentikan riset, submission baru, dan pemanggilan rekonsiliasi gateway
-berikutnya. OFF tidak menutup posisi dan tidak membatalkan order entry/SL/TP.
-Pemanggilan eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya
-masih dapat selesai dan dicatat ke journal. Guard GET riset tidak menginterupsi
-callback adapter yang sudah dimulai, karena callback dapat sedang menyelesaikan
-proteksi entry. OFF mencegah pemanggilan callback berikutnya. Exception callback
-tetap diperlakukan sebagai outcome belum pasti, tanpa replay otomatis.
-Polling read-only saldo/posisi/riwayat
-Office tetap berjalan, sementara semua karyawan AI tidak menunjukkan aktivitas
-kerja saat OFF. Rekonsiliasi gateway dijalankan saat ON; developer harus
-menyediakan prosedur penanganan pending/filled order sesudah restart atau ketika
-worker OFF, sesuai pilihan ini. Proteksi Binance tetap berada di exchange ketika
-worker/browser berhenti; OFF tidak memicu close atau cancel otomatis.
-
-## Migrasi dan pemeriksaan
-
-Upgrade pertama membuat `ledger-pre-order.sqlite3` privat yang diverifikasi,
-menghapus tabel runtime lama, membersihkan cache lama, dan mengembalikan robot
-ke OFF. Archive hanya audit; runtime tidak membacanya. Journal NeuroAPI dan
-receipt entry nyata dipertahankan. Request lama dengan outcome tidak pasti tetap
-menghentikan riset sampai ditinjau. Setup dari namespace lama tidak dipromosikan.
-
-Upgrade v8→v9 hanya mengganti constraint identitas cycle melalui transaksi
-schema version 2. Semua cycle dan rowid, request berbayar, candidate lama,
-intent termasuk `SUBMITTING`/`NEEDS_REVIEW`, receipt, ON/OFF, risiko tersimpan,
-serta observasi exposure dipertahankan. Namespace baru dapat mulai pada
-hari/epoch sama tanpa memakai request/proof gross-risk sebelumnya; bukti lama
-tidak otomatis mendapat fee baru atau dipromosikan menjadi order.
-
-Laporan Office memakai GET Binance account/income/userTrades. Riwayat berisi
-fill, bukan inferensi posisi tertutup; scope parsial ditandai dan total transaksi
-yang belum terbukti ditampilkan kosong. Animasi layar kantor bukan bukti order.
-
-Jalankan verifikasi tanpa kredensial atau transaksi:
-
-```sh
-python -m unittest discover -s tests -p 'test_*.py' -q
+```text
+SL adverse execution = S × (1-r) untuk LONG, S × (1+r) untuk SHORT
+L = abs(E-S) + S×r + f×(E + SL adverse execution)
+q = quantity legal terbesar, dibulatkan turun ke stepSize, sehingga q×L <= target
+LONG TP ideal = (E×(1+f) + 2×L) / ((1-r)×(1-f))
+SHORT TP ideal = (E×(1-f) - 2×L) / ((1+r)×(1+f))
 ```
 
-Fixtures pada pengujian memeriksa kontrak adapter, claim persisten, slot manual,
-receipt, dan restart; fixtures bukan executor runtime. Kelulusan pengujian
-tidak menyatakan sambungan POST produksi atau proteksi Binance sudah bekerja.
+LONG TP dibulatkan ke tick legal pertama di atas target; SHORT di bawahnya.
+TP adverse execution memakai r yang sama. Net reward mengurangi taker fee
+entry/TP dan cadangan TP; planned risk memasukkan taker fee entry/SL serta
+cadangan SL. LIMIT entry memakai entry reserve nol. Fee exit dihitung pada
+harga adverse execution yang diasumsikan, bukan fee rate tebakan model.
+
+Signed GET `/fapi/v1/commissionRate` menyediakan commission per symbol.
+Fee/filter evidence harus fresh dan cocok. Decimal/Fraction menjaga hitungan
+tepat; min/max quantity, step, minimum notional, tick/range harga, margin, dan
+leverage bracket harus lolos. Tidak ada quantity fallback ketika fee atau
+rules tidak tersedia. Leverage 75× tidak mengalikan risk target.
+
+Cadangan 0,5% adalah asumsi sizing. Funding, gap/slippage melampaui cadangan,
+perubahan fee, dan liquidation dapat membuat loss aktual melampaui target.
+Tidak ada jaminan loss aktual maksimal 5 USDT dari STOP_MARKET.
+
+## Pemeriksaan sebelum entry
+
+1. GET akun/config, posisi, seluruh regular/algo open entries. One-way,
+   single-asset, izin trade valid, margin cukup, tanpa exposure/order lain
+   pada symbol bot. HYPEUSDT tetap manual-only.
+2. Hitung slot dari posisi manual/carryover, pending entry manual/bot, dan
+   reservasi intent. Gabungan symbol dihitung sekali. Maksimal dua occupancy
+   serta dua first fill entry bot per hari WIB; pending bot mencadangkan kuota.
+3. GET `symbolConfig` dan `leverageBracket`. Bila perlu dan masih ON, POST
+   `marginType=CROSSED` dan `leverage=75` hanya untuk symbol bot yang bebas
+   exposure lain. Baca ulang config/bracket sebelum entry.
+4. Verifikasi provenance, fee, rules, TP normalisasi dan risk target. Intent
+   stale/exposed tidak dikirim. Payload yang dibekukan tidak diubah ukurannya.
+
+Tidak ada perubahan global position mode atau multi-assets margin yang dapat
+memengaruhi posisi manual. Jika akun tidak sesuai, hentikan submission.
+
+## Pemetaan field Binance
+
+| Operasi | Endpoint / field |
+| --- | --- |
+| CROSS | POST `/fapi/v1/marginType`, `marginType=CROSSED` |
+| Leverage | POST `/fapi/v1/leverage`, `leverage=75` |
+| Entry | POST `/fapi/v1/order`, `type=LIMIT`, `timeInForce=GTC`, `positionSide=BOTH` |
+| Entry LONG / SHORT | `side=BUY` / `SELL` |
+| Entry size / price | `quantity=intent.entry.quantity`, `price=intent.entry.price` |
+| Identitas entry | `newClientOrderId=intent.client_order_id` |
+| SL | POST `/fapi/v1/algoOrder`, `algoType=CONDITIONAL`, `type=STOP_MARKET` |
+| TP | Endpoint algo sama, `type=TAKE_PROFIT_MARKET` |
+| Harga trigger | `triggerPrice=intent.protection.stop_loss` / `take_profit` |
+| Pemicu baru | `workingType=CONTRACT_PRICE` sesuai Terakhir |
+| LONG / SHORT exit | `side=SELL` / `BUY`, `positionSide=BOTH` |
+| Exit size | Exposure terisi bot yang masih terbuka, `reduceOnly=true`, `closePosition=false` |
+| Identitas proteksi | `clientAlgoId` deterministik dan quantity-bound |
+| Konfirmasi | GET entry/algo/history/trades/position sesuai ID dan ownership |
+
+## Fill, TP/SL, dan exit
+
+Entry diterima tetapi belum fill tetap `ENTRY_PENDING`. Untuk fill positif,
+termasuk partial fill, gateway membuktikan order/fills dan ownership lalu
+memasang SL terlebih dahulu, baru TP. Quantity exit mencakup 100% exposure
+bot yang masih terbuka, tanpa mengambil posisi manual.
+
+GET kedua proteksi harus cocok dengan symbol, ID, sisi, trigger, quantity,
+workingType, reduceOnly/closePosition, dan active status sebelum
+`POSITION_PROTECTED`. ACK tidak cukup. Additional fills mengikuti exposure;
+receipt first fill tetap satu. Saat exit terbukti, cleanup pasangan hanya
+mengenai order bot yang dibuktikan milik intent ini.
+
+Tick sekitar 45 detik dan waktu request menambah jeda; entry/SL/TP tidak
+atomik. [Pemetaan layar Binance](TP_SL_AUTOMATIC.md) menjelaskan pilihannya.
+
+## OFF dan batas mutation
+
+Setiap provider POST serta Binance POST/DELETE memeriksa ON tepat sebelum
+transport. OFF memblokir entry, config, proteksi, cancel dan close baru,
+termasuk mutation berikutnya di callback yang sudah dimulai. Standalone
+adapter tanpa konteks coordinator tidak mendapat izin mutation implisit.
+
+Request yang sudah terkirim masih dapat selesai; GET/hasil journal boleh
+menyelesaikan pembuktiannya tanpa mutation berikutnya. Polling akun read-only
+berjalan. OFF tidak close/cancel posisi atau order existing/manual. Pending
+entry dapat fill di Binance saat OFF tanpa pemasangan proteksi baru oleh bot.
+
+## Observasi yang diterima coordinator
+
+Observasi memakai `source=BINANCE_FUTURES`, symbol/client ID/order ID yang
+sesuai, `filled_quantity`, `observed_at`, serta state yang dibuktikan.
+Fill positif memerlukan `first_fill_at`; `POSITION_PROTECTED` memerlukan
+`sl_confirmed=true`, `tp_confirmed=true`, dan dua order ID. `CLOSED` memerlukan
+exit serta waktu closure yang dapat dibuktikan. Coordinator menyimpan receipt
+sekali menurut hari WIB first fill; close tidak mengembalikan kuota hari itu.
+
+## Unknown outcome dan diagnostics
+
+`ORDER_OUTCOME_UNKNOWN` berarti hasil callback belum dapat dibuktikan, bukan
+Binance pasti menolak. Posisi nol belum membuktikan tidak ada LIMIT pending.
+Timeout setelah POST tidak boleh diubah menjadi rejection atau submission ulang.
+Jangan menghapus claim, mereset attempts/counter, atau memakai ID baru untuk
+mengulang order. Rekonsiliasi manual memerlukan exact client lookup, riwayat
+order/fills lengkap, open regular/algo orders, posisi, dan ownership saat ini.
+Kode absence `-2013` sendirian belum menyelesaikan kemungkinan order/fill lain.
+
+Exception TP/SL tidak ditelan. Unknown order/protection/provider menjadi
+`NEEDS_REVIEW` dan memblokir pekerjaan baru sampai bukti diperiksa. Diagnostics
+menyimpan kode aman dan tahap callback, misalnya `ORDER_UNKNOWN_PROTECTION`;
+raw exception, signed query, credential, atau respons provider tidak dicetak.
+Pemasangan source/tes tidak menandai unknown sebagai sukses.
+
+## Deployment
+
+Gunakan [audit source](AUDIT_BEFORE_ON.md), [Termius](TERMIUS_24_7.md), dan
+[persiapan build existing](EXISTING_GATEWAY_BUILD.md). Revisi dibuktikan di VPS
+saat OFF sebelum GitHub. Backup source/image/journal privat dipertahankan.
+Cleanup source/command historis sesudah bukti akhir tidak menghapus volume,
+financial journal, receipt, secret, manual orders atau pending entries.

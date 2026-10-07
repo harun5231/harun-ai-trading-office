@@ -75,6 +75,8 @@ class RobotMarket(ExpandedMarket):
 class Account:
     def __init__(self):
         self.positions = []
+        self.open_orders = []
+        self.open_algos = []
         self.calls = []
         self.maker_fee = '0'
         self.taker_fee = '0'
@@ -88,6 +90,12 @@ class Account:
         pass
 
     def signed_get(self, path):
+        if path == '/fapi/v1/openOrders':
+            self.calls.append(('GET', path))
+            return copy.deepcopy(self.open_orders)
+        if path == '/fapi/v1/openAlgoOrders':
+            self.calls.append(('GET', path))
+            return copy.deepcopy(self.open_algos)
         if path != '/fapi/v3/account':
             raise AssertionError('Unexpected fixture account endpoint')
         self.calls.append(('GET', path))

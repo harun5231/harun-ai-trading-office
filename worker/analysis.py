@@ -3,11 +3,12 @@ import time
 import re
 from dataclasses import replace
 from datetime import datetime
-from .core import D,Review,number,RISK,validated_risk_target,validated_fee_rate,FEE_SOURCE,REWARD_RISK_POLICY
+from .core import (D,Review,number,RISK,validated_risk_target,validated_fee_rate,FEE_SOURCE,
+    RISK_MODEL,NORMALIZED_REWARD_RISK_POLICY,EXIT_SLIPPAGE_RATE,RESERVE_EXCLUDED_COSTS)
 
-SIZING_CONTRACT='Target planned net loss at stop loss is 5 USDT including entry and stop-loss exit fees. The worker computes the largest legal Binance base-asset quantity such that quantity × (abs(limit_entry - stop_loss) + limit_entry × taker_fee_rate + stop_loss × taker_fee_rate) <= 5 USDT. Use the supplied per-symbol account taker commission for entry, SL exit, and TP exit. Select TP targeting net reward/risk 1:2 after entry and exit fees, with only the unavoidable legal price-tick rounding: the first LONG TP tick at or above the exact net 1:2 target, or the first SHORT TP tick at or below it. Do not select an arbitrarily larger reward/risk. Slippage, funding, and price gaps are outside this calculation. The provider determines entry, TP, SL, or HOLD; the worker alone sizes quantity and rejects noncanonical TP without rewriting model prices.'
+SIZING_CONTRACT='Target planned net loss at stop loss is 5 USDT including entry and stop-loss exit taker fees and a 0.5% adverse SL execution reserve. The worker computes the largest legal Binance base-asset quantity within that target. Return LONG, SHORT, or HOLD using the supplied complete 1h and 15m Futures charts. A trading setup requires declared gross reward/risk at least 2 and original model price distances at least 1:2. Preserve model Entry, TP, and SL in the response. The worker keeps Entry and SL, normalizes the final order TP to net 1:2 including account fees and a 0.5% adverse TP execution reserve, then rounds to the first valid profitable tick. Funding, gaps, and execution beyond the stated reserve are outside the estimate.'
 
-TP_CONTRACT='Let E=limit_entry, S=stop_loss, f=the supplied account taker_fee_rate, and L=abs(E-S)+f*(E+S). LONG exact TP=(E*(1+f)+2*L)/(1-f), rounded up to the next valid tickSize. SHORT exact TP=(E*(1-f)-2*L)/(1+f), rounded down to the previous valid tickSize. Return that first legal TP tick only; net reward after entry and TP fees must reach twice the fee-inclusive SL loss. If no accurate profitable setup meets this policy, return HOLD. The worker does not rewrite TP.'
+TP_CONTRACT='Return the original model TP with valid gross risk:reward at least 1:2; the worker preserves it as audit evidence and computes the actual order TP. Let E=limit_entry, S=stop_loss, f=account taker_fee_rate, a=0.005. For LONG, adverse SL fill is S*(1-a), L=E-S*(1-a)+f*(E+S*(1-a)), and exact order TP=(E*(1+f)+2*L)/((1-a)*(1-f)), rounded up to the next valid tick. For SHORT, adverse SL fill is S*(1+a), L=S*(1+a)-E+f*(E+S*(1+a)), and exact order TP=(E*(1-f)-2*L)/((1+a)*(1+f)), rounded down to the previous valid tick. Return HOLD when no accurate valid gross setup exists.'
 
 def account_fee_rules(rules,symbol,client):
     """Attach a fresh account commission GET, without assuming a fallback rate."""
@@ -52,11 +53,13 @@ def analysis_context(market,symbol,risk_target=RISK,account_client=None):
             'max_entry_price':str(rules.mark_price*rules.multiplier_up)}
     return {**data,'contract_rules':contract,'risk_constraints':{'quantity_unit':'base_asset',
         'margin_mode_target':'CROSS','leverage_target':75,'maximum_loss_at_sl_usdt':str(risk_target),
-        'minimum_actual_reward_risk':2,'reward_risk_basis':'NET_AFTER_ENTRY_AND_EXIT_FEES',
-        'target_actual_reward_risk':2,'reward_risk_policy':REWARD_RISK_POLICY,
+        'minimum_actual_reward_risk':2,'reward_risk_basis':'NET_AFTER_ENTRY_EXIT_FEES_AND_ADVERSE_EXIT_RESERVE',
+        'minimum_declared_model_reward_risk':2,'minimum_model_price_reward_risk':2,
+        'target_actual_reward_risk':2,'reward_risk_policy':NORMALIZED_REWARD_RISK_POLICY,
+        'risk_model':RISK_MODEL,'exit_slippage_rate':format(EXIT_SLIPPAGE_RATE,'f'),
         'take_profit_contract':TP_CONTRACT,'take_profit_tick_rounding':{'LONG':'CEILING','SHORT':'FLOOR'},
         'entry_fee_rate':format(rules.taker_fee_rate,'f'),'sl_exit_fee_rate':format(rules.taker_fee_rate,'f'),
         'tp_exit_fee_rate':format(rules.taker_fee_rate,'f'),'fee_source':rules.fee_source,
         'fee_symbol':rules.fee_symbol,'fee_observed_at':rules.fee_observed_at,
-        'excluded_costs':['SLIPPAGE','FUNDING','GAPS'],
+        'excluded_costs':list(RESERVE_EXCLUDED_COSTS),
         'target_loss_at_sl_usdt':str(risk_target),'position_sizing_contract':SIZING_CONTRACT.replace('5 USDT',str(risk_target)+' USDT')}},rules

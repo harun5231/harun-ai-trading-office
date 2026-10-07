@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, localcontext
 
 from .binance_private import BinanceCheckError, CODES
-from .account_state import account_order
+from .account_state import account_order, open_entry_symbols
 
 DAY_MS=86_400_000
 PAGE_SIZE=1000
@@ -232,6 +232,10 @@ def collect(client,include_history=True):
     try:
         if type(include_history) is not bool:raise ValueError()
         client.sync_time()
+        # Potential entries precede the position reads so a concurrent fill is
+        # still represented by their symbol union in capacity calculations.
+        pending=set(open_entry_symbols(_read(client,'/fapi/v1/openOrders'),allow_hedge=True))
+        pending.update(open_entry_symbols(_read(client,'/fapi/v1/openAlgoOrders'),algo=True,allow_hedge=True))
         raw_account=_read(client,'/fapi/v3/account')
         config=_read(client,'/fapi/v1/accountConfig')
         risks=_read(client,'/fapi/v3/positionRisk')
@@ -242,6 +246,7 @@ def collect(client,include_history=True):
             client.sync_time();end_ms=client.server_time_ms()
         checked_at=_iso(end_ms)
         account=_account(raw_account,config,risks,checked_at)
+        account['open_entry_symbols']=sorted(pending)
         account.update(completion_order)
     except Exception as error:
         reason=_reason(error)

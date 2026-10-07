@@ -40,6 +40,7 @@ class FixtureClient:
         self.account=dict(assets=[dict(asset='USDT',walletBalance='116.92800000',availableBalance='110.5')],
                           positions=[dict(symbol='HYPEUSDT',positionSide='BOTH',positionAmt='10.000')])
         self.config=dict(canTrade=True,dualSidePosition=False,multiAssetsMargin=False)
+        self.open_orders=[];self.open_algos=[]
         self.risks=[dict(symbol='HYPEUSDT',positionSide='BOTH',positionAmt='10.000',entryPrice='12.340',
                          markPrice='12.350',unRealizedProfit='0.1000')]
         self.incomes=[income(1,'REALIZED_PNL','1.2'),income(2,'COMMISSION','-0.04'),
@@ -51,6 +52,8 @@ class FixtureClient:
     def server_time_ms(self):return END
     def signed_get(self,path,**options):
         self.calls.append((path,dict(options)))
+        if path=='/fapi/v1/openOrders':return copy.deepcopy(self.open_orders)
+        if path=='/fapi/v1/openAlgoOrders':return copy.deepcopy(self.open_algos)
         if path=='/fapi/v3/account':return copy.deepcopy(self.account)
         if path=='/fapi/v1/accountConfig':return copy.deepcopy(self.config)
         if path=='/fapi/v3/positionRisk':return copy.deepcopy(self.risks)
@@ -79,11 +82,41 @@ class OfficeTests(unittest.TestCase):
         serialized=json.dumps(result)
         for forbidden in ('PRIVATE_RAW_MUST_NOT_LEAK',KEY,SECRET,'DRY_RUN','SIMULATION','CLOSED','bot_owned'):
             self.assertNotIn(forbidden,serialized)
-        self.assertTrue(all(path=='TIME' or path in ('/fapi/v3/account','/fapi/v1/accountConfig','/fapi/v3/positionRisk','/fapi/v1/income','/fapi/v1/userTrades') for path,_ in self.client.calls))
+        self.assertTrue(all(path=='TIME' or path in ('/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v3/account','/fapi/v1/accountConfig','/fapi/v3/positionRisk','/fapi/v1/income','/fapi/v1/userTrades') for path,_ in self.client.calls))
     def test_account_only_refresh_has_no_history_reads_or_keys(self):
         result=office.collect(self.client,include_history=False)
         self.assertEqual(set(result),{'source','generated_at','account'})
-        self.assertEqual([path for path,_ in self.client.calls],['TIME','/fapi/v3/account','/fapi/v1/accountConfig','/fapi/v3/positionRisk'])
+        self.assertEqual([path for path,_ in self.client.calls],['TIME','/fapi/v1/openOrders','/fapi/v1/openAlgoOrders','/fapi/v3/account','/fapi/v1/accountConfig','/fapi/v3/positionRisk'])
+    def test_pending_regular_and_algo_entries_are_preserved_without_counting_reducing_exits(self):
+        entry=dict(symbol='ZECUSDT',status='NEW',positionSide='BOTH',side='BUY',reduceOnly=False,closePosition=False)
+        self.client.open_orders=[entry,dict(entry),dict(entry,symbol='ETHUSDT',reduceOnly=True),
+            dict(entry,symbol='ADAUSDT',closePosition=True)]
+        self.client.open_algos=[dict(entry,symbol='SOLUSDT',algoStatus='NEW'),
+            dict(entry,symbol='HYPEUSDT',algoStatus='NEW',reduceOnly=True)]
+        before=copy.deepcopy((self.client.open_orders,self.client.open_algos))
+        result=office.collect(self.client,False)['account']
+        self.assertEqual(result['open_entry_symbols'],['SOLUSDT','ZECUSDT'])
+        self.assertEqual(result['active_positions'],1)
+        self.assertEqual(before,(self.client.open_orders,self.client.open_algos))
+    def test_pending_fill_race_is_still_reserved_by_symbol_union(self):
+        self.client.open_orders=[dict(symbol='HYPEUSDT',status='PARTIALLY_FILLED',positionSide='BOTH',
+            side='BUY',reduceOnly=False,closePosition=False)]
+        result=office.collect(self.client,False)['account']
+        occupied=set(result['open_entry_symbols'])|{p['symbol'] for p in result['positions']}
+        self.assertEqual(occupied,{'HYPEUSDT'})
+    def test_invalid_pending_order_cannot_be_published_as_empty_capacity(self):
+        for row in (dict(symbol='ZECUSDT',status='NEW',positionSide='BOTH',side='BUY',reduceOnly='false',closePosition=False),
+                    dict(symbol='ZECUSDT',status='NEW',positionSide='BOTH',side='BUY',reduceOnly=False)):
+            with self.subTest(row=row):
+                self.client.open_orders=[row]
+                with self.assertRaisesRegex(BinanceCheckError,'^BINANCE_ACCOUNT_UNAVAILABLE$'):
+                    office.collect(self.client,False)
+    def test_pending_hedge_entry_preserves_read_only_account_dashboard(self):
+        self.client.config['dualSidePosition']=True
+        self.client.open_orders=[dict(symbol='ZECUSDT',status='NEW',positionSide='LONG',side='BUY',reduceOnly=False,closePosition=False)]
+        result=office.collect(self.client,False)['account']
+        self.assertEqual(result['position_mode'],'HEDGE')
+        self.assertEqual(result['open_entry_symbols'],['ZECUSDT'])
     def test_bangkok_boundary_exact_usdt_pnl_and_non_usdt_not_converted(self):
         result=office.collect(self.client)
         report=result['reports']
@@ -155,7 +188,7 @@ class OfficeTests(unittest.TestCase):
         database.execute('CREATE TABLE robot_entry_receipts(id TEXT,symbol TEXT,entry_day TEXT,confirmed_at TEXT)')
         database.execute("INSERT INTO robot_entry_receipts VALUES('old-bot-fill','BTCUSDT','2026-10-01','2026-10-01T12:00:00Z')")
         store=SimpleNamespace(db=database,entries=lambda today:0,
-                              available_slots=lambda running,symbols,today:slots(running,0))
+                              available_slots=lambda running,symbols,today,**kwargs:slots(running,0))
         self.client.account['positions'].append(dict(symbol='BTCUSDT',positionSide='BOTH',positionAmt='0.1'))
         self.client.check=lambda:dict(status='BINANCE_CONNECTED',position_mode='ONE_WAY',can_trade=True,
                                      multi_assets_margin=False,usdt_wallet_balance='116.92800000',usdt_available_balance='110.5')

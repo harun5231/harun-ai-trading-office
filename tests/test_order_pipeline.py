@@ -264,7 +264,7 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
         self.assertEqual(len(self.market.calls) - market_count, 1)
         self.assertIn('/premiumIndex?', self.market.calls[-1][1])
-        self.assertEqual(len(self.account.calls) - account_count, 1)  # The initial live snapshot only.
+        self.assertEqual(len(self.account.calls) - account_count, 3)  # Positions and global open entry orders only.
         self.assertEqual(self.intent()['state'], 'READY_FOR_EXECUTION')
         self.assertEqual(self.ledger.db.execute('SELECT status FROM robot_candidates').fetchone()[0], 'READY_FOR_EXECUTION')
         self.assertFalse(self.ledger.db.execute("SELECT 1 FROM office_activity WHERE state='EXECUTING'").fetchone())
@@ -365,26 +365,26 @@ class OrderPipelineTests(unittest.TestCase):
         self.one_slot_ready()
         gateway = self.connected()
         def unavailable(intent): raise GatewayUnavailable(NOT_CONNECTED)
-        gateway.on_submit = unavailable
+        gateway.on_submit = unavailable;gateway.on_reconcile = unavailable
         self.assertEqual(self.robot.tick()['failure_code'], 'ORDER_OUTCOME_UNKNOWN')
         self.assertEqual(self.intent()['state'], 'NEEDS_REVIEW')
         self.restart()
         self.ticks(4)
         self.assertEqual(len(gateway.submissions), 1)
-        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(len(gateway.reconciliations), 4)
         self.assertEqual(self.receipt_count(), 0)
 
     def test_submit_timeout_never_replays_after_restart(self):
         self.one_slot_ready()
         gateway = self.connected()
         def uncertain(intent): raise TimeoutError('private details must not be persisted')
-        gateway.on_submit = uncertain
+        gateway.on_submit = uncertain;gateway.on_reconcile = uncertain
         self.assertEqual(self.robot.tick()['failure_code'], 'ORDER_OUTCOME_UNKNOWN')
         self.restart()
         result = self.ticks(8)
         self.assertEqual(result['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(len(gateway.submissions), 1)
-        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(len(gateway.reconciliations), 8)
         self.assertEqual(len(self.calls), 2)
         self.assertNotIn('private', self.intent()['failure_code'])
         self.assertEqual(self.receipt_count(), 0)
@@ -394,10 +394,12 @@ class OrderPipelineTests(unittest.TestCase):
         self.robot.tick()
         self.ledger.db.execute("UPDATE order_intents SET state='SUBMITTING',failure_code=NULL")
         gateway = self.connected()
+        def unknown(intent):raise Review('BINANCE_ORDER_OUTCOME_UNKNOWN')
+        gateway.on_reconcile=unknown
         self.restart()
         self.assertEqual(self.ticks(3)['failure_code'], 'ORDER_OUTCOME_UNKNOWN')
         self.assertEqual(gateway.submissions, [])
-        self.assertEqual(gateway.reconciliations, [])
+        self.assertEqual(len(gateway.reconciliations), 3)
         self.assertEqual(len(self.calls), 2)
 
     def test_mismatched_ack_is_needs_review_without_receipt(self):
@@ -414,7 +416,7 @@ class OrderPipelineTests(unittest.TestCase):
     def test_unprotected_fill_is_needs_review_without_fabricated_receipt(self):
         self.one_slot_ready()
         gateway = self.connected()
-        gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5', sl_confirmed=False)
+        gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], sl_confirmed=False)
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(self.receipt_count(), 0)
 
@@ -437,7 +439,7 @@ class OrderPipelineTests(unittest.TestCase):
         first_fill = now()
         def reconcile(intent):
             self.account.positions = [self.account.positions[0], dict(symbol='BTCUSDT', positionSide='BOTH', positionAmt='2.5')]
-            return gateway.observation(intent, 'POSITION_PROTECTED', '2.5', first_fill_at=first_fill)
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], first_fill_at=first_fill)
         gateway.on_reconcile = reconcile
         result = self.robot.tick()
         self.assertEqual(self.intent()['state'], 'POSITION_PROTECTED')
@@ -1112,7 +1114,7 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual((result['bot_status'], result['wait_reason']), ('OFF', 'ROBOT_OFF'))
         self.assertEqual(len(self.market.calls) - market_count, 1)
         self.assertTrue(self.market.calls[-1][1].endswith('/exchangeInfo'))
-        self.assertEqual(len(self.account.calls) - account_count, 1)
+        self.assertEqual(len(self.account.calls) - account_count, 3)
         self.assertEqual(len(self.calls), 1)
         self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 0)
         self.assertFalse(self.ledger.db.execute("SELECT 1 FROM robot_jobs WHERE kind='ANALYSIS'").fetchone())
@@ -1252,7 +1254,7 @@ class OrderPipelineTests(unittest.TestCase):
     def test_yesterday_protected_position_allows_today_remaining_slot(self):
         gateway, captured = self.protected_fixture()
         self.account.positions = [row for row in self.account.positions if row['symbol'] != 'HYPEUSDT']
-        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5', **captured)
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], **captured)
         self.screens.append(['ETHUSDT'])
         tomorrow = (datetime.fromisoformat(day()) + timedelta(days=1)).date().isoformat()
         with patch('worker.robot.day', return_value=tomorrow):
@@ -1358,10 +1360,10 @@ class OrderPipelineTests(unittest.TestCase):
             if intent['symbol'] == 'ETHUSDT': return gateway.observation(intent)
             first_fill['at'] = now()
             self.account.position('BTCUSDT', '2.5')
-            return gateway.observation(intent, 'POSITION_PROTECTED', '2.5', first_fill_at=first_fill['at'])
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], first_fill_at=first_fill['at'])
         gateway.on_submit = submit
         gateway.on_reconcile = lambda intent: (gateway.observation(intent) if intent['symbol'] == 'ETHUSDT' else
-            gateway.observation(intent, 'POSITION_PROTECTED', '2.5', first_fill_at=first_fill['at']))
+            gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], first_fill_at=first_fill['at']))
         self.ticks(5)
         self.assertEqual([intent['symbol'] for intent in gateway.submissions], ['BTCUSDT', 'ETHUSDT'])
         self.assertEqual(len(self.calls), 3)
@@ -1383,7 +1385,8 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 3)
         self.restart()
         self.ticks(3)
-        self.assertEqual(len(gateway.reconciliations) - before, 1)
+        self.assertEqual(len(gateway.reconciliations) - before, 4)
+        self.assertEqual(len({r['intent_id'] for r in gateway.reconciliations[before:]}), 1)
 
     def test_closed_history_allows_next_bounded_research_cycle(self):
         self.one_slot_ready()
@@ -1392,13 +1395,13 @@ class OrderPipelineTests(unittest.TestCase):
         def submit(intent):
             first_fill['at'] = now()
             self.account.position('BTCUSDT', '2.5')
-            return gateway.observation(intent, 'POSITION_PROTECTED', '2.5', first_fill_at=first_fill['at'])
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], first_fill_at=first_fill['at'])
         gateway.on_submit = submit
         self.robot.tick()
         def closed(intent):
             self.account.positions = [row for row in self.account.positions if row['symbol'] != 'BTCUSDT']
             closed_at = now()
-            return gateway.observation(intent, 'CLOSED', '2.5', first_fill_at=first_fill['at'],
+            return gateway.observation(intent, 'CLOSED', intent['entry']['quantity'], first_fill_at=first_fill['at'],
                                        closed_at=closed_at, exit_order_id='11')
         gateway.on_reconcile = closed
         self.screens.append(['ETHUSDT'])
@@ -1419,7 +1422,7 @@ class OrderPipelineTests(unittest.TestCase):
     def test_first_fill_before_order_intent_cannot_fabricate_receipt(self):
         self.one_slot_ready()
         gateway = self.connected()
-        gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5',
+        gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'],
             first_fill_at='2001-01-01T00:00:00+00:00')
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(self.receipt_count(), 0)
@@ -1427,7 +1430,7 @@ class OrderPipelineTests(unittest.TestCase):
     def test_closed_observation_requires_real_exit_evidence(self):
         self.one_slot_ready()
         gateway = self.connected()
-        gateway.on_submit = lambda intent: gateway.observation(intent, 'CLOSED', '2.5')
+        gateway.on_submit = lambda intent: gateway.observation(intent, 'CLOSED', intent['entry']['quantity'])
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(self.receipt_count(), 0)
 
@@ -1466,7 +1469,7 @@ class OrderPipelineTests(unittest.TestCase):
         def submit(intent):
             captured['first_fill_at'] = now()
             self.account.position('BTCUSDT', '2.5')
-            return gateway.observation(intent, 'POSITION_PROTECTED', '2.5', **captured)
+            return gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], **captured)
         gateway.on_submit = submit
         self.assertEqual(self.robot.tick()['bot_status'], 'POSITION_PROTECTED')
         return gateway, captured
@@ -1479,14 +1482,14 @@ class OrderPipelineTests(unittest.TestCase):
 
     def test_reconcile_cannot_change_entry_order_identity(self):
         gateway, captured = self.protected_fixture()
-        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5', order_id='99', **captured)
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], order_id='99', **captured)
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(self.receipt_count(), 1)
 
     def test_reconcile_cannot_change_first_fill_time_or_receipt(self):
         gateway, captured = self.protected_fixture()
         receipt = dict(self.ledger.db.execute('SELECT * FROM robot_entry_receipts').fetchone())
-        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5', first_fill_at=now())
+        gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], first_fill_at=now())
         self.assertEqual(self.robot.tick()['bot_status'], 'NEEDS_REVIEW')
         self.assertEqual(dict(self.ledger.db.execute('SELECT * FROM robot_entry_receipts').fetchone()), receipt)
 
@@ -1504,7 +1507,7 @@ class OrderPipelineTests(unittest.TestCase):
         with patch('worker.robot.day', return_value='2026-10-07'):
             self.one_slot_ready()
             gateway = self.connected()
-            gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', '2.5',
+            gateway.on_submit = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'],
                 observed_at=observed.isoformat(), first_fill_at='2026-10-07T16:59:00+00:00')
             with patch('worker.robot.now', return_value='2026-10-07T16:58:00+00:00'), patch('worker.robot.datetime', Clock):
                 result = self.robot.tick()

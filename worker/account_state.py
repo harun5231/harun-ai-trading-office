@@ -11,14 +11,14 @@ from .prompts import SCREENING
 SCREENING_ONE='pilihkan 1 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
 MANUAL_ONLY_SYMBOLS=frozenset(('HYPEUSDT',))
 MAX_REPLACEMENTS=3
-ACCOUNT_FIELDS=('running_positions','running_symbols','available_slots','manual_exposure',
+ACCOUNT_FIELDS=('running_positions','running_symbols','open_entry_symbols','available_slots','manual_exposure',
     'usdt_wallet_balance','usdt_available_balance','bot_entries_today')
 ACCOUNT_GENERATION=uuid4().hex
 ACCOUNT_REVISION=count(1)
 ACCOUNT_ORDER_FIELDS=('_account_generation','_account_revision')
 
 def empty_account():
-    return dict(running_positions=None,running_symbols=None,available_slots=None,manual_exposure=[],
+    return dict(running_positions=None,running_symbols=None,open_entry_symbols=None,available_slots=None,manual_exposure=[],
         usdt_wallet_balance=None,usdt_available_balance=None,account_checked_at=None,account_failure_code=None,
         _account_generation=None,_account_revision=None)
 
@@ -74,11 +74,35 @@ def slots(running,entries=0,*,pending=0,unrepresented=0):
     # calendar day's two-entry allowance even after their positions are closed.
     return max(0,min(2-running-unrepresented,2-entries-pending))
 
+def open_entry_symbols(rows,*,algo=False,allow_hedge=False):
+    """Validate global regular open orders; reducing exits reserve no new slot."""
+    if not isinstance(rows,list):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+    symbols=set()
+    for row in rows:
+        if not isinstance(row,dict) or type(row.get('reduceOnly')) is not bool:
+            raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        if row['reduceOnly']:continue
+        if type(row.get('closePosition')) is not bool:raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        if row['closePosition']:continue
+        symbol=row.get('symbol')
+        if (not isinstance(symbol,str) or not re.fullmatch(r'[A-Z0-9_]{2,30}',symbol)
+                or row.get('positionSide') not in (('BOTH','LONG','SHORT') if allow_hedge else ('BOTH',)) or row.get('side') not in ('BUY','SELL')
+                or row.get('algoStatus' if algo else 'status') not in (
+                    ('NEW','TRIGGERING','TRIGGERED') if algo else ('NEW','PARTIALLY_FILLED','PENDING_CANCEL'))):
+            raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        symbols.add(symbol)
+    return sorted(symbols)
+
 def account_state(client,store,today):
     config=client.check()
     if config.get('status')!='BINANCE_CONNECTED' or config.get('position_mode')!='ONE_WAY' or config.get('multi_assets_margin') is not False or config.get('can_trade') is not True:
         raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-    client.sync_time();value=client.signed_get('/fapi/v3/account')
+    client.sync_time()
+    # Read potential entries first: a fill between these GETs appears in the
+    # final positions snapshot and the union still reserves that symbol once.
+    pending_symbols=sorted(set(open_entry_symbols(client.signed_get('/fapi/v1/openOrders')))|
+        set(open_entry_symbols(client.signed_get('/fapi/v1/openAlgoOrders'),algo=True)))
+    value=client.signed_get('/fapi/v3/account')
     rows=value.get('positions') if isinstance(value,dict) else None
     if not isinstance(rows,list):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
     running=set()
@@ -96,7 +120,8 @@ def account_state(client,store,today):
     # Until the gateway supplies current ownership evidence, every existing
     # exposure is externally managed and must remain protected from robot use.
     return dict(running_positions=len(running),running_symbols=sorted(running),manual_exposure=sorted(running),
-        bot_entries_today=entries,available_slots=store.available_slots(len(running),sorted(running),today),
+        open_entry_symbols=pending_symbols,bot_entries_today=entries,
+        available_slots=store.available_slots(len(running),sorted(running),today,pending_symbols=pending_symbols),
         usdt_wallet_balance=config.get('usdt_wallet_balance'),
         usdt_available_balance=config.get('usdt_available_balance'),account_checked_at=now(),account_failure_code=None,
         **account_order())

@@ -1,159 +1,87 @@
 # HARUN AI TRADING OFFICE
 
-Dashboard kantor 3D dan worker privat Binance USD-M Futures untuk satu alur:
+Dashboard kantor 3D dan worker privat Binance USD-M Futures:
 
-`ROBOT ON → account Binance → screening NeuroAPI → analisis → validasi risiko → OrderGateway.submit(intent) → Binance Futures`
+`ON → account/open orders → kapasitas → screening → analisis 15m/1h → sizing/TP → entry → SL/TP → rekonsiliasi`
 
-**Gateway bawaan belum memiliki sambungan pengiriman order.** Ujung alur instalasi bawaan
-berhenti dengan status `EXECUTION_BLOCKED` dan kode
-`BINANCE_ORDER_GATEWAY_NOT_CONNECTED`; gateway menampilkan `NOT_CONNECTED`.
-Entry, TP, dan SL belum terkirim. Developer manusia menyambungkan satu adapter
-[`worker/order_gateway.py`](worker/order_gateway.py), sesuai kontrak dalam
-[panduan integrasi](deploy/ORDER_INTEGRATION.md). Tidak ada transport trading
-alternatif atau tombol yang dapat melewati adapter tersebut.
+Worker berjalan di VPS 24/7; browser dapat ditutup. Menu Office yang sudah ada
+menyediakan Robot Trading ON/OFF, pengaturan risiko, Karyawan AI, Laporan,
+Aktivitas, dan Riwayat Posisi. Key Binance/NeuroAPI tetap di VPS. Dashboard
+memakai token worker dan data akun yang dibaca dari Binance.
 
-Untuk adapter existing yang hanya berada di VPS, tersedia
-[perbaikan terarah berdasarkan source yang telah diaudit](deploy/VPS_ORDER_FIX.md).
-Prosedur mempertahankan helper dan file lain, mengganti hanya class gateway
-terverifikasi, dan memperbarui lima file coordinator tanpa pull/reset proyek.
-Template deployment tidak dipilih sebagai executor runtime lain. Pengujian
-offline belum membuktikan penerimaan entry atau SL/TP oleh Binance produksi.
+Gateway publik bawaan merupakan stub dengan
+`EXECUTION_BLOCKED / BINANCE_ORDER_GATEWAY_NOT_CONNECTED`. VPS existing
+memakai adapter produksi lokal pada `worker/order_gateway.py`. Status
+`CONFIGURED` hanya membuktikan konfigurasi lokal; penerimaan entry, fill,
+TP/SL, dan exit memerlukan bukti Binance. Update mempertahankan adapter privat,
+financial journal, receipt, settings, secret, dan order existing.
 
-Pada VPS existing, pembaruan gabungan enam file telah terpasang dan fingerprint
-host/container cocok pada 7 Oktober 2026; worker healthy setelah restart
-10:04 UTC. Pada saat itu ETH 0.181 telah terlindungi SL 2585 / TP 2730 dengan
-`MARK_PRICE` dan satu receipt. Audit GET berikutnya pada 10:45 UTC membuktikan
-SL telah menutup ETH pada 10:07:39.052 UTC, average fill 2575.81; TP pasangan
-sudah `CANCELED`, tanpa posisi atau order terbuka. Pada audit itu, journal
-memerlukan pencatatan closure setelah `BINANCE_ORDER_EXIT_RACE`.
-Pencatatan GET-only pada 11:14 UTC telah memverifikasi `CLOSED` dan
-mempertahankan satu receipt entry.
-Verifikasi source ini belum membuktikan
-penerimaan order baru setelah restart. Audit berikutnya membuktikan penggantian
-BTCUSDT yang ditolak RR ke BNBUSDT yang ditolak target tick, lalu SOLUSDT yang
-menerima HTTP 422 pada analisis sebelum order. Installer pemulihan sebelumnya
-berhenti pada `UNRESOLVED_ORDER` sesudah `SOURCE_MATCH`, sebelum source berubah.
-Paket lanjutan pada 11:14 UTC telah menghasilkan
-`ETH_CLOSED_AND_NEUROAPI_FIX_INSTALLED`: source cocok, worker healthy,
-closure ETH tercatat, pembuktian cancel pasangan diperbarui, dan request SOL
-dicatat `REJECTED_REQUEST_VALIDATION` tanpa replay. Pemeriksaan terbaru
-11:19 UTC membuktikan request/job pending atau needs-review kosong, order ETH
-asli `CLOSED` tanpa failure, satu receipt, dan posisi aktif nol. Cycle epoch 1
-selesai setelah tiga putaran pengganti; kandidat terakhir ETHUSDT baru ditolak
-`NET_RISK_REWARD_NOT_TARGET_2` sebelum order. Robot ON menunggu dengan
-`INSUFFICIENT_ACTIONABLE_SETUPS / ROBOT_CYCLE_COMPLETE`, tanpa failure robot
-atau akun dan satu slot tersedia. Laporan masih `PARTIAL`; kasus ini belum
-membuktikan penerimaan order baru `CONTRACT_PRICE` atau partial fill versi baru.
-Lihat
-[pemulihan HTTP 422 tanpa replay SOL](deploy/NEUROAPI_422_RECOVERY.md).
+## Aturan robot
 
-Coordinator memeriksa implementasi `submit` dan `reconcile` sebelum menyimpan
-claim `SUBMITTING`. Metode yang sudah diimplementasikan dipanggil setelah
-validasi alur, dengan status koneksi sebagai metadata Office. Field `connected`
-tidak mengaktifkan atau menonaktifkan dispatch, dan tidak ada sakelar environment
-pengiriman order. Keberadaan metode maupun status tidak membuktikan autentikasi
-atau kesehatan exchange; developer harus menyelesaikan dan memverifikasi adapter.
+- Maksimal dua first fill entry bot per hari WIB, UTC+7, dan dua occupancy
+  bersamaan. Posisi manual/carryover serta pending entry manual dan bot memakai
+  kapasitas; symbol yang sama dihitung sekali. HYPEUSDT manual-only.
+- Screening meminta satu atau dua coin sesuai slot. Analisis memakai USDT
+  perpetual aktif, candle Futures fresh 15m/1h, filter kontrak, dan commission
+  akun per symbol. NeuroAPI mengembalikan LONG, SHORT, atau HOLD.
+- HOLD dan RR di bawah 1:2 sebelum plan/intent meminta coin berbeda, maksimal
+  tiga putaran pengganti. Unknown outcome tidak diulang. Polling/restart tidak
+  membuka cycle berbayar tanpa batas setelah putaran habis.
+- Risk target tetap editable pada menu lama: default 5 USDT, positif sampai
+  100 USDT. Quantity legal terbesar mencakup taker fee entry/SL dan cadangan
+  exit SL merugikan 0,5%. Leverage 75× tidak memperbesar budget risiko.
+- Setup model minimal RR 1:2 dapat dipakai. Entry dan SL dipertahankan; worker
+  menormalisasi TP eksekusi ke net 1:2 setelah fee dan cadangan exit TP 0,5%,
+  pada tick legal terdekat. TP model asli dan bukti normalisasi disimpan.
+- Entry LIMIT GTC, CROSS 75×. Setelah actual fill, SL `STOP_MARKET` dipasang
+  terlebih dahulu lalu TP `TAKE_PROFIT_MARKET`, pemicu Terakhir
+  (`CONTRACT_PRICE`), untuk 100% exposure bot yang masih terbuka. GET harus
+  membuktikan keduanya sebelum `POSITION_PROTECTED`.
 
-## Office
+Model biaya baru adalah `FEE_SLIPPAGE_RISK_V3`. Planned loss dengan cadangan
+harus memenuhi target; gap, slippage melampaui cadangan, funding, perubahan fee,
+atau liquidation dapat membuat loss aktual lebih besar dari 5 USDT. Entry dan
+proteksi terpisah; fill tidak atomik dengan pemasangan TP/SL.
 
-Menu hanya memuat Robot Trading ON/OFF, Karyawan AI, Laporan, Aktivitas, dan
-Riwayat Posisi. Saldo, posisi, dan riwayat akun berasal dari pembacaan Binance.
-Riset dan kejadian worker ditampilkan sebagai aktivitas, bukan transaksi akun.
-Animasi karyawan mengikuti status worker; browser dapat ditutup tanpa
-menghentikan worker VPS.
+OFF menghentikan setiap request provider dan mutation Binance baru, termasuk
+entry, TP/SL, perubahan config, cancel, dan close. Request yang sudah terkirim
+dapat selesai dan dicatat. Polling akun tetap tersedia. OFF tidak membatalkan
+entry pending atau menutup posisi/order existing maupun manual; entry pending
+masih dapat fill di Binance saat OFF.
 
-Default robot OFF dan target risiko net ke SL 5 USDT, termasuk fee entry dan
-fee exit SL memakai taker commission per symbol dari signed GET Binance.
-Maksimal dua entry bot baru per hari WIB (UTC+7) dan dua posisi bersamaan,
-termasuk posisi manual serta posisi yang terbawa dari hari sebelumnya.
-Entry `ENTRY_PENDING` mencadangkan kuota harian dan kapasitas, termasuk yang
-dibuat kemarin tetapi masih mungkin fill hari ini. Partial fill dihitung sebagai
-satu entry pada hari WIB dari fill pertama yang terverifikasi; receipt tetap
-tersimpan setelah restart. Posisi manual mengurangi slot; HYPEUSDT selalu
-manual-only. Jika HYPEUSDT merupakan satu-satunya posisi
-aktif, screening meminta satu coin lain. Robot tidak mengambil alih posisi
-manual atau memakai hasil analisis sebagai bukti adanya order Binance.
+## Journal dan update
 
-Kapasitas adalah nilai terkecil dari sisa kuota harian dan sisa slot bersamaan.
-Pergantian hari pada pukul 00:00 WIB memperbarui kuota entry, tanpa menutup posisi
-lama. Satu posisi lama yang masih aktif menyisakan paling banyak satu slot saat
-itu; dua posisi lama menyisakan nol sampai salah satunya selesai. Posisi yang
-selesai membebaskan slot bersamaan, tanpa mengembalikan kuota entry hari itu.
+Namespace operation tetap `robot-v9`/`analysis-v9`, agar update tidak membuat
+replay riset/order. Receipt first fill, pending reservations, kuota, replacement
+counter, payload dan provenance lama dipertahankan. Plan lama memakai model
+biaya serta pemicu yang terikat pada buktinya; update tidak mengganti level
+atau quantity order historis.
 
-ROBOT OFF menghentikan riset, submission, dan rekonsiliasi gateway berikutnya.
-OFF tidak menutup posisi atau membatalkan order entry/SL/TP. Request
-eksternal yang sudah dikirim tidak dapat ditarik kembali; hasilnya masih dapat
-selesai dan dicatat ke journal. Callback adapter yang sudah dimulai juga dapat
-menyelesaikan proteksinya; guard GET riset tidak menginterupsinya. Semua karyawan
-AI berhenti menunjukkan aktivitas
-kerja saat OFF, sementara pembacaan saldo, posisi, dan riwayat tetap tersedia
-di Office.
+Respons provider `COMPLETE` yang cocok dapat diselesaikan dari journal setelah
+restart tanpa POST baru hanya jika metadata waktu chart asli masih fresh.
+Metadata hilang/stale ditolak lokal tanpa replay provider. HTTP 422 yang diterima
+bersifat terminal, tanpa output model; timeout/unknown tetap memblokir.
+`ORDER_OUTCOME_UNKNOWN` bukan bukti rejection Binance. Posisi nol belum
+membuktikan tidak ada entry pending. Jangan menghapus claim, mereset counter,
+atau memaksa submission ulang.
 
-Pengaturan risiko tetap tersedia di panel Robot Trading, dengan nilai positif
-sampai 100 USDT seperti sebelumnya. Perubahan hanya berlaku untuk analisis baru;
-level, quantity, dan risiko intent yang sudah dibuat tetap mengikuti buktinya.
+Revisi alur diverifikasi di VPS saat OFF sebelum publikasi GitHub. Cleanup
+hanya menyangkut source/command robot historis setelah verifikasi; volume,
+journal, secret, backup, order manual, dan fitur Office tetap dipertahankan.
 
-Worker memakai NeuroAPI Starter `smart`, data Binance 15m/1h nyata, serta aturan
-kontrak dan commission akun terbaru. Model menentukan side dan harga Entry/TP/SL;
-quantity ditentukan worker menggunakan Decimal agar estimasi loss SL termasuk
-fee tidak melebihi target. Plan baru memakai `NET_1_TO_2_NEAREST_TICK`: TP harus
-pada tick legal terdekat yang mencapai net RR 1:2 sesudah fee. Worker memvalidasi
-harga model tanpa menggesernya; plan lama tanpa kebijakan ini tetap memakai net RR
-minimal 2. Funding, slippage,
-perubahan fee, dan gap harga dapat membuat loss nyata melampaui estimasi tersebut.
-Entry tetap LIMIT, margin CROSS, dan leverage 75; worker tidak menggeser level.
-Proteksi plan baru memakai pemicu Terakhir (`CONTRACT_PRICE`); plan lama tanpa
-field tersebut tetap `MARK_PRICE`, termasuk setup ETH historis yang ditutup SL.
-HOLD dan penolakan lokal `REJECTED` dengan kode `NET_RISK_REWARD_BELOW_2` atau
-`NET_RISK_REWARD_NOT_TARGET_2` tanpa plan/intent order dapat meminta kandidat
-pengganti. Penolakan tetap `REJECTED` dan tidak dipromosikan menjadi HOLD.
-Semua alasan tersebut berbagi maksimum tiga screening
-tambahan per cycle, hanya untuk hasil putaran terakhir dan slot yang tersedia.
-Pada screening pengganti, `message_history` existing mengecualikan coin yang
-sudah dilihat, exposed/pending, dan HYPEUSDT. Prompt/schema tetap sama dan
-screening awal tidak ditambah history. Kegagalan teknis lain atau outcome belum
-pasti tidak meminta pengganti. Kode penanganan HTTP 422 yang telah terpasang
-menambahkan pengganti hanya untuk respons validasi yang terbukti diterima
-sebelum plan/intent, melalui batas tiga putaran yang sama; timeout tanpa
-respons tetap memblokir. Request berbayar
-memiliki claim persisten. Outcome yang belum pasti dihentikan untuk rekonsiliasi,
-tanpa replay otomatis setelah restart.
+## Panduan aktif
 
-## Deploy dan pengembangan
+- [Alur dan aturan robot](deploy/ROBOT_WORKFLOW.md)
+- [Operasi melalui Termius](deploy/TERMIUS_24_7.md)
+- [Worker 24/7 dan status](deploy/ROBOT_24_7.md)
+- [Audit source sebelum ON](deploy/AUDIT_BEFORE_ON.md)
+- [Entry dan TP/SL Binance](deploy/TP_SL_AUTOMATIC.md)
+- [Kontrak adapter dan model risiko](deploy/ORDER_INTEGRATION.md)
+- [Batas request NeuroAPI dan unknown outcome](deploy/NEUROAPI_422_RECOVERY.md)
+- [Docker, HTTPS, secret, dan migrasi](deploy/DOCKER.md)
+- [Persiapan build adapter existing](deploy/EXISTING_GATEWAY_BUILD.md)
 
-- [Deployment Docker dan secret VPS](deploy/DOCKER.md)
-- [Operasi dan pemeriksaan 24/7](deploy/ROBOT_24_7.md)
-- [Panduan Termius untuk VPS existing dan adapter Futures 24/7](deploy/TERMIUS_24_7.md)
-- [Audit source container sebelum ROBOT ON tanpa mengubah adapter VPS](deploy/AUDIT_BEFORE_ON.md)
-- [Perbaikan adapter VPS dan coordinator dengan backup, tanpa mengganti fungsi lain](deploy/VPS_ORDER_FIX.md)
-- [Pemulihan journal riset lama dengan backup, tanpa replay atau perubahan adapter](deploy/LEGACY_RESEARCH_RECOVERY.md)
-- [Pemulihan entry yang tidak ditemukan di Binance dan diagnostics callback](deploy/UNKNOWN_ORDER_RECOVERY.md)
-- [Pemulihan satu slot setelah penolakan entry yang telah diverifikasi](deploy/ONE_SLOT_RECOVERY.md)
-- [Pemasangan gabungan enam file: target net RR 1:2, pengganti, dan pemicu Terakhir](deploy/RR_REPLACEMENT.md)
-- [Pemulihan HTTP 422 NeuroAPI dan partisi context lengkap tanpa replay SOL](deploy/NEUROAPI_422_RECOVERY.md)
-- [Alur worker dan API privat](deploy/ROBOT_WORKFLOW.md)
-- [Satu adapter order untuk developer](deploy/ORDER_INTEGRATION.md)
-
-Diagnostics koneksi `python -m worker api-check` dan
-`python -m worker binance-check` tetap tersedia. Keduanya hanya membaca koneksi
-provider/akun, tanpa screening berbayar atau pengiriman order.
-
-Worker memakai Python standard library; frontend Three.js diterbitkan melalui
-GitHub Pages. Secret Binance, NeuroAPI, dan token worker tetap berada di VPS,
-di luar Git dan dashboard. Docker menjaga volume yang sama, menjalankan service
-sebagai UID/GID 10001, dan memulihkan proses melalui restart policy serta watchdog.
-
-Upgrade pertama membuat backup audit privat dari ledger lama, menghapus tabel
-alur lama dari database aktif, dan mengembalikan robot ke OFF. Backup tidak dibaca
-oleh jalur runtime. Journal request berbayar serta bukti entry Binance yang
-terkonfirmasi dipertahankan. Tidak ada promosi setup lama menjadi order.
-
-Upgrade alur fee-inclusive memakai namespace `robot-v9` dan `analysis-v9`.
-Schema version 2 mengizinkan cycle baru pada hari/epoch yang sama dengan cycle
-lama sambil mempertahankan semua baris lama, settings ON/OFF, journal, intent,
-receipt, dan observasi exposure. Bukti risiko harga tanpa fee lama tidak dipromosikan;
-order dengan outcome belum pasti tetap memblokir sampai direkonsiliasi.
-
-Pengujian lokal menggunakan fixtures tanpa key atau uang nyata. Test lulus
-tidak membuktikan adapter Binance sudah tersambung. Status default `NOT_CONNECTED`
-mencerminkan adapter bawaan yang belum memiliki transport, rekonsiliasi, dan proteksi.
+Diagnostics `python -m worker api-check`, `binance-check`, `diagnostics`, dan
+`status` hanya membaca. Tidak ada command manual untuk memulai screening atau
+entry. Tes memakai fixtures tanpa uang/key nyata; tes lulus tidak membuktikan
+order produksi diterima Binance.
