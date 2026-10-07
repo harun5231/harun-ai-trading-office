@@ -1,4 +1,4 @@
-"""No actual adapter imports; synthetic classes run in offline isolation."""
+"""Offline synthetic adapters; the pinned public release must exist in local Git."""
 import ast
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import copy
@@ -31,6 +31,7 @@ REPO = next(path for path in (
     HERE / "harun-office-robot24",
 ) if (path / ".git").exists() and (path / "worker" / "order_gateway.py").is_file())
 KNOWN_SHA = "ba15012f49b7eafbac729f2e509590e4b03a4ba3544124d073c14c924f81642e"
+RELEASE_COMMIT = "79d3c51a6bdc7c80b98ac16092286c0f3e8b8f0f"
 SECRET = b"SYNTHETIC_SECRET_MUST_NEVER_APPEAR_IN_OUTPUT"
 DOCKER = (b"FROM python:3.12-slim-bookworm\n"
           b"RUN useradd --uid 10001 --create-home office\n"
@@ -54,7 +55,7 @@ class PreparationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.baseline = git(REPO, "show", "--no-ext-diff", "--no-textconv",
-                           "HEAD:worker/order_gateway.py")
+                           RELEASE_COMMIT + ":worker/order_gateway.py")
         if hashlib.sha256(cls.baseline).hexdigest() != KNOWN_SHA:
             raise AssertionError("The fixture must use the exact known Git baseline")
         tree = ast.parse(cls.baseline)

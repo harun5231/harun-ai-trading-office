@@ -1,4 +1,4 @@
-"""Pinned source updates with offline Git material and mocked Docker OFF checks."""
+"""Offline updater tests; the pinned public release must exist in local Git."""
 from contextlib import redirect_stdout
 import importlib.util
 import io
@@ -20,14 +20,26 @@ SPEC.loader.exec_module(tool)
 SECRET = b'SYNTHETIC_PRIVATE_SOURCE_DO_NOT_PRINT'
 
 
+def release_source(name):
+    """The updater's immutable release, independent of current worker changes."""
+    environment = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull,
+                       GIT_CONFIG_NOSYSTEM='1')
+    return subprocess.run(
+        ['git', '--no-optional-locks', '-C', str(ROOT), 'show',
+         '--no-ext-diff', '--no-textconv', tool.TARGET_COMMIT + ':worker/' + name],
+        env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        check=True,
+    ).stdout
+
+
 class ExistingWorkerUpdateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         fixture = json.loads((ROOT / 'tests/fixtures/vps_worker_baseline.json').read_text(encoding='utf-8'))
         assert set(fixture) == {name for name, pair in tool.HASHES.items() if pair[0] is not None}
         cls.old = {name: raw.encode('utf-8') for name, raw in fixture.items()}
-        cls.new = {name: (ROOT / 'worker' / name).read_bytes() for name in tool.HASHES}
-        cls.anchors = {name: (ROOT / 'worker' / name).read_bytes() for name in tool.ANCHORS}
+        cls.new = {name: release_source(name) for name in tool.HASHES}
+        cls.anchors = {name: release_source(name) for name in tool.ANCHORS}
         for name, pair in tool.HASHES.items():
             if pair[0] is not None: assert tool.digest(cls.old[name]) == pair[0]
             assert tool.digest(cls.new[name]) == pair[1]
