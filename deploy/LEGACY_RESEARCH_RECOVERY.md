@@ -13,7 +13,7 @@ belum membuktikan request berasal dari versi lama.
 ## Pemulihan terarah tanpa mengganti source VPS
 
 `retire_legacy_research.py` memeriksa format operation di ledger secara lokal.
-Utility hanya menerima format sebelum namespace `robot-v8`, sesuai source
+Secara default, utility hanya menerima format sebelum namespace `robot-v8`, sesuai source
 historis repository. Format v8/v9, operation tidak dikenal, dan seluruh request
 `PENDING` ditolak sebagai alasan pemulihan otomatis. Request `COMPLETE` tidak
 diubah.
@@ -116,3 +116,59 @@ request HTTP sudah dikirim, ditagih, atau diterima provider.
 Kirim laporan tersebut untuk menentukan langkah selanjutnya. Request aktif
 atau tidak dikenal tetap diblokir; laporan ini tidak memperluas format yang
 boleh dipensiunkan, mengubah journal, atau mengirim ulang screening/order.
+
+## Satu penolakan screening yang dibuktikan oleh arsip pre-order
+
+Laporan VPS berikutnya menunjukkan dua request `legacy_analysis` yang dikenali
+dan satu ID opaque tanpa tanggal atau namespace yang dikenali. Request opaque
+itu berstatus `NEEDS_REVIEW`, attempts satu, dan failure code
+`INVALID_SCREENING_SYMBOL`. Nama atau waktu request saja belum membuktikan
+asalnya.
+
+Opsi eksplisit `--prove-pre-order-screening-rejection` menyediakan pemeriksaan
+provenance terpisah; opsi ini tidak mengubah grammar `classify()` ataupun
+menjadikan semua ID tidak dikenal sebagai legacy. Hanya satu penolakan opaque
+dengan bentuk dan field yang sesuai kasus di atas dapat dipertimbangkan.
+
+Utility membaca hanya arsip migrasi tetap `ledger-pre-order.sqlite3`. Arsip harus
+berupa snapshot SQLite lengkap, privat, tanpa sidecar, dengan schema runtime
+lama yang dikenali dan tanpa schema runtime order baru. Seluruh schema API dan
+row target harus identik secara typed bytes dengan journal sekarang. Bukti
+eksekusi atau referensi lama/aktif, snapshot tidak lengkap, row berbeda,
+namespace current, dan request `PENDING` tetap menghalangi pemulihan.
+
+Jika proof lolos dan seluruh guard lama terpenuhi, penolakan tersebut dapat
+dipensiunkan bersama request legacy yang dikenali, melalui backup dan satu
+transaksi yang sama. Scope audit khusus `pre_order_archive:<sha256>` mengikat
+snapshot yang digunakan; row asli tetap disimpan. File dan hash arsip diperiksa
+ulang sebelum backup, sebelum menulis, dan sebelum commit. Outcome request
+tidak diubah menjadi sukses, dan request lama tidak dikirim ulang.
+
+Dengan ROBOT OFF, jalankan inspeksi proof terlebih dahulu bila diperlukan:
+
+```bash
+(
+  set -euo pipefail
+  cd /root/harun-ai-trading-office
+  git fetch origin main
+  git show origin/main:deploy/retire_legacy_research.py |
+    docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S - --data-dir /data --prove-pre-order-screening-rejection
+)
+```
+
+Untuk menerapkan hanya jika proof dan seluruh guard lolos:
+
+```bash
+(
+  set -euo pipefail
+  cd /root/harun-ai-trading-office
+  git fetch origin main
+  git show origin/main:deploy/retire_legacy_research.py |
+    docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S - --data-dir /data --prove-pre-order-screening-rejection --apply
+  docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker.robot_status
+)
+```
+
+Jika arsip tidak tersedia atau proof tidak cocok, proses berhenti tanpa
+mengubah state. Jangan membuat arsip dari journal saat ini untuk menggantikan
+bukti yang hilang. Kirim ringkasan proof/error untuk penelusuran berikutnya.
