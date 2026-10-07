@@ -119,7 +119,7 @@ function badge(role, accent, owned) {
   ctx.font = 'bold 27px sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(String(role || 'AI').replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase(), 72, 38);
+  ctx.fillText(String(role || 'TEAM').replace(/[^a-z0-9]/gi, '').slice(0, 4).toUpperCase(), 72, 38);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
   const mat = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.85 });
@@ -154,7 +154,7 @@ export function footCycle(phase) {
   return { z: -stride + ease(swing) * 2 * stride, lift: Math.sin(swing * Math.PI) * 0.13 };
 }
 
-export function createAvatar({ id, role = 'AI', name = '', accent = '#5eafff', index = 0 } = {}) {
+export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff', index = 0 } = {}) {
   users += 1;
   const owned = [];
   const root = new THREE.Group();

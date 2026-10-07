@@ -6,16 +6,18 @@
   const title = document.getElementById('panelTitle');
   const drawer = document.getElementById('menuDrawer');
   const menuToggle = document.getElementById('menuToggle');
-  const views = { robot: 'ROBOT TRADING ON / OFF', staff: 'KARYAWAN AI', reports: 'LAPORAN', activity: 'AKTIVITAS', positions: 'RIWAYAT POSISI BINANCE' };
+  const views = { robot: 'ROBOT TRADING ON / OFF', calendar: 'KALENDER PNL' };
+  const CALENDAR_START = '2026-10-01';
   const FRESH_MS = 120000;
   let origin = '', configuredOrigin = '', token = '', timer = null, snapshot = null;
   let view = 'robot', generation = 0, revision = 0, polling = false, saving = false;
   let riskDraft = null, resetRiskOnRefresh = null;
   let online = false, refreshRequested = false, message = 'Hubungkan worker untuk membaca akun dan status robot.';
+  let calendarMonth = null, selectedDay = null;
 
   function element(tag, text, className) {
     const node = document.createElement(tag);
-    if (text !== undefined) node.textContent = String(text ?? '—');
+    if (text !== undefined) node.textContent = String(text ?? '—').replace(/\b(?:nanda|ai)\b/gi, '').replace(/\s+/g, ' ').trim();
     if (className) node.className = className;
     return node;
   }
@@ -30,7 +32,7 @@
   function fresh(value) { const time = timestamp(value); return time !== null && Date.now() - time >= -60000 && Date.now() - time < FRESH_MS; }
   function date(value) {
     const time = timestamp(value);
-    return time === null ? 'Belum tersedia' : new Date(time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'medium' });
+    return time === null ? 'Belum tersedia' : new Date(time).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'medium', timeZone: 'Asia/Jakarta' });
   }
   function validOrigin(value) {
     const url = new URL(value);
@@ -100,7 +102,7 @@
     const pnlLabel = document.querySelectorAll('.stats .stat span')[1];
     if (pnlLabel) pnlLabel.textContent = reports?.complete === false ? 'PNL Hari Ini *' : 'PNL Hari Ini';
     const pnlValue = document.querySelectorAll('.stats .stat b')[1];
-    if (pnlValue) pnlValue.title = reports?.complete === false ? 'Laporan Binance parsial; baca rincian pada Laporan.' : '';
+    if (pnlValue) pnlValue.title = reports?.complete === false ? 'Data Binance parsial; rincian posisi ditutup tersedia pada Kalender PNL.' : '';
     document.querySelector('.brand small').textContent = !origin ? '● WORKER BELUM TERHUBUNG' : !online ? '● WORKER TIDAK TERJANGKAU' : !account ? '● AKUN BINANCE BELUM TERSEDIA' : '● BINANCE FUTURES · '+(snapshot.robot.robot_on ? 'ROBOT ON' : 'ROBOT OFF');
     const robotMenu = document.getElementById('robotMenu');
     robotMenu.dataset.robotOn = snapshot ? String(snapshot.robot.robot_on) : '';
@@ -198,47 +200,196 @@
     actions.append(connect, stop); details.append(originLabel, tokenLabel, actions, notice('Token kontrol hanya berada di memori tab. Kunci Binance dan NeuroAPI tetap di VPS.'));
     return details;
   }
-  function renderStaff() {
-    const employees = snapshot?.employees ?? [];
-    const robotOff = snapshot?.robot.robot_on === false || snapshot?.robot.bot_status === 'OFF';
-    content.append(notice(online ? robotOff ? 'Robot OFF. Seluruh pekerjaan karyawan AI berhenti; dashboard tetap dapat membaca akun.' : 'Status karyawan mengikuti pekerjaan yang dilaporkan coordinator.' : 'Status karyawan belum tersedia dari worker.', online ? 'normal' : 'warning'));
-    for (const employee of employees) {
-      const row = element('article', undefined, 'dashboard-row'); row.append(element('strong', employee.name), element('p', robotOff ? 'OFF' : employee.status)); content.append(row);
-    }
-    if (!employees.length) content.append(notice('Belum ada status karyawan AI.'));
+  function wibDay(value = Date.now()) {
+    return new Date(value + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
   }
-  function renderReports() {
-    const reports = snapshot?.reports, main = section('HASIL BINANCE FUTURES'); source(main, reports);
-    field(main, 'PnL hari ini · USDT', number(reports?.pnl_today_usdt));
-    field(main, 'Realized PnL · USDT', number(reports?.realized_pnl_today_usdt));
-    field(main, 'Komisi · USDT', number(reports?.commission_today_usdt));
-    field(main, 'Funding · USDT', number(reports?.funding_today_usdt));
-    field(main, 'Fill / transaksi hari ini', number(reports?.trades_today, 0));
-    main.append(notice('Periode: '+date(reports?.period_start)+' — '+date(reports?.period_end)));
-    if (reports?.complete === false) main.append(notice('Laporan parsial. Jangan membaca hasil ini sebagai total akun yang sudah lengkap.', 'warning'));
+  function calendarDate(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const at = Date.parse(value+'T00:00:00Z');
+    return Number.isFinite(at) && new Date(at).toISOString().slice(0, 10) === value;
+  }
+  function decimal(value) {
+    return typeof value === 'string' && value.length <= 64 && /^-?\d+(?:\.\d+)?$/.test(value) && Number.isFinite(Number(value));
+  }
+  function calendarData() {
+    const data = snapshot?.pnl_calendar;
+    if (!data || data.source !== 'BINANCE_FUTURES' || data.kind !== 'CLOSED_POSITIONS_FROM_FILLS' ||
+        data.timezone !== 'Asia/Jakarta' || data.start_date !== CALENDAR_START ||
+        !calendarDate(data.end_date) || data.end_date < CALENDAR_START || data.end_date > wibDay() ||
+        !['READY', 'PARTIAL', 'UNAVAILABLE'].includes(data.status) || typeof data.complete !== 'boolean' ||
+        !Array.isArray(data.days) || data.days.length > 10000 || !Array.isArray(data.positions) || data.positions.length > 20000) return null;
+    const dates = new Set();
+    for (const day of data.days) {
+      if (!calendarDate(day.date) || day.date < CALENDAR_START || day.date > data.end_date || dates.has(day.date) ||
+          typeof day.complete !== 'boolean' || !Number.isSafeInteger(day.closed_positions) || day.closed_positions < 0 ||
+          !decimal(day.known_pnl_usdt) || day.pnl_usdt !== null && !decimal(day.pnl_usdt)) return null;
+      dates.add(day.date);
+    }
+    const ids = new Set();
+    for (const position of data.positions) {
+      const closed = timestamp(position.closed_at), opened = position.opened_at === null ? null : timestamp(position.opened_at);
+      if (typeof position.id !== 'string' || position.id.length > 128 || ids.has(position.id) ||
+          !/^[A-Z0-9]{1,24}USDT$/.test(position.symbol) || !['LONG', 'SHORT'].includes(position.side) ||
+          position.status !== 'CLOSED' || typeof position.complete !== 'boolean' || closed === null ||
+          position.opened_at !== null && (opened === null || opened > closed) ||
+          !calendarDate(position.close_date) || position.close_date < CALENDAR_START || position.close_date > data.end_date || wibDay(closed) !== position.close_date ||
+          position.entry_price !== null && !decimal(position.entry_price) || !decimal(position.exit_price) ||
+          !decimal(position.closed_quantity) || Number(position.closed_quantity) <= 0 || !decimal(position.realized_pnl_usdt) ||
+          position.commission_usdt !== null && !decimal(position.commission_usdt) || position.pnl_usdt !== null && !decimal(position.pnl_usdt) ||
+          !decimal(position.known_pnl_usdt) || position.funding_usdt !== null && !decimal(position.funding_usdt) ||
+          position.insurance_usdt !== null && !decimal(position.insurance_usdt)) return null;
+      ids.add(position.id);
+    }
+    return data;
+  }
+  function signedMoney(value) {
+    if (!decimal(value)) return '—';
+    const amount = Number(value);
+    const formatted = Math.abs(amount).toLocaleString('id-ID', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (amount > 0 ? '+' : amount < 0 ? '−' : '')+formatted;
+  }
+  function calendarNumber(value, minimumFractionDigits = 0) {
+    return decimal(value) ? Number(value).toLocaleString('id-ID', { minimumFractionDigits, maximumFractionDigits: 8 }) : '—';
+  }
+  function decimalTotal(values) {
+    const scale = Math.max(0, ...values.map(value => (value.split('.')[1] ?? '').length));
+    const total = values.reduce((sum, value) => {
+      const negative = value.startsWith('-'), [whole, fraction = ''] = value.replace(/^-/, '').split('.');
+      const units = BigInt(whole+fraction.padEnd(scale, '0'));
+      return sum+(negative ? -units : units);
+    }, 0n);
+    const digits = (total < 0n ? -total : total).toString().padStart(scale+1, '0');
+    return (total < 0n ? '-' : '')+(scale ? digits.slice(0, -scale)+'.'+digits.slice(-scale) : digits);
+  }
+  function dayLabel(value, options = { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }) {
+    return new Date(value+'T00:00:00Z').toLocaleDateString('id-ID', { ...options, timeZone: 'UTC' });
+  }
+  function shiftMonth(month, offset) {
+    const [year, index] = month.split('-').map(Number);
+    return new Date(Date.UTC(year, index - 1 + offset, 1)).toISOString().slice(0, 7);
+  }
+  function chooseDay(key, focus = false) {
+    if (!calendarDate(key) || key < CALENDAR_START || key > wibDay()) return;
+    selectedDay = key; calendarMonth = key.slice(0, 7); paint();
+    if (focus) document.getElementById('pnl-day-'+key)?.focus?.({ preventScroll: true });
+  }
+  function moveMonth(offset) {
+    const next = shiftMonth(calendarMonth, offset);
+    if (next < CALENDAR_START.slice(0, 7) || next > wibDay().slice(0, 7)) return;
+    const day = next === wibDay().slice(0, 7) ? wibDay() : next+'-01';
+    chooseDay(day);
+  }
+  function positionCard(position) {
+    const card = element('article', undefined, 'pnl-position');
+    const heading = element('div', undefined, 'pnl-position-head'), identity = element('div', undefined, 'pnl-position-identity');
+    identity.append(element('span', position.side === 'LONG' ? 'B' : 'S', 'pnl-side '+position.side.toLowerCase()),
+      element('strong', position.symbol), element('span', 'Perp', 'pnl-badge'), element('span', position.side, 'pnl-badge'));
+    heading.append(identity, element('span', 'Ditutup', 'pnl-closed')); card.append(heading);
+    const metrics = element('div', undefined, 'pnl-position-metrics');
+    const metric = (label, value, className = '') => {
+      const item = element('div', undefined, 'pnl-position-metric');
+      item.append(element('span', label), element('b', value, className)); metrics.append(item);
+    };
+    const net = position.pnl_usdt, amount = net ?? position.known_pnl_usdt;
+    metric(net === null ? 'PNL diketahui · USDT' : 'PNL terealisasi net · USDT', signedMoney(amount)+(net === null ? ' *' : ''),
+      decimal(amount) ? Number(amount) < 0 ? 'pnl-loss-text' : Number(amount) > 0 ? 'pnl-profit-text' : '' : '');
+    metric('Vol. tertutup', calendarNumber(position.closed_quantity));
+    metric('Harga masuk rata-rata', calendarNumber(position.entry_price, 2));
+    metric('Harga penutupan rata-rata', calendarNumber(position.exit_price, 2));
+    card.append(metrics);
+    const times = element('div', undefined, 'pnl-position-times');
+    field(times, 'Dibuka · WIB', date(position.opened_at));
+    field(times, 'Ditutup · WIB', date(position.closed_at));
+    if (position.opened_at !== null) {
+      const minutes = Math.floor((timestamp(position.closed_at) - timestamp(position.opened_at)) / 60000);
+      const days = Math.floor(minutes / 1440), hours = Math.floor(minutes % 1440 / 60), remaining = minutes % 60;
+      field(times, 'Durasi', [days ? days+' hari' : '', hours ? hours+' jam' : '', remaining+' mnt'].filter(Boolean).join(' '));
+    }
+    card.append(times);
+    card.append(element('p', 'PNL sebelum fee '+signedMoney(position.realized_pnl_usdt)+' USDT · Komisi '+calendarNumber(position.commission_usdt)+' USDT', 'pnl-fees'));
+    card.append(element('p', 'Funding '+(position.funding_usdt === null ? 'belum dapat dipastikan' : signedMoney(position.funding_usdt)+' USDT')+
+      ' · Biaya asuransi '+(position.insurance_usdt === null ? 'belum dapat dipastikan' : signedMoney(position.insurance_usdt)+' USDT'), 'pnl-fees'));
+    if (!position.complete || net === null) card.append(notice('Rincian posisi belum lengkap. Total net belum dapat dipastikan.', 'warning'));
+    return card;
+  }
+  function renderCalendar() {
+    const data = calendarData(), today = wibDay(), startMonth = CALENDAR_START.slice(0, 7), currentMonth = today.slice(0, 7);
+    if (!calendarMonth || calendarMonth < startMonth || calendarMonth > currentMonth) calendarMonth = currentMonth;
+    if (!selectedDay || selectedDay.slice(0, 7) !== calendarMonth || selectedDay > today) selectedDay = calendarMonth === currentMonth ? today : calendarMonth+'-01';
+    const main = element('section', undefined, 'pnl-calendar');
+    const header = element('div', undefined, 'pnl-calendar-head'), heading = element('div', undefined, 'pnl-calendar-heading');
+    heading.append(element('span', '▦', 'pnl-calendar-icon'), element('h4', 'PNL Calendar'));
+    const navigation = element('div', undefined, 'pnl-month-navigation');
+    const previous = element('button', '‹'), next = element('button', '›');
+    previous.id = 'pnlPreviousMonth'; next.id = 'pnlNextMonth';
+    previous.setAttribute('aria-label', 'Bulan sebelumnya'); next.setAttribute('aria-label', 'Bulan berikutnya');
+    previous.disabled = calendarMonth <= startMonth; next.disabled = calendarMonth >= currentMonth;
+    previous.onclick = () => moveMonth(-1); next.onclick = () => moveMonth(1);
+    const label = element('strong', dayLabel(calendarMonth+'-01', { month: 'long', year: 'numeric' })); label.id = 'pnlMonth'; label.setAttribute('aria-live', 'polite');
+    navigation.append(previous, label, next); header.append(heading, navigation); main.append(header);
+    const summaries = element('div', undefined, 'pnl-summary');
+    const days = data?.days.filter(day => day.date.startsWith(calendarMonth)) ?? [];
+    const count = days.reduce((total, day) => total+day.closed_positions, 0);
+    const monthComplete = data?.complete === true && days.length > 0 && days.every(day => day.complete && day.pnl_usdt !== null);
+    const known = decimalTotal(days.filter(day => day.closed_positions > 0).map(day => day.known_pnl_usdt));
+    const hasAmounts = days.some(day => day.closed_positions > 0);
+    const pnl = element('div'); pnl.append(element('span', monthComplete ? 'PNL bulan ini · USDT' : 'PNL diketahui · USDT'), element('strong', monthComplete || hasAmounts ? signedMoney(known)+(monthComplete ? '' : ' *') : '—'));
+    const positions = element('div'); positions.append(element('span', 'Posisi ditutup'), element('strong', data && (data.complete || count > 0) ? String(count)+(data.complete ? '' : ' *') : '—'));
+    summaries.append(pnl, positions); main.append(summaries);
+    const good = data && ['READY', 'PARTIAL'].includes(data.status);
+    if (!good) {
+      const reasons = snapshot?.pnl_calendar?.incomplete_reasons;
+      const loading = Array.isArray(reasons) && reasons.some(reason => ['HISTORY_NOT_LOADED', 'HISTORY_LOADING'].includes(reason));
+      const unavailable = !online || !origin
+        ? 'Kalender PNL belum tersedia. Hubungkan worker untuk membaca riwayat Futures Binance sejak 1 Oktober 2026.'
+        : loading ? 'Riwayat Futures sedang dimuat sejak 1 Oktober 2026.'
+        : 'Kalender PNL belum tersedia dari Binance Futures sejak 1 Oktober 2026.';
+      main.append(notice(unavailable, 'warning'));
+    }
+    else {
+      main.append(element('p', 'Binance Futures · '+date(data.checked_at)+' WIB', 'pnl-source'));
+      if (!online || !fresh(data.checked_at)) main.append(notice('Data terakhir sudah lama atau worker tidak terjangkau. Riwayat ini belum diperbarui.', 'warning'));
+      if (!data.complete) main.append(notice('Riwayat parsial. Tanda * menunjukkan PNL dan jumlah posisi yang berhasil ditemukan; total akun belum dapat dipastikan. Hari tanpa data ditampilkan —.', 'warning'));
+    }
+    const weekdays = element('div', undefined, 'pnl-weekdays'); weekdays.setAttribute('aria-hidden', 'true');
+    for (const name of ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min']) weekdays.append(element('span', name));
+    const grid = element('div', undefined, 'pnl-grid'); grid.setAttribute('role', 'group'); grid.setAttribute('aria-label', 'Kalender PNL '+label.textContent);
+    const [year, month] = calendarMonth.split('-').map(Number), first = new Date(Date.UTC(year, month-1, 1));
+    const offset = (first.getUTCDay()+6)%7, length = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const byDay = new Map((data?.days ?? []).map(day => [day.date, day]));
+    for (let index = 0; index < Math.ceil((offset+length)/7)*7; index++) {
+      const dayNumber = index-offset+1;
+      if (dayNumber < 1 || dayNumber > length) { const empty = element('div', undefined, 'pnl-day-empty'); empty.setAttribute('aria-hidden', 'true'); grid.append(empty); continue; }
+      const key = calendarMonth+'-'+String(dayNumber).padStart(2, '0'), detail = byDay.get(key);
+      const knownDay = detail && (detail.pnl_usdt !== null || detail.closed_positions > 0);
+      const amount = detail?.pnl_usdt ?? (detail?.closed_positions > 0 ? detail.known_pnl_usdt : null);
+      const sign = knownDay && decimal(amount) ? Number(amount) : null;
+      const cell = element('button', undefined, 'pnl-day'+(sign > 0 ? ' profit' : sign < 0 ? ' loss' : ''));
+      cell.id = 'pnl-day-'+key; cell.dataset.date = key; cell.disabled = key < CALENDAR_START || key > today;
+      cell.tabIndex = key === selectedDay ? 0 : -1; cell.setAttribute('aria-pressed', String(key === selectedDay));
+      if (key === today) cell.setAttribute('aria-current', 'date');
+      const value = knownDay ? signedMoney(amount)+(detail.complete && data?.complete ? '' : '*') : '—';
+      cell.setAttribute('aria-label', dayLabel(key)+': '+value+' USDT'+(detail ? ', '+detail.closed_positions+' posisi ditutup'+(!detail.complete || !data?.complete ? ', data parsial' : '') : ', belum tersedia'));
+      cell.append(element('span', String(dayNumber), 'pnl-day-number'), element('b', key > today ? '' : value, 'pnl-day-value'));
+      const caption = key > today ? '' : detail?.closed_positions > 0 ? detail.closed_positions+' posisi' : detail?.complete && data?.complete ? '0 posisi' : '—';
+      cell.append(element('small', caption, 'pnl-day-count')); cell.onclick = () => chooseDay(key, true);
+      cell.addEventListener('keydown', event => {
+        const delta = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[event.key];
+        if (delta !== undefined) { event.preventDefault(); chooseDay(new Date(Date.parse(key+'T00:00:00Z')+delta*86400000).toISOString().slice(0, 10), true); }
+        else if (event.key === 'PageUp' || event.key === 'PageDown') { event.preventDefault(); moveMonth(event.key === 'PageUp' ? -1 : 1); document.getElementById('pnl-day-'+selectedDay)?.focus?.({ preventScroll: true }); }
+      });
+      grid.append(cell);
+    }
+    main.append(weekdays, grid, element('p', 'Hijau = profit · Merah = rugi · WIB · PNL posisi setelah fee, funding dan biaya asuransi yang dapat dipastikan.', 'pnl-legend'));
+    main.append(element('p', 'Riwayat direkonstruksi dari transaksi Futures Binance. PNL posisi dicatat pada tanggal posisi selesai ditutup.', 'pnl-method'));
     content.append(main);
-  }
-  function renderActivity() {
-    const activity = snapshot?.activity ?? [];
-    content.append(notice(online ? 'Aktivitas terbaru dari worker.' : 'Worker belum terjangkau; aktivitas yang tersimpan bukan pembaruan terkini.', online ? 'normal' : 'warning'));
-    for (const event of activity.slice(-80).reverse()) {
-      const row = element('article', undefined, 'dashboard-row');
-      row.append(element('small', date(event.at)), element('strong', event.agent+' · '+event.state), element('p', event.message)); content.append(row);
-    }
-    if (!activity.length) content.append(notice('Belum ada aktivitas worker.'));
-  }
-  function renderPositions() {
-    const history = snapshot?.position_history, main = section('RIWAYAT TRANSAKSI DARI BINANCE'); source(main, history);
-    main.append(notice('Daftar ini berisi fill Binance. Satu posisi bisa memiliki beberapa fill; data ini tidak menyimpulkan otomatis bahwa sebuah posisi sudah ditutup.'));
-    main.append(notice('Periode: '+date(history?.period_start)+' — '+date(history?.period_end)));
-    for (const fill of [...(history?.items ?? [])].sort((a, b) => (timestamp(b.time) ?? 0) - (timestamp(a.time) ?? 0)).slice(0, 100)) {
-      const row = element('article', undefined, 'dashboard-row');
-      row.append(element('strong', fill.symbol+' · '+fill.side+' · '+fill.position_side), element('small', date(fill.time)));
-      row.append(element('p', `Quantity ${number(fill.quantity, 8)} · Harga ${number(fill.price, 8)} · Realized PnL ${number(fill.realized_pnl)} USDT`));
-      row.append(element('p', `Komisi ${number(fill.commission, 8)} ${fill.commission_asset ?? '—'} · Order ${fill.order_id ?? '—'} · Fill ${fill.id ?? '—'}`)); main.append(row);
-    }
-    if (!history?.items?.length) main.append(notice(history?.status === 'AVAILABLE' ? 'Tidak ada fill Binance pada periode ini.' : history?.status === 'PARTIAL' ? 'Tidak ada fill dalam data yang berhasil dibaca; riwayat masih parsial.' : 'Riwayat Binance belum tersedia.'));
-    content.append(main);
+    const selected = element('section', undefined, 'pnl-day-detail');
+    selected.append(element('h4', dayLabel(selectedDay)));
+    const rows = (data?.positions ?? []).filter(position => position.close_date === selectedDay).sort((a, b) => timestamp(b.closed_at)-timestamp(a.closed_at));
+    for (const position of rows) selected.append(positionCard(position));
+    if (!rows.length) selected.append(notice(data?.complete && byDay.get(selectedDay)?.complete ? 'Tidak ada posisi yang ditutup pada tanggal ini.' : 'Belum ada posisi ditutup yang dapat dipastikan pada tanggal ini. Riwayat belum lengkap.', 'warning'));
+    content.append(selected);
+    if (!origin) content.append(renderConnection());
   }
   function paint() {
     paintStats();
@@ -253,8 +404,11 @@
       const note = content.querySelector('.dashboard-message'); if (note) note.textContent = message;
       return;
     }
+    const calendarFocus = view === 'calendar' && focused?.id?.startsWith('pnl-day-') ? focused.id : null;
+    panel.classList.toggle('calendar-panel', view === 'calendar');
     title.textContent = views[view]; content.replaceChildren();
-    ({ robot: renderRobot, staff: renderStaff, reports: renderReports, activity: renderActivity, positions: renderPositions })[view]();
+    ({ robot: renderRobot, calendar: renderCalendar })[view]();
+    if (calendarFocus) document.getElementById(calendarFocus)?.focus?.({ preventScroll: true });
   }
   async function request(path, method = 'GET', value) {
     const headers = { Authorization: 'Bearer '+token };
@@ -306,13 +460,13 @@
   function disconnect() {
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
     polling = false; saving = false; refreshRequested = false; online = false;
-    riskDraft = null; resetRiskOnRefresh = null;
+    riskDraft = null; resetRiskOnRefresh = null; calendarMonth = null; selectedDay = null;
     const field = document.getElementById('apiToken'); if (field) field.value = ''; publish();
   }
   menuToggle.addEventListener('click', () => { drawer.hidden = !drawer.hidden; menuToggle.setAttribute('aria-expanded', String(!drawer.hidden)); });
   drawer.querySelectorAll('[data-view]').forEach(button => button.addEventListener('click', () => {
     view = button.dataset.view; drawer.querySelectorAll('[data-view]').forEach(item => item.classList.toggle('active', item === button));
-    panel.hidden = false; drawer.hidden = true; menuToggle.setAttribute('aria-expanded', 'false'); paint();
+    panel.hidden = false; panel.scrollTop = 0; drawer.hidden = true; menuToggle.setAttribute('aria-expanded', 'false'); paint();
   }));
   document.getElementById('panelClose').addEventListener('click', () => { panel.hidden = true; });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) { publish(); paint(); poll(); } });

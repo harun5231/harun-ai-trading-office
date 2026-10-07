@@ -119,7 +119,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     mesh.castShadow = false; displayMeshes.push(mesh);
   }
   label([-5.35, 1.29, -8.60], 4.2, .55, ['GLOBAL MARKET / OPERATIONS', 'OFFICE STATUS'], '#8ce0e5');
-  label([4.30, 3.05, -9.07], 6.8, 1.25, ['HARUN AI TRADING OFFICE', 'RESEARCH · RISK · REVIEW'], '#d7c098', 0, '#2e4850');
+  label([4.30, 3.05, -9.07], 6.8, 1.25, ['HARUN TRADING OFFICE', 'RESEARCH · RISK · REVIEW'], '#d7c098', 0, '#2e4850');
 
   // Slender light rails hover over the work rows without enclosing the cutaway.
   for (const z of [-4.7, 1.1]) for (const x of [-6, 0, 6]) {
