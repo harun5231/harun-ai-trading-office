@@ -1,111 +1,84 @@
 # Pemeriksaan sebelum ROBOT ON pada VPS existing
 
-Adapter order terbaru tersimpan hanya di VPS. Source GitHub dan status
-`CONNECTED` atau `CONFIGURED` tidak membuktikan versi adapter yang berjalan,
-entry yang diterima Binance, maupun proteksi SL/TP. Pemeriksaan ini mengambil
-source tersamarkan dan fingerprint dari **container yang sedang berjalan**.
-Tidak ada import adapter, panggilan API, pengiriman order, perubahan settings,
-atau penghapusan file.
+Adapter produksi tersimpan di VPS. Source GitHub, health, dan label
+`CONNECTED`/`CONFIGURED` tidak membuktikan entry diterima, fill, atau proteksi
+SL/TP. Cocokkan source host dan container, journal, settings, serta bukti GET
+Binance sebelum menggunakan revisi alur.
 
-Adapter dengan fingerprint `74b1db1b51461af34d0d4f0ecc189d4876bc72a6e021a049f9dcd22c9dd3509c`
-sudah ditinjau dan memerlukan perbaikan. Gunakan
-[perbaikan VPS yang terarah](VPS_ORDER_FIX.md) untuk fingerprint tersebut;
-pemeriksaan di bawah tetap berlaku untuk source lain atau setelah deployment.
+Pertahankan ROBOT OFF melalui menu Office. Perbaikan harus diverifikasi di VPS
+lebih dahulu; publikasi GitHub dan cleanup source historis mengikuti bukti
+akhir. Adapter privat, financial journal, receipt, secret, backup, volume, dan
+order/posisi existing maupun manual harus dipertahankan.
 
-## Ambil bukti melalui Termius
+## Inspeksi source melalui Termius
 
-Pertahankan ROBOT OFF di Office selama pemeriksaan. Salin blok berikut:
+Collector yang sudah ada di checkout membaca source secara statis. Ia tidak
+mengimpor adapter, mengirim API request, mengubah settings, atau menghapus file.
+Jalankan dari Termius:
 
 ```bash
 cd /root/harun-ai-trading-office
 git --no-optional-locks status --short
 sha256sum worker/order_gateway.py
 docker compose -f compose.yaml ps
-(
-  set -euo pipefail
-  git fetch origin main
-  git show origin/main:deploy/inspect_vps_gateway.py |
-    docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S -
-)
+docker compose -f compose.yaml exec -T --user 10001:10001 worker python -I -B -S - < deploy/inspect_vps_gateway.py
 ```
 
-`git fetch` memperbarui referensi remote saja. Perintah ini tidak menjalankan
-`git pull`, updater, rebuild, restart, atau replace gateway. Gateway lokal,
-Dockerfile kustom, volume data, dan file untracked tetap dipertahankan.
+Blok ini tidak mengambil atau memasang source baru. Collector membaca `enabled`
+dengan SQLite read-only dan berhenti bila OFF tidak terbukti. Python memakai
+`-I -B -S`; gateway diparse sebagai AST, komentar dibuang, dan literal selain
+protokol publik disamarkan. Tidak ada pembacaan `.env`, credential environment,
+atau file secret. Jangan sertakan API key atau token saat membagikan output.
 
-Collector membaca `enabled` dari ledger dengan SQLite read-only dan menolak
-melanjutkan jika OFF tidak dapat dibuktikan. Python memakai `-I -B -S` agar
-inspeksi tidak memuat package startup atau menghasilkan bytecode. Source
-gateway diparse sebagai AST; komentar dibuang dan literal selain token protokol
-publik disamarkan. Tidak ada pembacaan `.env`, environment credential, atau file
-secret. Jangan sertakan nilai API key atau secret saat mengirim hasil.
+Output dibatasi 64 KiB dan memuat `robot_on:false`, `gateway.sha256`, source
+tersamarkan, serta `workflow_sha256`/`workflow_status`. Bandingkan hash gateway
+dengan host. Perbedaan menunjukkan source host/container belum sama; `MISSING`
+dapat menunjukkan image lama. Hash atau static inspection belum membuktikan
+perilaku exchange. `ROBOT_OFF_REQUIRED` berarti OFF belum teramati oleh collector.
 
-Output JSON memuat:
+## Aturan versi yang dipasang
 
-- `robot_on: false`: OFF teramati saat inspeksi; bukan perubahan settings.
-- `gateway.sha256`: hash file adapter di container. Bandingkan dengan hash host
-  yang dicetak oleh `sha256sum`. Perbedaan berarti kedua source belum identik.
-- `gateway.sanitized_source`: source yang bisa ditinjau tanpa menjalankan SDK.
-- `workflow_sha256` dan `workflow_status`: fingerprint file alur yang terpasang.
-  `MISSING` pada modul baru dapat menunjukkan image masih memakai versi lama.
-
-Output dibatasi 64 KiB. Jika muncul `ROBOT_OFF_REQUIRED`, matikan robot di Office
-dan ulangi pemeriksaan. Error lain menghentikan collector tanpa mencetak source
-mentah. Kirim output teks pemeriksaan untuk review versi yang sama dengan VPS.
-
-## Aturan yang harus dibuktikan dari versi terpasang
-
-| Bagian | Perilaku yang diperlukan |
+| Bagian | Perilaku yang harus dibuktikan |
 | --- | --- |
-| Kapasitas | Maksimum dua posisi bersamaan, termasuk manual dan carryover. Pending entry juga mencadangkan kapasitas. HYPEUSDT tidak boleh diambil alih. |
-| Kuota harian | Maksimum dua entry bot pada hari WIB dari first fill terverifikasi. Partial fill dihitung sekali; restart mempertahankan receipt. Posisi close tidak mengembalikan kuota hari itu. |
-| Screening | Minta sebanyak slot tersedia, satu atau dua coin. Analisis memakai chart Binance USD-M Futures 1h dan 15m. |
-| Pengganti | HOLD dan penolakan lokal `REJECTED` dengan kode `NET_RISK_REWARD_BELOW_2` atau `NET_RISK_REWARD_NOT_TARGET_2` tanpa plan/intent order berbagi maksimum tiga screening tambahan. Hanya putaran terakhir, sesuai slot; status penolakan dan journal dipertahankan. Kegagalan lain/unknown tidak diganti. |
-| Risiko | Target dapat diubah di Office. Quantity legal terbesar menghasilkan estimasi loss SL termasuk fee entry dan SL exit tidak melebihi target. Plan baru memakai `NET_1_TO_2_NEAREST_TICK`: TP tepat pada tick legal terdekat yang mencapai net RR 1:2; plan lama tanpa kebijakan ini tetap memerlukan net RR minimal dua. |
-| Konfigurasi exchange | Adapter memastikan CROSS dan leverage 75 pada symbol terpilih sebelum entry. Menyimpan nilai tersebut dalam intent saja belum mengubah konfigurasi Binance. |
-| Entry dan proteksi | LIMIT GTC LONG/SHORT memakai harga dan quantity intent; SL/TP lawan side, hanya mengurangi exposure bot. Plan baru memakai pemicu Terakhir (`CONTRACT_PRICE`); plan lama tanpa field tersebut tetap `MARK_PRICE`. Identitas order, basis pemicu, dan quantity terisi diverifikasi dari Binance. |
-| Outcome belum pasti | Tidak mengirim ulang entry otomatis setelah timeout/restart. Kegagalan proteksi dilaporkan, bukan ditelan atau dianggap berhasil. |
-| OFF | Tidak memulai request riset, submit, atau rekonsiliasi gateway berikutnya; tidak close/cancel posisi dan order. Request yang sudah terkirim boleh selesai dan dijournal. Polling saldo/posisi tetap tersedia. |
+| Kapasitas | Maksimal dua occupancy; gabungan symbol posisi manual/carryover, pending entry manual/bot, dan reservasi intent dihitung sekali. Reducing exits bukan entry. HYPEUSDT manual-only; semua order manual tetap utuh. |
+| Kuota WIB | Maksimal dua first fill bot per hari UTC+7; pending bot mencadangkan kuota. Partial/additional fill pada entry sama tetap satu receipt. Close tidak mengembalikan kuota hari itu. |
+| Screening | Satu atau dua coin sesuai slot, USD-M USDT perpetual aktif, tanpa seen/exposed/pending/manual-only symbols. Analisis memakai candle Futures fresh 15m/1h serta commission per symbol. |
+| Pengganti | HOLD dan RR di bawah dua sebelum plan/intent berbagi maksimal tiga putaran pengganti. Hanya putaran terakhir eligible. Terminal HTTP 422 satu attempts, tanpa output/plan/intent dapat mengikuti batas sama. Unknown tidak memberi izin replay/reset. |
+| TP V3 | Entry/SL model dipertahankan; declared RR dan jarak harga minimal 1:2. TP di atas dua dinormalisasi ke net 1:2 pada tick legal terdekat setelah fee/reserve, dengan TP model asli dan bukti normalisasi tersimpan. |
+| Risk V3 | Target editable pada menu existing, default 5 USDT, positif sampai 100. Quantity legal terbesar memenuhi planned loss yang memasukkan taker fee entry/SL dan adverse exit reserve 0,5%. Cadangan TP juga masuk net reward. Gap/slippage lebih besar, funding, fee berubah, atau liquidation dapat melampaui loss aktual target. |
+| Config/entry | Akun one-way/single-asset, margin/filters/bracket valid; CROSS dan leverage 75 dibaca ulang. Entry LIMIT GTC memakai harga, quantity dan client ID intent, tanpa mengubah global config/order manual. |
+| TP/SL | Actual fill termasuk partial mendapat SL `STOP_MARKET` lalu TP `TAKE_PROFIT_MARKET`, Terakhir (`CONTRACT_PRICE`) untuk plan baru. Exit `BOTH`, reduce-only, 100% exposure bot yang masih terbuka. Kedua active algos harus dibuktikan GET sebelum `POSITION_PROTECTED`. |
+| Intent lama | Payload, provenance, harga, quantity, trigger dan cost model historis tetap utuh; tidak dinormalisasi ulang atau diberi ID baru untuk replay. |
+| Restart | Operation tetap v9. Cached COMPLETE hanya dapat diselesaikan tanpa POST bila request/job/hash/target cocok dan metadata waktu chart asli masih fresh; missing/stale context ditolak lokal tanpa provider replay. |
+| OFF | Setiap provider POST dan Binance mutation baru diblokir tepat pada transport, termasuk mutation lanjutan callback. Request yang sudah terkirim boleh selesai/dijournal; GET akun/status berjalan. OFF tidak cancel/close existing/manual orders. |
 
-Collector tidak menghasilkan verdict kesiapan order nyata. Setelah static review,
-bukti GET order entry, algo SL/TP, konfigurasi symbol, dan fill yang sudah ada
-masih diperlukan untuk memastikan Binance menerima parameter yang benar. Tidak
-perlu membuat order baru hanya untuk menjalankan collector.
+Saat OFF, pending entry masih dapat fill di Binance tanpa pemasangan TP/SL baru
+oleh bot. Entry/SL/TP adalah request terpisah; polling sekitar 45 detik dan
+latency request berarti proteksi tidak atomik dengan fill.
 
-## Perbaikan coordinator pada repository
+## Status dan bukti exchange
 
-Antrean hasil screening kini tetap tersimpan ketika kapasitas menyusut sementara.
-Antrean v9 pada hari yang sama yang sebelumnya salah ditandai COMPLETE dapat
-diteruskan sesuai anggaran awal dan batas bersama putaran pengganti; cycle yang benar-benar habis
-tidak dibuka kembali. Setup siap dari seluruh cycle mencadangkan slot sebelum
-analisis tambahan.
+```bash
+cd /root/harun-ai-trading-office
+docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker.robot_status
+docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker diagnostics
+docker compose -f compose.yaml exec -T --user 10001:10001 worker python -B -m worker binance-check
+```
 
-Coin yang dipastikan tidak lagi ada di katalog Futures ditolak dan dilewati
-secara atomik, sehingga coin valid berikutnya tidak tertahan. Gangguan GET
-katalog atau fee sementara tetap dapat dicoba kembali tanpa claim berbayar.
+CLI ini hanya membaca. Cocokkan status fresh, OFF, account/config, occupancy,
+receipt harian, pending entries, dan kode aman. Jangan memulai order nyata untuk
+membuktikan collector. Untuk order existing, review GET exact client/order ID,
+regular/algo open orders, complete order/trade histories, positions, ownership,
+trigger, working type, quantity dan protection status.
 
-OFF diperiksa sebelum setiap GET riset berikutnya, termasuk chart dan fee,
-dalam context coordinator. Polling akun pada thread lain tetap berjalan. Respons
-analisis berbayar yang sudah diterima tetap dijournal memakai rules yang telah
-dibaca jika OFF terjadi saat refresh. Pemeriksaan RR parser memakai perbandingan
-rasional eksak agar hasil tidak bergantung pada presisi Decimal.
+`ORDER_OUTCOME_UNKNOWN` bukan bukti rejection Binance. Posisi nol belum
+membuktikan tidak ada LIMIT pending; ACK bukan bukti fill/proteksi. Lookup
+`-2013` sendirian belum membuktikan order tidak pernah ada. Jangan menghapus
+claim, mereset attempts/counter, memakai operation baru, atau memaksa submit
+ulang. Unknown request/order/protection memblokir pekerjaan baru sampai bukti
+terverifikasi; source patch dan build lulus tidak menjadikannya sukses.
 
-Guard riset tidak menginterupsi callback `submit`/`reconcile` yang sudah dimulai:
-adapter mungkin sedang menyelesaikan proteksi sesudah entry. Callback tersebut
-dapat menyelesaikan request-nya dan dijournal; OFF mencegah pemanggilan callback
-berikutnya. Exception adapter tetap menghasilkan outcome belum pasti, tanpa
-reset atau replay entry otomatis.
-
-Pembaruan gabungan enam file pada VPS existing telah diverifikasi pada
-7 Oktober 2026: package, patch gateway, dan fingerprint source host/container
-cocok; worker healthy setelah restart 10:04 UTC. ETH lama tetap memakai
-`MARK_PRICE`, SL 2585 / TP 2730, quantity 0.181, dan satu receipt. Snapshot bot
-10:03:37 UTC mendahului restart, sehingga belum membuktikan putaran pengganti
-baru atau order baru. Observasi cycle, kandidat, serta order setelah restart
-tetap diperlukan.
-
-Untuk instalasi lain atau perubahan berikutnya, bandingkan fingerprint dahulu
-dan gunakan update terarah yang mempertahankan adapter lokal; jangan memakai
-pull/reset atau updater standar untuk menggantinya dengan gateway bawaan.
-Rincian kontrak adapter ada di
-[ORDER_INTEGRATION.md](ORDER_INTEGRATION.md).
+Diagnostics tidak mencetak raw provider output, signed query, exception mentah,
+atau secret. Metadata `CONFIGURED` tetap hanya konfigurasi lokal. Lihat
+[kontrak adapter](ORDER_INTEGRATION.md), [alur lengkap](ROBOT_WORKFLOW.md), dan
+[panduan Termius](TERMIUS_24_7.md).

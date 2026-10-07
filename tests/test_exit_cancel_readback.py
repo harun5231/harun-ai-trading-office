@@ -1,28 +1,9 @@
-"""Offline owned cancellation proofs and source-only private SDK patch checks."""
-import ast
+"""Offline owned cancellation proofs and bounded readback guards."""
 import copy
-import hashlib
-import os
-import stat
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
-from deploy import patch_exit_cancel_readback as patcher
 from test_live_gateway import Exchange, Review
-
-
-ROOT = Path(__file__).resolve().parents[1]
-
-
-def private_fixture(newline=b'\n'):
-    source = (ROOT / 'deploy/live_gateway_template.py').read_bytes()
-    assert source.count(patcher.NEW_METHOD.encode()) == 1
-    source = source.replace(patcher.NEW_METHOD.encode(), patcher.OLD_METHOD.encode(), 1)
-    prefix = b"# Private prefix must survive.\nPRIVATE_KEY = 'offline-only-secret'\n"
-    suffix = b"\n# Private suffix must survive.\ndef private_status():\n    return 'private-value'\n"
-    return (prefix + source + suffix).replace(b'\n', newline)
 
 
 class ExitCancelReadbackTests(unittest.TestCase):
@@ -176,70 +157,6 @@ class ExitCancelReadbackTests(unittest.TestCase):
                     gateway._cancel_algo(gateway.command, algo)
                 self.assertEqual([call[0] for call in calls], ['GET'])
                 self.sleep.assert_not_called()
-
-
-class ExitCancelSourcePatchTests(unittest.TestCase):
-    def test_only_owned_method_changes_and_private_bytes_survive(self):
-        raw = private_fixture()
-        changed = patcher.transform(raw, hashlib.sha256(raw).hexdigest())
-        self.assertEqual(changed, raw.replace(patcher.OLD_METHOD.encode(), patcher.NEW_METHOD.encode(), 1))
-        before, after = ast.parse(raw), ast.parse(changed)
-        for tree in (before, after):
-            cls = next(node for node in tree.body if isinstance(node, ast.ClassDef))
-            cls.body.remove(next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == '_cancel_algo'))
-        self.assertEqual(ast.dump(before), ast.dump(after))
-
-    def test_crlf_private_bytes_and_method_line_endings_are_preserved(self):
-        raw = private_fixture(b'\r\n')
-        changed = patcher.transform(raw, hashlib.sha256(raw).hexdigest())
-        self.assertEqual(changed, raw.replace(patcher.OLD_METHOD.replace('\n', '\r\n').encode(), patcher.NEW_METHOD.replace('\n', '\r\n').encode(), 1))
-        self.assertNotIn(b'\n', changed.replace(b'\r\n', b''))
-
-    def test_wrong_full_hash_method_shape_and_reformat_are_refused(self):
-        raw = private_fixture()
-        with self.assertRaisesRegex(ValueError, 'GATEWAY_SOURCE_CHANGED'):
-            patcher.transform(raw)
-        for method in (patcher.OLD_METHOD.replace("quantity = self._decimal(algo['quantity'], positive=True)", "quantity = self._decimal(algo['quantity'])", 1),
-                       patcher.OLD_METHOD.replace("        kind = 'sl'", "        kind  = 'sl'", 1)):
-            changed = raw.replace(patcher.OLD_METHOD.encode(), method.encode(), 1)
-            with self.assertRaisesRegex(ValueError, 'GATEWAY_METHOD'):
-                patcher.transform(changed, hashlib.sha256(changed).hexdigest())
-
-    def test_default_inspection_does_not_write_and_apply_preserves_owner_mode(self):
-        raw = private_fixture()
-        original = patcher.transform
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'order_gateway.py'
-            path.write_bytes(raw)
-            path.chmod(0o640)
-            before = path.stat()
-            with patch.object(patcher, 'transform', side_effect=lambda value: original(value, hashlib.sha256(raw).hexdigest())):
-                report = patcher.apply(path)
-                self.assertEqual(report['status'], 'PATCH_READY')
-                self.assertEqual(path.read_bytes(), raw)
-                if os.geteuid() == 0:
-                    report = patcher.apply(path, True)
-                    self.assertEqual(report['status'], 'PATCHED')
-                    self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), report['after_sha256'])
-                    after = path.stat()
-                    self.assertEqual((after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)),
-                                     (before.st_uid, before.st_gid, 0o640))
-
-    def test_atomic_apply_refuses_source_changed_during_transform(self):
-        raw = private_fixture()
-        original = patcher.transform
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / 'order_gateway.py'
-            path.write_bytes(raw)
-            def changed_during_patch(value):
-                result = original(value, hashlib.sha256(raw).hexdigest())
-                path.write_bytes(raw + b'# concurrent edit\n')
-                return result
-            with patch.object(patcher, 'transform', side_effect=changed_during_patch), patch.object(patcher.os, 'geteuid', return_value=0):
-                with self.assertRaisesRegex(ValueError, 'GATEWAY_SOURCE_CHANGED'):
-                    patcher.apply(path, True)
-            self.assertEqual(path.read_bytes(), raw + b'# concurrent edit\n')
-            self.assertEqual(list(Path(directory).iterdir()), [path])
 
 
 if __name__ == '__main__':

@@ -82,11 +82,15 @@ class RobotStore:
     def entries(self, today):
         return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?', (today,)).fetchone()[0]
 
-    def available_slots(self, running, symbols, today):
+    def available_slots(self, running, symbols, today, *, pending_symbols=()):
         """One capacity rule for submission, screening, and read-only Office."""
         active=list(self.db.execute("SELECT symbol,state FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
         pending=sum(row['state']=='ENTRY_PENDING' for row in active)
-        unrepresented=sum(row['symbol'] not in symbols for row in active)
+        # A symbol already running or present in Binance open entry orders is
+        # counted once, even when the same bot intent also reserves that symbol.
+        represented=set(symbols)
+        reserved=set(pending_symbols)|{row['symbol'] for row in active}
+        unrepresented=len(reserved-represented)
         return slots(running,self.entries(today),pending=pending,unrepresented=unrepresented)
 
     def results(self, cycle):
@@ -112,7 +116,8 @@ class RobotStore:
         value.update(self.settings(), bot_entries_today=self.entries(today), execution_gateway=OrderGateway().status())
         running=value.get('running_positions');symbols=value.get('running_symbols')
         if type(running) is int and running>=0 and isinstance(symbols,list) and not value.get('account_failure_code'):
-            value['available_slots']=self.available_slots(running,symbols,today)
+            value['available_slots']=self.available_slots(running,symbols,today,
+                pending_symbols=value.get('open_entry_symbols') or ())
         if not value['robot_on']: value.update(bot_status='OFF', wait_reason='ROBOT_OFF')
         row = self.db.execute('SELECT symbol,status,failure_code FROM robot_candidates ORDER BY rowid DESC LIMIT 1').fetchone()
         value['last_decision'] = dict(row) if row else None
@@ -170,8 +175,10 @@ class RobotStore:
         account = value['account']
         if account.get('status') != 'CONNECTED': return
         running = [row['symbol'] for row in account['positions']]
+        pending_symbols=account.get('open_entry_symbols') or ()
         summary = dict(running_positions=account['active_positions'], running_symbols=running,
-            manual_exposure=sorted(set(running)), available_slots=self.available_slots(account['active_positions'],running,day()),
+            open_entry_symbols=list(pending_symbols),manual_exposure=sorted(set(running)),
+            available_slots=self.available_slots(account['active_positions'],running,day(),pending_symbols=pending_symbols),
             usdt_wallet_balance=account['usdt_wallet_balance'], usdt_available_balance=account['usdt_available_balance'],
             account_checked_at=account['checked_at'], **{key: account[key] for key in ('_account_generation', '_account_revision') if key in account})
         self.report_account(summary)

@@ -78,7 +78,7 @@ class ProviderTests(unittest.TestCase):
         self.client().ask('analysis', ANALYSIS, SETUP_SCHEMA, lambda value: setup(value, 'BTCUSDT'), context)
         body = self.calls[0][3]
         expected = ('Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\n'
-                    'Tentukan !\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar.\nRISK REWARD 1:2')
+                    'Tentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar.\nRISK REWARD 1:2')
         self.assertEqual(body['prompt'].encode('utf-8'), expected.encode('utf-8'))
         self.assertEqual(body['prompt'], ANALYSIS);self.assertNotIn('Ukuran posisi',body['prompt'])
         self.assertNotIn('5 usdt',body['prompt'])
@@ -89,7 +89,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'], '10')
         self.assertEqual(context['risk_constraints']['position_sizing_contract'], SIZING_CONTRACT.replace('5 USDT', '10 USDT'))
         self.assertEqual(context['contract_rules']['stepSize'], str(rules.step))
-        self.assertEqual(context['risk_constraints']['reward_risk_basis'],'NET_AFTER_ENTRY_AND_EXIT_FEES')
+        self.assertEqual(context['risk_constraints']['reward_risk_basis'],'NET_AFTER_ENTRY_EXIT_FEES_AND_ADVERSE_EXIT_RESERVE')
         self.assertEqual(context['risk_constraints']['fee_symbol'],'BTCUSDT')
         self.assertEqual(context['risk_constraints']['fee_source'],'BINANCE_FUTURES_COMMISSION_RATE')
         for field in ('entry_fee_rate','sl_exit_fee_rate','tp_exit_fee_rate'):

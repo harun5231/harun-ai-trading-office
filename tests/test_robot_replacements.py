@@ -7,6 +7,7 @@ import test_order_pipeline as pipeline
 import test_slot_resume_pipeline as slot_pipeline
 from worker.core import D, Review, day, now
 from worker.account_state import SCREENING, SCREENING_ONE
+from worker.prompts import REPLACEMENT_SCREENING
 
 
 class RobotReplacementTests(unittest.TestCase):
@@ -17,6 +18,14 @@ class RobotReplacementTests(unittest.TestCase):
         self.addCleanup(fixture.doCleanups)
         fixture.account.maker_fee = '0.000200'
         fixture.account.taker_fee = '0.000500'
+        transport=fixture.transport
+        def local_rr_reply(*args,**kwargs):
+            status,headers,value=transport(*args,**kwargs)
+            output=value['output']
+            if 'risk_reward' in output and output['risk_reward']==2 and output['side']!='HOLD':
+                output['risk_reward']=D('1.99')
+            return status,headers,value
+        fixture.transport=local_rr_reply;fixture.make()
         return fixture
 
     def rejected_one(self):
@@ -25,7 +34,7 @@ class RobotReplacementTests(unittest.TestCase):
         fixture.screens = [['BTCUSDT'], ['SOLUSDT']]
         fixture.on()
         self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
-        self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
         return fixture
 
     def candidate(self, fixture, symbol):
@@ -33,39 +42,29 @@ class RobotReplacementTests(unittest.TestCase):
             'SELECT * FROM robot_candidates WHERE symbol=? ORDER BY rowid DESC LIMIT 1',
             (symbol,)).fetchone()
 
-    def test_far_tp_is_replaced_before_entry_and_next_coin_uses_net_target(self):
-        fixture = self.fixture()
-        fixture.connected()
-        fixture.account.position('HYPEUSDT', '4.16')
-        fixture.screens = [['BTCUSDT'], ['SOLUSDT']]
-        fixture.on()
-        fixture.robot.tick()
-        with patch.dict(pipeline.GOOD, take_profit=110, risk_reward=5):
-            self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_NOT_TARGET_2')
-        rejected = dict(self.candidate(fixture, 'BTCUSDT'))
-        self.assertIsNone(rejected['plan'])
-        self.assertEqual(fixture.gateway.submissions, [])
-        fixture.restart()
-        self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
-        with patch.dict(pipeline.GOOD, take_profit=D('104.31'), risk_reward=D('2.155')):
-            self.assertEqual(fixture.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
-        self.assertEqual(fixture.robot.tick()['bot_status'], 'ENTRY_PENDING')
-        self.assertEqual(dict(self.candidate(fixture, 'BTCUSDT')), rejected)
-        self.assertEqual(len(fixture.gateway.submissions), 1)
-        intent = fixture.gateway.submissions[0]
-        self.assertEqual(intent['symbol'], 'SOLUSDT')
-        self.assertEqual(intent['protection']['take_profit'], '104.31')
-        self.assertEqual(intent['reward_risk_policy'], 'NET_1_TO_2_NEAREST_TICK')
-        self.assertEqual(intent['tp_tick_size'], '0.01')
-        self.assertEqual(intent['protection']['working_type'], 'CONTRACT_PRICE')
+    def test_model_far_tp_is_audited_and_normalized_without_replacement(self):
+        fixture=self.fixture();fixture.connected();fixture.account.position('HYPEUSDT','4.16')
+        fixture.screens=[['BTCUSDT']];fixture.on();fixture.robot.tick()
+        with patch.dict(pipeline.GOOD,take_profit=110,risk_reward=5):
+            self.assertEqual(fixture.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
+        plan=json.loads(self.candidate(fixture,'BTCUSDT')['plan'])
+        self.assertEqual(plan['tp_normalization']['model_tp'],'110')
+        self.assertEqual(fixture.robot.tick()['bot_status'],'ENTRY_PENDING')
+        intent=fixture.gateway.submissions[0]
+        self.assertEqual(intent['symbol'],'BTCUSDT')
+        self.assertEqual(intent['protection']['take_profit'],plan['tp'])
+        self.assertNotEqual(plan['tp'],'110')
+        self.assertEqual(intent['reward_risk_policy'],'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE')
+        self.assertEqual(fixture.screen_counts(),[1])
+        self.assertEqual(json.loads(fixture.current_cycle()[0]['data'])['replacements'],0)
 
-    def test_far_tp_and_hold_share_three_round_cap_after_restart(self):
+    def test_low_declared_rr_and_hold_share_three_round_cap_after_restart(self):
         fixture = self.fixture()
         fixture.account.position('HYPEUSDT', '4.16')
         fixture.screens = [['BTCUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['ADAUSDT']]
         fixture.decisions = dict(SOLUSDT='HOLD', ADAUSDT='HOLD')
         fixture.on()
-        with patch.dict(pipeline.GOOD, take_profit=110, risk_reward=5):
+        with patch.dict(pipeline.GOOD, take_profit=110, risk_reward=D("1.99")):
             fixture.ticks(4)
             fixture.restart()
             fixture.ticks(8)
@@ -73,8 +72,8 @@ class RobotReplacementTests(unittest.TestCase):
         self.assertEqual((row['state'], data['replacements']), ('COMPLETE', 3))
         self.assertEqual(fixture.screen_counts(), [1, 1, 1, 1])
         reasons = {r['symbol']: r['failure_code'] for r in fixture.store.results(row['id'])}
-        self.assertEqual(reasons['BTCUSDT'], 'NET_RISK_REWARD_NOT_TARGET_2')
-        self.assertEqual(reasons['BNBUSDT'], 'NET_RISK_REWARD_NOT_TARGET_2')
+        self.assertEqual(reasons['BTCUSDT'], 'RISK_REWARD_BELOW_2')
+        self.assertEqual(reasons['BNBUSDT'], 'RISK_REWARD_BELOW_2')
         self.assertEqual(fixture.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 0)
         count = len(fixture.calls)
         self.assertEqual(fixture.ticks(3)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
@@ -92,13 +91,13 @@ class RobotReplacementTests(unittest.TestCase):
                 self.assertNotIn('message_history', fixture.calls[0])
                 btc = dict(self.candidate(fixture, 'BTCUSDT'))
                 self.assertEqual((btc['status'], btc['failure_code'], btc['plan']),
-                                 ('REJECTED', 'NET_RISK_REWARD_BELOW_2', None))
+                                 ('REJECTED', 'RISK_REWARD_BELOW_2', None))
                 self.assertEqual(self.candidate(fixture, 'ETHUSDT')['status'],
                                  'REJECTED' if eth_decision == 'LONG' else 'HOLD')
                 self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
                 self.assertEqual(fixture.screen_counts(), [2, 2])
                 replacement = fixture.calls[-1]
-                self.assertEqual(replacement['prompt'], SCREENING)
+                self.assertEqual(replacement['prompt'], REPLACEMENT_SCREENING.format(count=2))
                 context = json.loads(replacement['message_history'][0]['content'])
                 self.assertEqual(context['requested_count'], 2)
                 self.assertEqual(context['excluded_symbols'], ['BTCUSDT', 'ETHUSDT', 'HYPEUSDT'])
@@ -119,7 +118,7 @@ class RobotReplacementTests(unittest.TestCase):
         fixture.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]
         fixture.on()
         fixture.robot.tick()
-        self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
         with patch.dict(pipeline.GOOD, take_profit=D("104.31"), risk_reward=D("2.155")):
             self.assertEqual(fixture.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
         # Default unimplemented dispatch keeps the ready slot reserved but permits
@@ -162,7 +161,7 @@ class RobotReplacementTests(unittest.TestCase):
                 fixture.seed_one()
                 fixture.screens = [['BTCUSDT'], ['SOLUSDT']]
                 fixture.robot.tick()
-                self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+                self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
                 rejected = dict(self.candidate(fixture, 'BTCUSDT'))
                 fixture.ledger.db.execute('UPDATE robot_cycles SET state=? WHERE id=?', (state, fixture.new))
                 count = len(fixture.calls)
@@ -174,7 +173,7 @@ class RobotReplacementTests(unittest.TestCase):
                 self.assertEqual(initial['prompt'], SCREENING_ONE)
                 self.assertNotIn('message_history', initial)
                 replacement = fixture.calls[-1]
-                self.assertEqual(replacement['prompt'], SCREENING_ONE)
+                self.assertEqual(replacement['prompt'], REPLACEMENT_SCREENING.format(count=1))
                 context = json.loads(replacement['message_history'][0]['content'])
                 self.assertEqual(context['requested_count'], 1)
                 # ETH belongs to the old cycle, so its active order must be
@@ -196,7 +195,7 @@ class RobotReplacementTests(unittest.TestCase):
         fixture.seed_one()
         fixture.screens = [['BTCUSDT'], ['SOLUSDT']]
         fixture.robot.tick()
-        self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
         fixture.fill('ETHUSDT')
         self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
         self.assertEqual(fixture.store.entries(day()), 1)
@@ -225,7 +224,7 @@ class RobotReplacementTests(unittest.TestCase):
                     state = 'REJECTED' if mutation == 'rejected_intent' else 'NEEDS_REVIEW'
                     fixture.ledger.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
                         (row['id'], row['id'], row['symbol'], state, '{}', None,
-                         'NET_RISK_REWARD_BELOW_2', now(), now()))
+                         'RISK_REWARD_BELOW_2', now(), now()))
                 self.assertFalse(fixture.robot.replaceable_result(self.candidate(fixture, 'BTCUSDT')))
                 count = len(fixture.calls)
                 fixture.restart()
@@ -257,7 +256,7 @@ class RobotReplacementTests(unittest.TestCase):
     def test_new_technical_rejection_does_not_replace_historical_fee_rejection(self):
         fixture = self.rejected_one()
         self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
-        with patch('worker.robot.risk_check', side_effect=Review('INVALID_PRICE_FILTER')):
+        with patch.dict(pipeline.GOOD,risk_reward=D('2.155')), patch('worker.robot.risk_check', side_effect=Review('INVALID_PRICE_FILTER')):
             self.assertEqual(fixture.robot.tick()['failure_code'], 'INVALID_PRICE_FILTER')
         count = len(fixture.calls)
         fixture.ticks(4)
@@ -265,7 +264,7 @@ class RobotReplacementTests(unittest.TestCase):
         self.assertEqual(fixture.screen_counts(), [1, 1])
         row, data = fixture.current_cycle()
         self.assertEqual((row['state'], data['replacements']), ('COMPLETE', 1))
-        self.assertEqual(self.candidate(fixture, 'BTCUSDT')['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(self.candidate(fixture, 'BTCUSDT')['failure_code'], 'RISK_REWARD_BELOW_2')
         self.assertEqual(self.candidate(fixture, 'SOLUSDT')['failure_code'], 'INVALID_PRICE_FILTER')
 
     def test_provider_repeating_excluded_coin_creates_no_order_or_extra_round(self):

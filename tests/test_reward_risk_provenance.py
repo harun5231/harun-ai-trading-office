@@ -11,7 +11,8 @@ from unittest.mock import patch
 
 from support import Account, FakeMarket, RULES
 from worker.analysis import analysis_context
-from worker.core import D, Ledger, Review, Signal, REWARD_RISK_POLICY, day, risk_check, target_reward_risk_tp
+from worker.core import (D, Ledger, Review, Signal, REWARD_RISK_POLICY,
+    NORMALIZED_REWARD_RISK_POLICY, RISK_MODEL, day, risk_check, target_reward_risk_tp)
 from worker.neuroapi import NeuroAPI, SETUP_SCHEMA, setup
 from worker.order_gateway import build_intent
 from worker.prompts import ANALYSIS
@@ -162,12 +163,15 @@ class RewardRiskProvenanceTests(unittest.TestCase):
         account.taker_fee = '0.0005'
         context, _ = analysis_context(FakeMarket(), 'BTCUSDT', '5', account)
         constraints = context['risk_constraints']
-        self.assertEqual(constraints['reward_risk_policy'], REWARD_RISK_POLICY)
+        self.assertEqual(constraints['reward_risk_policy'], NORMALIZED_REWARD_RISK_POLICY)
+        self.assertEqual(constraints['risk_model'], RISK_MODEL)
+        self.assertEqual(constraints['exit_slippage_rate'], '0.005')
         self.assertEqual(constraints['target_actual_reward_risk'], 2)
         self.assertEqual(constraints['take_profit_tick_rounding'], {'LONG': 'CEILING', 'SHORT': 'FLOOR'})
-        self.assertIn('(E*(1+f)+2*L)/(1-f)', constraints['take_profit_contract'])
-        self.assertIn('(E*(1-f)-2*L)/(1+f)', constraints['take_profit_contract'])
-        self.assertIn('rejects noncanonical TP without rewriting model prices', constraints['position_sizing_contract'])
+        self.assertIn('(E*(1+f)+2*L)/((1-a)*(1-f))', constraints['take_profit_contract'])
+        self.assertIn('(E*(1-f)-2*L)/((1+a)*(1+f))', constraints['take_profit_contract'])
+        self.assertIn('Preserve model Entry, TP, and SL', constraints['position_sizing_contract'])
+        self.assertIn('normalizes the final order TP to net 1:2', constraints['position_sizing_contract'])
         self.assertEqual(ANALYSIS, prompt)
         self.assertEqual(SETUP_SCHEMA, schema)
 

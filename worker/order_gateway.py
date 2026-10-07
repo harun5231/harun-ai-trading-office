@@ -65,7 +65,7 @@ def build_intent(plan, operation):
             observed_at=plan['fee_observed_at'],taker_rate=plan['entry_fee_rate']),
         excluded_costs=plan['excluded_costs'],
         evidence_sha256=plan['provenance']['payload_sha256'])
-    if 'reward_risk_policy' in plan:
+    if 'reward_risk_policy' in plan or 'risk_model' in plan:
         from .core import Rules, validate_reward_risk_policy
         from dataclasses import fields
         try:
@@ -74,9 +74,21 @@ def build_intent(plan, operation):
                 raise ValueError
             rules = Rules(**{key: (D(value) if isinstance(value, str) and
                 key not in ('fee_source', 'fee_symbol') else value) for key, value in sizing.items()})
-            validate_reward_risk_policy(plan, rules)
+            if 'risk_model' in plan:
+                from .core import validate_normalized_plan
+                validate_normalized_plan(plan, rules, check_fresh=False)
+            else:
+                validate_reward_risk_policy(plan, rules)
             intent['reward_risk_policy'] = plan['reward_risk_policy']
             intent['tp_tick_size'] = format(number(rules.tick), 'f')
+            if 'risk_model' in plan:
+                from copy import deepcopy
+                intent['excluded_costs'] = deepcopy(plan['excluded_costs'])
+                for key in ('risk_model', 'exit_slippage_rate', 'entry_slippage_rate',
+                            'sl_slippage_usdt', 'tp_slippage_usdt',
+                            'sl_execution_price', 'tp_execution_price',
+                            'cost_evidence', 'tp_normalization'):
+                    intent[key] = deepcopy(plan[key])
         except Exception:
             raise Review('INVALID_ORDER_CONTRACT') from None
     return intent

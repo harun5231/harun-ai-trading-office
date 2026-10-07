@@ -7,8 +7,15 @@ volume `harun-office_worker_data` dipertahankan.
 
 ## Update instalasi existing
 
-Setelah perubahan digabungkan ke `main`, pilih ROBOT OFF di Office lalu jalankan
-di Termius:
+Untuk VPS dengan adapter produksi privat pada `worker/order_gateway.py`, ikuti
+[panduan Termius](TERMIUS_24_7.md) dan package terarah yang mempertahankan SDK.
+Revisi alur diverifikasi di VPS saat OFF sebelum publikasi GitHub. Jangan
+menjalankan pull/reset/updater standar yang menimpa adapter lokal; backup source,
+image, journal, secret, dan volume tetap dipertahankan.
+
+Blok berikut hanya untuk instalasi standar yang tidak memiliki gateway kustom
+atau perubahan deployment lokal. Setelah perubahan digabungkan ke `main`,
+pilih ROBOT OFF di Office lalu jalankan di Termius:
 
 ```sh
 cd /root/harun-ai-trading-office
@@ -20,8 +27,9 @@ git log -1 --oneline &&
 bash deploy/update-api.sh
 ```
 
-Jika Git menolak karena perubahan lokal, rekonsiliasi file tersebut dahulu.
-Script build sebelum menghentikan service, menunggu request berjalan menyimpan
+Jika Git menolak karena perubahan lokal, hentikan update dan cocokkan source
+sebelum menentukan deployment yang sesuai. Script build sebelum menghentikan
+service, menunggu request berjalan menyimpan
 hasil, lalu mengganti worker dan proxy dengan volume serta secret existing.
 Build Docker tidak menerbitkan frontend; GitHub Pages memakai source `main`
 dan deployment Pages tersendiri.

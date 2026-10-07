@@ -152,14 +152,14 @@ class SlotResumePipelineTests(fixture.OrderPipelineTests):
         self.assertEqual(self.screens_after(),[1]); self.assertEqual(len(self.calls)-self.initial_calls,2)
         self.assertEqual(self.ledger.db.execute("SELECT state FROM api_requests WHERE operation=?",(self.new+':analysis-v9:BTCUSDT',)).fetchone()[0],'COMPLETE')
         self.preserve_old()
-    def test_fee_rejected_setup_selects_one_replacement_without_replaying_old_entry(self):
+    def test_declared_rr_rejected_setup_selects_one_replacement_without_replaying_old_entry(self):
         self.seed_one(); self.screens=[['BTCUSDT'],['SOLUSDT']]
         self.assertEqual(self.robot.tick()['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING')
         self.account.maker_fee='0.000200'; self.account.taker_fee='0.000500'
-        result=self.robot.tick()
-        self.assertEqual((result['bot_status'],result['failure_code']),('REJECTED','NET_RISK_REWARD_BELOW_2'))
+        with patch.dict(fixture.GOOD,risk_reward=D('1.99')):result=self.robot.tick()
+        self.assertEqual((result['bot_status'],result['failure_code']),('REJECTED','RISK_REWARD_BELOW_2'))
         row=self.ledger.db.execute('SELECT status,failure_code FROM robot_candidates WHERE cycle=?',(self.new,)).fetchone()
-        self.assertEqual(tuple(row),('REJECTED','NET_RISK_REWARD_BELOW_2'))
+        self.assertEqual(tuple(row),('REJECTED','RISK_REWARD_BELOW_2'))
         self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM order_intents WHERE candidate_id IN (SELECT id FROM robot_candidates WHERE cycle=?)',(self.new,)).fetchone()[0],0)
         count=len(self.calls)
         self.assertEqual(self.robot.tick()['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING')
@@ -168,14 +168,14 @@ class SlotResumePipelineTests(fixture.OrderPipelineTests):
         self.assertEqual(json.loads(self.cycle()['data'])['replacements'],1)
         self.assertEqual(self.screens_after(),[1,1])
         self.assertEqual(self.store.snapshot()['available_slots'],1)
-        self.assertEqual(self.store.snapshot()['last_decision']['failure_code'],'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(self.store.snapshot()['last_decision']['failure_code'],'RISK_REWARD_BELOW_2')
         with patch.dict(fixture.GOOD,take_profit=D("104.31"),risk_reward=D("2.155")):
             self.assertEqual(self.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
             self.assertEqual(self.robot.tick()['bot_status'],'ENTRY_PENDING')
         self.assertEqual([order['symbol'] for order in self.gateway.submissions[self.submissions_before:]],['SOLUSDT'])
         count=len(self.calls);self.ticks(3);self.assertEqual(len(self.calls),count)
         row=self.ledger.db.execute("SELECT status,failure_code FROM robot_candidates WHERE cycle=? AND symbol='BTCUSDT'",(self.new,)).fetchone()
-        self.assertEqual(tuple(row),('REJECTED','NET_RISK_REWARD_BELOW_2'))
+        self.assertEqual(tuple(row),('REJECTED','RISK_REWARD_BELOW_2'))
         self.preserve_old()
     def test_one_carryover_position_limits_new_day_screening_to_one(self):
         self.new_pending(); self.fill('ETHUSDT'); self.fill('SOLUSDT'); self.ticks(2)

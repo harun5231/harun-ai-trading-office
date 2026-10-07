@@ -46,8 +46,10 @@ class ProviderValidationReplacementTests(unittest.TestCase):
                     output = hold(symbol)
                 else:
                     output = {**GOOD, 'symbol': symbol}
-                    if choice == 'FAR':
-                        output.update(take_profit=110, risk_reward=5)
+                    if choice == 'PRICE_BELOW':
+                        output.update(take_profit=D('103.99'), risk_reward=99)
+                    elif choice == 'BELOW':
+                        output.update(risk_reward=D('1.99'))
                     elif choice == 'TARGET':
                         output.update(take_profit=D('104.31'), risk_reward=D('2.155'))
             return 200, {}, dict(mode='smart', answer=None, output=output)
@@ -75,15 +77,15 @@ class ProviderValidationReplacementTests(unittest.TestCase):
         return fixture
 
     def test_one_manual_slot_rr_rr_422_then_final_canonical_coin_without_replay(self):
-        fixture = self.fixture({'BNBUSDT': 'FAR', 'SOLUSDT': 'HTTP_422', 'ADAUSDT': 'TARGET'})
+        fixture = self.fixture({'BNBUSDT': 'PRICE_BELOW', 'SOLUSDT': 'HTTP_422', 'ADAUSDT': 'TARGET'})
         fixture.connected()
         fixture.screens = [['BTCUSDT'], ['BNBUSDT'], ['SOLUSDT'], ['ADAUSDT']]
         manual = copy.deepcopy(fixture.account.positions)
         fixture.on()
         fixture.robot.tick()
-        self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_BELOW_2')
+        self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
         fixture.robot.tick()
-        self.assertEqual(fixture.robot.tick()['failure_code'], 'NET_RISK_REWARD_NOT_TARGET_2')
+        self.assertEqual(fixture.robot.tick()['failure_code'], 'RISK_REWARD_BELOW_2')
         fixture.robot.tick()
         self.assertEqual(fixture.robot.tick()['failure_code'], 'HTTP_422')
         rejected = dict(self.candidate(fixture, 'SOLUSDT'))
@@ -108,7 +110,7 @@ class ProviderValidationReplacementTests(unittest.TestCase):
         intent = fixture.gateway.submissions[0]
         self.assertEqual((intent['symbol'], intent['protection']['take_profit'],
                           intent['protection']['working_type']),
-                         ('ADAUSDT', '104.31', 'CONTRACT_PRICE'))
+                         ('ADAUSDT', json.loads(self.candidate(fixture,'ADAUSDT')['plan'])['tp'], 'CONTRACT_PRICE'))
         self.assertEqual(fixture.screen_counts(), [1, 1, 1, 1])
         self.assertEqual(len(fixture.calls), 8)
         self.assertEqual(dict(self.candidate(fixture, 'SOLUSDT')), rejected)
@@ -129,7 +131,7 @@ class ProviderValidationReplacementTests(unittest.TestCase):
 
     def test_hold_rr_and_terminal_422_share_three_rounds_even_after_restart(self):
         fixture = self.fixture({'BTCUSDT': 'HOLD', 'BNBUSDT': 'HTTP_422',
-                                'SOLUSDT': 'FAR', 'ADAUSDT': 'HTTP_422'})
+                                'SOLUSDT': 'PRICE_BELOW', 'ADAUSDT': 'HTTP_422'})
         fixture.screens = [['BTCUSDT'], ['BNBUSDT'], ['SOLUSDT'], ['ADAUSDT']]
         fixture.on()
         fixture.ticks(4)
@@ -320,7 +322,7 @@ class ProviderValidationReplacementTests(unittest.TestCase):
         packets = [json.loads(content) for content in contents]
         metadata = packets[0]['data']
         self.assertEqual(metadata['symbol'], 'BTCUSDT')
-        self.assertEqual(metadata['risk_constraints']['reward_risk_policy'], 'NET_1_TO_2_NEAREST_TICK')
+        self.assertEqual(metadata['risk_constraints']['reward_risk_policy'], 'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE')
         self.assertEqual(metadata['risk_constraints']['entry_fee_rate'], '0.0005')
         frames = {'1h': [], '15m': []}
         for packet in packets[1:]:
