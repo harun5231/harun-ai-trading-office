@@ -95,3 +95,24 @@ Diagnostics lama dapat menampilkan state arsip sebagai `STATE_REDACTED` karena
 allowlist-nya belum mengenal `RETIRED_LEGACY`. Ringkasan utility membaca marker
 tersebut secara eksplisit. Marker arsip tidak dipakai untuk membuat order atau
 mengembalikan kuota harian.
+
+## Jika muncul CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED
+
+Penolakan ini berarti setidaknya satu request `NEEDS_REVIEW` tidak cocok dengan
+format legacy yang sudah dibuktikan. Utility berhenti sebelum backup atau
+perubahan state. Output diagnostics yang menyamarkan ID belum cukup untuk
+membedakan request namespace aktif dari ID lain yang belum dikenali.
+
+Pertahankan ROBOT OFF, lalu jalankan blok inspeksi di atas **tanpa `--apply`**.
+Laporan `unresolved_requests` menampilkan hash ID untuk korelasi, kategori,
+bentuk token dari vocabulary tetap, tanggal/waktu yang valid, attempts, dan
+failure code yang diizinkan. Nilai simbol, angka di dalam ID, teks bebas,
+payload, dan output model tetap disamarkan. Laporan dibatasi 50 request dan
+menyertakan jumlah request yang tidak ditampilkan.
+
+`created_at` adalah waktu claim lokal yang tercatat; field ini tidak membuktikan
+request HTTP sudah dikirim, ditagih, atau diterima provider.
+
+Kirim laporan tersebut untuk menentukan langkah selanjutnya. Request aktif
+atau tidak dikenal tetap diblokir; laporan ini tidak memperluas format yang
+boleh dipensiunkan, mengubah journal, atau mengirim ulang screening/order.

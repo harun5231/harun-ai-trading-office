@@ -31,6 +31,20 @@ PUBLIC_FAILURES = frozenset(('NETWORK_UNCERTAIN', 'LOCAL_PROCESSING_FAILED',
     'RESEARCH_PAUSED', 'HTTP_401', 'HTTP_403', 'HTTP_429', 'HTTP_500', 'HTTP_503'))
 MAX_ROWS = 10000
 MAX_ROW_BYTES = 2 * 1024 * 1024
+MAX_UNRESOLVED_DETAILS = 50
+PUBLIC_OPERATION_TOKENS = {
+    **{'robot-v' + str(version): 'ROBOT_V' + str(version) for version in range(1, 10)},
+    **{'analysis-v' + str(version): 'ANALYSIS_V' + str(version) for version in range(1, 10)},
+    'screening': 'SCREENING', 'analysis': 'ANALYSIS',
+    'replacement-screening': 'REPLACEMENT_SCREENING',
+    'manual-screening': 'MANUAL_SCREENING', 'v2': 'VERSION_V2',
+}
+CURRENT_OPERATIONS = {
+    'CURRENT_V8': re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}:robot-v8:[0-2]:'
+        r'(?:screening:[0-3]:[12]|analysis-v8:[A-Z0-9]{2,18}USDT)'),
+    'CURRENT_V9': re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}:robot-v9:(?:0|[1-9][0-9]{0,11}):'
+        r'(?:screening:[0-3]:[12]|analysis-v9:[A-Z0-9]{2,18}USDT)'),
+}
 
 
 class Refuse(Exception):
@@ -74,6 +88,72 @@ def classify(operation):
     if tail.startswith('replacement-screening:'): return ('legacy_replacement_screening', match[1], match[1])
     if tail == 'manual-screening:v2': return ('legacy_manual_screening_v2', match[1], match[1])
     return ('legacy_screening', match[1], match[1])
+
+
+def public_date(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', value):
+        return None
+    try: return date.fromisoformat(value).isoformat()
+    except ValueError: return None
+
+
+def operation_metadata(operation):
+    """Diagnostic labels only; these never authorize retirement or replay."""
+    digest = checksum(operation.encode('utf-8') if isinstance(operation, str)
+        else encoded(('operation',), (operation,)))
+    if not isinstance(operation, str) or len(operation) > 120:
+        return dict(operation_sha256=digest, scope_category='UNRECOGNIZED',
+            operation_date=None, shape=['OPAQUE'])
+    parts = operation.split(':')
+    day = public_date(parts[0])
+    category = 'LEGACY_RECOGNIZED' if classify(operation) else 'UNRECOGNIZED'
+    if day:
+        for label, pattern in CURRENT_OPERATIONS.items():
+            if pattern.fullmatch(operation): category = label
+    shape = []
+    if len(parts) > 12: shape = ['OPAQUE']
+    else:
+        for offset, part in enumerate(parts):
+            if offset == 0 and day: token = 'DATE'
+            elif part in PUBLIC_OPERATION_TOKENS: token = PUBLIC_OPERATION_TOKENS[part]
+            elif re.fullmatch(r'[0-9]{1,12}', part): token = 'INTEGER'
+            elif re.fullmatch(r'[A-Z0-9]{2,18}USDT', part): token = 'USDT_SYMBOL'
+            else: token = 'REDACTED'
+            shape.append(token)
+    return dict(operation_sha256=digest, scope_category=category,
+        operation_date=day, shape=shape)
+
+
+def public_created(value):
+    if value is None: return 'UNAVAILABLE'
+    # Comparisons also exclude nonfinite REALs; no arbitrary value is printed.
+    if type(value) not in (int, float) or not 0 <= value <= 4102444800:
+        return 'INVALID'
+    try: return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec='microseconds')
+    except (ValueError, OverflowError, OSError): return 'INVALID'
+
+
+def public_failure(value):
+    return value if value in PUBLIC_FAILURES else 'UNAVAILABLE' if value is None else 'REDACTED'
+
+
+def unresolved_details(columns, rows):
+    index = {name: offset for offset, name in enumerate(columns)}
+    unresolved = [row for row in rows if row[index['state']] in ('PENDING', 'NEEDS_REVIEW')]
+    keyed = [(operation_metadata(row[index['operation']]), row) for row in unresolved]
+    keyed.sort(key=lambda item: item[0]['operation_sha256'])
+    details = []
+    for metadata, row in keyed[:MAX_UNRESOLVED_DETAILS]:
+        created = row[index['created']] if 'created' in index else None
+        attempts = row[index['attempts']] if 'attempts' in index else None
+        failure = row[index['failure_code']] if 'failure_code' in index else None
+        details.append(dict(metadata, state=row[index['state']],
+            created_at=public_created(created),
+            attempts=attempts if type(attempts) is int and 0 <= attempts <= 1000
+                else 'UNAVAILABLE' if attempts is None else 'INVALID',
+            failure_code=public_failure(failure)))
+    return dict(unresolved_request_count=len(unresolved), unresolved_requests=details,
+        unresolved_truncated_count=max(0, len(unresolved) - len(details)))
 
 
 def identity(info):
@@ -238,6 +318,7 @@ def observe(db):
         request_states=dict(states), eligible_scopes=dict(scopes), eligible_dates=dict(days),
         failure_codes=dict(failures), journal_sha256=fingerprint, robot_off=off,
         can_apply=not reasons and bool(selected), refusal_reasons=sorted(reasons))
+    report.update(unresolved_details(columns, rows))
     return dict(columns=columns, selected=selected, report=report, fingerprint=fingerprint)
 
 

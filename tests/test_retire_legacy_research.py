@@ -96,6 +96,84 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(self.db.total_changes, total)
         self.unchanged(before)
 
+    def test_inspect_distinguishes_legacy_current_and_unknown_without_raw_identifiers(self):
+        operations = (
+            ('2026-10-06:robot-v8:0:screening:1:2', 'CURRENT_V8'),
+            ('2026-10-06:robot-v9:1:analysis-v9:SOLUSDT', 'CURRENT_V9'),
+            (SECRET + ':robot-v1:' + SECRET, 'UNRECOGNIZED'),
+            ('2026-10-06:robot-v7:3:screening:0:1', 'UNRECOGNIZED'),
+        )
+        for operation, _ in operations: self.insert(operation, 'NEEDS_REVIEW', SECRET)
+        before, names, total = self.requests(), self.names(), self.db.total_changes
+        _, report = self.invoke()
+        details = {row['operation_sha256']: row for row in report['unresolved_requests']}
+        self.assertEqual(report['unresolved_request_count'], 7)
+        self.assertEqual(report['unresolved_truncated_count'], 0)
+        self.assertFalse(report['can_apply'])
+        self.assertIn('CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED', report['refusal_reasons'])
+        for operation, category in (*operations, *((operation, 'LEGACY_RECOGNIZED') for operation in LEGACY)):
+            item = details[tool.checksum(operation.encode())]
+            self.assertEqual(item['scope_category'], category)
+            self.assertEqual(item['state'], 'NEEDS_REVIEW')
+            self.assertEqual(item['created_at'], '2026-10-06T11:33:20.125000+00:00')
+            self.assertEqual(item['attempts'], 2)
+        current = details[tool.checksum(operations[1][0].encode())]
+        self.assertEqual(current['shape'], ['DATE', 'ROBOT_V9', 'INTEGER', 'ANALYSIS_V9', 'USDT_SYMBOL'])
+        opaque = details[tool.checksum(operations[2][0].encode())]
+        self.assertIsNone(opaque['operation_date'])
+        for operation, _ in operations: self.assertNotIn(operation, json.dumps(report))
+        self.assertNotIn('SOLUSDT', json.dumps(report))
+        self.assertEqual((self.names(), self.db.total_changes), (names, total))
+        self.unchanged(before)
+
+    def test_unknown_private_metadata_is_redacted_and_malformed_values_are_bounded(self):
+        operation = '2026-02-30:' + SECRET + ':analysis-v6:PRIVATEUSDT'
+        self.insert(operation, 'PENDING', SECRET.encode())
+        self.db.execute('UPDATE api_requests SET created=?,attempts=? WHERE operation=?',
+            (SECRET.encode(), SECRET, operation))
+        before, names = self.requests(), self.names()
+        _, report = self.invoke()
+        item = next(row for row in report['unresolved_requests']
+            if row['operation_sha256'] == tool.checksum(operation.encode()))
+        self.assertEqual(item['scope_category'], 'UNRECOGNIZED')
+        self.assertEqual(item['state'], 'PENDING')
+        self.assertEqual(item['created_at'], 'INVALID')
+        self.assertEqual(item['attempts'], 'INVALID')
+        self.assertEqual(item['failure_code'], 'REDACTED')
+        self.assertIsNone(item['operation_date'])
+        self.assertEqual(item['shape'], ['REDACTED', 'REDACTED', 'ANALYSIS_V6', 'USDT_SYMBOL'])
+        self.assertNotIn('PRIVATEUSDT', json.dumps(report))
+        self.assertIn('PENDING_REQUEST_PRESENT', report['refusal_reasons'])
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_unresolved_report_has_fifty_item_limit_and_exact_truncated_count(self):
+        for offset in range(60): self.insert(SECRET + str(offset), 'NEEDS_REVIEW', SECRET)
+        before, names = self.requests(), self.names()
+        _, report = self.invoke()
+        self.assertEqual(report['unresolved_request_count'], 63)
+        self.assertEqual(len(report['unresolved_requests']), 50)
+        self.assertEqual(report['unresolved_truncated_count'], 13)
+        hashes = [row['operation_sha256'] for row in report['unresolved_requests']]
+        self.assertEqual(hashes, sorted(hashes))
+        self.assertTrue(all(len(row['shape']) <= 12 for row in report['unresolved_requests']))
+        status, error = self.invoke(True)
+        self.assertEqual((status, error), (1, {'error': 'CURRENT_OR_UNKNOWN_REQUEST_UNRESOLVED'}))
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
+    def test_missing_optional_metadata_is_unavailable_without_schema_changes(self):
+        self.db.execute('ALTER TABLE api_requests DROP COLUMN created')
+        self.db.execute('ALTER TABLE api_requests DROP COLUMN attempts')
+        self.db.execute('ALTER TABLE api_requests DROP COLUMN failure_code')
+        before, names = self.requests(), self.names()
+        _, report = self.invoke()
+        self.assertTrue(report['can_apply'])
+        self.assertTrue(all(row['created_at'] == 'UNAVAILABLE' and row['attempts'] == 'UNAVAILABLE'
+            and row['failure_code'] == 'UNAVAILABLE' for row in report['unresolved_requests']))
+        self.assertEqual(self.names(), names)
+        self.unchanged(before)
+
     def test_apply_archives_exact_types_and_private_full_backup_before_only_state_changes(self):
         before = self.requests()
         lock = (self.trading / 'cycle.lock').stat()
@@ -379,6 +457,46 @@ class RetirementTests(unittest.TestCase):
 
 
 class GrammarTests(unittest.TestCase):
+    def test_diagnostic_tokens_are_fixed_and_never_expand_retirement_grammar(self):
+        for version in range(1, 10):
+            operation = '2026-10-06:robot-v' + str(version) + ':0:analysis-v' + str(version) + ':ETHUSDT'
+            item = tool.operation_metadata(operation)
+            self.assertEqual(item['shape'], ['DATE', 'ROBOT_V' + str(version), 'INTEGER',
+                'ANALYSIS_V' + str(version), 'USDT_SYMBOL'])
+            self.assertEqual(item['scope_category'], {7: 'LEGACY_RECOGNIZED', 8: 'CURRENT_V8',
+                9: 'CURRENT_V9'}.get(version, 'UNRECOGNIZED'))
+            self.assertEqual(bool(tool.classify(operation)), version == 7)
+        for operation in ('2026-02-30:robot-v9:0:analysis-v9:ETHUSDT',
+                '2026-10-06:robot-v9:0:analysis-v8:ETHUSDT',
+                '2026-10-06:robot-v10:0:analysis-v10:ETHUSDT', SECRET * 5, b'private_blob_id'):
+            item = tool.operation_metadata(operation)
+            self.assertEqual(item['scope_category'], 'UNRECOGNIZED')
+            self.assertIsNone(tool.classify(operation))
+            self.assertNotIn('ETHUSDT', json.dumps(item))
+            self.assertNotIn(SECRET, json.dumps(item))
+        for epoch in ('3', '12', '999999999999'):
+            operation = '2026-10-06:robot-v9:' + epoch + ':analysis-v9:ETHUSDT'
+            item = tool.operation_metadata(operation)
+            self.assertEqual(item['scope_category'], 'CURRENT_V9')
+            self.assertEqual(item['shape'], ['DATE', 'ROBOT_V9', 'INTEGER', 'ANALYSIS_V9', 'USDT_SYMBOL'])
+            self.assertIsNone(tool.classify(operation))
+        for epoch in ('00', '01', '1000000000000'):
+            item = tool.operation_metadata('2026-10-06:robot-v9:' + epoch + ':analysis-v9:ETHUSDT')
+            self.assertEqual(item['scope_category'], 'UNRECOGNIZED')
+        self.assertEqual(tool.operation_metadata('2026-10-06:robot-v8:3:analysis-v8:ETHUSDT')['scope_category'], 'UNRECOGNIZED')
+
+    def test_diagnostic_timestamp_and_attempt_values_are_strictly_bounded(self):
+        for value in (-1, 4102444801, float('inf'), float('-inf'), float('nan'), SECRET, b'private', True):
+            self.assertEqual(tool.public_created(value), 'INVALID')
+        self.assertEqual(tool.public_created(None), 'UNAVAILABLE')
+        self.assertEqual(tool.public_created(0), '1970-01-01T00:00:00.000000+00:00')
+        self.assertEqual(tool.public_created(4102444800), '2100-01-01T00:00:00.000000+00:00')
+        columns = ('operation', 'state', 'created', 'attempts', 'failure_code')
+        for value, expected in ((None, 'UNAVAILABLE'), (-1, 'INVALID'), (1001, 'INVALID'),
+                (2.5, 'INVALID'), (SECRET, 'INVALID'), (b'private', 'INVALID'), (0, 0), (1000, 1000)):
+            item = tool.unresolved_details(columns, [('unknown', 'PENDING', None, value, None)])['unresolved_requests'][0]
+            self.assertEqual(item['attempts'], expected)
+
     def test_exact_proven_historical_formats_only(self):
         valid = ('screening', 'replacement-screening:1', 'replacement-screening:3',
             'manual-screening:v2', 'analysis:BTCUSDT', 'analysis-v3:BTCUSDT',
