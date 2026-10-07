@@ -17,6 +17,7 @@ from .robot_store import RobotStore
 from .order_gateway import OrderGateway
 from .binance_private import BinanceReadOnly
 from .binance_office import collect
+from .pnl_calendar import collect_calendar, unavailable as unavailable_calendar
 
 ROBOT_POLL_SECONDS=45
 ACCOUNT_POLL_SECONDS=15
@@ -63,6 +64,7 @@ def office_snapshot(controller,result):
         reports.update(status='UNAVAILABLE',checked_at=None,complete=False,pnl_today_usdt=None,
             realized_pnl_today_usdt=None,commission_today_usdt=None,funding_today_usdt=None,trades_today=None)
         result.get('position_history',{}).update(status='UNAVAILABLE',checked_at=None,items=[],complete=False)
+        result['pnl_calendar']=unavailable_calendar(account_failure)
     employees=result.get('employees',[])
     for employee in employees:
         if employee.get('status')!='WORKING':continue
@@ -150,7 +152,12 @@ class Controller:
                 try:
                     history=time.monotonic()-last_history>=HISTORY_POLL_SECONDS
                     try:
-                        observation=collect(BinanceReadOnly(),include_history=history)
+                        client=BinanceReadOnly()
+                        observation=collect(client,include_history=history)
+                        if history:
+                            observation['pnl_calendar']=collect_calendar(client,self.directory,max_requests=1,budget_seconds=10)
+                            if observation['pnl_calendar']['checked_at'] is None:
+                                observation['pnl_calendar']['checked_at']=observation['generated_at']
                     except Exception as error:
                         reason=str(error)
                         store.report_office_failure(reason if reason in ACCOUNT_FAILURE_CODES else 'BINANCE_ACCOUNT_UNAVAILABLE')

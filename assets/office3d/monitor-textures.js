@@ -19,7 +19,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
 
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
   const number = (value, digits = 2) => finite(value) ? Number(value).toFixed(digits) : '—';
-  const short = (value, length = 30) => String(value ?? '—').replace(/[\r\n\t]/g, ' ').slice(0, length);
+  const short = (value, length = 30) => String(value ?? '—').replace(/\b(?:nanda|ai)\b/gi, '').replace(/\s+/g, ' ').trim().slice(0, length);
   const phase = (t, index, speed = 1) => Math.sin(t * speed + index * 1.83);
   const fresh = (value, ttl) => {
     const at = typeof value === 'string' ? Date.parse(value) : NaN;
@@ -78,7 +78,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     line(ctx, 0, 30, 512, 30, palette.border);
     ctx.fillStyle = '#081923'; ctx.fillRect(0, 234, 512, 22);
     text(ctx, 'READ ONLY · OFFICE GRAPHICS', 12, 248, palette.muted, 9);
-    text(ctx, 'HARUN AI', 442, 248, palette.cyan, 9);
+    text(ctx, 'HARUN', 442, 248, palette.cyan, 9);
   }
   function candles(ctx, t, variant) {
     box(ctx, 12, 42, 327, 154); text(ctx, variant ? 'OFFICE GRAPHICS / FLOW' : 'OFFICE GRAPHICS / SIGNAL PATTERN', 23, 58, palette.muted, 9);

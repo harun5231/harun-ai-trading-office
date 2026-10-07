@@ -1,13 +1,24 @@
-# HARUN AI TRADING OFFICE
+# HARUN TRADING OFFICE
 
 Dashboard kantor 3D dan worker privat Binance USD-M Futures:
 
 `ON → account/open orders → kapasitas → screening → analisis 15m/1h → sizing/TP → entry → SL/TP → rekonsiliasi`
 
-Worker berjalan di VPS 24/7; browser dapat ditutup. Menu Office yang sudah ada
-menyediakan Robot Trading ON/OFF, pengaturan risiko, Karyawan AI, Laporan,
-Aktivitas, dan Riwayat Posisi. Key Binance/NeuroAPI tetap di VPS. Dashboard
+Worker berjalan di VPS 24/7; browser dapat ditutup. Menu menyediakan Robot
+Trading ON/OFF dengan pengaturan risiko dan koneksi worker, serta Kalender PNL.
+Key Binance/NeuroAPI tetap di VPS. Dashboard
 memakai token worker dan data akun yang dibaca dari Binance.
+
+Kalender menampilkan riwayat posisi USD-M Futures sejak 1 Oktober 2026 dalam
+WIB, dikelompokkan pada tanggal posisi selesai ditutup. Hari profit berwarna
+hijau dan hari rugi merah; memilih tanggal menampilkan posisi LONG/SHORT,
+harga masuk/keluar rata-rata, volume, waktu buka/tutup, durasi, serta komponen
+PNL yang dapat dibuktikan. Worker merekonstruksi siklus posisi dari transaksi
+Binance karena API publik tidak menyediakan riwayat posisi seperti layar app.
+Komisi, funding, dan biaya asuransi hanya dihitung bila atribusinya dapat
+dipastikan. Data parsial ditandai `*`, jumlah yang diketahui dipisahkan dari
+total yang belum lengkap, dan hari tanpa bukti ditampilkan `—`. Kalender tidak
+menebak ROI, leverage historis, atau angka nol untuk data yang belum tersedia.
 
 Gateway publik bawaan merupakan stub dengan
 `EXECUTION_BLOCKED / BINANCE_ORDER_GATEWAY_NOT_CONNECTED`. VPS existing

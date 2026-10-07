@@ -8,6 +8,7 @@ from worker.account_state import account_order
 from worker.core import Ledger,day,now
 from unittest.mock import patch
 from worker.robot_store import RobotStore
+from worker.pnl_calendar import unavailable as unavailable_calendar
 
 
 class OfficeCacheTests(unittest.TestCase):
@@ -104,3 +105,33 @@ class OfficeCacheTests(unittest.TestCase):
         self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
             ('today-filled','ETHUSDT',day(),now()))
         self.assertEqual(self.store.snapshot()['available_slots'],0)
+
+    def test_old_office_snapshot_gets_calendar_contract_without_schema_migration(self):
+        observation=self.observation()
+        self.store.report_office(observation)
+        snapshot=self.store.office_snapshot()
+        self.assertEqual(snapshot['pnl_calendar']['start_date'],'2026-10-01')
+        self.assertEqual(snapshot['pnl_calendar']['kind'],'CLOSED_POSITIONS_FROM_FILLS')
+        self.assertEqual(snapshot['pnl_calendar']['positions'],[])
+
+    def test_calendar_refresh_does_not_regress_to_older_history(self):
+        observation=self.observation()
+        calendar=unavailable_calendar()
+        calendar.update(status='PARTIAL',checked_at=observation['generated_at'],positions=[dict(id='verified-closed')])
+        observation['pnl_calendar']=calendar
+        self.store.report_office(observation)
+        older=copy.deepcopy(observation)
+        older['pnl_calendar'].update(checked_at='2020-01-01T00:00:00Z',positions=[])
+        self.store.report_office(older)
+        self.assertEqual(self.store.office_snapshot()['pnl_calendar']['positions'],[dict(id='verified-closed')])
+
+    def test_account_failure_clears_current_calendar_without_changing_receipts(self):
+        observation=self.observation()
+        observation['pnl_calendar']=dict(unavailable_calendar(),checked_at=observation['generated_at'],status='PARTIAL')
+        self.store.report_office(observation)
+        self.ledger.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',('prior','ETHUSDT',day(),now()))
+        self.store.report_office_failure('BINANCE_ACCOUNT_UNAVAILABLE')
+        snapshot=self.store.office_snapshot()
+        self.assertEqual(snapshot['pnl_calendar']['status'],'UNAVAILABLE')
+        self.assertEqual(snapshot['pnl_calendar']['positions'],[])
+        self.assertEqual(self.store.entries(day()),1)

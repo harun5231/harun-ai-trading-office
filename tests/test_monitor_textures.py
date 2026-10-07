@@ -58,6 +58,14 @@ const staticMonitors=createMonitorTextures(THREE,{mobile:true,reducedMotion:true
         self.assertNotIn('LOCAL VISUAL SIMULATION', (ROOT / 'assets/office3d/scene-builder.js').read_text())
         self.assertIn('OFFICE STATUS', (ROOT / 'assets/office3d/scene-builder.js').read_text())
 
+    def test_visible_names_and_branding_exclude_removed_words(self):
+        self.run_node(r"""
+data.events=[{agent:'Nanda AI Coordinator',state:'SCREENING',message:'Actual event'}];
+monitors.update(1,data);
+for(const role of monitors.diagnostics().roles)assert.doesNotMatch(text(role),/\b(?:nanda|ai)\b/i);
+assert.match(text('reviewer'),/Coordinator/);monitors.dispose();
+""")
+
 
 if __name__ == '__main__':
     unittest.main()

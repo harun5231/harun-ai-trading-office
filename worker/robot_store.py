@@ -7,6 +7,7 @@ from .account_state import (empty_account, account_observation, newer_account,
 from .migration import retire_previous_runtime, upgrade_cycle_namespaces
 from .order_gateway import OrderGateway
 from .robot_provenance import verify
+from .pnl_calendar import unavailable as unavailable_calendar
 
 ACTIVE_ORDERS = ('READY_FOR_EXECUTION', 'EXECUTION_BLOCKED', 'SUBMITTING',
                  'ENTRY_PENDING', 'POSITION_PROTECTED', 'NEEDS_REVIEW')
@@ -26,7 +27,8 @@ def unavailable_office():
         reports=dict(status='UNAVAILABLE', checked_at=None, pnl_today_usdt=None,
                      trades_today=None, complete=False),
         position_history=dict(status='UNAVAILABLE', checked_at=None, items=[],
-                              complete=False, kind='BINANCE_FILLS'))
+                              complete=False, kind='BINANCE_FILLS'),
+        pnl_calendar=unavailable_calendar())
 
 
 def newer_section(incoming, previous):
@@ -161,8 +163,8 @@ class RobotStore:
             # History collection can finish after a later account observation.
             if 'account' in incoming and not newer_account(incoming['account'], value['account']):
                 incoming.pop('account')
-            for section in ('reports', 'position_history'):
-                if section in incoming and not newer_section(incoming[section], value[section]):
+            for section in ('reports', 'position_history', 'pnl_calendar'):
+                if section in incoming and not newer_section(incoming[section], value.get(section, {})):
                     incoming.pop(section)
             generated = account_timestamp(incoming.get('generated_at'))
             previous_generated = account_timestamp(value.get('generated_at'))
@@ -196,7 +198,8 @@ class RobotStore:
             # An unavailable refresh must not present cached account fills as
             # the current account observation.
             value['position_history'] = unavailable_office()['position_history']
-            for section in ('reports', 'position_history'):
+            value['pnl_calendar'] = unavailable_calendar(reason)
+            for section in ('reports', 'position_history', 'pnl_calendar'):
                 value[section].update(checked_at=failed_at, failure_code=reason)
             value.update(generated_at=failed_at)
             self.db.execute('INSERT OR REPLACE INTO office_cache VALUES(1,?)', (json.dumps(value),))
@@ -207,6 +210,7 @@ class RobotStore:
     def office_snapshot(self):
         row = self.db.execute('SELECT data FROM office_cache WHERE id=1').fetchone()
         value = json.loads(row[0]) if row else unavailable_office()
+        value.setdefault('pnl_calendar', unavailable_calendar())
         robot = self.snapshot()
         value.update(schema_version=2, source='BINANCE_FUTURES', robot=robot)
         value['activity'] = [dict(row) for row in self.db.execute('SELECT at,state,agent,message FROM office_activity ORDER BY seq DESC LIMIT 100')][::-1]
