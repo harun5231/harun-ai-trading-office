@@ -7,6 +7,7 @@ network calls, settings updates, order changes, or generic journal clearing.
 import argparse
 from collections import Counter
 from datetime import date, datetime, timezone
+from decimal import Decimal, localcontext, ROUND_HALF_EVEN
 import fcntl
 import hashlib
 import json
@@ -344,6 +345,88 @@ def no_operation_references(db, operation):
             if contains_operation(parsed, operation): raise Refuse('PRE_ORDER_REQUEST_REFERENCED')
 
 
+def validated_shadow_rows(db):
+    """Verify the two historical unexecuted models found in the VPS archive."""
+    if 'shadow_plans' not in tables(db): return []
+    if not db.execute('SELECT 1 FROM shadow_plans LIMIT 1').fetchone(): return []
+    schema = 'CREATE TABLE shadow_plans(setup_id TEXT PRIMARY KEY,day TEXT NOT NULL,symbol TEXT NOT NULL,plan TEXT NOT NULL,state TEXT NOT NULL,model TEXT NOT NULL,UNIQUE(day,symbol))'
+    keys = set('status setup_id business_day symbol side position_mode positionSide margin_target leverage_target execution_quantity entry TP SL calculated_risk actual_RR protective_side client_ids entry_order take_profit_order stop_loss_order would_submit live_execution mode failure_policy future_reconciliation future_states'.split())
+    optional = {'failure_code', 'required_account_mutations'}
+    default = dict(state='PLAN_READY', tp_confirmed=False, sl_confirmed=False, model_only=True, fill_confirmed=False)
+
+    def reject(*unused):
+        raise Refuse('PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT')
+
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value: reject()
+            value[key] = item
+        return value
+
+    def decode(raw):
+        if not isinstance(raw, str) or len(raw.encode('utf-8')) > MAX_ROW_BYTES: reject()
+        try: return json.loads(raw, object_pairs_hook=pairs, parse_constant=reject, parse_float=reject)
+        except (ValueError, TypeError, RecursionError): reject()
+
+    def normalized(value):
+        if type(value) not in (str, int): reject()
+        text = str(value)
+        if len(text) > 64 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', text): reject()
+        with localcontext() as context:
+            context.prec, context.rounding = 160, ROUND_HALF_EVEN
+            number = Decimal(text)
+            if number <= 0: reject()
+            return format(number.normalize(), 'f')
+
+    expected = sqlite3.connect(':memory:')
+    try:
+        expected.execute(schema)
+        if table_schema(db, 'shadow_plans', normalize_core=True) != table_schema(expected, 'shadow_plans', normalize_core=True): reject()
+    finally: expected.close()
+    stored = db.execute('SELECT setup_id,day,symbol,plan,state,model FROM shadow_plans LIMIT 3').fetchall()
+    if not stored: return []
+    if len(stored) != 2: reject()
+    result = []
+    for row in stored:
+        if any(not isinstance(value, str) or len(value.encode('utf-8')) > MAX_ROW_BYTES for value in row): reject()
+        key, day, symbol, raw, state, model_raw = row
+        plan, model = decode(raw), decode(model_raw)
+        if not isinstance(plan, dict) or not keys.issubset(plan) or set(plan) - keys - optional: reject()
+        if not isinstance(model, dict) or set(model) != set(default) or any(type(model[field]) is not type(value) or model[field] != value for field, value in default.items()): reject()
+        if state not in ('SHADOW_PLAN_READY', 'SHADOW_PREFLIGHT_OK', 'NEEDS_REVIEW') or plan['status'] != state: reject()
+        if any(plan[field] != value for field, value in (('setup_id', key), ('business_day', day), ('symbol', symbol), ('mode', 'DRY_RUN'))): reject()
+        if plan['would_submit'] is not False or plan['live_execution'] is not False: reject()
+        if not re.fullmatch(r'[0-9a-f]{64}', key) or public_date(day) != day or not re.fullmatch(r'[A-Z0-9]{2,18}USDT', symbol): reject()
+        side = plan['side']
+        if side not in ('LONG', 'SHORT') or plan['position_mode'] != 'ONE_WAY' or plan['positionSide'] != 'BOTH' or plan['margin_target'] != 'CROSS' or type(plan['leverage_target']) is not int or plan['leverage_target'] != 75: reject()
+        identity = [day, symbol, side] + [normalized(plan[field]) for field in ('entry', 'TP', 'SL', 'execution_quantity')]
+        if checksum(json.dumps(identity, separators=(',', ':')).encode()) != key: reject()
+        normalized(plan['calculated_risk'])
+        rr = plan['actual_RR']
+        if type(rr) not in (str, int) or len(str(rr)) > 256 or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?(?:E[+-]?[0-9]{1,3})?', str(rr)): reject()
+        rr_number = Decimal(str(rr))
+        if not rr_number.is_finite() or rr_number <= 0 or abs(rr_number.as_tuple().exponent) > 256: reject()
+        ids = {leg: 'ho-' + key[:28] + '-' + suffix for leg, suffix in (('ENTRY', 'e'), ('TP', 't'), ('SL', 's'))}
+        enter, exit_side = ('BUY', 'SELL') if side == 'LONG' else ('SELL', 'BUY')
+        if plan['client_ids'] != ids or plan['protective_side'] != exit_side: reject()
+        entry = dict(api_family='USD-M_FUTURES', intended_path='/fapi/v1/order', payload=dict(symbol=symbol, side=enter, positionSide='BOTH', type='LIMIT', timeInForce='GTC', quantity=plan['execution_quantity'], price=plan['entry'], newClientOrderId=ids['ENTRY']))
+        if plan['entry_order'] != entry: reject()
+        future = dict(entry=dict(intended_get_path='/fapi/v1/order', lookup=dict(symbol=symbol, origClientOrderId=ids['ENTRY'])), implemented=False)
+        for field, leg, kind, price in (('take_profit', 'TP', 'TAKE_PROFIT_MARKET', plan['TP']), ('stop_loss', 'SL', 'STOP_MARKET', plan['SL'])):
+            expected_order = dict(api_family='USD-M_ALGO', intended_path='/fapi/v1/algoOrder', activation='AFTER_CONFIRMED_ENTRY_FILL', payload=dict(algoType='CONDITIONAL', symbol=symbol, side=exit_side, positionSide='BOTH', type=kind, triggerPrice=price, workingType='MARK_PRICE', closePosition='true', clientAlgoId=ids[leg]))
+            if plan[field + '_order'] != expected_order: reject()
+            future[field] = dict(intended_get_path='/fapi/v1/algoOrder', lookup=dict(clientAlgoId=ids[leg]))
+        if plan['future_reconciliation'] != future or plan['future_reconciliation']['implemented'] is not False: reject()
+        policy = dict(uncertain_entry='RECONCILE_SAME_CLIENT_ID_NO_BLIND_RETRY', partial_fill='PROTECTION_INCOMPLETE_RECONCILE_AND_PROTECT_FILLED_EXPOSURE', protection='REQUIRE_BOTH_ACKNOWLEDGED_LEGS', incomplete='BLOCK_NEXT_SETUP', after_exit='RECONCILE_FLAT_AND_CLEAR_SIBLING_BEFORE_NEW_SETUP')
+        if plan['failure_policy'] != policy or plan['future_states'] != ['PLAN_READY', 'ENTRY_SUBMITTED', 'ENTRY_CONFIRMED', 'PROTECTION_SUBMITTED', 'POSITION_PROTECTED']: reject()
+        if 'failure_code' in plan and (not isinstance(plan['failure_code'], str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,63}', plan['failure_code'])): reject()
+        if 'required_account_mutations' in plan and (not isinstance(plan['required_account_mutations'], list) or len(plan['required_account_mutations']) > 2 or any(value not in ('SET_MARGIN_TYPE_CROSS', 'SET_LEVERAGE_75') for value in plan['required_account_mutations'])): reject()
+        contains_operation(plan, None)
+        result.append((row, plan, model))
+    return result
+
+
 class PreOrderArchive:
     def __init__(self, parent):
         self.parent, self.fd, self.db = parent, None, None
@@ -382,7 +465,9 @@ class PreOrderArchive:
                     if table_schema(self.db, name, normalize_core=True) != table_schema(expected, name, normalize_core=True):
                         raise Refuse('PRE_ORDER_ARCHIVE_SCHEMA_UNSUPPORTED')
             finally: expected.close()
+            self.shadow_rows = validated_shadow_rows(self.db)
             for name in PRE_ORDER_EMPTY_TABLES:
+                if name == 'shadow_plans': continue # The historical rows were checked above.
                 if name in names and self.db.execute('SELECT 1 FROM ' + quoted(name) + ' LIMIT 1').fetchone():
                     raise Refuse('PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT')
             self.columns, self.rows = rowset(self.db)
@@ -431,6 +516,9 @@ class PreOrderArchive:
             raise Refuse('PRE_ORDER_REQUEST_ROW_MISMATCH')
         no_operation_references(self.db, operation)
         no_operation_references(db, operation)
+        for stored, plan, model in self.shadow_rows + validated_shadow_rows(db):
+            if any(value == operation for value in stored) or contains_operation(plan, operation) or contains_operation(model, operation):
+                raise Refuse('PRE_ORDER_REQUEST_REFERENCED')
         return checksum(encoded(columns, row))
 
     def close(self):

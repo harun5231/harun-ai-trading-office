@@ -5,6 +5,20 @@ coordinator melaporkan `ROBOT_REQUEST_NEEDS_REVIEW`. Health GET NeuroAPI berhasi
 Diagnostics menampilkan tiga request `NEEDS_REVIEW`, termasuk satu
 `INVALID_SCREENING_SYMBOL` dan dua tanpa kode kegagalan; ID-nya disamarkan.
 
+Pemulihan kasus VPS ini sudah berhasil: dua request analysis legacy dan satu
+penolakan screening opaque dipensiunkan setelah seluruh bukti lokal lolos.
+Journal berisi `COMPLETE: 12`, `RETIRED_LEGACY: 3`, dan unresolved request nol.
+Status yang dikirim setelah pemulihan menunjukkan worker ONLINE, robot OFF,
+failure kosong, gateway `CONFIGURED`, dan posisi Futures nol. Hasil ini adalah
+hasil pemulihan journal; tidak ada order baru atau hasil trading yang dibuat
+oleh utility.
+
+Tidak perlu mengulang `--apply`, rebuild, atau restart untuk kasus yang sudah
+selesai. Pembaruan helper ini mempertahankan kompatibilitas marker yang ditulis
+oleh perintah VPS sementara, sehingga inspeksi biasa dapat membaca ulang
+buktinya tanpa memasang wrapper lagi. Source SDK custom yang sudah terpasang
+tetap dipertahankan.
+
 Coordinator memeriksa seluruh `api_requests` dan `robot_jobs`, termasuk riwayat
 lama. Migrasi awal mempertahankan `api_requests` untuk audit, sehingga journal
 order kosong belum membuktikan journal riset bersih. ID yang disamarkan sendiri
@@ -172,3 +186,42 @@ Untuk menerapkan hanya jika proof dan seluruh guard lolos:
 Jika arsip tidak tersedia atau proof tidak cocok, proses berhenti tanpa
 mengubah state. Jangan membuat arsip dari journal saat ini untuk menggantikan
 bukti yang hilang. Kirim ringkasan proof/error untuk penelusuran berikutnya.
+
+## Dua shadow plan historis yang tetap dipertahankan
+
+Pada VPS ini, pemeriksaan awal proof berhenti dengan
+`PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT`. Inventaris arsip memperlihatkan
+`trades: 0`, `robot_entry_receipts: 0`, dan dua row `shadow_plans`; tabel bukti
+live lainnya tidak ada. Nama tabel dan count tersebut belum cukup untuk
+menyatakan row aman. Perintah VPS sementara kemudian memverifikasi bentuk
+historis kedua plan sebelum menjalankan pemulihan.
+
+Helper terintegrasi mempertahankan pengecualian yang sama: tabel shadow yang
+berisi row harus memiliki schema historis enam kolom dengan constraint
+`UNIQUE(day,symbol)`, tepat dua plan, serta model awal yang lengkap. Setiap plan
+harus memiliki `mode: DRY_RUN`, `would_submit: false`, `live_execution: false`,
+dan `future_reconciliation.implemented: false`. Model harus persis
+`state: PLAN_READY`, `model_only: true`, serta `fill_confirmed`, `tp_confirmed`,
+dan `sl_confirmed` semuanya boolean `false`.
+
+State row harus sesuai status plan historis: `SHADOW_PLAN_READY`,
+`SHADOW_PREFLIGHT_OK`, atau `NEEDS_REVIEW`. Kata `ENTRY_SUBMITTED` dan
+`POSITION_PROTECTED` di daftar tetap `future_states` adalah deskripsi alur yang
+belum diimplementasikan; kata tersebut bukan bukti entry dalam plan awal ini.
+Model yang sudah bergerak ke state eksekusi tetap ditolak.
+
+Identitas setup dihitung ulang dari tanggal, symbol, side, level, dan quantity.
+Client ID serta seluruh payload dan lookup harus sesuai identitas tersebut
+dan bentuk historisnya. Field receipt tambahan, schema berbeda, JSON dengan
+key ganda atau nilai tidak finite, flag numerik pengganti boolean, model yang
+berubah, serta referensi operation target pada plan/model/kolom shadow lama
+atau sekarang tetap ditolak. `actual_RR` harus berupa nilai numerik scalar
+yang dibatasi; field itu tidak dapat menyimpan objek receipt.
+
+Pengecualian ini tidak menerima order nyata, tidak memperluas grammar request
+legacy, dan tidak melewati guard OFF, order intent/receipt kosong, journal,
+referensi, backup privat, cycle lock, atau pemeriksaan file sebelum commit.
+File `ledger-pre-order.sqlite3` dan kedua shadow row tetap utuh. Marker
+`pre_order_archive:<sha256>` tetap menggunakan format yang sama; inspeksi
+ulang biasa maupun dengan opsi proof memverifikasinya. Apply ulang yang valid
+menghasilkan `UNCHANGED` tanpa backup tambahan atau replay request.

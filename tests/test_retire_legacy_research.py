@@ -1,5 +1,7 @@
 """Offline evidence-preserving retirement; no worker/SDK imports or HTTP calls."""
 from contextlib import redirect_stdout
+import copy
+import hashlib
 import fcntl
 import importlib.util
 import io
@@ -20,6 +22,43 @@ tool = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(tool)
 SECRET = 'SYNTHETIC_PRIVATE_OUTPUT_MUST_NOT_APPEAR'
 LEGACY = ('2026-10-06:analysis-v6:BTCUSDT', '2026-10-06:robot-v7:0:screening:0:1', '2026-10-05:manual-screening:v2')
+SHADOW_SQL = '''CREATE TABLE shadow_plans(setup_id TEXT PRIMARY KEY,day TEXT NOT NULL,symbol TEXT NOT NULL,plan TEXT NOT NULL,state TEXT NOT NULL,model TEXT NOT NULL,UNIQUE(day,symbol))'''
+SHADOW_MODEL = dict(state='PLAN_READY', tp_confirmed=False, sl_confirmed=False,
+    model_only=True, fill_confirmed=False)
+
+
+def historical_shadow_plan(symbol, state='SHADOW_PREFLIGHT_OK'):
+    """Published GET-only plan shape, independent of deleted modules/Git history."""
+    day = '2026-10-05'
+    key = hashlib.sha256(json.dumps([day, symbol, 'LONG', '100', '102', '99', '1'],
+        separators=(',', ':')).encode()).hexdigest()
+    ids = {leg: 'ho-' + key[:28] + '-' + suffix for leg, suffix in
+        (('ENTRY', 'e'), ('TP', 't'), ('SL', 's'))}
+    plan = dict(status=state, setup_id=key, business_day=day, symbol=symbol, side='LONG',
+        position_mode='ONE_WAY', positionSide='BOTH', margin_target='CROSS', leverage_target=75,
+        execution_quantity='1', entry='100', TP='102', SL='99', calculated_risk='1', actual_RR='2',
+        protective_side='SELL', client_ids=ids, required_account_mutations=[],
+        would_submit=False, live_execution=False, mode='DRY_RUN',
+        entry_order=dict(api_family='USD-M_FUTURES', intended_path='/fapi/v1/order',
+            payload=dict(symbol=symbol, side='BUY', positionSide='BOTH', type='LIMIT',
+                timeInForce='GTC', quantity='1', price='100', newClientOrderId=ids['ENTRY'])),
+        failure_policy=dict(uncertain_entry='RECONCILE_SAME_CLIENT_ID_NO_BLIND_RETRY',
+            partial_fill='PROTECTION_INCOMPLETE_RECONCILE_AND_PROTECT_FILLED_EXPOSURE',
+            protection='REQUIRE_BOTH_ACKNOWLEDGED_LEGS', incomplete='BLOCK_NEXT_SETUP',
+            after_exit='RECONCILE_FLAT_AND_CLEAR_SIBLING_BEFORE_NEW_SETUP'),
+        future_reconciliation=dict(entry=dict(intended_get_path='/fapi/v1/order',
+            lookup=dict(symbol=symbol, origClientOrderId=ids['ENTRY'])), implemented=False),
+        future_states=['PLAN_READY', 'ENTRY_SUBMITTED', 'ENTRY_CONFIRMED',
+            'PROTECTION_SUBMITTED', 'POSITION_PROTECTED'])
+    for field, leg, kind, price in (('take_profit', 'TP', 'TAKE_PROFIT_MARKET', '102'),
+            ('stop_loss', 'SL', 'STOP_MARKET', '99')):
+        plan[field + '_order'] = dict(api_family='USD-M_ALGO', intended_path='/fapi/v1/algoOrder',
+            activation='AFTER_CONFIRMED_ENTRY_FILL', payload=dict(algoType='CONDITIONAL',
+                symbol=symbol, side='SELL', positionSide='BOTH', type=kind, triggerPrice=price,
+                workingType='MARK_PRICE', closePosition='true', clientAlgoId=ids[leg]))
+        plan['future_reconciliation'][field] = dict(intended_get_path='/fapi/v1/algoOrder',
+            lookup=dict(clientAlgoId=ids[leg]))
+    return plan
 
 
 class RetirementTests(unittest.TestCase):
@@ -799,6 +838,204 @@ class PreOrderProofTests(unittest.TestCase):
         status, _ = self.invoke(True, True)
         self.assertEqual(status, 1)
         self.unchanged(before)
+
+
+class IdleShadowArchiveTests(unittest.TestCase):
+    insert = RetirementTests.insert
+    requests = RetirementTests.requests
+    names = RetirementTests.names
+    invoke = RetirementTests.invoke
+    unchanged = RetirementTests.unchanged
+    archive_change = PreOrderProofTests.archive_change
+    make_snapshot = PreOrderProofTests.make_snapshot
+
+    def setUp(self):
+        PreOrderProofTests.setUp(self)
+        self.plans = [historical_shadow_plan(symbol) for symbol in ('BTCUSDT', 'ETHUSDT')]
+        with sqlite3.connect(self.snapshot) as archive:
+            archive.execute(SHADOW_SQL)
+            for plan in self.plans:
+                archive.execute('INSERT INTO shadow_plans VALUES(?,?,?,?,?,?)', self.shadow_row(plan))
+
+    @staticmethod
+    def shadow_row(plan):
+        return (plan['setup_id'], plan['business_day'], plan['symbol'], json.dumps(plan),
+            plan['status'], json.dumps(SHADOW_MODEL))
+
+    def plan_change(self, update):
+        plan = copy.deepcopy(self.plans[0])
+        update(plan)
+        self.archive_change('UPDATE shadow_plans SET plan=? WHERE setup_id=?',
+            (json.dumps(plan), self.plans[0]['setup_id']))
+
+    def model_change(self, update):
+        model = dict(SHADOW_MODEL)
+        update(model)
+        self.archive_change('UPDATE shadow_plans SET model=? WHERE setup_id=?',
+            (json.dumps(model), self.plans[0]['setup_id']))
+
+    def rename_opaque(self, operation):
+        self.db.execute('UPDATE api_requests SET operation=? WHERE operation=?', (operation, self.opaque))
+        self.archive_change('UPDATE api_requests SET operation=? WHERE operation=?', (operation, self.opaque))
+        self.opaque = operation
+
+    def refusal_preserves_everything(self, expected='PRE_ORDER_ARCHIVE_ORDER_EVIDENCE_PRESENT'):
+        before, names, snapshot = self.requests(), self.names(), self.snapshot.read_bytes()
+        status, error = self.invoke(True, True)
+        self.assertEqual((status, error), (1, {'error': expected}))
+        self.unchanged(before)
+        self.assertEqual(self.names(), names)
+        self.assertEqual(self.snapshot.read_bytes(), snapshot)
+        self.assertFalse((self.trading / 'legacy-research-backups').exists())
+
+    def test_full_proof_apply_and_repeats_preserve_archive_shadow_manual_cache_and_no_replay(self):
+        for number in range(10): self.insert('2026-10-06:analysis-v6:TEST' + str(number) + 'USDT', 'COMPLETE')
+        before, names, snapshot = self.requests(), self.names(), self.snapshot.read_bytes()
+        status, inspect = self.invoke(prove=True)
+        self.assertEqual(status, 0)
+        self.assertTrue(inspect['can_apply'])
+        self.assertEqual(inspect['eligible_count'], 3)
+        self.assertEqual((self.requests(), self.names(), self.snapshot.read_bytes()), (before, names, snapshot))
+        status, report = self.invoke(True, True)
+        self.assertEqual((status, report['retired_count']), (0, 3))
+        self.assertEqual(self.snapshot.read_bytes(), snapshot)
+        self.assertEqual([row for row in self.requests() if row[3] == 'COMPLETE'],
+            [row for row in before if row[3] == 'COMPLETE'])
+        self.assertEqual(self.db.execute('SELECT state,COUNT(*) FROM api_requests GROUP BY state').fetchall(),
+            [('COMPLETE', 12), ('RETIRED_LEGACY', 3)])
+        self.assertEqual(self.db.execute('SELECT enabled,risk FROM robot_settings').fetchone(), (0, '5'))
+        self.assertEqual(self.db.execute('SELECT data FROM office_cache').fetchone(), ('HYPEUSDT manual exposure untouched',))
+        for table in ('robot_jobs', 'robot_candidates', 'order_intents', 'robot_entry_receipts'):
+            self.assertEqual(self.db.execute('SELECT COUNT(*) FROM ' + table).fetchone(), (0,))
+        with sqlite3.connect(report['backup']) as backup: self.assertEqual(self.requests(backup), before)
+        archived = self.db.execute('SELECT * FROM legacy_research_archive ORDER BY operation').fetchall()
+        names = self.names()
+        for prove in (False, True):
+            status, inspect = self.invoke(prove=prove)
+            self.assertEqual((status, inspect['pre_order_proof']['matched_count']), (0, 1))
+            self.assertEqual(self.invoke(True, prove), (0, dict(status='UNCHANGED', retired_count=0)))
+        self.assertEqual(self.names(), names)
+        self.assertEqual(self.db.execute('SELECT * FROM legacy_research_archive ORDER BY operation').fetchall(), archived)
+        self.assertEqual(self.snapshot.read_bytes(), snapshot)
+
+    def test_frozen_vps_marker_format_is_readable_without_installer_or_migration(self):
+        # The ephemeral VPS addon wrote the unchanged base helper's typed payload,
+        # scope and timestamp. Seed that format independently of current apply().
+        columns = tuple(row[1] for row in self.db.execute('PRAGMA table_info(api_requests)'))
+        original = self.requests()
+        self.db.execute('''CREATE TABLE legacy_research_archive(operation TEXT PRIMARY KEY,
+            original_row BLOB NOT NULL,row_sha256 TEXT NOT NULL,scope TEXT NOT NULL,retired_at TEXT NOT NULL)''')
+        for row in original:
+            if row[3] != 'NEEDS_REVIEW': continue
+            payload = tool.encoded(columns, row)
+            scope = ('pre_order_archive:' + hashlib.sha256(self.snapshot.read_bytes()).hexdigest()
+                if row[0] == self.opaque else tool.classify(row[0])[0])
+            self.db.execute('INSERT INTO legacy_research_archive VALUES(?,?,?,?,?)',
+                (row[0], payload, hashlib.sha256(payload).hexdigest(), scope, '2026-10-07T05:20:00+00:00'))
+            self.db.execute("UPDATE api_requests SET state='RETIRED_LEGACY' WHERE operation=?", (row[0],))
+        before, names, snapshot = self.requests(), self.names(), self.snapshot.read_bytes()
+        for prove in (False, True):
+            status, inspect = self.invoke(prove=prove)
+            self.assertEqual((status, inspect['pre_order_proof']['matched_count']), (0, 1))
+            self.assertEqual(inspect['eligible_count'], 0)
+            self.assertEqual(inspect['unresolved_request_count'], 0)
+            self.assertEqual(self.invoke(True, prove), (0, dict(status='UNCHANGED', retired_count=0)))
+        self.assertEqual((self.requests(), self.names(), self.snapshot.read_bytes()), (before, names, snapshot))
+        self.assertFalse((self.trading / 'legacy-research-backups').exists())
+
+    def test_live_flag(self):
+        self.plan_change(lambda plan: plan.update(live_execution=True))
+        self.refusal_preserves_everything()
+
+    def test_false_plan_flag_must_be_boolean(self):
+        self.plan_change(lambda plan: plan.update(would_submit=0))
+        self.refusal_preserves_everything()
+
+    def test_default_model_only_flag_is_required(self):
+        self.model_change(lambda model: model.update(model_only=False))
+        self.refusal_preserves_everything()
+
+    def test_false_model_flag_must_be_boolean(self):
+        self.model_change(lambda model: model.update(fill_confirmed=0))
+        self.refusal_preserves_everything()
+
+    def test_started_execution_model_is_not_an_idle_plan(self):
+        self.model_change(lambda model: model.update(state='ENTRY_SUBMITTED'))
+        self.refusal_preserves_everything()
+
+    def test_unknown_schema(self):
+        self.archive_change('ALTER TABLE shadow_plans ADD COLUMN unknown TEXT')
+        self.refusal_preserves_everything()
+
+    def test_nonempty_malformed_shadow_table_retains_original_evidence_refusal(self):
+        self.archive_change('DROP TABLE shadow_plans')
+        self.archive_change('CREATE TABLE shadow_plans(id TEXT)')
+        self.archive_change('INSERT INTO shadow_plans VALUES(?)', ('unknown shadow evidence',))
+        self.refusal_preserves_everything()
+
+    def test_shadow_plan_client_id_reference_blocks_opaque_retirement(self):
+        self.rename_opaque(self.plans[0]['client_ids']['ENTRY'])
+        self.refusal_preserves_everything('PRE_ORDER_REQUEST_REFERENCED')
+
+    def test_shadow_model_state_reference_blocks_opaque_retirement(self):
+        self.rename_opaque('PLAN_READY')
+        self.refusal_preserves_everything('PRE_ORDER_REQUEST_REFERENCED')
+
+    def test_current_valid_shadow_plan_reference_is_checked_too(self):
+        plans = [historical_shadow_plan(symbol) for symbol in ('SOLUSDT', 'ADAUSDT')]
+        self.db.execute(SHADOW_SQL)
+        self.db.executemany('INSERT INTO shadow_plans VALUES(?,?,?,?,?,?)', [self.shadow_row(plan) for plan in plans])
+        self.rename_opaque(plans[0]['client_ids']['ENTRY'])
+        self.refusal_preserves_everything('PRE_ORDER_REQUEST_REFERENCED')
+
+    def test_unknown_top_level_receipt_claim(self):
+        self.plan_change(lambda plan: plan.update(order_id='123'))
+        self.refusal_preserves_everything()
+
+    def test_receipt_hidden_in_reward_ratio(self):
+        self.plan_change(lambda plan: plan.update(actual_RR={'orderId': 123}))
+        self.refusal_preserves_everything()
+
+    def test_nested_receipt_claim(self):
+        self.plan_change(lambda plan: plan['entry_order']['payload'].update(orderId=123))
+        self.refusal_preserves_everything()
+
+    def test_duplicate_json_flags(self):
+        value = '{"would_submit":true,' + json.dumps(self.plans[0])[1:]
+        self.archive_change('UPDATE shadow_plans SET plan=? WHERE setup_id=?', (value, self.plans[0]['setup_id']))
+        self.refusal_preserves_everything()
+
+    def test_nonfinite_json(self):
+        self.plan_change(lambda plan: plan.update(failure_code=float('nan')))
+        self.refusal_preserves_everything()
+
+    def test_unvalidated_level_identity(self):
+        self.plan_change(lambda plan: plan.update(TP='103'))
+        self.refusal_preserves_everything()
+
+    def test_implemented_reconciliation(self):
+        self.plan_change(lambda plan: plan['future_reconciliation'].update(implemented=True))
+        self.refusal_preserves_everything()
+
+    def test_single_plan_does_not_expand_two_row_exception(self):
+        self.archive_change('DELETE FROM shadow_plans WHERE setup_id=?', (self.plans[0]['setup_id'],))
+        self.refusal_preserves_everything()
+
+    def test_missing_opaque_api_row_is_not_proved_by_shadow_plan(self):
+        self.archive_change('DELETE FROM api_requests WHERE operation=?', (self.opaque,))
+        self.refusal_preserves_everything('PRE_ORDER_REQUEST_NOT_IN_ARCHIVE')
+
+    def test_on_still_refuses_before_backup(self):
+        self.db.execute('UPDATE robot_settings SET enabled=1')
+        self.refusal_preserves_everything('ROBOT_OFF_REQUIRED')
+
+    def test_current_pending_intent_still_refuses_before_backup(self):
+        self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?)', ('owned', 'candidate', 'ENTRY_PENDING', '{}'))
+        self.refusal_preserves_everything('ORDER_EVIDENCE_PRESENT')
+
+    def test_archived_real_receipt_still_refuses_before_backup(self):
+        self.archive_change('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)', ('actual', 'BTCUSDT', '2026-10-05', 'now'))
+        self.refusal_preserves_everything()
 
 
 class GrammarTests(unittest.TestCase):
