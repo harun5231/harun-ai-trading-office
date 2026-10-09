@@ -3,7 +3,8 @@
 .dashboard-section{padding:14px;border:1px solid var(--line);background:#25464b45;border-radius:12px;margin:14px 0;overflow-wrap:anywhere}
 .dashboard-section h4{font-size:11px;letter-spacing:.08em;color:#c1e6e4;margin:0 0 12px}
 .dashboard-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
-.dashboard-actions button{min-height:44px;padding:11px 14px;background:#365e68;border:1px solid var(--line);border-radius:9px;color:#eff6ff;font:inherit;font-size:12px;font-weight:600}
+.dashboard-actions button,.dashboard-actions a{min-height:44px;padding:11px 14px;background:#365e68;border:1px solid var(--line);border-radius:9px;color:#eff6ff;font:inherit;font-size:12px;font-weight:600}
+.dashboard-actions a{display:flex;align-items:center;justify-content:center;text-align:center;text-decoration:none;flex:1}
 .dashboard-actions button:disabled{opacity:.45;cursor:default}
 #robotToggle{flex:1;text-align:center;letter-spacing:.04em}
 #robotToggle[aria-pressed=true]{background:#215a48;border-color:#a0e0bd77;color:#c3ffe1}

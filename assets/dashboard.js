@@ -15,7 +15,7 @@
   let riskDraft = null, resetRiskOnRefresh = null;
   let online = false, refreshRequested = false, message = 'Hubungkan worker untuk membaca akun dan status robot.';
   let calendarMonth = null, selectedDay = null;
-  let loginBusy = false, loginMessage = '';
+  let loginBusy = false, loginMessage = '', loginAccess = null, loginExpiryTimer = null;
 
   function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -79,7 +79,7 @@
         !['CONNECTED', 'LOGIN_REQUIRED', 'LOGIN_IN_PROGRESS', 'UNAVAILABLE', 'CHALLENGE_REQUIRED', 'BUSY'].includes(research.status)) {
       return { status: 'UNAVAILABLE', label: 'Status perlu diperbarui', login: true };
     }
-    const labels = { CONNECTED: 'Terhubung', LOGIN_REQUIRED: 'Login diperlukan', LOGIN_IN_PROGRESS: 'Login sedang dibuka',
+    const labels = { CONNECTED: 'Terhubung', LOGIN_REQUIRED: 'Login diperlukan', LOGIN_IN_PROGRESS: 'Akses login sedang aktif',
       UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi login diperlukan', BUSY: 'Analisis sedang berjalan' };
     return { status: research.status, label: labels[research.status], login: ['LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
   }
@@ -220,9 +220,9 @@
     return details;
   }
   function renderNeurobro() {
-    const state = researchState(), research = snapshot?.research;
+    const state = researchState(), research = snapshot?.research, access = currentLoginAccess(state);
     const main = section('SESI NEUROBRO');
-    const status = element('p', state.label, 'dashboard-status neurobro-status');
+    const status = element('p', access ? 'Akses login siap' : state.label, 'dashboard-status neurobro-status');
     status.id = 'neurobroStatus'; status.dataset.status = state.status; status.setAttribute('role', 'status'); main.append(status);
     if (online && research?.provider === 'NEUROBRO_WEB' && timestamp(research.checked_at) !== null) {
       main.append(notice('Diperiksa '+date(research.checked_at), state.status === 'UNAVAILABLE' ? 'warning' : 'normal'));
@@ -230,12 +230,22 @@
     if (state.status === 'API_ACTIVE') main.append(notice('Worker masih memakai koneksi sebelumnya. Login browser tersedia setelah pembaruan worker.', 'warning'));
     else if (state.status === 'CONNECTED' || state.status === 'BUSY') {
       main.append(notice('Robot memakai chatbot Neurobro di browser VPS. Sesi login disimpan agar tetap dapat digunakan setelah worker dimulai ulang, sampai sesi berakhir di situs Neurobro.'));
+    } else if (access) {
+      main.append(notice('Tekan BUKA BROWSER LOGIN untuk membuka tab browser VPS, lalu selesaikan login Neurobro di sana. Tautan ini hanya dapat digunakan sekali dan berlaku paling lama 60 detik.'));
     } else if (state.status === 'LOGIN_IN_PROGRESS') {
-      main.append(notice('Selesaikan login pada tab Neurobro yang sudah terbuka. Status diperbarui otomatis setelah sesi tersambung.'));
+      main.append(notice('Akses login masih aktif di VPS. Jika tab login tidak terbuka, tunggu sampai tombol LOGIN NEURO tersedia kembali. Tautan awal berlaku 60 detik; akses browser yang sudah dibuka berlaku 10 menit.'));
     } else {
       main.append(notice(origin && online ? 'Buka browser VPS untuk login Neurobro. Jika ada verifikasi akun, selesaikan pada tab login tersebut.' : 'Hubungkan worker privat untuk membaca sesi dan membuka login Neurobro.', 'warning'));
     }
-    if (state.login || !origin || !online) {
+    if (access) {
+      const actions = element('div', undefined, 'dashboard-actions');
+      const link = element('a', 'BUKA BROWSER LOGIN'); link.id = 'neurobroLoginOpen';
+      link.setAttribute('href', access.url); link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer');
+      link.onclick = event => {
+        if (currentLoginAccess() !== access) { event.preventDefault(); paint(); }
+      };
+      actions.append(link); main.append(actions);
+    } else if (state.login || !origin || !online) {
       const actions = element('div', undefined, 'dashboard-actions');
       const button = element('button', loginBusy ? 'MEMBUKA LOGIN…' : 'LOGIN NEURO');
       button.id = 'neurobroLogin'; button.disabled = !origin || !online || loginBusy;
@@ -246,25 +256,43 @@
     main.append(notice('Saat sesi logout atau membutuhkan verifikasi, screening dan analisis baru menunggu login. Login tidak mengaktifkan robot atau mengubah posisi Binance.'));
     content.append(main, renderConnection());
   }
+  function clearLoginAccess() {
+    clearTimeout(loginExpiryTimer); loginExpiryTimer = null;
+    if (loginAccess) loginAccess.url = '';
+    loginAccess = null;
+    const link = document.getElementById('neurobroLoginOpen');
+    if (link) { link.removeAttribute('href'); link.hidden = true; }
+  }
+  function currentLoginAccess(state = researchState()) {
+    if (!loginAccess) return null;
+    if (!origin || !online || loginAccess.generation !== generation || loginAccess.origin !== origin ||
+        ['CONNECTED', 'BUSY', 'API_ACTIVE'].includes(state.status)) {
+      clearLoginAccess(); loginMessage = ''; return null;
+    }
+    if (performance.now() >= loginAccess.expiresAt) {
+      clearLoginAccess(); loginMessage = 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; return null;
+    }
+    return loginAccess;
+  }
   async function startNeurobroLogin() {
-    if (!origin || !online || loginBusy) return;
-    // Open during the click itself so mobile browsers do not block the login tab.
-    const tab = window.open('about:blank', '_blank');
-    if (!tab) { loginMessage = 'Tab login diblokir browser. Izinkan tab baru, lalu tekan LOGIN NEURO lagi.'; paint(); return; }
-    tab.opener = null;
-    const currentGeneration = generation, loginOrigin = origin;
-    loginBusy = true; loginMessage = 'Menyiapkan tab login Neurobro…'; paint();
+    if (!origin || !online || loginBusy || currentLoginAccess() || !researchState().login) return;
+    const currentGeneration = generation, loginOrigin = origin, startedAt = performance.now();
+    clearLoginAccess(); loginBusy = true; loginMessage = 'Menyiapkan akses login Neurobro…'; paint();
     try {
       const result = await request('/neurobro/login/start', 'POST', {});
-      if (currentGeneration !== generation || origin !== loginOrigin) { tab.close(); return; }
+      if (currentGeneration !== generation || origin !== loginOrigin) return;
       if (!result || typeof result.ticket !== 'string' || !/^[0-9a-f]{64}$/.test(result.ticket) || result.path !== '/neurobro/login' ||
           !Number.isInteger(result.expires_in) || result.expires_in < 1 || result.expires_in > 60) throw Error('Respons login worker tidak sesuai kontrak.');
-      if (tab.closed) throw Error('Tab login sudah ditutup.');
-      tab.location.replace(loginOrigin+'/neurobro/login#'+result.ticket);
-      loginMessage = 'Tab login dibuka. Selesaikan login di sana; status di menu akan diperbarui otomatis.';
+      const expiresAt = startedAt + result.expires_in * 1000;
+      if (performance.now() >= expiresAt) throw Error('Akses login kedaluwarsa sebelum siap.');
+      loginAccess = { url: loginOrigin+'/neurobro/login#'+result.ticket, origin: loginOrigin, generation: currentGeneration, expiresAt };
+      loginExpiryTimer = setTimeout(() => {
+        if (currentGeneration !== generation) return;
+        clearLoginAccess(); loginMessage = 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; paint();
+      }, expiresAt - performance.now());
+      loginMessage = '';
     } catch (error) {
-      tab.close();
-      if (currentGeneration === generation) loginMessage = error.message+' Login belum terhubung.';
+      if (currentGeneration === generation) { clearLoginAccess(); loginMessage = error.message+' Login belum terhubung.'; }
     } finally {
       if (currentGeneration === generation) { loginBusy = false; paint(); poll(); }
     }
@@ -461,6 +489,7 @@
     if (!origin) content.append(renderConnection());
   }
   function paint() {
+    currentLoginAccess();
     paintStats();
     if (panel.hidden) return;
     const focused = document.activeElement;
@@ -527,6 +556,7 @@
     }
   }
   function disconnect() {
+    clearLoginAccess();
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
     polling = false; saving = false; refreshRequested = false; online = false;
     riskDraft = null; resetRiskOnRefresh = null; calendarMonth = null; selectedDay = null;
