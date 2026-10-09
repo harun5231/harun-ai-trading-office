@@ -86,7 +86,7 @@ button:focus-visible{outline:3px solid #8cdbc7;outline-offset:3px}
 }
 
 </style>
-<link rel="stylesheet" href="assets/workflow.css">
+<link rel="stylesheet" href="assets/workflow.css?v=444fa5cd7f92">
 <link rel="stylesheet" href="assets/office3d/canvas.css">
 </head>
 <body>
@@ -106,6 +106,7 @@ button:focus-visible{outline:3px solid #8cdbc7;outline-offset:3px}
 <div id="menuDrawer" class="menu-drawer" hidden>
   <button id="robotMenu" data-view="robot" class="menu-item active">◉ <span>Robot Trading ON / OFF</span></button>
   <button data-view="calendar" class="menu-item">▦ <span>Kalender PNL</span></button>
+  <button id="neurobroMenu" data-view="neurobro" class="menu-item neurobro-menu">◈ <span>LOGIN NEURO<small id="neurobroMenuStatus">Status belum tersedia</small></span></button>
   <div class="drawer-note">Pilih menu untuk membuka panel. Tampilan kantor tetap terlihat.</div>
 </div>
 <div id="infoPanel" class="panel info-panel" hidden><div class="panel-head"><h3 id="panelTitle">ROBOT TRADING ON / OFF</h3><button id="panelClose" class="panel-close" aria-label="Tutup panel">✕</button></div>
@@ -139,6 +140,6 @@ window.addEventListener('unhandledrejection', function(e) {
   }
 });
 </script>
-<script src="assets/dashboard.js"></script>
+<script src="assets/dashboard.js?v=821197db7b26"></script>
 </body>
 </html>

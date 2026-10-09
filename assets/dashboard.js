@@ -6,14 +6,16 @@
   const title = document.getElementById('panelTitle');
   const drawer = document.getElementById('menuDrawer');
   const menuToggle = document.getElementById('menuToggle');
-  const views = { robot: 'ROBOT TRADING ON / OFF', calendar: 'KALENDER PNL' };
+  const views = { robot: 'ROBOT TRADING ON / OFF', calendar: 'KALENDER PNL', neurobro: 'LOGIN NEURO' };
   const CALENDAR_START = '2026-10-01';
   const FRESH_MS = 120000;
+  const RESEARCH_FRESH_MS = 90000;
   let origin = '', configuredOrigin = '', token = '', timer = null, snapshot = null;
   let view = 'robot', generation = 0, revision = 0, polling = false, saving = false;
   let riskDraft = null, resetRiskOnRefresh = null;
   let online = false, refreshRequested = false, message = 'Hubungkan worker untuk membaca akun dan status robot.';
   let calendarMonth = null, selectedDay = null;
+  let loginBusy = false, loginMessage = '';
 
   function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -68,6 +70,19 @@
   }
   function accountCurrent() { return online && snapshot?.account.status === 'CONNECTED' && fresh(snapshot.account.checked_at); }
   function reportsCurrent() { return online && ['AVAILABLE', 'PARTIAL'].includes(snapshot?.reports.status) && fresh(snapshot.reports.checked_at); }
+  function researchState() {
+    const research = snapshot?.research;
+    if (!online || !research) return { status: 'UNAVAILABLE', label: 'Status belum tersedia', login: online };
+    if (research.provider === 'NEUROAPI') return { status: 'API_ACTIVE', label: 'Browser belum diaktifkan', login: false };
+    const at = timestamp(research.checked_at);
+    if (research.provider !== 'NEUROBRO_WEB' || at === null || at > Date.now() + 5000 || Date.now() - at >= RESEARCH_FRESH_MS ||
+        !['CONNECTED', 'LOGIN_REQUIRED', 'LOGIN_IN_PROGRESS', 'UNAVAILABLE', 'CHALLENGE_REQUIRED', 'BUSY'].includes(research.status)) {
+      return { status: 'UNAVAILABLE', label: 'Status perlu diperbarui', login: true };
+    }
+    const labels = { CONNECTED: 'Terhubung', LOGIN_REQUIRED: 'Login diperlukan', LOGIN_IN_PROGRESS: 'Login sedang dibuka',
+      UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi login diperlukan', BUSY: 'Analisis sedang berjalan' };
+    return { status: research.status, label: labels[research.status], login: ['LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
+  }
   function publish() {
     const account = accountCurrent() ? snapshot.account : null;
     const reports = reportsCurrent() ? snapshot.reports : null;
@@ -107,6 +122,10 @@
     const robotMenu = document.getElementById('robotMenu');
     robotMenu.dataset.robotOn = snapshot ? String(snapshot.robot.robot_on) : '';
     robotMenu.dataset.status = online ? snapshot?.robot.bot_status ?? 'WAITING' : 'OFFLINE';
+    const research = researchState(), researchMenu = document.getElementById('neurobroMenu');
+    if (researchMenu) researchMenu.dataset.status = research.status;
+    const researchLabel = document.getElementById('neurobroMenuStatus');
+    if (researchLabel) researchLabel.textContent = research.label;
   }
   function notice(text, tone = 'normal') { return element('p', text, 'dashboard-notice '+tone); }
   function section(label) {
@@ -197,8 +216,58 @@
     };
     const stop = element('button', 'PUTUSKAN'); stop.id = 'apiDisconnect'; stop.disabled = !origin;
     stop.onclick = () => { disconnect(); message = 'Dashboard terputus. Worker tetap menjalankan status terakhirnya di VPS.'; paint(); };
-    actions.append(connect, stop); details.append(originLabel, tokenLabel, actions, notice('Token kontrol hanya berada di memori tab. Kunci Binance dan NeuroAPI tetap di VPS.'));
+    actions.append(connect, stop); details.append(originLabel, tokenLabel, actions, notice('Token kontrol hanya berada di memori tab. Kunci Binance dan sesi browser Neurobro tetap di VPS.'));
     return details;
+  }
+  function renderNeurobro() {
+    const state = researchState(), research = snapshot?.research;
+    const main = section('SESI NEUROBRO');
+    const status = element('p', state.label, 'dashboard-status neurobro-status');
+    status.id = 'neurobroStatus'; status.dataset.status = state.status; status.setAttribute('role', 'status'); main.append(status);
+    if (online && research?.provider === 'NEUROBRO_WEB' && timestamp(research.checked_at) !== null) {
+      main.append(notice('Diperiksa '+date(research.checked_at), state.status === 'UNAVAILABLE' ? 'warning' : 'normal'));
+    }
+    if (state.status === 'API_ACTIVE') main.append(notice('Worker masih memakai koneksi sebelumnya. Login browser tersedia setelah pembaruan worker.', 'warning'));
+    else if (state.status === 'CONNECTED' || state.status === 'BUSY') {
+      main.append(notice('Robot memakai chatbot Neurobro di browser VPS. Sesi login disimpan agar tetap dapat digunakan setelah worker dimulai ulang, sampai sesi berakhir di situs Neurobro.'));
+    } else if (state.status === 'LOGIN_IN_PROGRESS') {
+      main.append(notice('Selesaikan login pada tab Neurobro yang sudah terbuka. Status diperbarui otomatis setelah sesi tersambung.'));
+    } else {
+      main.append(notice(origin && online ? 'Buka browser VPS untuk login Neurobro. Jika ada verifikasi akun, selesaikan pada tab login tersebut.' : 'Hubungkan worker privat untuk membaca sesi dan membuka login Neurobro.', 'warning'));
+    }
+    if (state.login || !origin || !online) {
+      const actions = element('div', undefined, 'dashboard-actions');
+      const button = element('button', loginBusy ? 'MEMBUKA LOGIN…' : 'LOGIN NEURO');
+      button.id = 'neurobroLogin'; button.disabled = !origin || !online || loginBusy;
+      button.onclick = startNeurobroLogin; actions.append(button); main.append(actions);
+    }
+    if (loginMessage) main.append(element('p', loginMessage, 'dashboard-message'));
+    main.append(notice('Untuk coin yang dipilih, robot mengirim dua gambar chart realtime Binance Futures: 15 menit dan 1 jam. Login dan CAPTCHA diselesaikan langsung oleh pengguna pada browser VPS.'));
+    main.append(notice('Saat sesi logout atau membutuhkan verifikasi, screening dan analisis baru menunggu login. Login tidak mengaktifkan robot atau mengubah posisi Binance.'));
+    content.append(main, renderConnection());
+  }
+  async function startNeurobroLogin() {
+    if (!origin || !online || loginBusy) return;
+    // Open during the click itself so mobile browsers do not block the login tab.
+    const tab = window.open('about:blank', '_blank');
+    if (!tab) { loginMessage = 'Tab login diblokir browser. Izinkan tab baru, lalu tekan LOGIN NEURO lagi.'; paint(); return; }
+    tab.opener = null;
+    const currentGeneration = generation, loginOrigin = origin;
+    loginBusy = true; loginMessage = 'Menyiapkan tab login Neurobro…'; paint();
+    try {
+      const result = await request('/neurobro/login/start', 'POST', {});
+      if (currentGeneration !== generation || origin !== loginOrigin) { tab.close(); return; }
+      if (!result || typeof result.ticket !== 'string' || !/^[0-9a-f]{64}$/.test(result.ticket) || result.path !== '/neurobro/login' ||
+          !Number.isInteger(result.expires_in) || result.expires_in < 1 || result.expires_in > 60) throw Error('Respons login worker tidak sesuai kontrak.');
+      if (tab.closed) throw Error('Tab login sudah ditutup.');
+      tab.location.replace(loginOrigin+'/neurobro/login#'+result.ticket);
+      loginMessage = 'Tab login dibuka. Selesaikan login di sana; status di menu akan diperbarui otomatis.';
+    } catch (error) {
+      tab.close();
+      if (currentGeneration === generation) loginMessage = error.message+' Login belum terhubung.';
+    } finally {
+      if (currentGeneration === generation) { loginBusy = false; paint(); poll(); }
+    }
   }
   function wibDay(value = Date.now()) {
     return new Date(value + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -396,7 +465,7 @@
     if (panel.hidden) return;
     const focused = document.activeElement;
     // Keep unfinished credential/risk input intact while worker facts refresh.
-    if (view === 'robot' && ['apiOrigin', 'apiToken', 'robotRisk'].includes(focused?.id)) {
+    if (['robot', 'neurobro'].includes(view) && ['apiOrigin', 'apiToken', 'robotRisk'].includes(focused?.id)) {
       const toggle = document.getElementById('robotToggle'); if (toggle) toggle.disabled = !origin || !online || saving || !snapshot;
       for (const id of ['robotRisk', 'robotRiskSave']) {
         const control = document.getElementById(id); if (control) control.disabled = !origin || !online || saving || !snapshot;
@@ -407,7 +476,7 @@
     const calendarFocus = view === 'calendar' && focused?.id?.startsWith('pnl-day-') ? focused.id : null;
     panel.classList.toggle('calendar-panel', view === 'calendar');
     title.textContent = views[view]; content.replaceChildren();
-    ({ robot: renderRobot, calendar: renderCalendar })[view]();
+    ({ robot: renderRobot, calendar: renderCalendar, neurobro: renderNeurobro })[view]();
     if (calendarFocus) document.getElementById(calendarFocus)?.focus?.({ preventScroll: true });
   }
   async function request(path, method = 'GET', value) {
@@ -461,6 +530,7 @@
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
     polling = false; saving = false; refreshRequested = false; online = false;
     riskDraft = null; resetRiskOnRefresh = null; calendarMonth = null; selectedDay = null;
+    loginBusy = false; loginMessage = '';
     const field = document.getElementById('apiToken'); if (field) field.value = ''; publish();
   }
   menuToggle.addEventListener('click', () => { drawer.hidden = !drawer.hidden; menuToggle.setAttribute('aria-expanded', String(!drawer.hidden)); });

@@ -20,6 +20,11 @@
 .dashboard-connection summary{cursor:pointer;padding:12px 0;min-height:44px;color:#d4e8ec}
 .dashboard-connection label{display:block;margin-top:8px;color:#c9dce0}
 .dashboard-connection input{display:block;width:100%;min-height:44px;padding:10px;background:#122934;border:1px solid var(--line);border-radius:8px;color:#fff;font-size:16px;margin-top:4px}
+.neurobro-menu>span{min-width:0;overflow-wrap:anywhere}
+.neurobro-menu small{display:block;margin-top:3px;color:var(--muted);font-size:10px;font-weight:400;line-height:1.5}
+.neurobro-menu[data-status=CONNECTED] small,.neurobro-menu[data-status=BUSY] small,.neurobro-status[data-status=CONNECTED],.neurobro-status[data-status=BUSY]{color:#a0e0bd}
+.neurobro-menu[data-status=LOGIN_REQUIRED] small,.neurobro-menu[data-status=CHALLENGE_REQUIRED] small,.neurobro-status[data-status=LOGIN_REQUIRED],.neurobro-status[data-status=CHALLENGE_REQUIRED]{color:#ffe0a3}
+#neurobroLogin{flex:1;text-align:center}
 @media(max-width:700px){.dashboard-section{padding:12px;margin:11px 0}.dashboard-metrics{grid-template-columns:1fr}.dashboard-field{font-size:11px}}
 
 /* A monthly closed-position calendar, with no decorative account numbers. */
