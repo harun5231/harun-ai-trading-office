@@ -1,0 +1,83 @@
+name: Build and publish delegated Neurobro dialogue agent
+on:
+  pull_request:
+    paths: ['agent/dialogue_*.py', 'agent/native_market_context.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'tests/test_native_browser_hook.py', 'tests/test_agent_dialogue*', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+  workflow_dispatch:
+permissions: {}
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: dialogue-agent-image-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Test delegated runtime and native data conversion without providers
+        run: |
+          python3 -m unittest tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_browser_hook -v
+      - name: Build from the immutable existing agent image
+        run: |
+          contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"
+          docker build --pull --platform linux/amd64 -f deploy/dialogue-agent.Dockerfile --build-arg REVISION="$GITHUB_SHA" --build-arg CONTRACT_SHA="$contract_sha" -t harun-dialogue-agent:test .
+      - name: Actual missing-key daemon, clean shutdown, restart and crash recovery
+        run: |
+          docker run --rm --network none --read-only --user 10002:10002 --group-add 10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 256m --cpus 0.5 --tmpfs /tmp:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --tmpfs /data:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/smoke_dialogue_agent_image.py,dst=/smoke.py,readonly" --entrypoint python harun-dialogue-agent:test /smoke.py
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.repository_id == '1404087844' &&
+      github.actor_id == '325709525' && github.triggering_actor == 'harun5231' &&
+      github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build, verify and publish this exact source revision
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/harun5231/harun-neurobro-agent:dialogue-sha-$GITHUB_SHA"
+          contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"
+          docker build --pull --platform linux/amd64 -f deploy/dialogue-agent.Dockerfile --build-arg REVISION="$GITHUB_SHA" --build-arg CONTRACT_SHA="$contract_sha" -t "$image" .
+          docker run --rm --network none --read-only --user 10002:10002 --group-add 10001 --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 256m --cpus 0.5 --tmpfs /tmp:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --tmpfs /data:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/smoke_dialogue_agent_image.py,dst=/smoke.py,readonly" --entrypoint python "$image" /smoke.py
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u harun5231 --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          docker push "$image"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          image_id="$(docker image inspect --format '{{.Id}}' "$image")"
+          SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" python3 - <<'PY'
+          import json, os, re
+          image=os.environ['IMAGE_DIGEST']
+          assert re.fullmatch(r'ghcr.io/harun5231/harun-neurobro-agent@sha256:[0-9a-f]{64}',image)
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}',os.environ['IMAGE_ID'])
+          assert re.fullmatch(r'[0-9a-f]{40}',os.environ['SOURCE_COMMIT'])
+          assert re.fullmatch(r'[0-9a-f]{64}',os.environ['CONTRACT_SHA'])
+          with open('dialogue-agent-image.json','w') as output:
+              json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office',
+                  'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
+                  'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
+                  'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
+                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:00c1a2b1cf383e44522c8330dd00144dc45304bc72b0a738d78cb01045c8ae3d',
+                  'deployment_authorized':False},output,sort_keys=True)
+          PY
+          cat dialogue-agent-image.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain immutable image evidence for release review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dialogue-agent-image
+          path: dialogue-agent-image.json
+          retention-days: 14
