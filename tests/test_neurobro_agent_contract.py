@@ -32,11 +32,12 @@ class NeurobroAgentContractTests(unittest.TestCase):
 
     def test_fixed_contract_is_valid_but_not_runtime_or_deployment_ready(self):
         result = validator.validate_contract(self.contract())
-        self.assertEqual(result['status'], 'PREPARATION_CONTRACT_VALID')
-        for field in ('runtime_implemented', 'provider_verified', 'deployment_authorized', 'production_actions'):
+        self.assertEqual(result['status'], 'RUNTIME_CONTRACT_VALID')
+        self.assertIs(result['runtime_implemented'], True)
+        for field in ('provider_verified', 'deployment_authorized', 'production_actions'):
             self.assertIs(result[field], False)
-        self.assertIn('RUNTIME_NOT_IMPLEMENTED', result['blockers'])
-        self.assertIn('BROWSER_ARTIFACT_NOT_PINNED_OR_RECONCILED', result['blockers'])
+        self.assertIn('VPS_DEPLOYMENT_NOT_PERFORMED', result['blockers'])
+        self.assertIn('PRODUCTION_BROWSER_BINDING_NOT_RECONCILED', result['blockers'])
 
     def test_exact_role_assignment_and_original_setup_authority_cannot_be_changed(self):
         for role in self.contract()['roles']:
@@ -52,7 +53,7 @@ class NeurobroAgentContractTests(unittest.TestCase):
     def test_credentials_funding_and_all_privileged_permissions_are_denied(self):
         for field in self.contract()['permissions']:
             with self.subTest(permission=field):
-                self.rejected(('permissions', field), True)
+                self.rejected(('permissions', field), not self.contract()['permissions'][field])
         self.rejected(('decision_contract', 'paid_llm_configured'), True)
         self.rejected(('decision_contract', 'fallback_ai_provider'), 'PAID_MODEL')
 
@@ -66,7 +67,7 @@ class NeurobroAgentContractTests(unittest.TestCase):
     def test_every_readiness_claim_remains_false(self):
         for field in self.contract()['readiness']:
             with self.subTest(field=field):
-                self.rejected(('readiness', field), True)
+                self.rejected(('readiness', field), not self.contract()['readiness'][field])
         self.rejected(('investigation', 'deployed_source_match_verified'), True)
 
     def test_source_allowlist_rejects_other_origin_signed_paths_or_methods(self):
@@ -83,7 +84,7 @@ class NeurobroAgentContractTests(unittest.TestCase):
         self.rejected(('browser_provider', 'artifact_sha256'), 'b' * 64)
         self.rejected(('browser_provider', 'reconciliation_verified'), True)
         self.rejected(('browser_provider', 'reconciliation_required'), False)
-        self.rejected(('browser_provider', 'max_critical_clarifications_per_setup'), 2)
+        self.rejected(('browser_provider', 'max_critical_clarifications_per_setup'), 3)
         self.rejected(('browser_provider', 'unknown_outcome'), 'RETRY')
 
     def test_fee_and_account_bridge_requires_fresh_sanitized_root_owned_evidence(self):
@@ -122,8 +123,8 @@ class NeurobroAgentContractTests(unittest.TestCase):
                 self.rejected(('rollback', key), replacement)
 
     def test_first_install_scope_requires_absence_and_new_service_ownership_proof(self):
-        self.rejected(('service', 'lifecycle_scope'), 'UPGRADE_PRESENT_SERVICE')
-        self.rejected(('rollback', 'requires_predeployment_absence_verified'), False)
+        self.rejected(('service', 'lifecycle_scope'), 'UNSCOPED_PRODUCTION_UPDATE')
+        self.rejected(('rollback', 'requires_predeployment_absence_verified'), True)
         self.rejected(('rollback', 'requires_new_service_ownership_proof'), False)
 
     def test_baseline_investigation_is_a_full_commit_not_a_mutable_or_deployed_claim(self):
@@ -181,7 +182,7 @@ class NeurobroAgentContractTests(unittest.TestCase):
                 self.assertEqual(code, 0 if valid else 1)
                 result = json.loads(output.getvalue())
                 self.assertIs(result['deployment_authorized'], False)
-                self.assertIs(result['runtime_implemented'], False)
+                self.assertIs(result['runtime_implemented'], valid)
                 self.assertNotIn('PRIVATE_CANARY', output.getvalue())
                 self.assertEqual(path.read_bytes(), before)
 

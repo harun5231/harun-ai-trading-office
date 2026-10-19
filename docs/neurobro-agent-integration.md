@@ -1,137 +1,121 @@
-# Neurobro agent: concrete preparation contract
+# Runtime Neurobro agent and production integration
 
-The four files in this change define and validate a future service. They do not
-implement an AI runtime, verify a browser provider, authorize deployment, start
-research, or change the existing worker or frontend. All readiness flags
-remain false. A successful validator result means the preparation policy is
-intact; it is not a successful health check or permission to deploy.
+PR24 now contains an executable Python daemon (`python -m agent`), not only the
+initial preparation contract. The original117 repository files remain unchanged,
+including the complete3D office, worker, Risk Manager and order gateway. The new
+agent image copies only `worker/core.py`, `worker/prompts.py` and `worker/__init__.py`
+from that baseline. It does not contain the public placeholder gateway,
+`Coordinator`, the worker service, exchange credentials or a financial database.
 
-## Confirmed source baseline
+The agent uses GPT-5 Mini through the OpenAI Responses API for bounded dialogue
+control. Model output has only an action, explicitly quoted screening symbols,
+and one short question; no price or order fields. ENTRY/TP/SL are parsed from the
+attributed Neurobro message. The unchanged deterministic Risk Manager validates
+and sizes the setup. Only an independently authenticated existing-backend adapter
+can admit it to the existing LIVE gateway while ROBOT is ON. No new Binance
+executor is installed, and LIVE capability is not disabled.
 
-GitHub `main` was read at the full commit
-`d99a3dd921d48e6347211a63fff765fecaf5c85d`. Its recursive tree was complete and
-contained no `AGENTS.md`. That is an investigation reference, not proof that the
-current VPS runs the same source. A fresh status snapshot reporting OFF and
-healthy containers does not establish source equality, browser login, or release
-authorization.
+## Implemented behavior
 
-| Existing source at that commit | Concrete integration implication |
-| --- | --- |
-| `worker/market.py:9` | Reuse the public GET-only market parser and its four endpoint allowlist; it already supplies numeric 1h/15m candles. Additional screening endpoints need their own review. |
-| `worker/neuroapi.py:105` and `:158` | Current provider is an API-key client posting to NeuroAPI. It is not Neurobro web automation and must not become a paid fallback. |
-| `worker/analysis.py:13` and `:36` | Existing analysis context requires a fresh account commission quote. A credential-free service cannot call this function unchanged or invent a fee rate. |
-| `worker/core.py:345` and `:382` | Reuse the deterministic risk calculations and preflight policy; the agent cannot grant live authority or override risk or model levels. |
-| `worker/robot.py:202`, `:295`, `:401` | `Coordinator.tick()` reaches the order gateway before research, and OFF stops both. It is not a research-only entry point. |
-| `worker/api_service.py:174` | The current actor constructs the combined coordinator and NeuroAPI provider. Do not reuse this actor for the new research service. |
-| `worker/order_gateway.py:1` and `Dockerfile:5` | Public source contains a placeholder gateway copied into the worker image. Rebuilding the live worker from this baseline could replace its private gateway. |
-| `compose.yaml` | Only worker and proxy exist; the worker has private exchange/provider secrets and a financial data volume. None belong in the new service. |
+- OwnSQLite conversation, budgets and operation journal, with a single controller
+  lock. A delivery that may have happened is not blindly replayed after restart;
+  it needs an authoritative receipt. Confirmed not-sent failures can yield safely.
+- Fresh sanitized account snapshots, Jakarta daily-entry count, two combined
+  position/pending slots, two new entries per day, and ownership checks. Manual
+  positions and pending orders consume capacity; only owned pending orders are
+  eligible for automatic review. Overnight pending orders retain their slots.
+- Screening uses available capacity. HOLD excludes the old symbol and permits
+  at most three replacement rounds. The original analysis prompt in
+  `worker/prompts.py` is preserved byte-for-byte; the agent never edits it.
+- Public Binance USD-M1H/15M candles, mark price and exchange rules use bounded
+  GET-only requests. PNG charts are rendered from those numeric candles with
+  source, timeframe and time evidence. **They are data-derived chart images,
+  not screenshots of Binance's website UI.** No invented market prices are used.
+- Bounded clarifications and fresh market facts, followed immediately by risk
+  handoff when the Neurobro setup is complete. Quantity uses actual commission
+  evidence and the existing fee/slippage risk model, normally5USDT from the
+  backend setting. Cross75x, lot/tick, margin and net2R checks stay deterministic.
+- Owned LIMIT entries are reviewed after five hours using fresh market evidence.
+  TAHAN schedules another five-hour review. BATALKAN requires a fresh revision
+  and partial-fill check at the existing backend before cancelling only the
+  remainder; it cannot close an already filled or manual position.
+- OFF pauses screening, dialogue, market work, handoff and cancellation. There
+  is no code that turns ROBOT ON. Cached local health observations never start
+  trading, provider requests or order probes.
 
-No `worker/ai_agent.py`, `worker/neurobrowser.py`, `browser_runtime/`, or browser
-Compose overlay exists in that investigated main tree. Previously prepared
-browser/provider code must be located, pinned by full commit and artifact SHA,
-and reconciled against the actual browser interface before reuse. Null artifact
-pins in this contract are deliberate blockers, not placeholders accepted for a
-release.
+## Browser and backend boundary
 
-## Service and authority contract
+`agent/providers.py` implements attachment to an existing Chromium/CDP session,
+strict origin/page/account/composer checks, PNG upload, bounded response
+completion and login-expiry handling. It does not launch Chromium or read profile
+or cookie files. A real temporary-Chromium fixture exercises the adapter without
+using the VPS or Neurobro account. ProductionDOM selectors must be reconciled
+against the existing private browser source; test selectors are not a production
+contract. A container's private loopback is not the host/browser loopback, and raw
+CDP access is broad. A protected origin-scoped adapter or explicitly reconciled
+browser transport must be provisioned, rather than exposing a productionCDP port
+publicly or mounting the browser profile into this agent.
 
-`harun-neurobro-agent` gets its own Compose project, UID/GID 10002, research
-database and bounded artifact storage. It starts PAUSED. It gets no Binance or
-paid-LLM credentials, NeuroAPI key, production financial database, production
-browser profile, order gateway, Docker socket, host filesystem mount, public
-port, or production service control.
+`agent/bridge.py` implements the authenticated finite backend protocol. Its
+revision, source hash, atomic robot gate, capacity policy and LIVE-gateway
+capability must match the approved configuration. The backend retains exclusive
+financial authority and must verify the Neurobro receipt against the browser's
+own record before execution; the agent's self-hash alone is not origin proof.
+A client protocol and offline fixture do not establish that the current VPS
+implements those endpoints. The production adapter must be installed beside the
+verified existing backend without replacing its gateway or running two trading
+coordinators. Missing or stale fees, ownership, capabilities or source bindings
+pause work instead of assuming financial facts.
 
-This initial contract covers a first installation only. Actual predeployment
-absence of this service must be verified; a PRESENT or unknown inventory cannot
-be treated as compatible. An operations planner may describe a blocked future
-upgrade, but restoring a previous owned image/configuration is outside this
-version's rollback authority and requires a separately reviewed contract.
+## Image, checks and deployment
 
-The public Binance Futures adapter supplies market evidence. Neurobro WEB
-determines the setup, with authentic response and matching numeric/chart
-evidence. The agent coordinates research and preserves the original ENTRY, TP
-and SL; it cannot invent or override those values or risk. A rejection stays a
-rejection. Proposal records remain `UNVERIFIED_RESEARCH`, never
-`READY_FOR_EXECUTION` or `order_intents`.
+`deploy/agent.Dockerfile` builds the real non-root UID10002 image. The base image
+and Python wheels are hash-pinned. The image has its own data directory, no
+production mount/socket, and no browser download. Its source/policy labels are
+verified by the operations broker. A build secret can supply the environment CA
+without copying that CA into image layers or weakeningTLS.
 
-Only the existing RiskManager may grant live execution after an authentic setup
-and fresh risk preflight while ROBOT is ON. Execution continues through the one
-existing private gateway. This contract creates no gateway, live executor,
-financial write route, order cancellation, wallet, funding or transfer authority.
-The existing worker, ROBOT state and execution workflow remain separate.
+The GitHub-hosted `agent-image.yml` runs unit/regression tests, builds the isolated
+image, and runs the actual daemon against a synthetic authenticated OFF backend
+with `--network none`. An owner manual run on main can publish the tested source
+to GHCR and retain `agent-image.json` with the real registry digest. That artifact
+is build evidence, not deployment approval. No registry digest is invented and
+no release catalog is self-approved by the implementation.
 
-Account exposure and commission data require a root-owned, sanitized read-only
-bridge. Evidence must bind source, symbol, observed time, expiry and digest, be
-no older than 120 seconds, and contain no credentials. Missing, stale or
-ambiguous evidence pauses work as unverified; there is no assumed fallback fee.
-The bridge has not been implemented or authenticated by this change.
+The companion [VPS Ops PR2](https://github.com/harun5231/harun-vps-ops/pull/2)
+implements the application-only root broker and manual `agent-ops.yml` path for
+deploy, status, categorized logs, restart and rollback. The runner keeps its
+existing isolation and receives no Docker socket or general root shell. The old
+general deployment workflows remain locked; the new path verifies the owner
+manual run and exact approved release independently through GitHub. It keeps
+receipts and previous own-agent images/configuration and never restores trading
+ledger, positions, credentials or browser profiles.
 
-## Next code work, before a release can be proposed
+## Current deployment status and remaining prerequisites
 
-1. Add `worker/research_agent_service.py` as a separate entry point. It must not
-   import or call `Coordinator.tick()`, `OrderGateway`, or financial store
-   mutation paths. Persist operations, rate/backoff, unknown outcomes, progress,
-   and proposal evidence in its own database. Start paused even after restart.
-2. Add a pure proposal/evidence contract, for example
-   `worker/research_agent_contract.py`, to bind the actual Neurobro operation and
-   response digest to the same symbol, original levels, fresh market data and
-   matching closed 1h/15m screenshot evidence. Permit at most one critical
-   clarification; never alias an old response as a fresh reply or replay an
-   unknown browser operation.
-3. Reconcile the prepared browser/provider artifacts and implement a narrow
-   authenticated RPC client against the verified browser service. Pin source
-   commit and artifact SHA. Do not reuse the existing NeuroAPI client, pass
-   credentials/profile volumes to the agent, or assume that a healthy browser is
-   logged in. Keep chat disabled until separately authorized.
-4. Implement and separately review the sanitized evidence bridge in the existing
-   backend only where necessary. The bridge reads confirmed account/fee facts;
-   it grants no write capability and never exposes the backend's keys or ledger.
-   Map fresh evidence into the existing pure risk calculations, without copying
-   exchange signing or execution into the agent.
-5. Add a dedicated agent Dockerfile and Compose overlay, such as
-   `deploy/Dockerfile.neurobro-agent` and `compose.neurobro-agent.yaml`. They must
-   implement UID/GID 10002, own project/storage, read-only root filesystem,
-   dropped capabilities, no-new-privileges, default PAUSED state, no production
-   mounts/secrets, no published port, and the exact bounded resource policy.
-   The declared limits here are requirements, not verified runtime enforcement.
-6. Implement local health/status from actual process and task state with the
-   required identity, process generation and short expiry. Health must not send
-   market, screening, chat, Neurobro, Binance or credential-loading requests.
-   Do not report a working/healthy runtime merely because this JSON validates.
-7. Test the complete runtime with mocked providers and denied network access,
-   including malformed/stale evidence, unknown outcomes, resource yield,
-   restart/idempotence, one clarification, prohibited imports/financial writes,
-   and paused health. Review the concrete source commit and image digest, actual
-   isolation and compatibility before requesting deployment authorization.
+The daemon/image tests are local and use synthetic backend/browser fixtures.
+They are not evidence of a running agent or a verified browser/backend binding
+on the VPS. `provider_verified`, deployment authorization and production-source
+reconciliation are deliberately not asserted by the policy validator.
 
-The declared per-tick work and concurrency limits bound resource consumption;
-they do not impose a global candidate-count cap. Unknown browser outcomes pause
-without replay. The future browser/RPC boundary still needs independently
-verified resource and timeout enforcement.
+The existing successful VPS audit need not be repeated. The installed runner is
+ONLINE but has only a fixed read-only status publisher and `NoNewPrivileges`;
+there is no installed application broker that can perform the first privileged
+provisioning. A legitimate administrative management channel must install that
+one application boundary. GitHub approval alone cannot manufacture root access.
+The owner currently reports that administration is available only through
+Termius; no Termius code or SFTP step is requested by this change.
 
-## Health and rollback boundaries
+Also required are the dedicated OpenAI key in protected application storage,
+verified production browser/backend source and endpoints, application-only
+adapter credentials, and a real GHCR digest plus reviewed runtime configuration
+in the approved release catalog. Never place keys in a PR, workflow input or
+chat. GPT-5 Mini availability must be verified on the owner's API account; no
+silent model/provider fallback is configured.
 
-Health reports identity and actual observations only, including the full source
-commit, image digest, runtime-configuration digest and process generation. Those
-reported bindings must match independently inspected release/runtime metadata;
-reporting a digest is not provider verification or host attestation. It has at most 60-second
-freshness and 16 KiB output. It does not activate research or authorize a release.
-This change contains no service executable or health endpoint.
-
-Rollback is limited to stopping/removing the new service in its own project,
-while preserving its research evidence, after proving the service was absent
-before installation and the new instance belongs to this reviewed release.
-Missing ownership or absence proof blocks rollback automation. It must not touch existing containers,
-ROBOT state, financial databases, browser profiles or credentials. Rollback
-automation is not implemented or authorized here.
-
-## Local validation
-
-Run `python3 scripts/validate_neurobro_agent_contract.py` and
-`python3 -m unittest discover -s tests -p test_neurobro_agent_contract.py -v`.
-The validator uses only the standard library, validates bounded JSON with closed
-fields and strict scalar types, and prints a sanitized preparation result. It
-does not import application modules, start a container, contact a service, read
-credentials or use privileged host interfaces. All release blockers remain in
-its output. No UI or worker source change, build, pull, deployment, live chat or
-Binance request is part of this preparation.
+After those prerequisites and one concrete release approval, the broker can
+complete that release's finite deployment and health/rollback steps without
+requesting approval for each internal Docker command. The connector can read
+Actions results but currently has no new workflow-dispatch tool, so an owner can
+use GitHub on iPhone: **Actions → Run workflow**. No installation of the runner
+is repeated. ROBOT stays OFF until the owner activates it after integration tests.

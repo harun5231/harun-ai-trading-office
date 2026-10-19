@@ -1,0 +1,76 @@
+name: Test and build isolated Neurobro agent
+on:
+  pull_request:
+    paths: ['agent/**', 'deploy/agent.*', 'tests/test_agent*', '.github/workflows/agent-image.yml']
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: agent-image-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Offline runtime and regression tests
+        run: |
+          python3 -m pip install --disable-pip-version-check -r tests/requirements.txt
+          python3 -m unittest discover -s tests -v
+      - name: Build only the isolated agent image
+        run: |
+          contract_sha="$(sha256sum deploy/neurobro-agent.contract.json | cut -d ' ' -f 1)"
+          docker build -f deploy/agent.Dockerfile --build-arg REVISION="$GITHUB_SHA" --build-arg CONTRACT_SHA="$contract_sha" -t harun-agent:test .
+      - name: Verify image contains no legacy gateway or executor
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --entrypoint python harun-agent:test -c "import pathlib; from agent.controller import Controller; from worker.prompts import ANALYSIS; from playwright.sync_api import sync_playwright; assert not pathlib.Path('/app/worker/order_gateway.py').exists(); assert not pathlib.Path('/app/worker/robot.py').exists(); print('ISOLATED_AGENT_IMPORTS_VERIFIED')"
+      - name: Exercise actual OFF daemon against a synthetic backend without network
+        run: |
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 256m --cpus 0.5 --tmpfs /tmp:rw,nosuid,nodev,size=32m --tmpfs /data:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/smoke_agent_image.py,dst=/smoke.py,readonly" --entrypoint python harun-agent:test /smoke.py
+  publish:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.repository_id == '1404087844' &&
+      github.actor_id == '325709525' && github.triggering_actor == 'harun5231' &&
+      github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build immutable source and publish image
+        env:
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          image="ghcr.io/harun5231/harun-neurobro-agent:sha-$GITHUB_SHA"
+          contract_sha="$(sha256sum deploy/neurobro-agent.contract.json | cut -d ' ' -f 1)"
+          docker build -f deploy/agent.Dockerfile --build-arg REVISION="$GITHUB_SHA" --build-arg CONTRACT_SHA="$contract_sha" -t "$image" .
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --memory 256m --cpus 0.5 --tmpfs /tmp:rw,nosuid,nodev,size=32m --tmpfs /data:rw,nosuid,nodev,size=32m,uid=10002,gid=10002,mode=0700 --mount "type=bind,src=$GITHUB_WORKSPACE/scripts/smoke_agent_image.py,dst=/smoke.py,readonly" --entrypoint python "$image" /smoke.py
+          printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u harun5231 --password-stdin
+          trap 'docker logout ghcr.io >/dev/null 2>&1' EXIT
+          docker push "$image"
+          digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
+          SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" python3 - <<'PY'
+          import json, os, re
+          image=os.environ['IMAGE_DIGEST']
+          assert re.fullmatch(r'ghcr.io/harun5231/harun-neurobro-agent@sha256:[0-9a-f]{64}', image)
+          with open('agent-image.json','w') as output:
+              json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office','source_commit':os.environ['SOURCE_COMMIT'],'image':image,'deployment_authorized':False},output,sort_keys=True)
+          PY
+          cat agent-image.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain image digest for Codex release review
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-image
+          path: agent-image.json
+          retention-days: 14

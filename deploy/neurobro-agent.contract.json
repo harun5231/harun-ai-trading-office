@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "investigation": {
     "repository": "harun5231/harun-ai-trading-office",
     "main_commit": "d99a3dd921d48e6347211a63fff765fecaf5c85d",
@@ -12,13 +12,13 @@
     "uid": 10002,
     "gid": 10002,
     "default_state": "PAUSED",
-    "mode": "RESEARCH_ONLY",
-    "lifecycle_scope": "FIRST_INSTALL_ONLY",
-    "state_storage": "OWN_RESEARCH_DATABASE_ONLY",
+    "mode": "ROBOT_GATED_COORDINATION",
+    "lifecycle_scope": "OWNED_AGENT_INSTALL_UPDATE_RESTART_ROLLBACK",
+    "state_storage": "OWN_CONVERSATION_AND_OPERATION_DATABASE_ONLY",
     "proposal_state": "UNVERIFIED_RESEARCH"
   },
   "readiness": {
-    "runtime_implemented": false,
+    "runtime_implemented": true,
     "provider_verified": false,
     "deployment_authorized": false,
     "network_isolation_verified": false
@@ -26,7 +26,7 @@
   "roles": {
     "market_data": "BINANCE_FUTURES_PUBLIC",
     "setup_decision": "NEUROBRO_WEB",
-    "agent": "RESEARCH_COORDINATION_AND_EVIDENCE_ONLY",
+    "agent": "BOUNDED_DIALOGUE_MEMORY_AND_SOURCE_ATTRIBUTED_HANDOFF",
     "risk_validation": "EXISTING_RISK_MANAGER",
     "live_execution_authority": "EXISTING_RISK_MANAGER",
     "live_executor": "EXISTING_SINGLE_ORDER_GATEWAY"
@@ -48,7 +48,9 @@
     "agent_may_mark_ready_for_execution": false,
     "coordinator_tick_reuse": false,
     "paid_llm_configured": false,
-    "fallback_ai_provider": null
+    "fallback_ai_provider": null,
+    "model": "gpt-5-mini",
+    "model_key_provisioning": "DEDICATED_OPENAI_FILE_ONLY_NO_CHAT_NO_BINANCE_KEYS"
   },
   "public_market": {
     "source": "Binance Futures",
@@ -72,20 +74,24 @@
   },
   "browser_provider": {
     "interface": "NEUROBRO_WEB_AUTOMATION",
-    "artifact_state": "NOT_PINNED_ABSENT_FROM_INVESTIGATED_MAIN",
+    "artifact_state": "ADAPTER_IMPLEMENTED_PRODUCTION_BINDING_UNVERIFIED",
     "source_commit": null,
     "artifact_sha256": null,
     "reconciliation_required": true,
     "reconciliation_verified": false,
-    "max_critical_clarifications_per_setup": 1,
+    "max_critical_clarifications_per_setup": 2,
     "unknown_outcome": "PAUSE_NO_REPLAY"
   },
   "sanitized_bridge": {
     "owner": "ROOT",
-    "access": "READ_ONLY_SANITIZED_EVIDENCE",
+    "access": "SANITIZED_SNAPSHOT_AND_ATOMIC_EXISTING_BACKEND_HANDOFF",
     "required_data": [
       "ACCOUNT_EXPOSURE",
-      "ACCOUNT_COMMISSION_RATE"
+      "ACCOUNT_COMMISSION_RATE",
+      "ENTRY_COUNT_JAKARTA_DAY",
+      "PENDING_OWNERSHIP",
+      "SYMBOL_RULES",
+      "EXISTING_BACKEND_CAPABILITIES"
     ],
     "max_age_seconds": 120,
     "bind_fields": [
@@ -93,7 +99,10 @@
       "symbol",
       "observed_at",
       "expires_at",
-      "evidence_sha256"
+      "evidence_sha256",
+      "backend_revision",
+      "account_generation",
+      "idempotency_key"
     ],
     "credentials_shared": false,
     "financial_state_writes": false,
@@ -104,7 +113,7 @@
   "permissions": {
     "binance_credentials": false,
     "neurobro_api_key": false,
-    "paid_llm_credentials": false,
+    "paid_llm_credentials": true,
     "production_financial_database": false,
     "production_browser_profile": false,
     "order_gateway_access": false,
@@ -135,7 +144,15 @@
     "maximum_backoff_seconds": 3600,
     "max_proven_unsent_retries": 2,
     "daily_candidate_cap": null,
-    "resource_exhaustion": "YIELD_WITH_PERSISTED_PROGRESS"
+    "resource_exhaustion": "YIELD_WITH_PERSISTED_PROGRESS",
+    "daily_model_requests": 48,
+    "daily_reserved_input_tokens": 200000,
+    "daily_reserved_output_tokens": 24000,
+    "max_critical_clarifications_per_setup": 2,
+    "max_hold_replacement_rounds": 3,
+    "daily_new_entries": 2,
+    "combined_position_pending_slots": 2,
+    "pending_review_interval_seconds": 18000
   },
   "health": {
     "interface": "LOCAL_READ_ONLY_STATUS",
@@ -170,14 +187,15 @@
   "rollback": {
     "compose_project": "harun-neurobro-agent",
     "service": "harun-neurobro-agent",
-    "action": "STOP_AND_REMOVE_OWN_SERVICE_ONLY",
+    "action": "RESTORE_VERIFIED_OWN_AGENT_PREDECESSOR_OR_REMOVE_OWN_FIRST_INSTALL",
     "own_evidence": "PRESERVE",
-    "requires_predeployment_absence_verified": true,
+    "requires_predeployment_absence_verified": false,
     "requires_new_service_ownership_proof": true,
     "touch_existing_containers": false,
     "restore_financial_database": false,
     "restore_browser_profile": false,
     "restore_credentials": false,
-    "change_robot_state": false
+    "change_robot_state": false,
+    "requires_owned_previous_image_config_and_compatible_data_schema": true
   }
 }
