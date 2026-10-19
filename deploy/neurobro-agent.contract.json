@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "investigation": {
+    "repository": "harun5231/harun-ai-trading-office",
+    "main_commit": "d99a3dd921d48e6347211a63fff765fecaf5c85d",
+    "agents_md": "ABSENT_IN_COMPLETE_MAIN_TREE",
+    "deployed_source_match_verified": false
+  },
+  "service": {
+    "name": "harun-neurobro-agent",
+    "compose_project": "harun-neurobro-agent",
+    "uid": 10002,
+    "gid": 10002,
+    "default_state": "PAUSED",
+    "mode": "RESEARCH_ONLY",
+    "lifecycle_scope": "FIRST_INSTALL_ONLY",
+    "state_storage": "OWN_RESEARCH_DATABASE_ONLY",
+    "proposal_state": "UNVERIFIED_RESEARCH"
+  },
+  "readiness": {
+    "runtime_implemented": false,
+    "provider_verified": false,
+    "deployment_authorized": false,
+    "network_isolation_verified": false
+  },
+  "roles": {
+    "market_data": "BINANCE_FUTURES_PUBLIC",
+    "setup_decision": "NEUROBRO_WEB",
+    "agent": "RESEARCH_COORDINATION_AND_EVIDENCE_ONLY",
+    "risk_validation": "EXISTING_RISK_MANAGER",
+    "live_execution_authority": "EXISTING_RISK_MANAGER",
+    "live_executor": "EXISTING_SINGLE_ORDER_GATEWAY"
+  },
+  "decision_contract": {
+    "source_levels": [
+      "ENTRY",
+      "TP",
+      "SL"
+    ],
+    "agent_may_invent_or_override_levels": false,
+    "agent_may_invent_or_override_risk": false,
+    "risk_manager_may_reject": true,
+    "live_requires": [
+      "ROBOT_ON",
+      "AUTHENTIC_NEUROBRO_SETUP",
+      "FRESH_RISK_PREFLIGHT"
+    ],
+    "agent_may_mark_ready_for_execution": false,
+    "coordinator_tick_reuse": false,
+    "paid_llm_configured": false,
+    "fallback_ai_provider": null
+  },
+  "public_market": {
+    "source": "Binance Futures",
+    "origin": "https://fapi.binance.com",
+    "methods": [
+      "GET"
+    ],
+    "paths": [
+      "/fapi/v1/exchangeInfo",
+      "/fapi/v1/klines",
+      "/fapi/v1/premiumIndex",
+      "/fapi/v1/time"
+    ],
+    "timeframes": [
+      "1h",
+      "15m"
+    ],
+    "max_age_seconds": 180,
+    "matching_closed_candle_numeric_and_image_evidence_required": true,
+    "additional_market_endpoints_require_review": true
+  },
+  "browser_provider": {
+    "interface": "NEUROBRO_WEB_AUTOMATION",
+    "artifact_state": "NOT_PINNED_ABSENT_FROM_INVESTIGATED_MAIN",
+    "source_commit": null,
+    "artifact_sha256": null,
+    "reconciliation_required": true,
+    "reconciliation_verified": false,
+    "max_critical_clarifications_per_setup": 1,
+    "unknown_outcome": "PAUSE_NO_REPLAY"
+  },
+  "sanitized_bridge": {
+    "owner": "ROOT",
+    "access": "READ_ONLY_SANITIZED_EVIDENCE",
+    "required_data": [
+      "ACCOUNT_EXPOSURE",
+      "ACCOUNT_COMMISSION_RATE"
+    ],
+    "max_age_seconds": 120,
+    "bind_fields": [
+      "source",
+      "symbol",
+      "observed_at",
+      "expires_at",
+      "evidence_sha256"
+    ],
+    "credentials_shared": false,
+    "financial_state_writes": false,
+    "fallback_fee_rate": null,
+    "missing_or_stale_data": "UNVERIFIED_PAUSE",
+    "artifact_sha256": null
+  },
+  "permissions": {
+    "binance_credentials": false,
+    "neurobro_api_key": false,
+    "paid_llm_credentials": false,
+    "production_financial_database": false,
+    "production_browser_profile": false,
+    "order_gateway_access": false,
+    "place_order": false,
+    "cancel_order": false,
+    "transfer_funds": false,
+    "funding_operations": false,
+    "wallet_access": false,
+    "financial_writes": false,
+    "docker_socket": false,
+    "host_filesystem_mounts": false,
+    "production_service_control": false,
+    "privileged_container": false,
+    "public_inbound_port": false
+  },
+  "runtime_limits": {
+    "memory_limit_mib": 256,
+    "cpu_millicores": 500,
+    "pids_limit": 64,
+    "tmpfs_limit_mib": 32,
+    "own_storage_limit_mib": 256,
+    "max_concurrent_tasks": 1,
+    "max_tasks_per_tick": 1,
+    "tick_budget_seconds": 120,
+    "market_http_timeout_seconds": 15,
+    "browser_operation_timeout_seconds": 90,
+    "minimum_new_request_interval_seconds": 60,
+    "maximum_backoff_seconds": 3600,
+    "max_proven_unsent_retries": 2,
+    "daily_candidate_cap": null,
+    "resource_exhaustion": "YIELD_WITH_PERSISTED_PROGRESS"
+  },
+  "health": {
+    "interface": "LOCAL_READ_ONLY_STATUS",
+    "identity_fields": [
+      "service",
+      "compose_project",
+      "uid",
+      "gid",
+      "mode",
+      "state",
+      "source_commit",
+      "image_digest",
+      "runtime_config_sha256",
+      "process_generation",
+      "observed_at",
+      "expires_at",
+      "runtime_implemented",
+      "provider_verified",
+      "deployment_authorized"
+    ],
+    "max_age_seconds": 60,
+    "max_output_bytes": 16384,
+    "starts_research": false,
+    "starts_screening": false,
+    "sends_chat": false,
+    "calls_neurobro": false,
+    "calls_binance": false,
+    "loads_credentials": false,
+    "opens_financial_database": false,
+    "authorizes_deployment": false
+  },
+  "rollback": {
+    "compose_project": "harun-neurobro-agent",
+    "service": "harun-neurobro-agent",
+    "action": "STOP_AND_REMOVE_OWN_SERVICE_ONLY",
+    "own_evidence": "PRESERVE",
+    "requires_predeployment_absence_verified": true,
+    "requires_new_service_ownership_proof": true,
+    "touch_existing_containers": false,
+    "restore_financial_database": false,
+    "restore_browser_profile": false,
+    "restore_credentials": false,
+    "change_robot_state": false
+  }
+}
