@@ -1,0 +1,10 @@
+**
+!agent
+!agent/dialogue_service.py
+!agent/dialogue_client.py
+!agent/native_market_context.py
+!agent/llm.py
+!deploy
+!deploy/dialogue-agent.Dockerfile
+!deploy/dialogue-agent.Dockerfile.dockerignore
+!deploy/neurobro-dialogue.contract.json

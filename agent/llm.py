@@ -57,7 +57,7 @@ def validated_market_context(value):
     if (not isinstance(provenance, dict) or set(provenance) != {"provider", "market", "origin", "candles_sha256", "chart_kind"} or
             provenance["provider"] != "BINANCE_FUTURES_PUBLIC" or provenance["market"] != "USDT_PERPETUAL" or
             provenance["origin"] != "https://fapi.binance.com" or
-            provenance["chart_kind"] != "CANDLESTICK_RENDER_FROM_PUBLIC_KLINES" or
+            provenance["chart_kind"] not in ("CANDLESTICK_RENDER_FROM_PUBLIC_KLINES", "NATIVE_PUBLIC_KLINES_CONTEXT") or
             not isinstance(provenance["candles_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", provenance["candles_sha256"])):
         raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
     candles = value["recent_candles"]
