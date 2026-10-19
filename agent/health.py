@@ -73,12 +73,13 @@ class HealthServer:
                 if type(text) is str and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", text):
                     clean[key] = text
             dependencies[name] = clean
+        observed_at = self.clock()
         safe.update(service="harun-neurobro-agent", compose_project="harun-neurobro-agent",
                     uid=os.geteuid(), gid=os.getegid(), mode="ROBOT_GATED_COORDINATION", runtime_implemented=True,
                     source_commit=os.environ.get("HARUN_SOURCE_COMMIT", "UNVERIFIED"),
                     image_digest=os.environ.get("HARUN_IMAGE_DIGEST", "UNVERIFIED"),
                     runtime_config_sha256=self.config_sha256,
-                    process_generation=self.generation, observed_at=self.clock(), expires_at=self.clock()+60,
+                    process_generation=self.generation, observed_at=observed_at, expires_at=observed_at+60,
                     started_at=self.started_at, dependencies=dependencies,
                     integration_verified=all(item["verified"] and item["fresh"] for item in dependencies.values()),
                     deployment_authorized=False)

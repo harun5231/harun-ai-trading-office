@@ -83,6 +83,28 @@
       UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi login diperlukan', BUSY: 'Analisis sedang berjalan' };
     return { status: research.status, label: labels[research.status], login: ['LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
   }
+  function agentState() {
+    const agent = snapshot?.agent;
+    const unknown = { status: 'UNAVAILABLE', label: 'Status agent belum tersedia', verified: false, dependencies: {} };
+    if (!online || !agent || agent.schema_version !== 1 || agent.service !== 'harun-neurobro-agent' ||
+        agent.source !== 'LOCAL_AGENT_HEALTH' || agent.status !== 'AVAILABLE') return unknown;
+    const at = timestamp(agent.checked_at);
+    if (at === null || at > Date.now() + 5000 || Date.now() - at >= 60000) {
+      return { ...unknown, label: 'Status agent perlu diperbarui' };
+    }
+    const labels = { STARTING: 'Agent sedang dimulai', RUNNING: 'Agent sedang bekerja', IDLE: 'Agent menunggu tugas',
+      PAUSED: 'Agent dijeda', WAITING: 'Agent menunggu kesiapan layanan', BUSY: 'Agent sedang menyelesaikan tugas',
+      BLOCKED: 'Agent terhambat', REQUIRES_REVIEW: 'Agent memerlukan pemeriksaan' };
+    if (typeof agent.state !== 'string' || !Object.hasOwn(labels, agent.state)) return unknown;
+    const dependencies = {};
+    for (const [name, maximum] of [['backend', 30000], ['browser', 1200000], ['model', 1200000]]) {
+      const item = agent.dependencies?.[name], checked = timestamp(item?.checked_at);
+      dependencies[name] = item?.verified === true && checked !== null && checked <= Date.now() + 5000 && Date.now() - checked < maximum;
+    }
+    return { status: agent.state, label: labels[agent.state], checkedAt: agent.checked_at,
+      verified: agent.integration_verified === true && Object.values(dependencies).every(Boolean) &&
+        ['CONNECTED', 'BUSY'].includes(researchState().status), dependencies };
+  }
   function publish() {
     const account = accountCurrent() ? snapshot.account : null;
     const reports = reportsCurrent() ? snapshot.reports : null;
@@ -254,7 +276,19 @@
     if (loginMessage) main.append(element('p', loginMessage, 'dashboard-message'));
     main.append(notice('Untuk coin yang dipilih, robot mengirim dua gambar chart realtime Binance Futures: 15 menit dan 1 jam. Login dan CAPTCHA diselesaikan langsung oleh pengguna pada browser VPS.'));
     main.append(notice('Saat sesi logout atau membutuhkan verifikasi, screening dan analisis baru menunggu login. Login tidak mengaktifkan robot atau mengubah posisi Binance.'));
-    content.append(main, renderConnection());
+    const agent = agentState(), agentPanel = section('AGENT GPT-5 MINI');
+    const agentStatus = element('p', agent.label, 'dashboard-status');
+    agentStatus.id = 'agentStatus'; agentStatus.dataset.status = agent.status; agentStatus.setAttribute('role', 'status');
+    agentPanel.append(agentStatus);
+    if (agent.checkedAt) {
+      agentPanel.append(notice('Diperiksa '+date(agent.checkedAt)));
+      field(agentPanel, 'Backend', agent.dependencies.backend ? 'Terverifikasi' : 'Belum terverifikasi');
+      field(agentPanel, 'Model GPT-5 Mini', agent.dependencies.model ? 'Panggilan API terverifikasi' : 'Belum terverifikasi');
+      agentPanel.append(notice(agent.verified ? 'Integrasi agent terverifikasi pada pemeriksaan terakhir.' :
+        'Proses agent dan kesiapan seluruh integrasi diperiksa secara terpisah.', agent.verified ? 'normal' : 'warning'));
+    }
+    agentPanel.append(notice('Status agent tidak mengaktifkan robot. Login Neurobro, pengaturan risiko, dan kontrol ON / OFF tetap dikelola melalui kantor ini.'));
+    content.append(main, agentPanel, renderConnection());
   }
   function clearLoginAccess() {
     clearTimeout(loginExpiryTimer); loginExpiryTimer = null;

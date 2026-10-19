@@ -83,6 +83,18 @@ verified existing backend without replacing its gateway or running two trading
 coordinators. Missing or stale fees, ownership, capabilities or source bindings
 pause work instead of assuming financial facts.
 
+## Office agent status
+
+The existing Neurobro panel also renders the optional sanitized `snapshot.agent`
+field from its normal authenticated `/office/status` poll. It adds no browser
+request, does not forward credentials, and leaves the 3D scene, employee data,
+LOGIN, risk setting and ROBOT controls intact. Missing or stale telemetry is
+shown as unavailable. Process liveness is separate from verified browser/model/
+backend integration. `agent/office_status.py` provides the pure cache sanitizer
+and additive snapshot composer; the reviewed private backend must connect that
+helper to its trusted cache when production integration is reconciled. The
+public worker is not rebuilt to add this display.
+
 ## Image, checks and deployment
 
 `deploy/agent.Dockerfile` builds the real non-root UID 10002 image. The base image
@@ -109,7 +121,7 @@ ledger, positions, credentials or browser profiles.
 
 ## Current deployment status and remaining prerequisites
 
-Final local validation after the screening correction ran 919 tests successfully
+Final local validation after the screening correction ran 932 tests successfully
 (one unrelated optional test skipped), with both isolated Chromium and local HTTP
 fixtures enabled. Coverage includes eight HOLD coins in one persisted cycle,
 restart, exclusions, changing slot capacity and quota/OFF fences.
@@ -117,7 +129,7 @@ The full-stack fixture exercises screening, chart attachments, Neurobro reply
 provenance, deterministic total-risk sizing, owned partial-fill cancellation and
 the OFF fence. Its gateway is a test fixture, so it sends no Binance orders.
 Graphify's combined code map covers the agent and restricted operations path:
-486 nodes, 1,523 extracted edges and 16 communities. These are source and local
+539 nodes, 1,690 extracted edges and 13 communities. These are source and local
 integration checks, not VPS deployment evidence.
 
 The daemon/image tests are local and use synthetic backend/browser fixtures.
