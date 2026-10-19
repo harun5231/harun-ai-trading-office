@@ -68,7 +68,16 @@ class AgentConfig:
             raise ValueError("CONFIG_SCHEMA_INVALID")
         _path(value["data_directory"])
         _keys(value["backend"], ("url", "token_file", "revision", "source_sha256"))
-        _keys(value["browser"], ("cdp_url", "contract_file", "contract_sha256"))
+        browser = value["browser"]
+        rpc = type(browser) is dict and "rpc_url" in browser
+        _keys(browser, ("rpc_url", "token_file", "source_sha256", "contract_file", "contract_sha256")
+              if rpc else ("cdp_url", "contract_file", "contract_sha256"))
+        if rpc:
+            _path(browser["token_file"])
+            if (not isinstance(browser["source_sha256"], str) or
+                    not re.fullmatch(r"[0-9a-f]{64}", browser["source_sha256"]) or
+                    browser["source_sha256"] == "0"*64):
+                raise ValueError("BROWSER_SOURCE_PIN_REQUIRED")
         _keys(value["model"], ("key_file",))
         _keys(value["loop"], ("active_tick_seconds", "idle_tick_seconds"))
         for section, name in (("backend", "token_file"), ("browser", "contract_file"), ("model", "key_file")):
@@ -81,7 +90,8 @@ class AgentConfig:
             raise ValueError("BROWSER_CONTRACT_PIN_REQUIRED")
         if not isinstance(value["backend"]["revision"], str) or not 1 <= len(value["backend"]["revision"]) <= 128:
             raise ValueError("BACKEND_REVISION_REQUIRED")
-        for key in ("active_tick_seconds", "idle_tick_seconds"):
-            if type(value["loop"][key]) is not int or not 1 <= value["loop"][key] <= 120:
-                raise ValueError("LOOP_BOUND_INVALID")
+        active, idle = value["loop"]["active_tick_seconds"], value["loop"]["idle_tick_seconds"]
+        if (type(active) is not int or not 1 <= active <= 5 or
+                type(idle) is not int or not 5 <= idle <= 120):
+            raise ValueError("LOOP_BOUND_INVALID")
         return cls(value["data_directory"], value["backend"], value["browser"], value["model"], value["loop"], digest)

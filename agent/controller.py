@@ -195,6 +195,16 @@ class Controller:
         base = REPLACEMENT_SCREENING.format(count=count) if cycle["excluded"] else (SCREENING if count == 2 else SCREENING.replace("2 coin", "1 coin", 1))
         return base + ("\nCoin yang wajib dikecualikan: " + excluded if cycle["excluded"] else "")
 
+    @staticmethod
+    def _pending_prompt(cycle, question=None):
+        reference = hashlib.sha256(cycle["order_id"].encode()).hexdigest()
+        symbol = cycle["active"]
+        text = (f"PENDING_REVIEW symbol={symbol}\norder_ref: {reference}\n"
+                f"Evaluasi LIMIT {symbol} yang belum terisi penuh selama 5 jam. "
+                "Berdasarkan chart dan data terbaru, Neurobro pilih TAHAN atau BATALKAN sisa pending. "
+                "Jangan ubah posisi yang telah terisi. Jawab keputusan eksplisit dan alasan singkat.")
+        return text if question is None else text + "\nPertanyaan lanjutan: " + question
+
     def _save(self, cycle):
         self.memory.put("active_cycle", cycle)
 
@@ -370,7 +380,8 @@ class Controller:
                     return self._finish(cycle, "NEUROBRO_SETUP_INCOMPLETE")
         elif phase.endswith("_FOLLOWUP"):
             family = phase.split("_", 1)[0]
-            self._exchange(cycle, phase, cycle["question"])
+            text = self._pending_prompt(cycle, cycle["question"]) if family == "PENDING" else cycle["question"]
+            self._exchange(cycle, phase, text)
             cycle["phase"] = family + "_DECIDE"
         elif phase == "PENDING_REQUEST":
             order = self.bridge.pending_status(cycle["order_id"])
@@ -385,9 +396,7 @@ class Controller:
             context = MarketContext(context.symbol, context.observed_at, context.data,
                 tuple(self.render_chart(context.data, tf) for tf in ("1h", "15m")))
             self._exchange(cycle, "PENDING_REVIEW",
-                f"Evaluasi LIMIT {order.symbol} yang belum terisi penuh selama 5 jam. "
-                "Berdasarkan chart dan data terbaru, Neurobro pilih TAHAN atau BATALKAN sisa pending. "
-                "Jangan ubah posisi yang telah terisi. Jawab keputusan eksplisit dan alasan singkat.",
+                self._pending_prompt(cycle),
                 attachments=context.screenshots)
             cycle["phase"] = "PENDING_DECIDE"
         elif phase == "PENDING_DECIDE":
@@ -395,18 +404,30 @@ class Controller:
             decision = self._decision(cycle, "PENDING_REVIEW")
             reply = cycle["reply"]["text"]
             words = {word.upper() for word in re.findall(r"\b(?:TAHAN|BATALKAN)\b", reply, re.I)}
-            if decision["action"] not in words or len(words) != 1:
+            explicit = set()
+            for line in reply.splitlines():
+                line = re.sub(r"[*`_]", "", line).strip().lstrip("-• ")
+                match = re.fullmatch(r"(?:(?:KEPUTUSAN|DECISION)\s*:\s*)?(TAHAN|BATALKAN)[.!]?", line, re.I)
+                if match:
+                    explicit.add(match.group(1).upper())
+            if explicit != {decision["action"]} or words != explicit:
                 return self._clarify(cycle, decision, "PENDING")
             if decision["action"] == "BATALKAN":
                 # Status is read again immediately before the bridge's atomic
                 # revision/partial-fill check. Never cancel by a historical ID alone.
                 order = self.bridge.pending_status(cycle["order_id"])
                 if order is not None and order.quantity > order.executed_quantity:
-                    key = self._op_id(cycle, "CANCEL_REMAINDER:" + order.revision)
+                    # One logical cancellation keeps its ID across partial-fill
+                    # revisions. A changed payload after an unknown outcome must
+                    # require reconciliation, rather than create a fresh request.
+                    key = self._op_id(cycle, "CANCEL_REMAINDER:" + order.order_id)
+                    source = cycle["reply"]
+                    source_sha256 = hashlib.sha256(source["text"].encode()).hexdigest()
                     receipt = self.memory.operation(key, "BACKEND_CANCEL_REMAINDER",
                         {"order_id": order.order_id, "revision": order.revision,
-                         "executed_quantity": str(order.executed_quantity)},
-                        lambda: self.bridge.cancel_remaining(order, self._on(), key))
+                         "executed_quantity": str(order.executed_quantity),
+                         "source_message_id": source["response_id"], "source_sha256": source_sha256},
+                        lambda: self.bridge.cancel_remaining(order, self._on(), key, source_reply=source))
                     if not isinstance(receipt, dict) or receipt.get("accepted") is not True:
                         return self._finish(cycle, "CANCELLATION_NOT_ACCEPTED")
             reviews = self.memory.get("pending_reviews", {})

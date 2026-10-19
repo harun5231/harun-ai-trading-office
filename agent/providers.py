@@ -48,7 +48,16 @@ class BrowserReply:
 
 _SHA = re.compile(r"[0-9a-f]{64}\Z", re.ASCII)
 _REQUEST = re.compile(r"[A-Za-z0-9_.:-]{1,160}\Z", re.ASCII)
+_RESPONSE_ID = re.compile(r"[A-Za-z0-9:_-]{1,128}\Z", re.ASCII)
 _SELECTORS = frozenset({"account", "composer", "submit", "assistant_response", "assistant_complete", "busy", "login_required", "conversation", "attachment"})
+
+
+def canonical_response_id(value, conversation_id: str, request_id: str, text: str) -> str:
+    """Use a backend-compatible ID without exposing arbitrary website ID text."""
+    if isinstance(value, str) and _RESPONSE_ID.fullmatch(value):
+        return value
+    parts = (conversation_id, request_id, value if isinstance(value, str) else "", text)
+    return hashlib.sha256(json.dumps(parts, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest()
 
 
 def validate_browser_contract(contract: dict[str, Any]) -> dict[str, Any]:
@@ -262,8 +271,7 @@ class NeurobroBrowser:
                             stable, stable_since = text, self._clock()
                         elif stable_since is not None and self._clock() - stable_since >= 2:
                             response_id = responses[-1].get_attribute("data-message-id")
-                            if not isinstance(response_id, str) or not _REQUEST.fullmatch(response_id):
-                                response_id = hashlib.sha256((current_conversation + "\0" + request_id + "\0" + text).encode()).hexdigest()
+                            response_id = canonical_response_id(response_id, current_conversation, request_id, text)
                             if self._factory is None:
                                 self._evidence = {"verified": True, "provider": "NEUROBRO_WEB", "observed_at": time.time(),
                                     "source_sha256": self.contract["source_sha256"],

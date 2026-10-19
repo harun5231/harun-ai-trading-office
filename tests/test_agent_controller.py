@@ -40,8 +40,8 @@ class StubBridge:
         self.statuses.append(order_id)
         return next((p for p in self.account.pending if p.order_id == order_id), None)
 
-    def cancel_remaining(self, order, account, key):
-        self.cancellations.append((order, account, key))
+    def cancel_remaining(self, order, account, key, *, source_reply):
+        self.cancellations.append((order, account, key, source_reply))
         return {"accepted": True}
 
 
@@ -223,12 +223,62 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.tick().reason, "PENDING_BATALKAN")
         self.assertEqual(self.bridge.cancellations[0][0].executed_quantity, Decimal("0.7"))
         self.assertEqual(self.bridge.cancellations[0][0].revision, "r2")
+        self.assertEqual(self.bridge.cancellations[0][3]["text"], "BATALKAN")
+        self.assertEqual(self.bridge.cancellations[0][3]["response_id"], "message1")
+
+    def test_pending_followup_retains_independent_order_binding_and_original_reply(self):
+        import hashlib
+        identifier = "private-order-123"
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder(identifier, "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.2"), "r1"),))
+        controller = self.controller(("belum jelas", "**Keputusan: BATALKAN.**"),
+            (DialogueDecision("CLARIFY", (), "Konfirmasi keputusan sisa LIMIT?"), DialogueDecision("BATALKAN")))
+        for _ in range(5): result = controller.tick()
+        self.assertEqual(result.reason, "PENDING_BATALKAN")
+        expected = "PENDING_REVIEW symbol=BTCUSDT\norder_ref: " + hashlib.sha256(identifier.encode()).hexdigest() + "\n"
+        self.assertEqual(len(self.provider.calls), 2)
+        for prompt, _ in self.provider.calls:
+            self.assertTrue(prompt.startswith(expected))
+            self.assertNotIn(identifier, prompt)
+        self.assertIn("Pertanyaan lanjutan: Konfirmasi keputusan sisa LIMIT?", self.provider.calls[1][0])
+        self.assertEqual(self.bridge.cancellations[0][3]["response_id"], "message2")
+        self.assertEqual(self.bridge.cancellations[0][3]["text"], "**Keputusan: BATALKAN.**")
+
+    def test_unknown_cancel_is_not_reissued_after_partial_fill_revision_changes(self):
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.2"), "r1"),))
+        original = self.bridge.cancel_remaining
+        def interrupted(order, account, key, *, source_reply):
+            original(order, account, key, source_reply=source_reply)
+            raise TimeoutError()
+        self.bridge.cancel_remaining = interrupted
+        controller = self.controller(("BATALKAN",), (DialogueDecision("BATALKAN"),))
+        for _ in range(3): controller.tick()
+        self.bridge.account = replace(self.bridge.account, pending=(replace(self.bridge.account.pending[0],
+            executed_quantity=Decimal("0.7"), revision="r2"),))
+        controller.tick()
+        self.assertEqual(len(self.bridge.cancellations), 1)
 
     def test_pending_decision_must_be_explicitly_from_neurobro(self):
         self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time() - 19000,
             Decimal("1"), Decimal("0"), "r1"),))
         controller = self.controller(("belum jelas",), (DialogueDecision("BATALKAN"),))
         controller.tick(); controller.tick(); controller.tick()
+        self.assertEqual(self.bridge.cancellations, [])
+
+    def test_negated_cancellation_word_cannot_become_a_cancellation(self):
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.3"), "r1"),))
+        controller = self.controller(("Jangan BATALKAN. Tunggu evaluasi selanjutnya.",), (DialogueDecision("BATALKAN"),))
+        controller.tick(); controller.tick(); controller.tick()
+        self.assertEqual(self.bridge.cancellations, [])
+
+    def test_explicit_markdown_decision_is_accepted_without_rewriting_it(self):
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.3"), "r1"),))
+        controller = self.controller(("**Keputusan: TAHAN.**\nKondisi belum berubah.",), (DialogueDecision("TAHAN"),))
+        controller.tick(); controller.tick()
+        self.assertEqual(controller.tick().reason, "PENDING_TAHAN")
         self.assertEqual(self.bridge.cancellations, [])
 
     def test_old_jakarta_day_is_rejected_before_chat(self):

@@ -77,6 +77,23 @@ def parse_setup(text: str, symbol: str, source_message_id: str) -> NeurobroSetup
                          text, hashlib.sha256(text.encode("utf-8")).hexdigest())
 
 
+def explicit_pending_decision(text: str) -> str | None:
+    """Admit one unconditional explicit decision copied from Neurobro text."""
+    if not isinstance(text, str) or not 0 < len(text.encode("utf-8")) <= 16000:
+        return None
+    if re.search(r"\b(?:jika|apabila|kalau|kecuali|unless|if|until|conditional)\b", text, re.I):
+        return None
+    decisions = []
+    for original in text.splitlines():
+        line = re.sub(r"[*`_]", "", original).strip().lstrip("-• ")
+        match = re.fullmatch(r"(?:(?:KEPUTUSAN|DECISION)\s*:\s*)?(TAHAN|BATALKAN)[.!]?", line, re.I)
+        if match:
+            decisions.append(match.group(1).upper())
+        elif re.search(r"\b(?:TAHAN|BATALKAN)\b", line, re.I):
+            return None
+    return decisions[0] if len(decisions) == 1 else None
+
+
 def fresh(value, now: float, max_age: int, code: str) -> float:
     if type(value) not in (int, float) or not 0 <= now - value <= max_age:
         raise RiskRejected(code)

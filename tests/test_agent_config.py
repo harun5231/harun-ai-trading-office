@@ -48,6 +48,17 @@ class ConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "BROWSER_CONTRACT_PIN"):
                 AgentConfig.load(self.write())
 
+    def test_origin_scoped_rpc_form_replaces_broad_cdp_capability(self):
+        self.value["browser"] = {"rpc_url": "https://browser.example.test",
+            "token_file": "/run/secrets/backend_token", "source_sha256": "a"*64,
+            "contract_file": "/app-config/browser.json", "contract_sha256": "b"*64}
+        config = AgentConfig.load(self.write())
+        self.assertIn("rpc_url", config.browser)
+        self.assertNotIn("cdp_url", config.browser)
+        self.value["browser"]["cdp_url"] = "http://127.0.0.1:9222"
+        with self.assertRaisesRegex(ValueError, "FIELDS_INVALID"):
+            AgentConfig.load(self.write())
+
     def test_writable_or_symlink_configuration_refused(self):
         self.write()
         os.chmod(self.path, 0o666)
@@ -63,6 +74,11 @@ class ConfigTests(unittest.TestCase):
         os.chmod(self.path, 0o600)
         with self.assertRaisesRegex(ValueError, "DUPLICATE"):
             AgentConfig.load(self.path)
+
+    def test_slow_active_poll_cannot_expire_every_chart_before_discussion(self):
+        self.value["loop"]["active_tick_seconds"] = 120
+        with self.assertRaisesRegex(ValueError, "LOOP_BOUND_INVALID"):
+            AgentConfig.load(self.write())
 
     def test_composition_does_not_read_credentials_attach_browser_or_open_network(self):
         config = AgentConfig.load(self.write())

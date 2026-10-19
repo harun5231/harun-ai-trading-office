@@ -11,6 +11,7 @@ import threading
 from worker.prompts import ANALYSIS
 
 from .bridge import BackendBridge
+from .browser_rpc import NeurobroRPC
 from .charts import render_chart_png
 from .config import AgentConfig, read_json_file
 from .controller import Controller
@@ -19,7 +20,7 @@ from .llm import OpenAIDialogue
 from .market import BinanceFuturesMarket
 from .memory import Memory
 from .models import NotSent
-from .providers import NeurobroBrowser
+from .providers import NeurobroBrowser, validate_browser_contract
 from .risk import parse_setup
 
 
@@ -45,8 +46,15 @@ class _LazyBrowser:
                 raise NotSent("BROWSER_CONTRACT_FILE_UNVERIFIED") from None
             if contract_sha256 != self.config["contract_sha256"]:
                 raise NotSent("BROWSER_CONTRACT_SHA256_MISMATCH")
-            self._provider = NeurobroBrowser(self.config["cdp_url"],
-                contract, robot_enabled=self.enabled)
+            if "rpc_url" in self.config:
+                admitted = validate_browser_contract(contract)
+                if admitted["source_sha256"] != self.config["source_sha256"]:
+                    raise NotSent("BROWSER_SOURCE_PIN_MISMATCH")
+                self._provider = NeurobroRPC(self.config["rpc_url"], self.config["token_file"],
+                    self.config["source_sha256"], robot_enabled=self.enabled)
+            else:
+                self._provider = NeurobroBrowser(self.config["cdp_url"],
+                    contract, robot_enabled=self.enabled)
             self._provider.set_remaining_budget(self._remaining_budget)
         return self._provider.exchange(*args, **kwargs)
 

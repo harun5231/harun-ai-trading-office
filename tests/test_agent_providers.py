@@ -25,7 +25,7 @@ class Element:
         if name == "data-conversation-id":
             return "conversation-1"
         if name == "data-message-id":
-            return "reply-1"
+            return getattr(self.page, "response_id", "reply-1")
         return None
 
     def fill(self, text):
@@ -191,6 +191,13 @@ class ProviderTests(unittest.TestCase):
         from agent.models import NotSent
         self.assertTrue(issubclass(LoginRequired, NotSent))
         self.assertFalse(issubclass(DeliveryUncertain, NotSent))
+
+    def test_website_id_with_dots_is_hashed_to_backend_compatible_identity(self):
+        client, page, engine = self.setup_provider()
+        page.response_id = "website.response.001"
+        reply = client.exchange("Question", request_id="canonical-id-request")
+        self.assertRegex(reply.response_id, r"^[0-9a-f]{64}$")
+        self.assertNotIn(".", reply.response_id)
 
     def test_conversation_changes_and_multiple_matching_pages_refused(self):
         client, page, engine = self.setup_provider()

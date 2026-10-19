@@ -1,7 +1,7 @@
 name: Test and build isolated Neurobro agent
 on:
   pull_request:
-    paths: ['agent/**', 'deploy/agent.*', 'tests/test_agent*', '.github/workflows/agent-image.yml']
+    paths: ['agent/**', 'deploy/agent.*', 'deploy/neurobro-agent.contract.json', 'scripts/smoke_agent_image.py', 'tests/test_agent*', 'tests/requirements.txt', '.github/workflows/agent-image.yml']
   workflow_dispatch:
 permissions: {}
 concurrency:
@@ -12,15 +12,22 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Offline runtime and regression tests
+      - name: Install pinned test dependencies and isolated Chromium
         run: |
           python3 -m pip install --disable-pip-version-check -r tests/requirements.txt
+          python3 -m pip install --disable-pip-version-check --require-hashes --only-binary=:all: -r agent/requirements.txt
+          python3 -m playwright install --with-deps chromium
+      - name: Runtime, regression and isolated browser integration tests
+        env:
+          HARUN_BROWSER_INTEGRATION: '1'
+          HARUN_RPC_INTEGRATION: '1'
+        run: |
           python3 -m unittest discover -s tests -v
       - name: Build only the isolated agent image
         run: |

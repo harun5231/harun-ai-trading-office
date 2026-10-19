@@ -140,7 +140,6 @@
     "tick_budget_seconds": 120,
     "market_http_timeout_seconds": 15,
     "browser_operation_timeout_seconds": 90,
-    "minimum_new_request_interval_seconds": 60,
     "maximum_backoff_seconds": 3600,
     "max_proven_unsent_retries": 2,
     "daily_candidate_cap": null,
@@ -152,7 +151,8 @@
     "max_hold_replacement_rounds": 3,
     "daily_new_entries": 2,
     "combined_position_pending_slots": 2,
-    "pending_review_interval_seconds": 18000
+    "pending_review_interval_seconds": 18000,
+    "minimum_new_screening_cycle_interval_seconds": 120
   },
   "health": {
     "interface": "LOCAL_READ_ONLY_STATUS",

@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 
 from .models import (AccountSnapshot, AmbiguousOperation, MarketContext, NotSent,
                      NeurobroSetup, PendingOrder, Position, RobotOff)
-from .risk import RiskRejected, SYMBOL, capacity, evaluate_setup, fresh, number
+from .risk import RiskRejected, SYMBOL, capacity, evaluate_setup, explicit_pending_decision, fresh, number
 
 
 class BridgeUnavailable(NotSent):
@@ -157,8 +157,16 @@ class BackendBridge:
                          "Content-Type": "application/json", "Accept": "application/json"})
             sock = connection.sock
             response = connection.getresponse()
+            expected_length = response.length
+            if expected_length is not None and not 0 <= expected_length <= MAX_BODY:
+                raise BridgeUnavailable("BACKEND_RESPONSE_LENGTH_INVALID")
             chunks, size = [], 0
             while size <= MAX_BODY:
+                # HTTP/1.0 and Connection: close can close the socket as soon as
+                # read1 consumes the declared body. Do not touch that closed fd
+                # while looking for an EOF already recorded by HTTPResponse.
+                if response.isclosed() or response.length == 0:
+                    break
                 remaining = min(self._timeout(), deadline - time.monotonic())
                 if remaining <= 0:
                     raise TimeoutError()
@@ -170,6 +178,8 @@ class BackendBridge:
                 chunks.append(block)
                 size += len(block)
             raw = b"".join(chunks)
+            if expected_length is not None and len(raw) != expected_length:
+                raise BridgeUnavailable("BACKEND_RESPONSE_INCOMPLETE")
             if len(raw) > MAX_BODY or response.status != 200:
                 raise BridgeUnavailable("BACKEND_RESPONSE_REJECTED")
             if response.getheader("Content-Type", "").split(";", 1)[0].lower() != "application/json":
@@ -206,6 +216,7 @@ class BackendBridge:
                 "protocol": "harun-agent-bridge-v1", "backend_revision": self.backend_revision,
                 "source_sha256": self.backend_source_sha256, "gateway": "EXISTING_BINANCE_FUTURES_LIVE",
                 "provider": "NEUROBRO_WEB", "atomic_robot_gate": True,
+                "source_receipts_verified": True, "single_coordinator_verified": True,
                 "idempotent_handoff": True, "idempotent_cancel_remaining": True,
                 "daily_entry_limit": 2, "combined_slot_limit": 2,
                 "risk_model": "FEE_SLIPPAGE_RISK_V3"}
@@ -337,7 +348,7 @@ class BackendBridge:
             return order
 
     def cancel_remaining(self, order: PendingOrder, account: AccountSnapshot,
-                         idempotency_key: str) -> dict:
+                         idempotency_key: str, *, source_reply=None) -> dict:
         with self._lock:
             if not isinstance(idempotency_key, str) or not HEX64.fullmatch(idempotency_key):
                 raise RiskRejected("IDEMPOTENCY_KEY_INVALID")
@@ -348,8 +359,18 @@ class BackendBridge:
             remaining = order.quantity - order.executed_quantity
             if remaining <= 0:
                 raise RiskRejected("ORDER_ALREADY_FILLED")
+            if (not isinstance(source_reply, dict)
+                    or not isinstance(source_reply.get("response_id"), str)
+                    or not IDENTITY.fullmatch(source_reply["response_id"])
+                    or explicit_pending_decision(source_reply.get("text")) != "BATALKAN"):
+                raise RiskRejected("NEUROBRO_CANCELLATION_SOURCE_UNVERIFIED")
+            source = {"provider": "NEUROBRO_WEB", "message_id": source_reply["response_id"],
+                "response_text": source_reply["text"], "response_sha256":
+                    hashlib.sha256(source_reply["text"].encode("utf-8")).hexdigest()}
             payload = {"idempotency_key": idempotency_key, "expected_generation": current.generation,
                        "order_id": order.order_id, "symbol": order.symbol,
+                       "order_ref": hashlib.sha256(order.order_id.encode("utf-8")).hexdigest(),
+                       "source": source,
                        "expected_order_revision": order.revision,
                        "expected_executed_quantity": format(order.executed_quantity, "f"),
                        "remaining_quantity": format(remaining, "f")}

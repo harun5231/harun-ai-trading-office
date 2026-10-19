@@ -20,9 +20,12 @@ from datetime import datetime, timedelta, timezone
 
 
 def main():
+    import playwright
     from playwright.sync_api import sync_playwright
-    with sync_playwright() as engine:
-        assert engine.chromium is not None  # Start the bundled driver, not a browser.
+    # Verify the native driver dependencies without opening a browser transport.
+    driver = Path(playwright.__file__).parent/'driver'/'node'
+    subprocess.run([str(driver),'--version'], check=True, timeout=10,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     assert os.getuid() == 10002
     assert not Path('/app/worker/order_gateway.py').exists()
     assert not Path('/app/worker/robot.py').exists()
@@ -77,7 +80,7 @@ def main():
                 'browser':{'cdp_url':'http://127.0.0.1:9','contract_file':str(root/'intentionally-absent-browser.json'),
                     'contract_sha256':hashlib.sha256(b'intentionally-absent-browser-fixture').hexdigest()},
                 'model':{'key_file':str(root/'intentionally-absent-openai.key')},
-                'loop':{'active_tick_seconds':1,'idle_tick_seconds':1}}
+                'loop':{'active_tick_seconds':1,'idle_tick_seconds':5}}
             raw = (json.dumps(config,sort_keys=True)+'\n').encode()
             path = root/'runtime.json'
             path.write_bytes(raw)

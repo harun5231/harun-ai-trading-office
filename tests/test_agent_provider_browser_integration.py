@@ -5,6 +5,8 @@ Run HARUN_BROWSER_INTEGRATION=1 python -m unittest discover -s tests
 The production adapter never launches a browser; this test fixture does.
 """
 import base64
+import hashlib
+import json
 import os
 import shutil
 import signal
@@ -14,6 +16,7 @@ import tempfile
 import time
 import unittest
 import urllib.request
+from pathlib import Path
 
 from agent.providers import NeurobroBrowser, RobotOff
 
@@ -42,7 +45,10 @@ class ActualBrowserIntegrationTests(unittest.TestCase):
         from playwright.sync_api import sync_playwright
         executable = shutil.which("chromium") or shutil.which("chromium-browser")
         if not executable:
-            self.skipTest("Chromium executable unavailable")
+            with sync_playwright() as setup:
+                candidate = Path(setup.chromium.executable_path)
+                executable = str(candidate) if candidate.is_file() else None
+        self.assertIsNotNone(executable, "Opt-in Chromium integration requires an installed browser")
         with tempfile.TemporaryDirectory(prefix="harun-browser-fixture-") as profile:
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
@@ -86,8 +92,18 @@ class ActualBrowserIntegrationTests(unittest.TestCase):
                     "timeout_seconds": 15, "max_response_chars": 8192,
                 }
                 enabled = [False]
-                adapter = NeurobroBrowser(endpoint, contract, lambda: enabled[0])
-                self.assertEqual(adapter.status()["status"], "CONNECTED")
+                passive = NeurobroBrowser(endpoint, contract, lambda: enabled[0])
+                self.assertEqual(passive.status()["status"], "CONNECTED")
+                # Exercise the actual daemon composition, including the exact
+                # file SHA pin and the provider deadline/evidence methods.
+                from agent.__main__ import _LazyBrowser
+                contract_raw = json.dumps(contract, sort_keys=True).encode()
+                contract_path = Path(profile) / "browser-contract.json"
+                contract_path.write_bytes(contract_raw)
+                contract_path.chmod(0o600)
+                adapter = _LazyBrowser({"cdp_url": endpoint, "contract_file": str(contract_path),
+                                        "contract_sha256": hashlib.sha256(contract_raw).hexdigest()}, lambda: enabled[0])
+                adapter.set_remaining_budget(lambda: 120.0)
                 with self.assertRaises(RobotOff):
                     adapter.exchange("Do not send while OFF", request_id="fixture-off")
                 enabled[0] = True  # Fixture-only boolean, never the production robot setting.
@@ -95,6 +111,7 @@ class ActualBrowserIntegrationTests(unittest.TestCase):
                 reply = adapter.exchange("Exact fixture prompt", attachments_png=(png, png), request_id="fixture-actual-cdp")
                 self.assertEqual(reply.text, "HOLD. Fixture response with 2 PNG attachments.")
                 self.assertEqual(reply.response_id, "offline-reply")
+                self.assertTrue(adapter.evidence()["verified"])
                 self.assertIsNone(process.poll(), "Adapter disconnected without stopping the existing browser")
             finally:
                 if process.poll() is None:

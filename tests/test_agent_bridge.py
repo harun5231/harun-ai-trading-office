@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
@@ -46,6 +47,7 @@ class Backend:
         self.capabilities = {"protocol": "harun-agent-bridge-v1", "backend_revision": "revision1",
             "source_sha256": SOURCE, "gateway": "EXISTING_BINANCE_FUTURES_LIVE",
             "provider": "NEUROBRO_WEB", "atomic_robot_gate": True,
+            "source_receipts_verified": True, "single_coordinator_verified": True,
             "idempotent_handoff": True, "idempotent_cancel_remaining": True,
             "daily_entry_limit": 2, "combined_slot_limit": 2, "risk_model": "FEE_SLIPPAGE_RISK_V3"}
 
@@ -145,12 +147,25 @@ class BridgeProtocolTests(unittest.TestCase):
     def test_partial_fill_cancels_remaining_only_with_revision_and_fill_guards(self):
         account = self.bridge.snapshot()
         order = self.bridge.pending_status("order1")
-        self.bridge.cancel_remaining(order, account, KEY)
+        self.bridge.cancel_remaining(order, account, KEY,
+                                     source_reply={"text": "BATALKAN", "response_id": "pending-message1"})
         request = self.backend.calls[-1][2]
         self.assertEqual(request["remaining_quantity"], "0.6")
         self.assertEqual(request["expected_executed_quantity"], "0.4")
         self.assertEqual(request["expected_order_revision"], "revision1")
         self.assertEqual(request["expected_generation"], account.generation)
+        self.assertEqual(request["order_ref"], hashlib.sha256(order.order_id.encode()).hexdigest())
+        self.assertEqual(request["source"]["response_text"], "BATALKAN")
+
+    def test_cancel_requires_explicit_neurobro_reply_before_post(self):
+        account = self.bridge.snapshot()
+        order = self.bridge.pending_status("order1")
+        for source in (None, {"text": "Jangan BATALKAN", "response_id": "message1"},
+                       {"text": "BATALKAN\nJika turun nanti", "response_id": "message1"},
+                       {"text": "TAHAN", "response_id": "message1"}):
+            with self.subTest(source=source), self.assertRaisesRegex(RiskRejected, "SOURCE_UNVERIFIED"):
+                self.bridge.cancel_remaining(order, account, KEY, source_reply=source)
+        self.assertFalse(any(c[0] == "POST" for c in self.backend.calls))
 
     def test_fill_change_or_unowned_order_never_cancelled(self):
         account = self.bridge.snapshot()
@@ -190,6 +205,61 @@ class BridgeProtocolTests(unittest.TestCase):
         with self.assertRaises(BridgeUnavailable):
             unique_pairs([("risk", "5"), ("risk", "500")])
 
+    def test_manual_pending_ownership_is_preserved_in_account_snapshot(self):
+        self.backend.snapshot["pending"] = [pending_row(owned=False)]
+        self.backend.snapshot["risk_evidence"]["occupied_slots"] = 1
+        account = self.bridge.snapshot()
+        self.assertFalse(account.pending[0].owned)
+        self.assertEqual(account.occupied_slots, 1)
+
+    def test_injected_transport_never_claims_verified_production_backend(self):
+        self.bridge.snapshot()
+        evidence = self.bridge.evidence()
+        self.assertFalse(evidence["verified"])
+        self.assertEqual(evidence["transport"], "INJECTED_TEST_TRANSPORT")
+
+    def test_expired_tick_budget_rejects_before_request_as_confirmed_not_sent(self):
+        from agent.models import NotSent
+        self.bridge.set_remaining_budget(lambda: 0)
+        with self.assertRaises(NotSent):
+            self.bridge.snapshot()
+        self.assertEqual(self.backend.calls, [])
+
+    def test_http10_complete_body_closes_socket_without_second_timeout_write(self):
+        body = canonical(self.backend.capabilities)
+        class Response:
+            status = 200
+            length = len(body)
+            closed = False
+            def isclosed(self):
+                return self.closed
+            def read1(self, _limit):
+                self.length, self.closed = 0, True
+                return body
+            def getheader(self, _name, _default=""):
+                return "application/json"
+        response = Response()
+        class Socket:
+            writes = 0
+            def settimeout(self, _timeout):
+                if response.closed:
+                    raise OSError("A completed HTTP/1.0 response closed this fd")
+                self.writes += 1
+        sock = Socket()
+        class Connection:
+            def __init__(self, *_args, **_kwargs):
+                self.sock = sock
+            def request(self, *_args, **_kwargs):
+                pass
+            def getresponse(self):
+                return response
+            def close(self):
+                pass
+        bridge = BackendBridge("http://127.0.0.1", "unused", "revision1", SOURCE)
+        with patch("agent.bridge.http.client.HTTPConnection", Connection), patch("agent.bridge._token", return_value="e"*64):
+            self.assertEqual(bridge.capabilities()["protocol"], "harun-agent-bridge-v1")
+        self.assertEqual(sock.writes, 1)
+
 
 class BridgeTokenTests(unittest.TestCase):
     def setUp(self):
@@ -225,6 +295,7 @@ class BridgeTokenTests(unittest.TestCase):
     def test_loopback_http_transport_sends_app_token_to_fixed_protocol_path(self):
         owner = self
         class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.0"
             def do_GET(self):
                 owner.assertEqual(self.path, "/agent/v1/capabilities")
                 owner.assertEqual(self.headers["Authorization"], "Bearer " + "a"*64)
