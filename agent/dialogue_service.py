@@ -605,6 +605,10 @@ def main(argv=None):
         parser.add_argument('--'+name,required=True)
     parser.add_argument('--runtime-config')
     args = parser.parse_args(argv)
+    # Optional Office telemetry uses this exact running module/class namespace.
+    # It adds authenticated UDS GET status; the POST/model path is unchanged.
+    from .native_status_bridge import install_dialogue_status
+    install_dialogue_status(globals())
     memory = dialogue = health = None
     stop = threading.Event()
     try:

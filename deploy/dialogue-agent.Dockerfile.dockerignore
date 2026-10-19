@@ -3,6 +3,7 @@
 !agent/dialogue_service.py
 !agent/dialogue_client.py
 !agent/native_market_context.py
+!agent/native_status_bridge.py
 !agent/llm.py
 !deploy
 !deploy/dialogue-agent.Dockerfile

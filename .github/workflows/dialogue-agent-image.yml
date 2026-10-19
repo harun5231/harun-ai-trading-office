@@ -1,7 +1,7 @@
 name: Build and publish delegated Neurobro dialogue agent
 on:
   pull_request:
-    paths: ['agent/dialogue_*.py', 'agent/native_market_context.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'tests/test_native_browser_hook.py', 'tests/test_agent_dialogue*', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+    paths: ['agent/dialogue_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
   workflow_dispatch:
 permissions: {}
 defaults:
@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
       - name: Test delegated runtime and native data conversion without providers
         run: |
-          python3 -m unittest tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_browser_hook -v
+          python3 -m unittest tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal -v
       - name: Build from the immutable existing agent image
         run: |
           contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"

@@ -16,4 +16,14 @@ Deployment requires a dedicated OpenAI key stored outside source control and app
 
 ## Current verification boundary
 
-Unit/regression tests and isolated native-AST fixtures exercise the code without production chats or orders. A published image is not evidence that the native hook is deployed. The production worker still requires an approved exact-source update for unlimited HOLD replacement, and its pending-LIMIT review must be reconciled with the native provider/gateway before claiming the complete 24/7 workflow. ROBOT remains OFF during installation and verification. No real provider call or LIVE order is used as an installation test.
+Unit/regression tests and isolated native-AST fixtures exercise the code without production chats or orders. A published image is not evidence that the native hook is deployed. The production worker still requires an approved exact-source update for unlimited HOLD replacement and the implemented pending-LIMIT protocol before claiming the complete 24/7 workflow. ROBOT remains OFF during installation and verification. No real provider call or LIVE order is used as an installation test.
+
+## Native pending-LIMIT review and status
+
+`agent.native_pending_review` adds five-hour reviews inside the existing native Coordinator, rather than starting another scheduler. A separate durable journal binds each due owned intent to a new PENDING_REVIEW operation, the original native browser request, fresh 1H/15M charts and source receipt. TAHAN schedules the next review five hours later. BATALKAN re-verifies ownership, fill and protection using the original gateway, then invokes its existing partial-fill-aware cancellation of the unfilled remainder. Fully filled or manual positions are never selected for cancellation. Existing native protection continues while a review outcome is ambiguous; no new entry or blind replay is permitted.
+
+The pending protocol extends the exact source/schema/chart/dispatch guards for a separate namespace. It does not disguise review requests as ANALYSIS. The patch utility requires all original production hashes and preserves every other byte. Interrupted journal initialization resumes only from a proven-unused empty database with no pending-review API history. An unknown or lost initialized journal is preserved and requires reconciliation.
+
+`agent.native_status_bridge` adds authenticated UDS GET `/v1/status` to the unchanged service entrypoint and POST conversation path. Exact-source native adapters attach closed status telemetry to the existing browser/Office flow without an extra browser-control request, model calls, or financial operations. Root-approved release pins bind status to the deployed source, image and runtime hash. Telemetry preserves original Office fields and does not claim full integration merely from local health.
+
+These capabilities are implemented and tested offline. Native worker/browser rollout remains a separate approved operation derived from their actual installed images; no public worker or placeholder gateway is substituted.

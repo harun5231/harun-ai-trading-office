@@ -15,8 +15,15 @@
   "model_price_authority": false,
   "financial_database_access": false,
   "browser_dispatch_authority": false,
-  "required_caller_checks": ["ROBOT_ON_BEFORE_MODEL", "ROBOT_ON_BEFORE_BROWSER_DISPATCH"],
-  "phases": ["SCREENING", "ANALYSIS", "PENDING_REVIEW"],
+  "required_caller_checks": [
+    "ROBOT_ON_BEFORE_MODEL",
+    "ROBOT_ON_BEFORE_BROWSER_DISPATCH"
+  ],
+  "phases": [
+    "SCREENING",
+    "ANALYSIS",
+    "PENDING_REVIEW"
+  ],
   "non_screening_facts": "BINANCE_FUTURES_PUBLIC_USDT_PERPETUAL_1H_AND_15M",
   "replacement_hold_limit": null,
   "clarifications_per_conversation_phase": 1,
@@ -25,5 +32,8 @@
   "ambiguous_operation_replay": false,
   "missing_model_key_state": "BLOCKED",
   "health_contact_provider": false,
-  "deployment_authorized": false
+  "deployment_authorized": false,
+  "status_interface": "AUTHENTICATED_UDS_GET_V1_STATUS",
+  "office_status_binding": "EXACT_SOURCE_ADDITIVE_NATIVE_STATUS",
+  "native_pending_review_interface": "AUTHENTICATED_OWNED_PENDING_REVIEW_V1"
 }
