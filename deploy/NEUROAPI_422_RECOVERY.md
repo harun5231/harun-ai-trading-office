@@ -50,8 +50,9 @@ analysis job menjadi `REQUEST_REJECTED`. Candidate tetap `REJECTED / HTTP_422`
 tanpa plan/intent. Tidak ada output model palsu atau claim COMPLETE.
 
 Satu respons 422 dengan request/job terminal yang cocok, attempts satu,
-output/idempotency null, tanpa plan/intent dapat meminta coin berbeda dalam
-batas tiga putaran pengganti yang sama dengan HOLD/RR. Putaran lama tetap
+output/idempotency null, tanpa plan/intent dapat terus meminta coin berbeda
+sesuai aturan HOLD/RR tanpa batas jumlah putaran selama ROBOT ON, kuota entry
+harian dan slot tersedia. Putaran lama tetap
 terhitung. Request yang ditolak tidak diulang. Billing outcome tetap UNKNOWN:
 status 422 sendiri tidak membuktikan apakah provider menagihnya atau penyebab
 validasi spesifik ketika body/error historis tidak tersedia.

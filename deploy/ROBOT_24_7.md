@@ -38,9 +38,10 @@ manual-only. Receipt first fill tidak dihapus setelah close/restart.
 
 Screening meminta satu/dua coin USD-M USDT perpetual aktif. Analisis memakai
 candle fresh 15m/1h dan commission akun per symbol. HOLD/RR di bawah dua sebelum
-plan/intent dapat mencari coin berbeda, berbagi maksimal tiga putaran pengganti.
-Unknown outcome tidak mendapat replay. Cycle selesai tanpa setup valid menunggu
-hari/epoch yang sesuai, bukan menjalankan riset berbayar ulang tanpa batas.
+plan/intent dapat terus mencari coin berbeda tanpa batas jumlah putaran selama
+ROBOT ON, kuota entry harian dan slot tersedia. Coin yang sudah dilihat dalam
+cycle tetap dikecualikan. Unknown outcome tidak mendapat replay; penolakan
+teknis dan pemeriksaan biaya tetap berlaku.
 
 Risk target editable pada menu existing, default 5 USDT. Sizing V3 memasukkan
 fee entry/exit dan reserve adverse exit 0,5%. Entry/SL tetap dari model; setup

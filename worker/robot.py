@@ -9,7 +9,7 @@ from pathlib import Path
 from datetime import datetime,timezone
 from zoneinfo import ZoneInfo
 from .core import D,Review,day,now,risk_check,preflight,RISK_MODEL,NORMALIZED_REWARD_RISK_POLICY,validated_risk_target
-from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS)
+from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS)
 from .robot_store import RobotStore
 from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent,require_implementation
 from .neuroapi import SETUP_SCHEMA,ResearchPaused,selections,setup
@@ -169,7 +169,7 @@ class Coordinator:
         if self.research_budget(data,results)<=0:return False
         if data['queue']:return True
         if row['state']=='ACTIVE' and data['screen']==-1:return True
-        return self.replacement_count(data,results)>0 and data['replacements']<MAX_REPLACEMENTS
+        return self.replacement_count(data,results)>0
     def reject_queued_symbol(self,cycle,data,symbol,account,reason):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -465,15 +465,12 @@ class Coordinator:
                 return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
-        # HOLD and local fee/RR rejections share the same three replacement rounds.
+        # HOLD and local fee/RR rejections can request further replacement rounds.
         # Only the latest round triggers screening; other failures consume budget.
         replaceable=self.replacement_count(data,results)
         if not initial and not replaceable:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
-        if not initial and data['replacements']>=MAX_REPLACEMENTS:
-            self.save_cycle(cycle,data,'COMPLETE')
-            return self.store.report('INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
         return self.screen(cycle,data,remaining if initial else min(remaining,replaceable),account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None,*,data=None,context=None):
         self.db.execute('BEGIN IMMEDIATE')

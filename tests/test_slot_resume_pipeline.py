@@ -121,19 +121,20 @@ class SlotResumePipelineTests(fixture.OrderPipelineTests):
             self.assertEqual(self.ticks(3)['wait_reason'],'ROBOT_CAPACITY_FULL')
             self.assertEqual(self.store.snapshot()['available_slots'],0)
         self.assertEqual((len(self.calls),len(self.gateway.submissions)),(count,submissions)); self.preserve_old()
-    def test_bounded_hold_replacements_not_reset_when_epoch_changes(self):
-        self.seed_one(); self.screens=[['SOLUSDT'],['BNBUSDT'],['XRPUSDT'],['ADAUSDT']]
+    def test_hold_replacements_continue_past_three_without_reset_when_epoch_changes(self):
+        self.seed_one(); self.screens=[['SOLUSDT'],['BNBUSDT'],['XRPUSDT'],['ADAUSDT'],['BTCUSDT'],['DOGEUSDT'],['LTCUSDT']]
+        self.market.symbols=(*self.market.symbols,'DOGEUSDT','LTCUSDT')
         self.decisions={coin:'HOLD' for pair in self.screens for coin in pair}
-        self.ticks(14)
-        self.assertEqual(self.screens_after(),[1,1,1,1])
-        data=json.loads(self.cycle()['data']); self.assertEqual((data['target'],data['screen'],data['replacements']),(1,3,3))
+        self.ticks(12)
+        self.assertEqual(self.screens_after(),[1]*6)
+        data=json.loads(self.cycle()['data']); self.assertEqual((data['target'],data['screen'],data['replacements']),(1,5,5))
         count=len(self.calls); submissions=len(self.gateway.submissions)
         self.fill('ETHUSDT')
-        self.assertEqual(self.robot.tick()['bot_status'],'INSUFFICIENT_ACTIONABLE_SETUPS')
-        self.ticks(4)
-        self.assertEqual((len(self.calls),len(self.gateway.submissions)),(count,submissions))
-        self.assertEqual(json.loads(self.cycle()['data'])['replacements'],3)
-        self.assertEqual(self.cycle()['state'],'COMPLETE'); self.preserve_old()
+        self.assertEqual(self.robot.tick()['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual((len(self.calls),len(self.gateway.submissions)),(count+1,submissions))
+        data=json.loads(self.cycle()['data'])
+        self.assertEqual((data['replacements'],data['queue']),(6,['LTCUSDT']))
+        self.assertEqual(self.cycle()['state'],'ACTIVE'); self.preserve_old()
     def test_eth_exposure_is_excluded_without_replay(self):
         self.seed_one(); self.screens=[['ETHUSDT']]
         self.assertEqual(self.robot.tick()['wait_reason'],'SCREENING_NO_ELIGIBLE_SYMBOLS')

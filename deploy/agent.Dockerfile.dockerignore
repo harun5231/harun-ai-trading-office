@@ -1,0 +1,12 @@
+**
+!agent
+!agent/*.py
+!agent/requirements.txt
+!worker
+!worker/__init__.py
+!worker/core.py
+!worker/prompts.py
+!deploy
+!deploy/agent.Dockerfile
+!deploy/agent.Dockerfile.dockerignore
+!deploy/neurobro-agent.contract.json

@@ -54,19 +54,20 @@ null dan tidak membuat entry. LONG/SHORT memerlukan harga positif, urutan
 entry/TP/SL benar, declared RR minimal 2, serta jarak TP model minimal dua
 kali jarak SL. Worker memeriksa level, bukan mempercayai angka RR model saja.
 
-HOLD dan penolakan RR sebelum plan/intent dapat meminta coin berbeda, maksimum
-tiga screening pengganti setelah awal. RR di bawah dua memakai kode seperti
+HOLD dan penolakan RR sebelum plan/intent dapat terus meminta coin berbeda tanpa
+batas jumlah screening pengganti selama ROBOT ON, kuota entry harian dan slot
+tersedia. RR di bawah dua memakai kode seperti
 `RISK_REWARD_BELOW_2` atau `NET_RISK_REWARD_BELOW_2`. Penolakan RR historis yang
 eligible tetap dikenali. Setup baru dengan RR di atas dua dinormalisasi ke
 net 1:2, bukan ditolak hanya karena TP model terlalu jauh.
 
 Pengganti berasal dari hasil putaran terakhir, sesuai slot/budget, dan
 mengecualikan coin yang sudah dilihat, exposed/pending, serta HYPEUSDT. Respons
-HTTP 422 yang terbukti diterima dapat mengikuti batas sama hanya dengan request dan
+HTTP 422 yang terbukti diterima dapat mengikuti aturan sama hanya dengan request dan
 job terminal, satu percobaan, tanpa output, plan, atau intent. Unknown outcome,
 intent existing, dan kegagalan teknis lain tidak memberi izin replay/reset.
-Setelah tiga putaran habis, cycle selesai; polling tidak membuka riset berbayar
-ulang tanpa batas pada hari/epoch yang sama.
+Counter putaran tetap tersimpan untuk audit dan identitas request, serta tidak
+menghentikan penggantian hanya karena mencapai angka tertentu.
 
 ## Risiko V3 dan TP net 1:2
 

@@ -68,7 +68,8 @@ open orders/posisi Binance dan aturan di bawah.
 - Risk default 5 USDT editable di menu existing, fee fresh + reserve exit 0,5%.
   Reserve tidak menjamin loss aktual maksimal 5 USDT ketika gap/slippage lebih
   besar, funding, perubahan fee, atau liquidation terjadi.
-- HOLD/RR di bawah dua meminta coin berbeda, maksimum tiga putaran pengganti.
+- HOLD/RR di bawah dua terus meminta coin berbeda selama ROBOT ON, kuota entry
+  harian dan slot tersedia, tanpa batas jumlah putaran; coin lama tetap dikecualikan.
   Setup minimal RR 2 memakai TP normalisasi net 1:2; entry/SL tetap dari model.
 - Entry LIMIT GTC CROSS 75×. Actual fill mendapat SL kemudian TP market,
   pemicu Terakhir, 100% exposure bot, dengan bukti GET kedua proteksi.

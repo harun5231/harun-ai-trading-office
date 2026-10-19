@@ -129,25 +129,27 @@ class ProviderValidationReplacementTests(unittest.TestCase):
         self.assertEqual(len(fixture.gateway.submissions), 1)
         self.assertEqual(json.loads(fixture.current_cycle()[0]['data'])['replacements'], 3)
 
-    def test_hold_rr_and_terminal_422_share_three_rounds_even_after_restart(self):
+    def test_hold_rr_and_terminal_422_continue_beyond_three_rounds_after_restart(self):
         fixture = self.fixture({'BTCUSDT': 'HOLD', 'BNBUSDT': 'HTTP_422',
-                                'SOLUSDT': 'PRICE_BELOW', 'ADAUSDT': 'HTTP_422'})
-        fixture.screens = [['BTCUSDT'], ['BNBUSDT'], ['SOLUSDT'], ['ADAUSDT']]
+                                'SOLUSDT': 'PRICE_BELOW', 'ADAUSDT': 'HTTP_422',
+                                'XRPUSDT': 'HOLD', 'ETHUSDT': 'HTTP_422'})
+        fixture.screens = [['BTCUSDT'], ['BNBUSDT'], ['SOLUSDT'], ['ADAUSDT'], ['XRPUSDT'], ['ETHUSDT']]
         fixture.on()
         fixture.ticks(4)
         fixture.restart()
-        fixture.ticks(6)
+        fixture.ticks(8)
         cycle, data = fixture.current_cycle()
-        self.assertEqual((cycle['state'], data['screen'], data['replacements']), ('COMPLETE', 3, 3))
-        self.assertEqual(fixture.screen_counts(), [1, 1, 1, 1])
-        self.assertEqual(len(fixture.calls), 8)
+        self.assertEqual((cycle['state'], data['screen'], data['replacements']), ('ACTIVE', 5, 5))
+        self.assertEqual(fixture.screen_counts(), [1] * 6)
+        self.assertEqual(len(fixture.calls), 12)
         self.assertEqual(fixture.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 0)
         self.assertEqual(fixture.ledger.db.execute(
-            "SELECT COUNT(*) FROM api_requests WHERE state='REJECTED_REQUEST_VALIDATION'").fetchone()[0], 2)
+            "SELECT COUNT(*) FROM api_requests WHERE state='REJECTED_REQUEST_VALIDATION'").fetchone()[0], 3)
         before = [dict(row) for row in fixture.ledger.db.execute('SELECT * FROM api_requests ORDER BY operation')]
+        fixture.store.configure(dict(robot_on=False))
         fixture.restart()
-        self.assertEqual(fixture.ticks(4)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
-        self.assertEqual(len(fixture.calls), 8)
+        self.assertEqual(fixture.ticks(4)['bot_status'], 'OFF')
+        self.assertEqual(len(fixture.calls), 12)
         self.assertEqual([dict(row) for row in fixture.ledger.db.execute(
             'SELECT * FROM api_requests ORDER BY operation')], before)
 

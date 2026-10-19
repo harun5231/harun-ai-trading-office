@@ -1,4 +1,4 @@
-"""Bounded HOLD/fee-RR replacements use fake providers and never real orders."""
+"""HOLD/fee-RR replacements use fake providers and never real orders."""
 import json
 import unittest
 from unittest.mock import patch
@@ -58,10 +58,10 @@ class RobotReplacementTests(unittest.TestCase):
         self.assertEqual(fixture.screen_counts(),[1])
         self.assertEqual(json.loads(fixture.current_cycle()[0]['data'])['replacements'],0)
 
-    def test_low_declared_rr_and_hold_share_three_round_cap_after_restart(self):
+    def test_low_declared_rr_and_hold_continue_beyond_three_rounds_after_restart(self):
         fixture = self.fixture()
         fixture.account.position('HYPEUSDT', '4.16')
-        fixture.screens = [['BTCUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['ADAUSDT']]
+        fixture.screens = [['BTCUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['ADAUSDT'], ['XRPUSDT'], ['ETHUSDT']]
         fixture.decisions = dict(SOLUSDT='HOLD', ADAUSDT='HOLD')
         fixture.on()
         with patch.dict(pipeline.GOOD, take_profit=110, risk_reward=D("1.99")):
@@ -69,14 +69,15 @@ class RobotReplacementTests(unittest.TestCase):
             fixture.restart()
             fixture.ticks(8)
         row, data = fixture.current_cycle()
-        self.assertEqual((row['state'], data['replacements']), ('COMPLETE', 3))
-        self.assertEqual(fixture.screen_counts(), [1, 1, 1, 1])
+        self.assertEqual((row['state'], data['replacements']), ('ACTIVE', 5))
+        self.assertEqual(fixture.screen_counts(), [1] * 6)
         reasons = {r['symbol']: r['failure_code'] for r in fixture.store.results(row['id'])}
         self.assertEqual(reasons['BTCUSDT'], 'RISK_REWARD_BELOW_2')
         self.assertEqual(reasons['BNBUSDT'], 'RISK_REWARD_BELOW_2')
         self.assertEqual(fixture.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 0)
         count = len(fixture.calls)
-        self.assertEqual(fixture.ticks(3)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        fixture.store.configure(dict(robot_on=False))
+        self.assertEqual(fixture.ticks(3)['bot_status'], 'OFF')
         self.assertEqual(len(fixture.calls), count)
 
     def test_two_fee_rejections_or_mixed_hold_request_exactly_two_replacements(self):
@@ -131,26 +132,35 @@ class RobotReplacementTests(unittest.TestCase):
         self.assertEqual(fixture.store.snapshot()['last_decision']['symbol'], 'ETHUSDT')
         self.assertEqual(fixture.receipt_count(), 0)
 
-    def test_hold_and_fee_rejections_share_three_round_cap_across_restart(self):
+    def test_historical_three_round_complete_cycle_resumes_replacement_after_restart(self):
         fixture = self.fixture()
         fixture.account.position('HYPEUSDT', '4.16')
-        fixture.screens = [['BTCUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['ADAUSDT']]
+        fixture.screens = [['BTCUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['ADAUSDT'], ['XRPUSDT']]
         fixture.decisions = dict(SOLUSDT='HOLD', ADAUSDT='HOLD')
         fixture.on()
         fixture.ticks(4)
         fixture.restart()
-        fixture.ticks(8)
+        fixture.ticks(4)
         row, data = fixture.current_cycle()
         self.assertEqual((row['state'], data['target'], data['screen'], data['replacements']),
-                         ('COMPLETE', 1, 3, 3))
+                         ('ACTIVE', 1, 3, 3))
         self.assertEqual(fixture.screen_counts(), [1, 1, 1, 1])
         self.assertEqual(len(fixture.calls), 8)
         self.assertEqual({r['symbol']: r['status'] for r in fixture.store.results(row['id'])},
                          dict(BTCUSDT='REJECTED', SOLUSDT='HOLD', BNBUSDT='REJECTED', ADAUSDT='HOLD'))
+        # Retain a terminal state written by the previous capped implementation.
+        # A known HOLD/RR result now remains eligible in the same cycle.
+        fixture.ledger.db.execute("UPDATE robot_cycles SET state='COMPLETE' WHERE id=?", (row['id'],))
         count = len(fixture.calls)
         fixture.restart()
-        self.assertEqual(fixture.ticks(4)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
-        self.assertEqual(len(fixture.calls), count)
+        self.assertEqual(fixture.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        updated, data = fixture.current_cycle()
+        self.assertEqual(updated['id'], row['id'])
+        self.assertEqual((updated['state'], data['screen'], data['replacements'], data['queue']),
+                         ('ACTIVE', 4, 4, ['XRPUSDT']))
+        context = json.loads(fixture.calls[-1]['message_history'][0]['content'])
+        self.assertTrue({'BTCUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT'} <= set(context['excluded_symbols']))
+        self.assertEqual(len(fixture.calls), count + 1)
         self.assertEqual(fixture.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 0)
         self.assertEqual(fixture.account.positions[0]['symbol'], 'HYPEUSDT')
 
