@@ -13,17 +13,17 @@ import uuid
 
 from worker.prompts import ANALYSIS, REPLACEMENT_SCREENING, SCREENING
 
-from .models import AccountSnapshot, AgentError, AmbiguousOperation, MarketContext, NotSent, RobotOff, TickResult
+from .models import AccountSnapshot, AgentError, AmbiguousOperation, BudgetExceeded, MarketContext, NotSent, RobotOff, TickResult
 
 
 class Controller:
     def __init__(self, *, bridge, provider, market, llm, memory, analysis_prompt,
                  render_chart, parse_setup, screening_prompt="", clock=time.time,
-                 max_followups=2, max_replacement_rounds=3, max_market_age=180,
+                 max_followups=2, max_market_age=180,
                  account_max_age=30, monotonic=time.monotonic):
         if not isinstance(analysis_prompt, str) or not 1 <= len(analysis_prompt) <= 16000:
             raise ValueError("EXACT_ANALYSIS_PROMPT_REQUIRED")
-        if max_followups not in (0, 1, 2) or max_replacement_rounds != 3:
+        if max_followups not in (0, 1, 2):
             raise ValueError("DIALOGUE_BOUND_INVALID")
         if analysis_prompt != ANALYSIS:
             raise ValueError("EXACT_APPROVED_ANALYSIS_PROMPT_MISMATCH")
@@ -32,7 +32,7 @@ class Controller:
         self.render_chart, self.parse_setup = render_chart, parse_setup
         self.screening_prompt = screening_prompt
         self.clock, self.max_followups = clock, max_followups
-        self.max_replacement_rounds, self.max_market_age = max_replacement_rounds, max_market_age
+        self.max_market_age = max_market_age
         self.account_max_age = account_max_age
         self._tick_lock = threading.Lock()
         self._last = TickResult("STARTING", "IDLE")
@@ -269,11 +269,19 @@ class Controller:
             account = self._account()
             if not account.robot_on:
                 result = TickResult("PAUSED", "IDLE", "ROBOT_OFF")
+            elif self.memory.get("model_budget_wait_day") == account.jakarta_day:
+                # Cost admission is independent of the number of coins screened.
+                # Retain this cycle and its HOLD exclusions; do not start fresh
+                # browser conversations while today's model budget is exhausted.
+                result = TickResult("WAITING", "IDLE", "DAILY_MODEL_BUDGET_EXHAUSTED")
             else:
                 cycle = self.memory.get("active_cycle") or self._new_cycle(account)
                 result = self._step(cycle, account) if cycle else TickResult("IDLE", "IDLE", "NO_CAPACITY_OR_REVIEW_DUE")
         except RobotOff:
             result = TickResult("PAUSED", "IDLE", "ROBOT_OFF")
+        except BudgetExceeded:
+            self.memory.put("model_budget_wait_day", account.jakarta_day)
+            result = TickResult("WAITING", "IDLE", "DAILY_MODEL_BUDGET_EXHAUSTED")
         except NotSent as error:
             cycle = self.memory.get("active_cycle")
             if cycle:
@@ -300,13 +308,19 @@ class Controller:
         if phase == "SCREEN_REQUEST":
             if account.available_slots == 0:
                 return self._finish(cycle, "CAPACITY_REACHED")
-            remaining = cycle["target"] - cycle["delivered"]
-            if remaining <= 0:
-                return self._finish(cycle, "REQUESTED_SETUPS_FORWARDED")
+            # Capacity may grow or shrink during a long HOLD sequence. Each new
+            # request follows the current combined slot and daily-entry quota.
+            remaining = account.available_slots
+            cycle["target"] = cycle["delivered"] + remaining
             count = max(0, min(account.available_slots, remaining) - len(cycle["queue"]))
             if not count:
                 cycle["phase"] = "ANALYSIS_REQUEST"
             else:
+                eligible = (set(account.supported_symbols) - set(cycle["excluded"]) -
+                            {p.symbol for p in account.positions} - {p.symbol for p in account.pending})
+                if len(eligible) < count:
+                    self._save(cycle)
+                    return TickResult("WAITING", "SCREEN_REQUEST", "NO_NEW_ELIGIBLE_SYMBOLS")
                 cycle["screen_count"] = count
                 self._exchange(cycle, "SCREENING", self._screen_text(cycle, count))
                 cycle["phase"] = "SCREEN_DECIDE"
@@ -319,8 +333,16 @@ class Controller:
             if (decision["action"] != "SCREENING" or not symbols or len(symbols) != cycle["screen_count"] or len(symbols) > account.available_slots or
                     len(set(symbols)) != len(symbols) or not set(symbols) <= observed or
                     not set(symbols) <= set(account.supported_symbols) or
-                    set(symbols) & (set(cycle["excluded"]) | {p.symbol for p in account.positions} | {p.symbol for p in account.pending})):
+                    set(symbols) & ({p.symbol for p in account.positions} | {p.symbol for p in account.pending})):
                 return self._finish(cycle, "SCREENING_SYMBOLS_NOT_VERIFIED")
+            if set(symbols) & set(cycle["excluded"]):
+                # An explicitly excluded HOLD coin is never analysed again in
+                # this cycle. Ask for different coins without losing exclusions.
+                cycle["round"] += 1
+                cycle["followups"] = 0
+                cycle["phase"] = "SCREEN_REQUEST"
+                self._save(cycle)
+                return TickResult("RUNNING", "SCREEN_REQUEST", "EXCLUDED_COIN_NOT_REPEATED")
             cycle["queue"] = symbols
             cycle["followups"] = 0
             cycle["phase"] = "ANALYSIS_REQUEST"
@@ -368,8 +390,6 @@ class Controller:
                 decision = self._decision(cycle, "ANALYSIS")
                 if decision["action"] == "HOLD" and re.search(r"\bHOLD\b", reply["text"], re.I):
                     cycle["excluded"].append(cycle["active"])
-                    if cycle["round"] >= self.max_replacement_rounds:
-                        return self._finish(cycle, "REPLACEMENT_LIMIT_REACHED")
                     cycle["round"] += 1
                     self._next_symbol(cycle)
                     if not cycle["queue"]:

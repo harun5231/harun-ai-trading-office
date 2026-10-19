@@ -1,8 +1,10 @@
 # Runtime Neurobro agent and production integration
 
 PR #24 now contains an executable Python daemon (`python -m agent`), not only the
-initial preparation contract. The original 117 repository files remain unchanged,
-including the complete 3D office, worker, Risk Manager and order gateway. The new
+initial preparation contract. All original repository files are retained. The
+screening correction removes only the legacy replacement-round ceiling in the
+coordinator/account policy;
+the complete 3D office, Risk Manager and order gateway remain unchanged. The new
 agent image copies only `worker/core.py`, `worker/prompts.py` and `worker/__init__.py`
 from that baseline. It does not contain the public placeholder gateway,
 `Coordinator`, the worker service, exchange credentials or a financial database.
@@ -24,8 +26,13 @@ executor is installed, and LIVE capability is not disabled.
   position/pending slots, two new entries per day, and ownership checks. Manual
   positions and pending orders consume capacity; only owned pending orders are
   eligible for automatic review. Overnight pending orders retain their slots.
-- Screening uses available capacity. HOLD excludes the old symbol and permits
-  at most three replacement rounds. The original analysis prompt in
+- Screening requests exactly the current available one or two slots. HOLD
+  excludes the symbol for the rest of that persisted cycle, without any maximum
+  number of screening coins or replacement rounds. Exclusions survive restart;
+  an excluded coin returned again by Neurobro is not analysed again. Full slots
+  or the daily entry quota prevent further screening. Existing API cost budgets
+  and transport timeouts remain unchanged; a cost-budget wait retains the active
+  cycle instead of starting new paid conversations. The original analysis prompt in
   `worker/prompts.py` is preserved byte-for-byte; the agent never edits it.
 - Public Binance USD-M 1H/15M candles, mark price and exchange rules use bounded
   GET-only requests. PNG charts are rendered from those numeric candles with
@@ -102,13 +109,15 @@ ledger, positions, credentials or browser profiles.
 
 ## Current deployment status and remaining prerequisites
 
-Final local validation ran 912 tests successfully (one unrelated optional test
-skipped), with both isolated Chromium and local HTTP integration fixtures enabled.
+Final local validation after the screening correction ran 919 tests successfully
+(one unrelated optional test skipped), with both isolated Chromium and local HTTP
+fixtures enabled. Coverage includes eight HOLD coins in one persisted cycle,
+restart, exclusions, changing slot capacity and quota/OFF fences.
 The full-stack fixture exercises screening, chart attachments, Neurobro reply
 provenance, deterministic total-risk sizing, owned partial-fill cancellation and
 the OFF fence. Its gateway is a test fixture, so it sends no Binance orders.
 Graphify's combined code map covers the agent and restricted operations path:
-430 nodes, 1,335 extracted edges and 12 communities. These are source and local
+486 nodes, 1,523 extracted edges and 16 communities. These are source and local
 integration checks, not VPS deployment evidence.
 
 The daemon/image tests are local and use synthetic backend/browser fixtures.

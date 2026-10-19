@@ -857,46 +857,47 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(data['round_symbols'], ['SOLUSDT', 'BNBUSDT'])
         self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')").fetchone()[0], 2)
 
-    def test_hold_replacement_exhausts_three_rounds_and_stays_stable(self):
-        self.market.symbols = (*self.market.symbols, 'DOGEUSDT', 'TRXUSDT')
+    def test_hold_replacement_continues_beyond_three_rounds_and_off_stops_it(self):
+        self.market.symbols = (*self.market.symbols, 'DOGEUSDT', 'TRXUSDT', 'LINKUSDT', 'LTCUSDT')
         self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT', 'BNBUSDT'],
-                        ['XRPUSDT', 'ADAUSDT'], ['DOGEUSDT', 'TRXUSDT']]
+                        ['XRPUSDT', 'ADAUSDT'], ['DOGEUSDT', 'TRXUSDT'], ['LINKUSDT', 'LTCUSDT']]
         self.decisions = {symbol: 'HOLD' for pair in self.screens for symbol in pair}
         self.on()
-        result = self.ticks(13)
-        self.assertEqual(result['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
-        self.assertEqual(self.screen_counts(), [2, 2, 2, 2])
-        self.assertEqual(len(self.calls), 12)
+        result = self.ticks(15)
+        self.assertEqual(result['bot_status'], 'HOLD')
+        self.assertEqual(self.screen_counts(), [2] * 5)
+        self.assertEqual(len(self.calls), 15)
         row, data = self.current_cycle()
-        self.assertEqual(row['state'], 'COMPLETE')
-        self.assertEqual(data['replacements'], 3)
-        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 8)
+        self.assertEqual(row['state'], 'ACTIVE')
+        self.assertEqual(data['replacements'], 4)
+        self.assertEqual(self.ledger.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 10)
+        self.store.configure(dict(robot_on=False))
         self.restart()
-        self.assertEqual(self.ticks(8)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
-        self.assertEqual(len(self.calls), 12)
+        self.assertEqual(self.ticks(8)['bot_status'], 'OFF')
+        self.assertEqual(len(self.calls), 15)
         self.assertEqual(self.receipt_count(), 0)
 
-    def test_completed_three_hold_rounds_are_not_revived_when_ready_trade_fills(self):
+    def test_hold_replacements_keep_same_cycle_beyond_three_when_ready_trade_fills(self):
         self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT'], ['BNBUSDT'], ['XRPUSDT']]
         self.decisions = {symbol: 'HOLD' for symbol in ('ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT')}
         self.on()
-        self.assertEqual(self.ticks(10)['bot_status'], 'INSUFFICIENT_ACTIONABLE_SETUPS')
+        self.assertEqual(self.ticks(9)['bot_status'], 'HOLD')
         row, old_data = self.current_cycle()
         older = row['id']
-        self.assertEqual((row['state'], old_data['queue'], old_data['replacements']), ('COMPLETE', [], 3))
+        self.assertEqual((row['state'], old_data['queue'], old_data['replacements']), ('ACTIVE', [], 3))
         self.assertEqual(len(self.calls), 9)
         self.screens.append(['ADAUSDT'])
         self.fill_first_and_release_manual_slot()
         self.restart()
         self.assertEqual(self.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
         old_row = self.ledger.db.execute('SELECT * FROM robot_cycles WHERE id=?', (older,)).fetchone()
-        self.assertEqual((old_row['state'], json.loads(old_row['data'])), ('COMPLETE', old_data))
+        self.assertEqual(old_row['state'], 'ACTIVE')
         row, data = self.current_cycle()
-        self.assertNotEqual(row['id'], older)
-        self.assertEqual((row['entry_epoch'], data['target'], data['screen'], data['replacements']), (1, 1, 0, 0))
+        self.assertEqual(row['id'], older)
+        self.assertEqual((row['entry_epoch'], data['target'], data['screen'], data['replacements']), (0, 2, 4, 4))
         self.assertEqual(data['queue'], ['ADAUSDT'])
         self.assertEqual(self.screen_counts(), [2, 1, 1, 1, 1])
-        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_jobs WHERE cycle=? AND kind='SCREENING'", (older,)).fetchone()[0], 4)
+        self.assertEqual(self.ledger.db.execute("SELECT COUNT(*) FROM robot_jobs WHERE cycle=? AND kind='SCREENING'", (older,)).fetchone()[0], 5)
 
     def test_technical_rejection_does_not_replace_historical_hold(self):
         self.screens = [['BTCUSDT', 'ETHUSDT'], ['SOLUSDT']]

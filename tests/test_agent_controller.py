@@ -8,7 +8,7 @@ import unittest
 from agent.bridge import BackendBridge
 from agent.controller import Controller
 from agent.memory import Memory
-from agent.models import DialogueDecision, PendingOrder, Position, NotSent
+from agent.models import BudgetExceeded, DialogueDecision, PendingOrder, Position, NotSent
 from agent.providers import BrowserReply
 from agent.risk import parse_setup
 from worker.prompts import ANALYSIS, SCREENING
@@ -70,7 +70,10 @@ class StubModel:
         self.decisions, self.calls = list(decisions), []
     def plan(self, history, reply, **kwargs):
         self.calls.append((history, reply, kwargs))
-        return self.decisions.pop(0)
+        result = self.decisions.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 class ControllerTests(unittest.TestCase):
@@ -185,22 +188,144 @@ class ControllerTests(unittest.TestCase):
         self.assertIsNone(self.memory.get("active_cycle"))
         self.assertEqual(self.bridge.handoffs, [])
 
-    def test_hold_replacement_is_bounded_to_three_rounds(self):
+    def test_hold_replacements_continue_past_three_rounds_and_survive_restart(self):
+        symbols = ("BTCUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT", "LTCUSDT", "AVAXUSDT")
         self.bridge.account = replace(self.bridge.account, positions=(Position("ETHUSDT", Decimal("1")),),
-            supported_symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT"))
-        symbols = ("BTCUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT")
+            supported_symbols=("ETHUSDT", *symbols))
         replies, decisions = [], []
         for symbol in symbols:
             replies.extend((symbol, symbol + "\nHOLD"))
             decisions.extend((DialogueDecision("SCREENING", (symbol,)), DialogueDecision("HOLD")))
         controller = self.controller(replies, decisions)
         for _ in range(20):
-            result = controller.tick()
-            if result.reason == "REPLACEMENT_LIMIT_REACHED": break
-        self.assertEqual(result.reason, "REPLACEMENT_LIMIT_REACHED")
-        self.assertEqual(len(self.provider.calls), 8)
+            self.assertEqual(controller.tick().state, "RUNNING")
+        original_id = self.memory.get("active_cycle")["id"]
+        self.assertEqual(self.memory.get("active_cycle")["excluded"], list(symbols[:4]))
+        path = self.memory.path
+        self.memory.close()
+        self.memory = Memory(path)
+        controller = Controller(bridge=self.bridge, provider=self.provider, market=self.market,
+            llm=self.model, memory=self.memory, analysis_prompt=ANALYSIS,
+            render_chart=lambda *_: PNG, parse_setup=parse_setup)
+        for _ in range(20):
+            self.assertEqual(controller.tick().state, "RUNNING")
+        cycle = self.memory.get("active_cycle")
+        self.assertEqual(cycle["id"], original_id)
+        self.assertEqual(cycle["round"], 8)
+        self.assertEqual(cycle["excluded"], list(symbols))
+        self.assertEqual(len(self.provider.calls), 16)
+        self.assertEqual(self.market.calls, list(symbols))
         self.assertEqual(self.bridge.handoffs, [])
-        self.assertIn("BTCUSDT", self.provider.calls[2][0])
+        for index in range(1, len(symbols)):
+            for held in symbols[:index]:
+                self.assertIn(held, self.provider.calls[2 * index][0])
+
+    def test_no_eligible_coin_waits_without_repeating_hold_or_starting_new_cycle(self):
+        self.bridge.account = replace(self.bridge.account, positions=(Position("ETHUSDT", Decimal("1")),),
+            supported_symbols=("BTCUSDT", "ETHUSDT"))
+        controller = self.controller(("BTCUSDT", "BTCUSDT\nHOLD"),
+            (DialogueDecision("SCREENING", ("BTCUSDT",)), DialogueDecision("HOLD")))
+        for _ in range(5): controller.tick()
+        cycle = self.memory.get("active_cycle")
+        for _ in range(5):
+            self.assertEqual(controller.tick().reason, "NO_NEW_ELIGIBLE_SYMBOLS")
+        self.assertEqual(len(self.provider.calls), 2)
+        self.assertEqual(self.memory.get("active_cycle"), cycle)
+
+    def test_two_free_slots_keep_requesting_two_different_coins_after_many_holds(self):
+        symbols = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT", "LTCUSDT")
+        self.bridge.account = replace(self.bridge.account, supported_symbols=symbols)
+        replies, decisions = [], []
+        for index in range(0, len(symbols), 2):
+            pair = symbols[index:index + 2]
+            replies.extend((" ".join(pair), pair[0] + "\nHOLD", pair[1] + "\nHOLD"))
+            decisions.extend((DialogueDecision("SCREENING", pair), DialogueDecision("HOLD"), DialogueDecision("HOLD")))
+        controller = self.controller(replies, decisions)
+        for _ in range(32):
+            self.assertEqual(controller.tick().state, "RUNNING")
+        self.assertEqual(self.market.calls, list(symbols))
+        self.assertEqual(self.memory.get("active_cycle")["excluded"], list(symbols))
+        self.assertEqual(self.bridge.handoffs, [])
+        for index in range(4):
+            prompt = self.provider.calls[3 * index][0]
+            self.assertIn("pilihkan 2 coin", prompt)
+            for held in symbols[:2 * index]:
+                self.assertIn(held, prompt)
+
+    def test_neurobro_repeating_hold_coin_requests_another_without_reanalysis(self):
+        self.bridge.account = replace(self.bridge.account, positions=(Position("ETHUSDT", Decimal("1")),),
+            supported_symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+        controller = self.controller(("BTCUSDT", "BTCUSDT\nHOLD", "BTCUSDT", "SOLUSDT"),
+            (DialogueDecision("SCREENING", ("BTCUSDT",)), DialogueDecision("HOLD"),
+             DialogueDecision("SCREENING", ("BTCUSDT",)), DialogueDecision("SCREENING", ("SOLUSDT",))))
+        for _ in range(5): controller.tick()
+        cycle_id = self.memory.get("active_cycle")["id"]
+        controller.tick()
+        self.assertEqual(controller.tick().reason, "EXCLUDED_COIN_NOT_REPEATED")
+        controller.tick(); controller.tick()
+        self.assertEqual(self.memory.get("active_cycle")["id"], cycle_id)
+        self.assertEqual(self.memory.get("active_cycle")["queue"], ["SOLUSDT"])
+        self.assertEqual(self.market.calls, ["BTCUSDT"])
+        self.assertIn("BTCUSDT", self.provider.calls[-1][0])
+
+    def test_replacement_request_follows_current_capacity_in_both_directions(self):
+        self.bridge.account = replace(self.bridge.account,
+            supported_symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "ADAUSDT", "XRPUSDT"))
+        controller = self.controller(("BTCUSDT ETHUSDT", "BTCUSDT\nHOLD", "ETHUSDT\nHOLD",
+                                      "SOLUSDT", "SOLUSDT\nHOLD", "BNBUSDT ADAUSDT"),
+            (DialogueDecision("SCREENING", ("BTCUSDT", "ETHUSDT")), DialogueDecision("HOLD"),
+             DialogueDecision("HOLD"), DialogueDecision("SCREENING", ("SOLUSDT",)), DialogueDecision("HOLD")))
+        for _ in range(8): controller.tick()
+        self.bridge.account = replace(self.bridge.account, positions=(Position("XRPUSDT", Decimal("1")),))
+        controller.tick()
+        self.assertIn("pilihkan 1 coin", self.provider.calls[-1][0])
+        for _ in range(4): controller.tick()
+        self.bridge.account = replace(self.bridge.account, positions=())
+        controller.tick()
+        self.assertIn("pilihkan 2 coin", self.provider.calls[-1][0])
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            self.assertIn(symbol, self.provider.calls[-1][0])
+
+    def test_full_slots_quota_or_off_stop_replacement_screening_after_hold(self):
+        controller = self.controller(("BTCUSDT ETHUSDT", "BTCUSDT\nHOLD", "ETHUSDT\nHOLD"),
+            (DialogueDecision("SCREENING", ("BTCUSDT", "ETHUSDT")), DialogueDecision("HOLD"), DialogueDecision("HOLD")))
+        for _ in range(8): controller.tick()
+        self.bridge.account = replace(self.bridge.account, robot_on=False)
+        self.assertEqual(controller.tick().state, "PAUSED")
+        self.bridge.account = replace(self.bridge.account, robot_on=True, daily_new_trades=2)
+        self.assertEqual(controller.tick().reason, "CAPACITY_REACHED")
+        self.assertEqual(len(self.provider.calls), 3)
+        self.memory.put("next_screen_at", 0)
+        self.bridge.account = replace(self.bridge.account, daily_new_trades=0, pending=tuple(
+            PendingOrder(str(i), symbol, time.time(), Decimal("1"), Decimal("0"), "r")
+            for i, symbol in enumerate(("SOLUSDT", "BNBUSDT"))))
+        self.assertEqual(controller.tick().state, "IDLE")
+        self.assertEqual(len(self.provider.calls), 3)
+
+    def test_model_budget_wait_preserves_hold_exclusions_without_restarting_paid_screening(self):
+        self.bridge.account = replace(self.bridge.account, positions=(Position("ETHUSDT", Decimal("1")),),
+            supported_symbols=("BTCUSDT", "ETHUSDT", "SOLUSDT"))
+        controller = self.controller(("BTCUSDT", "BTCUSDT\nHOLD", "SOLUSDT"),
+            (DialogueDecision("SCREENING", ("BTCUSDT",)), DialogueDecision("HOLD"),
+             BudgetExceeded("DAILY_MODEL_BUDGET_EXHAUSTED")))
+        for _ in range(6): controller.tick()
+        cycle = self.memory.get("active_cycle")
+        self.assertEqual(controller.tick().reason, "DAILY_MODEL_BUDGET_EXHAUSTED")
+        for _ in range(3): self.assertEqual(controller.tick().state, "WAITING")
+        self.assertEqual(self.memory.get("active_cycle"), cycle)
+        self.assertEqual(cycle["excluded"], ["BTCUSDT"])
+        self.assertEqual(len(self.provider.calls), 3)
+        path = self.memory.path
+        self.memory.close()
+        self.memory = Memory(path)
+        controller = Controller(bridge=self.bridge, provider=self.provider, market=self.market,
+            llm=self.model, memory=self.memory, analysis_prompt=ANALYSIS,
+            render_chart=lambda *_: PNG, parse_setup=parse_setup)
+        self.assertEqual(controller.tick().state, "WAITING")
+        self.assertEqual(len(self.provider.calls), 3)
+        self.assertEqual(self.memory.get("active_cycle"), cycle)
+        self.bridge.account = replace(self.bridge.account, robot_on=False)
+        self.assertEqual(controller.tick().state, "PAUSED")
 
     def test_pending_hold_rechecks_after_another_five_hours(self):
         self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time() - 19000,

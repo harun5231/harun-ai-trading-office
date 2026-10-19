@@ -90,17 +90,20 @@ class WorkflowV2Tests(unittest.TestCase):
                 self.assertEqual(f.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
                 self.assertEqual(f.screen_counts(), [1, 1])
 
-    def test_two_holds_request_two_replacements_and_shared_cap_survives_restart(self):
+    def test_two_holds_continue_two_coin_replacements_beyond_three_after_restart(self):
         f = self.fixture();f.screens = [['BTCUSDT','ETHUSDT'], ['SOLUSDT','BNBUSDT'],
-                                      ['XRPUSDT','ADAUSDT'], ['BTCUSDT','ETHUSDT']]
-        f.responses = {symbol: hold(symbol) for symbol in ('BTCUSDT','ETHUSDT','SOLUSDT','BNBUSDT','XRPUSDT','ADAUSDT')}
+                                      ['XRPUSDT','ADAUSDT'], ['DOGEUSDT','TRXUSDT'], ['LINKUSDT','LTCUSDT']]
+        f.market.symbols = (*f.market.symbols, 'DOGEUSDT', 'TRXUSDT', 'LINKUSDT', 'LTCUSDT')
+        f.responses = {symbol: hold(symbol) for pair in f.screens for symbol in pair}
         f.on();f.ticks(3)
         self.assertEqual(f.robot.tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
         self.assertEqual(f.calls[-1]['prompt'], REPLACEMENT_SCREENING.format(count=2))
-        f.restart();f.ticks(10)
+        f.restart();f.ticks(11)
         cycle, data = f.current_cycle()
-        self.assertEqual((cycle['state'], data['replacements']), ('COMPLETE', 3))
-        self.assertEqual(f.screen_counts(), [2, 2, 2, 2])
+        self.assertEqual((cycle['state'], data['replacements']), ('ACTIVE', 4))
+        self.assertEqual(f.screen_counts(), [2] * 5)
+        self.assertEqual(len(data['seen']), 10)
+        f.store.configure(dict(robot_on=False))
         count = len(f.calls);f.restart();f.ticks(3)
         self.assertEqual(len(f.calls), count)
         self.assertEqual(f.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 0)

@@ -26,7 +26,8 @@ LONG/SHORT model memerlukan declared RR dan jarak harga minimal 1:2. Entry dan
 SL dipertahankan; TP eksekusi dinormalisasi ke net 1:2. RR model lebih besar
 dari dua tidak ditolak hanya karena TP terlalu jauh. HOLD dan penolakan
 RR di bawah dua sebelum plan/intent boleh mendapat pengganti sesuai slot,
-hanya putaran terakhir dan maksimum tiga putaran gabungan.
+hanya hasil putaran terakhir yang eligible. Jumlah putaran tidak dibatasi selama
+ROBOT ON, kuota entry harian dan slot masih tersedia; coin lama tetap dikecualikan.
 
 ## Model risiko dan size coin
 

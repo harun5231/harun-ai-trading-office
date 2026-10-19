@@ -102,6 +102,12 @@ class NeurobroAgentContractTests(unittest.TestCase):
             with self.subTest(key=key):
                 self.rejected(('runtime_limits', key), replacement)
 
+    def test_hold_replacement_rounds_have_no_numeric_maximum(self):
+        self.assertIsNone(self.contract()['runtime_limits']['max_hold_replacement_rounds'])
+        for cap in (0, 3, 1000000, '3'):
+            with self.subTest(cap=cap):
+                self.rejected(('runtime_limits', 'max_hold_replacement_rounds'), cap)
+
     def test_health_never_activates_chat_screening_market_or_credentials(self):
         self.assertTrue({'source_commit', 'image_digest', 'runtime_config_sha256'}
                         <= set(self.contract()['health']['identity_fields']))
