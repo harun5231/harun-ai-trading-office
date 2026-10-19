@@ -47,7 +47,7 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertEqual(rows[0],'**')
         allowed={row[1:] for row in rows if row.startswith('!')}
         self.assertEqual(allowed,{'agent','agent/dialogue_service.py','agent/dialogue_client.py',
-            'agent/native_market_context.py','agent/llm.py','deploy','deploy/dialogue-agent.Dockerfile',
+            'agent/native_market_context.py','agent/native_status_bridge.py','agent/llm.py','deploy','deploy/dialogue-agent.Dockerfile',
             'deploy/dialogue-agent.Dockerfile.dockerignore','deploy/neurobro-dialogue.contract.json'})
         for path in allowed:
             self.assertTrue((ROOT/path).exists())
