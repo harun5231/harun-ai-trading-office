@@ -2,6 +2,7 @@
 import asyncio
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -26,15 +27,22 @@ except ImportError:
     HAS_PLAYWRIGHT=False
 
 
-@unittest.skipUnless(HAS_PLAYWRIGHT and Path('/usr/bin/chromium').is_file(),
+CHROMIUM = Path(os.environ.get('HARUN_TEST_CHROMIUM_EXECUTABLE', '/usr/bin/chromium'))
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT and CHROMIUM.is_absolute() and CHROMIUM.is_file(),
     'A local Chromium executable and Playwright are required for this browser integration test')
 class NativeChartRPCBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.manager=sync_playwright().start()
-        cls.browser=cls.manager.chromium.launch(executable_path='/usr/bin/chromium',
-            chromium_sandbox=True,headless=True,args=['--disable-dev-shm-usage',
-                '--disable-background-networking','--disable-component-update'])
+        try:
+            cls.browser=cls.manager.chromium.launch(executable_path=str(CHROMIUM),
+                chromium_sandbox=True,headless=True,args=['--disable-dev-shm-usage',
+                    '--disable-background-networking','--disable-component-update'])
+        except BaseException:
+            cls.manager.stop()
+            raise
         cls.sdk_version=version('playwright')
     @classmethod
     def tearDownClass(cls):
