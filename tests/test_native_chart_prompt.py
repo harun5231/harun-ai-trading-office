@@ -49,6 +49,35 @@ class NativeChartPromptTests(unittest.TestCase):
         _, hook = self.hook(); payload = self.payload(); payload['context'] = None
         self.assertEqual(hook(payload), formatter(payload))
 
+    def test_actual_native_insertion_preserving_encoder_emits_full_canonical_projection(self):
+        def native_encode(value):
+            if isinstance(value, dict):
+                return '{' + ','.join(json.dumps(key) + ':' + native_encode(item)
+                    for key, item in value.items()) + '}'
+            if isinstance(value, (list, tuple)):
+                return '[' + ','.join(native_encode(item) for item in value) + ']'
+            return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(',', ':'))
+        def native_formatter(payload):
+            return (payload['prompt'] + '\n\nCONTEXT_JSON:\n' + native_encode(payload['context'])
+                + '\n\nOUTPUT_JSON_SCHEMA:\n' + native_encode(payload['output_schema'])
+                + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.')
+        _, hook = self.hook(native_formatter)
+        payload = self.payload(); before = copy.deepcopy(payload)
+        expected = convert_native_market_context(payload['context'], now=NOW)
+        # This fixture proves the original native ABI preserves insertion order
+        # and would not emit the converter's symbol-first dict canonically.
+        encoded = json.dumps(expected, sort_keys=True, separators=(',', ':'))
+        self.assertNotEqual(native_encode(expected), encoded)
+        rendered = hook(payload)
+        actual = rendered.split('\n\nCONTEXT_JSON:\n')[1].split('\n\nOUTPUT_JSON_SCHEMA:\n')[0]
+        self.assertEqual(actual, encoded)
+        self.assertEqual(json.loads(actual), expected)
+        self.assertEqual(sum(len(rows) for rows in json.loads(actual)['candles'].values()), 400)
+        self.assertEqual(payload, before)
+        self.assertTrue(rendered.startswith(payload['prompt'] + '\n\nCONTEXT_JSON:\n'))
+        self.assertTrue(rendered.endswith(native_encode(payload['output_schema'])
+            + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.'))
+
     def test_truncating_formatter_is_rejected(self):
         _, hook = self.hook(lambda payload: payload['prompt'])
         with self.assertRaisesRegex(ValueError, 'CONTEXT_NOT_SERIALIZED'):

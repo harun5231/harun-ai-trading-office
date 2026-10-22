@@ -50,7 +50,11 @@ def install(native_namespace, *, expected_prompt, context_key, wall_clock=time.t
             raise ValueError('NATIVE_200_PROMPT_PAYLOAD_LIMIT')
         context = convert_native_market_context(payload[context_key], now=wall_clock())
         projected = copy.deepcopy(payload)
-        projected[context_key] = context
+        # The authenticated native encoder recursively iterates dict.items();
+        # it does not sort keys. Arrange only this new public projection in
+        # canonical order so the unchanged encoder emits all 400 facts in the
+        # exact canonical form that the admission check below verifies.
+        projected[context_key] = json.loads(_canonical(context))
         formatted = expected_prompt(projected)
         if (type(formatted) is not str or not formatted
                 or len(formatted.encode('utf-8')) > MAX_PROMPT_BYTES

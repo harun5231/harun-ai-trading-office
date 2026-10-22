@@ -11,6 +11,7 @@ import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from datetime import datetime, timezone
 
 from agent.native_browser_hook import DelegatedDOMBridge, install_native_bridge
 
@@ -70,7 +71,7 @@ class Bridge:
    previous=None;stable=0
    until=self._until(self.timeout)
    while self.clock()<until:
-    answer=self._answer(payload['prompt'],())
+    answer=self._answer(payload['prompt'],tuple(self.uploaded_names))
     stable=stable+1 if answer is not None and answer==previous else 0
     previous=answer
     if answer is not None and stable>=3:
@@ -333,6 +334,225 @@ class NativeActorPatchTests(unittest.TestCase):
   result,receipt=self.module.patch_native_actor(raw,_expected_sha256=hashlib.sha256(raw).hexdigest())
   self.assertTrue(receipt['all_other_source_bytes_preserved']);self.assertEqual(result.count(self.module.PREFIX),1)
   self.assertEqual(self.module.NATIVE_ACTOR_SHA256,'0ccb1d63cc898af231e813ed8a3934c219fb9f0dff4f2345bb339c26b729e1ad')
+
+
+class NativeFreshFollowupTests(unittest.TestCase):
+ """New-turn chart facts and durable intent stay inside the native transaction."""
+ def harness(self, *, mutate=None, receipt_result=True):
+  from agent.native_market_context import convert_native_market_context
+  from agent.native_chart_capture import SOURCE
+  from agent.native_chart_prompt import install
+  from tests.test_agent_closed_candles_200 import NOW, native_context_200
+  self.now=NOW+10
+  class AttachmentBridge(Bridge):
+   def __init__(bridge):
+    super().__init__();bridge.pending_names=['initial-15m.png','initial-1h.png']
+    bridge.uploaded_names=list(bridge.pending_names);bridge.uploads=[]
+    bridge.after_click=lambda b:b.messages[-2].update(attachments=list(b.pending_names))
+   def _turns(bridge):
+    rows=copy.deepcopy(bridge.messages)
+    for row in rows:
+     if row['role']=='native_user_role':
+      row['attachments']=list(bridge.uploaded_names) if row['attachments']==bridge.uploaded_names else ['unverified']
+    return rows
+   def _upload(bridge,composer,payload,artifacts):
+    bridge.uploads.append((copy.deepcopy(payload),copy.deepcopy(artifacts)))
+    bridge.pending_names=[payload['marker']+'-'+row[2]['timeframe']+'-'+row[2]['sha256'][:12]+'.png' for row in artifacts]
+    bridge.uploaded_names=list(bridge.pending_names)
+    return [{**item[2],'attachment_id':'native:'+hashlib.sha256(name.encode()).hexdigest()}
+     for name,item in zip(bridge.pending_names,artifacts)]
+  self.bridge=AttachmentBridge();self.module=native()
+  self.value=request();self.value['context']=native_context_200(NOW)
+  self.value['output_schema']={'required':['symbol','side','entry_price','stop_loss','take_profit','risk_reward']}
+  self.initial=[{'source':SOURCE,'symbol':'BTCUSDT','timeframe':tf,
+   'captured_at':datetime.fromtimestamp(NOW,timezone.utc).isoformat(),
+   'sha256':hashlib.sha256(('initial-'+tf).encode()).hexdigest(),'bytes':2048} for tf in ('15m','1h')]
+  self.fresh={'context':native_context_200(self.now),
+   'chart_images':['fresh-15m.png','fresh-1h.png'],
+   'chart_evidence':[{'source':SOURCE,'symbol':'BTCUSDT','timeframe':tf,
+    'captured_at':datetime.fromtimestamp(self.now,timezone.utc).isoformat(),
+    'sha256':hashlib.sha256(('fresh-'+tf).encode()).hexdigest(),'bytes':2048} for tf in ('15m','1h')]}
+  if mutate:mutate(self.fresh)
+  self.module.image_artifacts.side_effect=lambda paths,evidence:[(path,b'x'*row['bytes'],copy.deepcopy(row)) for path,row in zip(paths,evidence)]
+  # Native actor.encode preserves insertion order. The public projection hook
+  # must canonicalize its new copy before this unchanged formatter sees it.
+  formatter={'user_prompt':lambda value:value['prompt']+'\nCONTEXT_JSON:\n'+json.dumps(value['context'],separators=(',',':'))+'\nMARKER:'+value['marker']}
+  install(formatter,expected_prompt=formatter['user_prompt'],context_key='context',wall_clock=lambda:self.now)
+  self.module.user_prompt=formatter['user_prompt']
+  self.events=[];self.enabled=True
+  self.gate=Mock(side_effect=lambda:self.enabled)
+  def refresh(**kwargs):
+   self.events.append(('REFRESH',self.bridge.clicks,copy.deepcopy(kwargs['payload'])))
+   self.assertLess(self.bridge.current,kwargs['deadline'])
+   self.assertIs(kwargs['dispatch_check'](),True)
+   return copy.deepcopy(self.fresh)
+  def receipt(**kwargs):
+   self.events.append((kwargs['stage'],self.bridge.clicks,copy.deepcopy(kwargs['receipt'])))
+   self.assertLess(self.bridge.current,kwargs['deadline'])
+   return receipt_result
+  self.refresh=Mock(side_effect=refresh);self.receipt=Mock(side_effect=receipt)
+  self.reasoner=client()
+  self.hook=DelegatedDOMBridge(self.bridge,self.reasoner,native=self.module,
+   converter=convert_native_market_context,monotonic=self.bridge.clock,wall_clock=lambda:self.now,
+   fresh_charts=self.refresh,followup_receipt=self.receipt)
+  return self.hook
+
+ def ask(self):
+  return self.hook.ask(self.value,self.gate,deadline=80,
+   chart_images=('initial-15m','initial-1h'),chart_evidence=self.initial)
+
+ def test_fresh_400_data_and_two_attachments_are_sent_once_with_native_final_identity(self):
+  self.harness();before=copy.deepcopy(self.value);result=self.ask()
+  self.assertEqual(self.value,before);self.assertEqual(self.bridge.clicks,2)
+  self.assertEqual(self.bridge.fresh_calls,1);self.assertEqual(len(self.bridge.uploads),1)
+  self.reasoner.request.assert_called_once();self.refresh.assert_called_once()
+  prompt=self.bridge.messages[2]['text'];self.assertTrue(prompt.startswith('Coin mana'))
+  start=prompt.index('\nCONTEXT_JSON:\n')+len('\nCONTEXT_JSON:\n')
+  context=json.loads(prompt[start:prompt.index('\nMARKER:')])
+  self.assertEqual({tf:len(rows) for tf,rows in context['candles'].items()},{'15m':200,'1h':200})
+  self.assertEqual(context['observed_at'],self.now)
+  self.assertEqual(self.bridge.messages[2]['attachments'],self.bridge.uploaded_names)
+  self.assertEqual([e[:2] for e in self.events],[('REFRESH',1),('INTENT',1),('COMPLETE',2)])
+  intent=self.events[1][2];complete=self.events[2][2]
+  self.assertEqual(intent['closed_candles_total'],400)
+  self.assertEqual(intent['original_payload_sha256'],hashlib.sha256(json.dumps(before,sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest())
+  self.assertEqual(complete['response_id'],result['response_id'])
+  self.assertEqual(complete['final_reply_sha256'],hashlib.sha256(self.bridge.final.encode()).hexdigest())
+  self.assertEqual(result['chart_evidence'],intent['followup_chart_evidence'])
+  self.assertTrue(all('attachment_id' in row for row in result['chart_evidence']))
+  self.assertEqual(self.bridge.messages[0]['text'],before['prompt'])
+  self.assertEqual(set(result),{'output','assistant_text','response_id','chart_evidence'})
+
+ def test_missing_callbacks_refuse_analysis_before_second_fill_or_send(self):
+  for missing in ('fresh_charts','followup_receipt'):
+   self.harness();setattr(self.hook,missing,None)
+   with self.subTest(missing=missing),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1);self.assertEqual(self.bridge.uploads,[])
+   self.assertEqual(self.bridge.composer.input_value(),'')
+
+ def test_false_or_failed_durable_intent_never_sends_followup(self):
+  for failure in (False,OSError('private path must not escape')):
+   self.harness(receipt_result=False)
+   if isinstance(failure,Exception):self.receipt.side_effect=failure
+   with self.subTest(failure=type(failure).__name__),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1)
+   self.assertEqual(self.bridge.composer.input_value(),'')
+
+ def test_complete_receipt_failure_is_unknown_and_never_replays(self):
+  self.harness();original=self.receipt.side_effect
+  def fail(**kwargs):
+   result=original(**kwargs)
+   return result if kwargs['stage']=='INTENT' else False
+  self.receipt.side_effect=fail
+  with self.assertRaises(OutcomeUnknown):self.ask()
+  self.assertEqual(self.bridge.clicks,2);self.refresh.assert_called_once()
+  self.assertEqual([e[0] for e in self.events],['REFRESH','INTENT','COMPLETE'])
+
+ def test_reused_initial_context_foreign_symbol_missing_candles_or_old_png_refused(self):
+  from tests.test_agent_closed_candles_200 import NOW,native_context_200
+  changes=[lambda f:f.update(context=native_context_200(NOW)),
+   lambda f:f['context'].update(symbol='ETHUSDT'),
+   lambda f:f['context']['timeframes']['15m'].update(candles=f['context']['timeframes']['15m']['candles'][-200:]),
+   lambda f:f['chart_evidence'][0].update(captured_at=datetime.fromtimestamp(NOW,timezone.utc).isoformat()),
+   lambda f:f['chart_evidence'][0].update(source='BINANCE_USDM_FUTURES_WEB'),
+   lambda f:f['chart_evidence'][0].update(symbol='ETHUSDT'),
+   lambda f:f['chart_evidence'][1].update(timeframe='15m'),
+   lambda f:f.update(unreviewed='field')]
+  for change in changes:
+   self.harness(mutate=change)
+   with self.subTest(change=changes.index(change)),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1);self.receipt.assert_not_called()
+
+ def test_truncated_context_prompt_or_broken_native_upload_receipt_refused(self):
+  for change in ('truncated','receipt','names'):
+   self.harness()
+   if change=='truncated':self.module.user_prompt=lambda payload:payload['prompt']+'\nshort context'
+   else:
+    original=self.bridge._upload
+    def bad(*args,**kwargs):
+     rows=original(*args,**kwargs)
+     if change=='receipt':rows[0]['sha256']='a'*64
+     else:self.bridge.uploaded_names=['only-one.png']
+     return rows
+    self.bridge._upload=bad
+   with self.subTest(change=change),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1);self.receipt.assert_not_called()
+
+ def test_off_or_deadline_after_refresh_or_intent_prevents_second_click(self):
+  for point in ('refresh','intent','deadline','navigation'):
+   self.harness()
+   if point=='refresh':
+    original=self.refresh.side_effect
+    def refresh(**kwargs):result=original(**kwargs);self.enabled=False;return result
+    self.refresh.side_effect=refresh
+   else:
+    original=self.receipt.side_effect
+    def receipt(**kwargs):
+     result=original(**kwargs)
+     if point=='intent':self.enabled=False
+     elif point=='navigation':self.bridge.page.url='https://fixture.invalid/chat/foreign'
+     else:self.bridge.current=100
+     return result
+    self.receipt.side_effect=receipt
+   with self.subTest(point=point),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1)
+
+ def test_foreign_final_attachments_or_changed_initial_prefix_never_complete(self):
+  for point in ('attachments','prefix'):
+   self.harness();original=self.bridge.after_click
+   def changed(bridge):
+    original(bridge)
+    if bridge.clicks==2:
+     if point=='attachments':bridge.messages[2]['attachments']=['foreign.png']
+     else:bridge.messages[0]['text']='mutated initial request'
+   self.bridge.after_click=changed
+   with self.subTest(point=point),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,2)
+   self.assertEqual([e[0] for e in self.events],['REFRESH','INTENT'])
+
+ def test_off_after_formatter_or_composer_discovery_prevents_upload_or_fill(self):
+  for point in ('formatter','upload_composer','fill_composer'):
+   self.harness()
+   if point=='formatter':
+    original=self.module.user_prompt
+    def render(payload):
+     result=original(payload);self.enabled=False;return result
+    self.module.user_prompt=render
+   else:
+    original=self.bridge._visible;calls=[]
+    def visible(selector):
+     result=original(selector)
+     if selector==self.bridge._dom_contract.composer:
+      calls.append(selector)
+      if len(calls)==(1 if point=='upload_composer' else 2):self.enabled=False
+     return result
+    self.bridge._visible=visible
+   with self.subTest(point=point),self.assertRaises(OutcomeUnknown):self.ask()
+   self.assertEqual(self.bridge.clicks,1);self.assertEqual(self.bridge.composer.input_value(),'')
+   self.assertEqual(len(self.bridge.uploads),1 if point=='fill_composer' else 0)
+
+ def test_callback_cannot_mutate_original_request_or_use_extra_rounds(self):
+  self.harness();original=self.refresh.side_effect
+  def refresh(**kwargs):
+   result=original(**kwargs);kwargs['payload']['prompt']='mutated private copy'
+   return result
+  self.refresh.side_effect=refresh;before=copy.deepcopy(self.value);result=self.ask()
+  self.assertEqual(self.value,before);self.assertEqual(self.bridge.clicks,2)
+  self.assertEqual(result['assistant_text'],self.bridge.final)
+  self.reasoner.request.assert_called_once();self.refresh.assert_called_once()
+
+ def test_factory_requires_configured_dialogue_and_preserves_explicit_callback_identity(self):
+  self.harness()
+  with patch.dict(os.environ,{},clear=True):
+   with self.assertRaises(ValueError):install_native_bridge(self.bridge,fresh_charts=self.refresh)
+   with self.assertRaises(ValueError):install_native_bridge(self.bridge,followup_receipt='unreviewed')
+  configured={'HARUN_AGENT_DIALOGUE_SOCKET':'/run/agent.sock',
+   'HARUN_AGENT_DIALOGUE_TOKEN_FILE':'/private/token'}
+  with patch.dict(os.environ,configured,clear=True),patch('agent.dialogue_client.DialogueClient',return_value=self.reasoner),patch('agent.native_browser_hook.importlib.import_module',return_value=self.module):
+   installed=install_native_bridge(self.bridge,fresh_charts=self.refresh,followup_receipt=self.receipt)
+   self.assertIs(installed.fresh_charts,self.refresh);self.assertIs(installed.followup_receipt,self.receipt)
+   self.assertIs(install_native_bridge(installed,fresh_charts=self.refresh,followup_receipt=self.receipt),installed)
+   with self.assertRaises(ValueError):install_native_bridge(installed,fresh_charts=lambda **kwargs:None)
 
 
 if __name__=='__main__':unittest.main()
