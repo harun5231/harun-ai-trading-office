@@ -157,8 +157,9 @@ class AgentEndToEndTests(unittest.TestCase):
                         self.assertEqual(path, "/fapi/v1/klines")
                         interval = {"1h": 3600000, "15m": 900000}[parameters["interval"]]
                         latest = now // interval * interval
-                        return [[latest-(29-i)*interval, "100", "101", "99", "100", "7",
-                                 latest-(29-i)*interval+interval-1] for i in range(30)]
+                        count = parameters["limit"]
+                        return [[latest-(count-1-i)*interval, "100", "101", "99", "100", "7",
+                                 latest-(count-1-i)*interval+interval-1] for i in range(count)]
                     market = BinanceFuturesMarket(transport=market_transport)
                     controller = Controller(bridge=bridge, provider=provider, market=market, llm=llm,
                         memory=memory, analysis_prompt=ANALYSIS, render_chart=render_chart_png, parse_setup=parse_setup)
@@ -178,7 +179,7 @@ class AgentEndToEndTests(unittest.TestCase):
                     self.assertEqual(backend.calls.count("SIMULATED_EXISTING_GATEWAY"), 1)
                     self.assertEqual(backend.source_receipts_read, ["analysis-message2"])
                     self.assertEqual(len(calls["model"]), 1)
-                    self.assertEqual(len(calls["market"]), 5)
+                    self.assertEqual(len(calls["market"]), 6)
                     self.assertEqual(len(calls["rpc"]), 2)
                     self.assertEqual(website.calls[1]["message"], ANALYSIS)
                     self.assertEqual(len(website.calls[1]["images"]), 2)

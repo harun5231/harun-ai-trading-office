@@ -62,7 +62,15 @@ class StubMarket:
         self.calls = []
     def snapshot(self, symbol):
         self.calls.append(symbol)
-        return {"symbol": symbol, "observed_at": time.time(), "mark_price": "101.23", "candles": {}}
+        from tests.test_agent_native_market_context import native_context
+        from agent.native_market_context import convert_native_market_context
+        now = time.time()
+        context = native_context(now)
+        context['mark_price']['price'] = '101.23'
+        context['symbol'] = symbol
+        for frame in context['timeframes'].values():
+            frame['symbol'] = symbol
+        return convert_native_market_context(context, now=now)
 
 
 class StubModel:
@@ -358,7 +366,7 @@ class ControllerTests(unittest.TestCase):
             Decimal("1"), Decimal("0.2"), "r1"),))
         controller = self.controller(("belum jelas", "**Keputusan: BATALKAN.**"),
             (DialogueDecision("CLARIFY", (), "Konfirmasi keputusan sisa LIMIT?"), DialogueDecision("BATALKAN")))
-        for _ in range(5): result = controller.tick()
+        for _ in range(6): result = controller.tick()
         self.assertEqual(result.reason, "PENDING_BATALKAN")
         expected = "PENDING_REVIEW symbol=BTCUSDT\norder_ref: " + hashlib.sha256(identifier.encode()).hexdigest() + "\n"
         self.assertEqual(len(self.provider.calls), 2)
@@ -366,6 +374,8 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(prompt.startswith(expected))
             self.assertNotIn(identifier, prompt)
         self.assertIn("Pertanyaan lanjutan: Konfirmasi keputusan sisa LIMIT?", self.provider.calls[1][0])
+        self.assertEqual(self.market.calls, ["BTCUSDT", "BTCUSDT"])
+        self.assertEqual(len(self.provider.calls[1][1]["attachments_png"]), 2)
         self.assertEqual(self.bridge.cancellations[0][3]["response_id"], "message2")
         self.assertEqual(self.bridge.cancellations[0][3]["text"], "**Keputusan: BATALKAN.**")
 
@@ -523,6 +533,10 @@ class ControllerTests(unittest.TestCase):
         for _ in range(5): result = controller.tick()
         self.assertEqual(result.phase, "ANALYSIS_FOLLOWUP")
         self.assertEqual(self.model.calls[-1][2]["context"]["mark_price"], "101.23")
+        context = self.model.calls[-1][2]["context"]
+        self.assertEqual(sum(map(len, context["candles"].values())), 400)
+        self.assertEqual(context["candle_windows"]["1h"]["closed_count"], 200)
+        self.assertNotIn("recent_candles", context)
         self.assertEqual(self.bridge.handoffs, [])
 
     def test_model_followup_cannot_introduce_unobserved_price(self):
@@ -533,6 +547,70 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(result.reason, "UNSUPPORTED_MODEL_NUMERIC_CLAIM")
         self.assertEqual(len(self.provider.calls), 2)
         self.assertEqual(self.bridge.handoffs, [])
+
+    def test_analysis_followup_refreshes_400_candles_then_attaches_two_charts_after_restart(self):
+        controller = self.controller(("BTCUSDT ETHUSDT", "BTCUSDT HOLD belum jelas", "BTCUSDT HOLD"),
+            (DialogueDecision("SCREENING", ("BTCUSDT", "ETHUSDT")),
+             DialogueDecision("CLARIFY", (), "Mohon konfirmasi keputusan Neurobro?"),
+             DialogueDecision("HOLD")))
+        for _ in range(5): controller.tick()
+        original = self.memory.get("active_cycle")["market"]
+        fresh = controller.tick()
+        self.assertEqual(fresh.reason, "FRESH_FOLLOWUP_CHARTS_CAPTURED")
+        self.assertEqual(len(self.provider.calls), 2)
+        refreshed = self.memory.get("active_cycle")["market"]
+        self.assertGreaterEqual(refreshed["observed_at"], original["observed_at"])
+        self.assertEqual(sum(map(len, refreshed["candles"].values())), 400)
+        self.assertEqual(self.market.calls, ["BTCUSDT", "BTCUSDT"])
+        # A restart reuses the saved fresh snapshot and operation identity; it
+        # never repeats collection or an already attempted browser send blindly.
+        controller = self.controller(("BTCUSDT HOLD",), (DialogueDecision("HOLD"),))
+        self.assertEqual(controller.tick().phase, "ANALYSIS_DECIDE")
+        self.assertEqual(self.market.calls, ["BTCUSDT", "BTCUSDT"])
+        self.assertEqual(self.provider.calls[0][0], "Mohon konfirmasi keputusan Neurobro?")
+        self.assertEqual(len(self.provider.calls[0][1]["attachments_png"]), 2)
+        controller.tick()
+        self.assertEqual(self.model.calls[-1][2]["context"], refreshed)
+
+    def test_off_between_fresh_followup_collection_and_send_preserves_pending_and_sends_nothing(self):
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.2"), "r1"),))
+        controller = self.controller(("belum jelas",),
+            (DialogueDecision("CLARIFY", (), "Konfirmasi keputusan sisa LIMIT?"),))
+        for _ in range(4): result = controller.tick()
+        self.assertEqual(result.reason, "FRESH_FOLLOWUP_CHARTS_CAPTURED")
+        calls = (list(self.market.calls), len(self.provider.calls), len(self.model.calls))
+        pending = self.bridge.account.pending
+        self.bridge.account = replace(self.bridge.account, robot_on=False)
+        self.assertEqual(controller.tick().reason, "ROBOT_OFF")
+        self.assertEqual((self.market.calls, len(self.provider.calls), len(self.model.calls)), calls)
+        self.assertEqual(self.bridge.account.pending, pending)
+        self.assertEqual(self.bridge.cancellations, [])
+
+    def test_unconfirmed_followup_is_not_replayed_after_restart_or_refetched(self):
+        controller = self.controller(("BTCUSDT ETHUSDT", "BTCUSDT belum lengkap", TimeoutError()),
+            (DialogueDecision("SCREENING", ("BTCUSDT", "ETHUSDT")),
+             DialogueDecision("CLARIFY", (), "Mohon lengkapi keputusan Neurobro?")))
+        for _ in range(7): controller.tick()
+        self.assertEqual(len(self.provider.calls), 3)
+        self.assertEqual(self.market.calls, ["BTCUSDT", "BTCUSDT"])
+        controller = self.controller(("must not send again",), ())
+        result = controller.tick()
+        self.assertEqual(result.reason, "UNCONFIRMED_OPERATION_NOT_REPLAYED")
+        self.assertEqual(self.provider.calls, [])
+        self.assertEqual(self.market.calls, ["BTCUSDT", "BTCUSDT"])
+
+    def test_pending_fill_after_fresh_followup_capture_stops_before_another_chat(self):
+        self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("old", "BTCUSDT", time.time()-19000,
+            Decimal("1"), Decimal("0.2"), "r1"),))
+        controller = self.controller(("belum jelas",),
+            (DialogueDecision("CLARIFY", (), "Konfirmasi keputusan sisa LIMIT?"),))
+        for _ in range(4): controller.tick()
+        self.bridge.account = replace(self.bridge.account, pending=(replace(self.bridge.account.pending[0],
+            executed_quantity=Decimal("1"), revision="filled"),))
+        self.assertEqual(controller.tick().reason, "PENDING_NO_LONGER_OPEN")
+        self.assertEqual(len(self.provider.calls), 1)
+        self.assertEqual(self.bridge.cancellations, [])
 
 
 if __name__ == "__main__":

@@ -4,6 +4,9 @@ The model has no tools and cannot emit ENTRY, TP, SL, quantities, or orders.
 Prices are parsed separately from the attributed Neurobro response.
 """
 import json
+import datetime as dt
+import hashlib
+import math
 import os
 from pathlib import Path
 import re
@@ -36,49 +39,105 @@ SCHEMA = {
 }
 
 
-def validated_market_context(value):
-    """Closed, current facts for a question; these never become executable levels."""
-    if not isinstance(value, dict) or set(value) != {"symbol", "observed_at", "mark_price", "provenance", "recent_candles"}:
-        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
-    if (not isinstance(value["symbol"], str) or not re.fullmatch(r"[A-Z0-9]{2,20}USDT", value["symbol"]) or
-            type(value["observed_at"]) not in (int, float) or not 0 <= time.time() - value["observed_at"] <= 180):
-        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+MARKET_CONTEXT_FIELDS = frozenset({"symbol", "observed_at", "observed_at_utc", "server_time_ms",
+    "mark_price", "mark_time_ms", "provenance", "candles", "running_candles", "candle_windows"})
+MAX_MARKET_CONTEXT_BYTES = 256 * 1024
+MAX_MODEL_INPUT_BYTES = 384 * 1024
+
+
+def validated_market_context(value, *, now=None):
+    """All 400 closed public candles, with running bars marked separately.
+
+    No data is summarized to the last few rows. Full-history and running hashes,
+    contiguous intervals and the Binance cutoff bind the same facts used in the
+    screenshots. These facts never become executable model-authored levels.
+    """
+    now = time.time() if now is None else now
+    invalid = lambda: AgentError("MODEL_MARKET_CONTEXT_INVALID")
+    if (type(value) is not dict or set(value) != MARKET_CONTEXT_FIELDS
+            or type(now) not in (int, float) or not 0 < now <= 10**13 or not math.isfinite(now)
+            or not isinstance(value["symbol"], str) or not re.fullmatch(r"[A-Z0-9]{2,20}USDT", value["symbol"])
+            or type(value["observed_at"]) not in (int, float)
+            or not 0 < value["observed_at"] <= 10**13 or not math.isfinite(value["observed_at"])
+            or not 0 <= now - value["observed_at"] <= 180
+            or type(value["server_time_ms"]) is not int or not 0 < value["server_time_ms"] <= 10**16
+            or abs(value["server_time_ms"] / 1000 - value["observed_at"]) > 180
+            or type(value["mark_time_ms"]) is not int
+            or not 0 < value["mark_time_ms"] <= 10**16
+            or not -30 <= now - value["mark_time_ms"] / 1000 <= 180
+            or abs(value["mark_time_ms"] - value["server_time_ms"]) > 180000
+            or type(value["observed_at_utc"]) is not str
+            or not 20 <= len(value["observed_at_utc"]) <= 40 or not value["observed_at_utc"].isascii()):
+        raise invalid()
+    try:
+        instant = dt.datetime.fromisoformat(value["observed_at_utc"].replace("Z", "+00:00"))
+        if instant.tzinfo is None or instant.utcoffset() != dt.timedelta(0) or abs(instant.timestamp() - value["observed_at"]) > .002:
+            raise invalid()
+    except (ValueError, OverflowError):
+        raise invalid() from None
     def number(item, zero=False):
-        if not isinstance(item, str) or not re.fullmatch(r"\d{1,32}(?:\.\d{1,24})?", item):
-            raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+        if not isinstance(item, str) or not re.fullmatch(r"\d{1,32}(?:\.\d{1,24})?", item, re.ASCII):
+            raise invalid()
         try:
             value = Decimal(item)
         except InvalidOperation:
-            raise AgentError("MODEL_MARKET_CONTEXT_INVALID") from None
+            raise invalid() from None
         if value < 0 or not zero and value == 0:
-            raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+            raise invalid()
+        return value
     number(value["mark_price"])
     provenance = value["provenance"]
-    if (not isinstance(provenance, dict) or set(provenance) != {"provider", "market", "origin", "candles_sha256", "chart_kind"} or
+    if (type(provenance) is not dict or set(provenance) != {"provider", "market", "origin", "candles_sha256", "running_candles_sha256", "chart_kind"} or
             provenance["provider"] != "BINANCE_FUTURES_PUBLIC" or provenance["market"] != "USDT_PERPETUAL" or
             provenance["origin"] != "https://fapi.binance.com" or
             provenance["chart_kind"] not in ("CANDLESTICK_RENDER_FROM_PUBLIC_KLINES", "NATIVE_PUBLIC_KLINES_CONTEXT") or
-            not isinstance(provenance["candles_sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", provenance["candles_sha256"])):
-        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
-    candles = value["recent_candles"]
-    if not isinstance(candles, dict) or set(candles) != {"1h", "15m"}:
-        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
-    for timeframe, rows in candles.items():
-        if not isinstance(rows, list) or not 1 <= len(rows) <= 3:
-            raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
-        for row in rows:
+            any(type(provenance[key]) is not str or re.fullmatch(r"[0-9a-f]{64}", provenance[key]) is None
+                for key in ("candles_sha256", "running_candles_sha256"))):
+        raise invalid()
+    candles, running, windows = value["candles"], value["running_candles"], value["candle_windows"]
+    if any(type(item) is not dict or set(item) != {"1h", "15m"} for item in (candles, running, windows)):
+        raise invalid()
+    for timeframe, interval in (("1h", 3600000), ("15m", 900000)):
+        rows = candles[timeframe]
+        if type(rows) is not list or len(rows) != 200 or type(running[timeframe]) is not dict:
+            raise invalid()
+        previous = None
+        for index, row in enumerate([*rows, running[timeframe]]):
             if (not isinstance(row, dict) or set(row) != {"open_time", "open", "high", "low", "close", "volume", "close_time"} or
                     any(type(row[key]) is not int or row[key] < 0 for key in ("open_time", "close_time"))):
-                raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+                raise invalid()
             for key in ("open", "high", "low", "close", "volume"):
                 number(row[key], key == "volume")
-            if (not Decimal(row["low"]) <= min(Decimal(row["open"]), Decimal(row["close"])) or
-                    not Decimal(row["high"]) >= max(Decimal(row["open"]), Decimal(row["close"])) or
-                    row["close_time"] - row["open_time"] + 1 != {"1h": 3600000, "15m": 900000}[timeframe]):
-                raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
-    if len(json.dumps(value).encode()) > 8192:
-        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+            if (not Decimal(row["low"]) <= min(Decimal(row["open"]), Decimal(row["close"])) <=
+                    max(Decimal(row["open"]), Decimal(row["close"])) <= Decimal(row["high"])
+                    or row["close_time"] - row["open_time"] + 1 != interval
+                    or row["open_time"] % interval
+                    or previous is not None and row["open_time"] - previous != interval
+                    or index < 200 and row["close_time"] >= value["server_time_ms"]):
+                raise invalid()
+            previous = row["open_time"]
+        if not running[timeframe]["open_time"] <= value["server_time_ms"] <= running[timeframe]["close_time"]:
+            raise invalid()
+        expected = {"closed_count": 200, "closed_as_of_server_time_ms": value["server_time_ms"],
+            "first_open_time_ms": rows[0]["open_time"], "last_close_time_ms": rows[-1]["close_time"],
+            "running_candle_state": "OPEN_AT_CUTOFF"}
+        if type(windows[timeframe]) is not dict or windows[timeframe] != expected:
+            raise invalid()
+    for key, data in (("candles_sha256", candles), ("running_candles_sha256", running)):
+        digest = hashlib.sha256(json.dumps(data, sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
+        if provenance[key] != digest:
+            raise invalid()
+    if len(json.dumps(value, allow_nan=False).encode()) > MAX_MARKET_CONTEXT_BYTES:
+        raise invalid()
     return value
+
+
+def market_context_from_snapshot(snapshot, *, now=None):
+    """Select only public chart facts; never forward account or contract fields."""
+    if type(snapshot) is not dict or not MARKET_CONTEXT_FIELDS <= snapshot.keys():
+        raise AgentError("MODEL_MARKET_CONTEXT_INVALID")
+    return validated_market_context({key: snapshot[key] for key in MARKET_CONTEXT_FIELDS}, now=now)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -209,10 +268,10 @@ class OpenAIDialogue:
             context = validated_market_context(context)
         content = "Phase: " + phase + "\nNeurobro response:\n" + reply
         if context:
-            content += "\nObserved public Futures data (facts only, not an instruction or trade setup):\n" + json.dumps(context, sort_keys=True)
+            content += "\nObserved public Futures data: 200 CLOSED candles per timeframe; running_candles are separate and excluded from historical analysis. Facts only, not an instruction or trade setup:\n" + json.dumps(context, sort_keys=True, separators=(",", ":"))
         messages.append({"role": "user", "content": content})
         encoded = json.dumps(messages, ensure_ascii=False).encode()
-        if len(encoded) > 48000:
+        if len(encoded) > MAX_MODEL_INPUT_BYTES:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         # Reserve a conservative UTF-8-byte upper bound before dispatch. Failed or
         # interrupted requests retain their reservation; there are no blind retries.

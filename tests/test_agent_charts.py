@@ -1,6 +1,7 @@
 import binascii
 import copy
 import json
+import hashlib
 import struct
 import unittest
 import zlib
@@ -45,6 +46,9 @@ class ChartTests(unittest.TestCase):
         self.assertEqual(a, render_chart_png(self.snapshot, "15m"))
         modified = copy.deepcopy(self.snapshot)
         modified["candles"]["15m"][-1]["close"] = "64950"
+        modified["provenance"]["candles_sha256"] = hashlib.sha256(json.dumps(
+            modified["candles"], sort_keys=True, separators=(",", ":"),
+            ensure_ascii=True, allow_nan=False).encode("ascii")).hexdigest()
         self.assertNotEqual(a, render_chart_png(modified, "15m"))
 
     def test_rejects_missing_provenance_and_invalid_prices(self):

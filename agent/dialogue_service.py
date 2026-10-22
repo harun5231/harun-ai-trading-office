@@ -30,7 +30,9 @@ from .llm import OpenAIDialogue, read_api_key, validated_market_context
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
 
-MAX_BODY = 65536
+# The exact 400-candle payload plus bounded Neurobro reply no longer fits the
+# former 64 KiB request. The response and HTTP-header limits remain unchanged.
+MAX_BODY = 384 * 1024
 MAX_RESPONSE = 16384
 PHASES = frozenset({'SCREENING', 'ANALYSIS', 'PENDING_REVIEW'})
 ACTIONS = frozenset({'SCREENING', 'CLARIFY', 'HOLD', 'TAHAN', 'BATALKAN', 'COMPLETE'})
@@ -102,7 +104,7 @@ def validate_request(value, *, now=None):
         need(value['market_context'] is None, 'DIALOGUE_MARKET_CONTEXT_INVALID')
     else:
         try:
-            validated_market_context(value['market_context'])
+            validated_market_context(value['market_context'], now=now)
         except (AgentError, ValueError, TypeError, OverflowError):
             raise DialogueError('DIALOGUE_MARKET_CONTEXT_INVALID') from None
     try:
