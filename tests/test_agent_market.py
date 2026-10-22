@@ -20,7 +20,7 @@ def fixture_transport(path, parameters):
         return {"symbol": "BTCUSDT", "markPrice": "65000.125", "time": int(NOW * 1000)}
     interval = {"1h": 3600000, "15m": 900000}[parameters["interval"]]
     last = int(NOW * 1000) // interval * interval
-    return [[last - (29-i) * interval, "64900", "65100", "64800", "65000", "12.5", last - (29-i) * interval + interval - 1] for i in range(30)]
+    return [[last - (parameters["limit"]-1-i) * interval, "64900", "65100", "64800", "65000", "12.5", last - (parameters["limit"]-1-i) * interval + interval - 1] for i in range(parameters["limit"])]
 
 
 class MarketTests(unittest.TestCase):
@@ -41,7 +41,7 @@ class MarketTests(unittest.TestCase):
         self.assertEqual(result["symbol_rules"]["tick_size"], "0.10")
         self.assertNotIn("max_leverage", result["symbol_rules"])
         self.assertEqual(len(result["provenance"]["candles_sha256"]), 64)
-        self.assertEqual(len(calls), 5)
+        self.assertEqual(len(calls), 6)
         self.assertTrue(all(not any(key.lower() in ("signature", "apikey", "secret") for key in params) for _, params in calls))
 
     def test_disallows_non_usdt_and_url_injection(self):

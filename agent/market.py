@@ -6,8 +6,8 @@ Account state, commissions and leverage brackets belong to the existing backend.
 from __future__ import annotations
 
 import datetime as dt
-import hashlib
 import json
+import math
 import re
 import time
 import urllib.error
@@ -15,6 +15,9 @@ import urllib.parse
 import urllib.request
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable
+
+from .native_market_context import (NativeContextUnavailable, candle_digest,
+                                    closed_candle_window)
 
 
 class MarketUnavailable(RuntimeError):
@@ -52,10 +55,12 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class BinanceFuturesMarket:
-    def __init__(self, *, timeout_seconds: float = 15, candle_limit: int = 120,
+    def __init__(self, *, timeout_seconds: float = 15, candle_limit: int = 202,
                  transport: Callable[[str, dict[str, Any]], Any] | None = None,
                  clock: Callable[[], float] = time.time):
-        if not 1 <= timeout_seconds <= 15 or not 30 <= candle_limit <= 200:
+        if (type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds)
+                or not 1 <= timeout_seconds <= 15 or type(candle_limit) is not int
+                or candle_limit not in (201, 202)):
             raise ValueError("MARKET_LIMIT_INVALID")
         self.timeout_seconds = timeout_seconds
         self.candle_limit = candle_limit
@@ -84,7 +89,7 @@ class BinanceFuturesMarket:
             raise MarketUnavailable("MARKET_PARAMETERS_REFUSED")
         if "symbol" in parameters:
             require_symbol(parameters["symbol"])
-        if "interval" in parameters and (parameters["interval"] not in INTERVAL_MS or type(parameters["limit"]) is not int or not 30 <= parameters["limit"] <= 200):
+        if "interval" in parameters and (parameters["interval"] not in INTERVAL_MS or type(parameters["limit"]) is not int or parameters["limit"] not in (201, 202)):
             raise MarketUnavailable("MARKET_PARAMETERS_REFUSED")
         timeout = self._timeout()
         if self._transport is not None:
@@ -124,9 +129,16 @@ class BinanceFuturesMarket:
     def _server_time(self) -> int:
         raw = self._get("/fapi/v1/time", {})
         server = raw.get("serverTime") if isinstance(raw, dict) else None
-        if type(server) is not int or abs(server / 1000 - self._clock()) > 15:
+        if type(server) is not int or server <= 0 or abs(server / 1000 - self._now()) > 15:
             raise MarketUnavailable("MARKET_CLOCK_UNVERIFIED")
         return server
+
+    def _now(self):
+        observed = self._clock()
+        if (type(observed) not in (int, float) or not math.isfinite(observed)
+                or not 0 < observed <= 253_402_300_799):
+            raise MarketUnavailable("MARKET_CLOCK_UNVERIFIED")
+        return observed
 
     def exchange_info(self, symbol: str) -> dict[str, str]:
         symbol = require_symbol(symbol)
@@ -166,7 +178,7 @@ class BinanceFuturesMarket:
 
     def _candles(self, symbol: str, interval: str, server_ms: int) -> list[dict[str, Any]]:
         rows = self._get("/fapi/v1/klines", {"symbol": symbol, "interval": interval, "limit": self.candle_limit})
-        if not isinstance(rows, list) or not 30 <= len(rows) <= self.candle_limit:
+        if not isinstance(rows, list) or len(rows) != self.candle_limit:
             raise MarketUnavailable("CANDLE_COUNT_INVALID")
         result = []
         previous = None
@@ -174,7 +186,8 @@ class BinanceFuturesMarket:
             if not isinstance(row, list) or len(row) < 7 or type(row[0]) is not int or type(row[6]) is not int:
                 raise MarketUnavailable("CANDLE_SCHEMA_INVALID")
             opened, closed = row[0], row[6]
-            if closed != opened + INTERVAL_MS[interval] - 1 or opened < 0:
+            if (closed != opened + INTERVAL_MS[interval] - 1 or opened < 0
+                    or opened % INTERVAL_MS[interval] != 0):
                 raise MarketUnavailable("CANDLE_INTERVAL_INVALID")
             if previous is not None and opened - previous != INTERVAL_MS[interval]:
                 raise MarketUnavailable("CANDLE_SEQUENCE_INVALID")
@@ -184,7 +197,11 @@ class BinanceFuturesMarket:
                 raise MarketUnavailable("CANDLE_OHLC_INVALID")
             result.append(dict(open_time=opened, open=values[0], high=values[1], low=values[2], close=values[3], volume=decimal_string(row[5], positive=False), close_time=closed))
             previous = opened
-        if not result[-1]["open_time"] <= server_ms <= result[-1]["close_time"] + 2000:
+        # At most one boundary can pass during the bounded collection. Keep
+        # the pre-request cutoff: a partial bar can never become history just
+        # because the response arrived after its nominal close time.
+        current_open = server_ms // INTERVAL_MS[interval] * INTERVAL_MS[interval]
+        if result[-1]["open_time"] not in (current_open, current_open + INTERVAL_MS[interval]):
             raise MarketUnavailable("LATEST_CANDLE_NOT_CURRENT")
         return result
 
@@ -192,22 +209,48 @@ class BinanceFuturesMarket:
         symbol = require_symbol(symbol)
         if not isinstance(timeframes, tuple) or len(set(timeframes)) != len(timeframes) or set(timeframes) != set(INTERVAL_MS):
             raise MarketUnavailable("REQUIRED_TIMEFRAMES_INVALID")
-        started = self._clock()
-        server_ms = self._server_time()
+        started = self._now()
         rules = self.exchange_info(symbol)
-        candles = {interval: self._candles(symbol, interval, server_ms) for interval in timeframes}
-        quote = self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
+        # One finite reread handles a collection straddling a 15m/hour boundary.
+        # The final clock observation confirms both frames stayed in the same
+        # interval as their pre-fetch cutoff. No open OHLCV is relabeled closed.
+        for attempt in range(2):
+            server_ms = self._server_time()
+            raw_frames = {interval: self._candles(symbol, interval, server_ms) for interval in timeframes}
+            quote = self._get("/fapi/v1/premiumIndex", {"symbol": symbol})
+            final_server_ms = self._server_time()
+            if final_server_ms < server_ms:
+                raise MarketUnavailable("MARKET_CLOCK_REGRESSED")
+            if any(server_ms // interval != final_server_ms // interval for interval in INTERVAL_MS.values()):
+                if attempt:
+                    raise MarketUnavailable("MARKET_BOUNDARY_UNSTABLE")
+                continue
+            if final_server_ms - server_ms > 90_000:
+                raise MarketUnavailable("MARKET_OBSERVATION_STALE")
+            if any(rows[-1]["open_time"] > final_server_ms for rows in raw_frames.values()):
+                raise MarketUnavailable("CANDLE_FUTURE_UNVERIFIED")
+            break
+        candles, running_candles, windows = {}, {}, {}
+        try:
+            for timeframe in timeframes:
+                candles[timeframe], running_candles[timeframe], windows[timeframe] = closed_candle_window(
+                    raw_frames[timeframe], timeframe, server_ms)
+        except NativeContextUnavailable:
+            raise MarketUnavailable("CLOSED_CANDLE_HISTORY_INCOMPLETE") from None
         if not isinstance(quote, dict) or quote.get("symbol") != symbol or type(quote.get("time")) is not int:
             raise MarketUnavailable("MARK_QUOTE_INVALID")
-        observed = self._clock()
-        if observed - started > 90 or observed < started or abs(quote["time"] / 1000 - observed) > 180:
+        observed = self._now()
+        if (observed - started > 90 or observed < started
+                or abs(quote["time"] / 1000 - observed) > 180
+                or quote["time"] > final_server_ms):
             raise MarketUnavailable("MARKET_OBSERVATION_STALE")
         mark = decimal_string(quote.get("markPrice"))
-        raw_candles = json.dumps(candles, sort_keys=True, separators=(",", ":")).encode()
         return {
             "symbol": symbol, "observed_at": observed,
             "observed_at_utc": dt.datetime.fromtimestamp(observed, dt.timezone.utc).isoformat(),
-            "server_time_ms": server_ms, "mark_price": mark, "mark_time_ms": quote["time"],
+            "server_time_ms": server_ms, "collection_finished_server_time_ms": final_server_ms,
+            "mark_price": mark, "mark_time_ms": quote["time"],
             "symbol_rules": rules, "candles": candles,
-            "provenance": {"provider": "BINANCE_FUTURES_PUBLIC", "market": "USDT_PERPETUAL", "origin": "https://fapi.binance.com", "candles_sha256": hashlib.sha256(raw_candles).hexdigest(), "chart_kind": "CANDLESTICK_RENDER_FROM_PUBLIC_KLINES"},
+            "running_candles": running_candles, "candle_windows": windows,
+            "provenance": {"provider": "BINANCE_FUTURES_PUBLIC", "market": "USDT_PERPETUAL", "origin": "https://fapi.binance.com", "candles_sha256": candle_digest(candles), "running_candles_sha256": candle_digest(running_candles), "chart_kind": "CANDLESTICK_RENDER_FROM_PUBLIC_KLINES"},
         }

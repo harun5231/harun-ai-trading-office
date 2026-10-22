@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
       - name: Test delegated runtime and native data conversion without providers
         run: |
-          python3 -m unittest tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal -v
+          PYTHONPATH=.:tests python3 -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal -v
       - name: Build from the immutable existing agent image
         run: |
           contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"

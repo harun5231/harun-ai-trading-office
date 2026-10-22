@@ -14,6 +14,7 @@ import uuid
 from worker.prompts import ANALYSIS, REPLACEMENT_SCREENING, SCREENING
 
 from .models import AccountSnapshot, AgentError, AmbiguousOperation, BudgetExceeded, MarketContext, NotSent, RobotOff, TickResult
+from .llm import market_context_from_snapshot
 
 
 class Controller:
@@ -152,9 +153,7 @@ class Controller:
         if phase != "SCREENING":
             market = self._context(cycle)
             data = market.data
-            context = {"symbol": market.symbol, "observed_at": market.observed_at,
-                       "mark_price": data.get("mark_price"), "provenance": data.get("provenance"),
-                       "recent_candles": {tf: data.get("candles", {}).get(tf, [])[-3:] for tf in ("1h", "15m")}}
+            context = market_context_from_snapshot(data, now=self.clock())
         payload = {"phase": phase, "reply": cycle["reply"]["text"], "history": history, "context": context}
         def plan():
             self._on()
@@ -219,6 +218,7 @@ class Controller:
         cycle["followups"] = 0
         cycle.pop("market", None)
         cycle.pop("reply", None)
+        cycle.pop("followup_market_id", None)
         cycle["phase"] = "ANALYSIS_REQUEST" if cycle["queue"] else "SCREEN_REQUEST"
         self._save(cycle)
 
@@ -401,7 +401,26 @@ class Controller:
         elif phase.endswith("_FOLLOWUP"):
             family = phase.split("_", 1)[0]
             text = self._pending_prompt(cycle, cycle["question"]) if family == "PENDING" else cycle["question"]
-            self._exchange(cycle, phase, text)
+            attachments = ()
+            if family in {"ANALYSIS", "PENDING"}:
+                if family == "PENDING":
+                    order = self.bridge.pending_status(cycle["order_id"])
+                    if order is None or order.quantity <= order.executed_quantity:
+                        return self._finish(cycle, "PENDING_NO_LONGER_OPEN")
+                observation_id = self._op_id(cycle, "FOLLOWUP_MARKET:" + phase + ":" +
+                                               str(cycle.get("followups", 0)))
+                if cycle.get("followup_market_id") != observation_id:
+                    # Every chart-dependent question gets a new public snapshot,
+                    # not the original setup's older chart. Persist collection in
+                    # its own tick, just like initial analysis/pending review.
+                    context = self._market(cycle["active"])
+                    cycle["market"] = dict(context.data)
+                    cycle["followup_market_id"] = observation_id
+                    self._save(cycle)
+                    return TickResult("RUNNING", phase, "FRESH_FOLLOWUP_CHARTS_CAPTURED")
+                context = self._context(cycle)
+                attachments = tuple(self.render_chart(context.data, tf) for tf in ("1h", "15m"))
+            self._exchange(cycle, phase, text, attachments=attachments)
             cycle["phase"] = family + "_DECIDE"
         elif phase == "PENDING_REQUEST":
             order = self.bridge.pending_status(cycle["order_id"])

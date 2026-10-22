@@ -1,4 +1,5 @@
 import json
+import copy
 import os
 from pathlib import Path
 import tempfile
@@ -92,14 +93,10 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
     def context(self):
-        candle = {"open_time": 1000000, "open": "100", "high": "102", "low": "99",
-                  "close": "101", "volume": "7", "close_time": 4599999}
-        fast = dict(candle, close_time=1899999)
-        return {"symbol": "BTCUSDT", "observed_at": time.time(), "mark_price": "101.23",
-                "provenance": {"provider": "BINANCE_FUTURES_PUBLIC", "market": "USDT_PERPETUAL",
-                    "origin": "https://fapi.binance.com", "candles_sha256": "a" * 64,
-                    "chart_kind": "CANDLESTICK_RENDER_FROM_PUBLIC_KLINES"},
-                "recent_candles": {"1h": [candle], "15m": [fast]}}
+        from tests.test_agent_native_market_context import native_context
+        from agent.native_market_context import convert_native_market_context
+        now = time.time()
+        return convert_native_market_context(native_context(now), now=now)
 
     def test_realtime_facts_supplied_separately_without_price_output_authority(self):
         model = self.model({"action": "CLARIFY", "symbols": [], "question": "Konfirmasi harga terbaru 101.23?"})
@@ -119,6 +116,59 @@ class LLMTests(unittest.TestCase):
             mutation(context)
             with self.assertRaises(AgentError):
                 validated_market_context(context)
+
+    def test_all_400_closed_rows_and_separate_running_rows_reach_model_unchanged(self):
+        context = self.context()
+        model = self.model({"action": "HOLD", "symbols": ["BTCUSDT"], "question": ""})
+        model.plan([], "BTCUSDT HOLD", phase="ANALYSIS", jakarta_day="2026-10-19", context=context)
+        content = self.calls[0]["input"][-1]["content"]
+        transmitted = json.loads(content.rsplit("\n", 1)[1])
+        self.assertEqual(transmitted, context)
+        self.assertEqual(sum(map(len, transmitted["candles"].values())), 400)
+        self.assertNotIn("recent_candles", transmitted)
+        self.assertIn("200 CLOSED candles per timeframe", content)
+        for tf in ("1h", "15m"):
+            self.assertNotIn(transmitted["running_candles"][tf], transmitted["candles"][tf])
+            self.assertEqual(transmitted["candles"][tf][0], context["candles"][tf][0])
+
+    def test_full_history_running_and_cutoff_tampering_rejected_before_model(self):
+        mutations = (
+            lambda x: x["candles"]["15m"].pop(0),
+            lambda x: x["candles"]["1h"][0].update(volume="0"),
+            lambda x: x["running_candles"]["1h"].update(volume="0"),
+            lambda x: x["candle_windows"]["15m"].update(closed_count=199),
+            lambda x: x["candles"]["1h"].__setitem__(-1, copy.deepcopy(x["running_candles"]["1h"])),
+            lambda x: x.update(observed_at_utc="2000-01-01T00:00:00+00:00"),
+            lambda x: x["provenance"].update(running_candles_sha256="0" * 64),
+            lambda x: x.update(recent_candles=x["candles"]),
+        )
+        model = self.model({"action": "HOLD", "symbols": ["BTCUSDT"], "question": ""})
+        for mutate in mutations:
+            context = self.context()
+            mutate(context)
+            with self.subTest(mutate=mutate), self.assertRaises(AgentError):
+                model.plan([], "BTCUSDT HOLD", phase="ANALYSIS", jakarta_day="2026-10-19", context=context)
+        self.assertEqual(self.calls, [])
+
+    def test_bounded_collection_latency_and_future_host_skew_match_public_chart_contract(self):
+        from agent.llm import market_context_from_snapshot
+        from tests.test_agent_charts_closed_200 import snapshot_fixture, SERVER_MS
+        import datetime as dt
+        snapshot = snapshot_fixture()
+        snapshot["provenance"]["chart_kind"] = "CANDLESTICK_RENDER_FROM_PUBLIC_KLINES"
+        snapshot["observed_at"] = SERVER_MS / 1000 + 45
+        snapshot["observed_at_utc"] = dt.datetime.fromtimestamp(snapshot["observed_at"], dt.timezone.utc).isoformat()
+        snapshot["collection_finished_server_time_ms"] = SERVER_MS + 45000
+        snapshot["symbol_rules"] = {"private_canary": object()}
+        value = market_context_from_snapshot(snapshot, now=snapshot["observed_at"])
+        self.assertNotIn("symbol_rules", value)
+        self.assertNotIn("collection_finished_server_time_ms", value)
+        # A verified Binance mark can be slightly ahead of the host clock.
+        value["mark_time_ms"] = int((snapshot["observed_at"] + 20) * 1000)
+        validated_market_context(value, now=snapshot["observed_at"])
+        value["mark_time_ms"] += 11000
+        with self.assertRaises(AgentError):
+            validated_market_context(value, now=snapshot["observed_at"])
 
     def test_absolute_response_deadline_does_not_reset_for_slow_drip_body(self):
         reads, timeouts = [], []

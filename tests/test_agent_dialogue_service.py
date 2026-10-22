@@ -19,13 +19,10 @@ from agent.memory import Memory
 
 
 def request(*, phase='SCREENING', reply='BTCUSDT', index=0, conversation='native-cycle:one'):
-    candle={'open_time':1000000,'open':'100','high':'102','low':'99','close':'101',
-        'volume':'7','close_time':4599999}
-    context={'symbol':'BTCUSDT','observed_at':time.time(),'mark_price':'101.23',
-        'provenance':{'provider':'BINANCE_FUTURES_PUBLIC','market':'USDT_PERPETUAL',
-            'origin':'https://fapi.binance.com','candles_sha256':'a'*64,
-            'chart_kind':'CANDLESTICK_RENDER_FROM_PUBLIC_KLINES'},
-        'recent_candles':{'1h':[candle],'15m':[dict(candle,close_time=1899999)]}}
+    from tests.test_agent_native_market_context import native_context
+    from agent.native_market_context import convert_native_market_context
+    now = time.time()
+    context = convert_native_market_context(native_context(now), now=now)
     return {'schema_version':1,'request_id':hashlib.sha256(str(index).encode()).hexdigest(),
         'conversation_id':conversation,'phase':phase,'reply':reply,
         'reply_sha256':hashlib.sha256(reply.encode()).hexdigest(),
@@ -105,8 +102,47 @@ class DialogueServiceTests(unittest.TestCase):
         self.assertIn('BINANCE_FUTURES_PUBLIC',text)
         self.assertIn('"1h"',text)
         self.assertIn('"15m"',text)
-        self.assertIn('101.23',text)
-        self.assertNotIn('101.23',json.dumps(value))
+        self.assertIn('101.2300',text)
+        self.assertNotIn('101.2300',json.dumps(value))
+
+    def test_full_400_candle_request_over_old_64k_limit_reaches_model_with_bounded_http_body(self):
+        from agent.native_market_context import candle_digest
+        value = request(phase='ANALYSIS', reply='BTCUSDT HOLD')
+        context = value['market_context']
+        for rows in context['candles'].values():
+            for row in rows:
+                row['volume'] = '12345678901234567890123456789012.123456789012345678901234'
+        context['provenance']['candles_sha256'] = candle_digest(context['candles'])
+        raw = d.canonical(value).encode()
+        self.assertGreater(len(raw), 65536)
+        self.assertLess(len(raw), d.MAX_BODY)
+        wire = (b'POST /v1/dialogue HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n'
+                b'Authorization: Bearer unit-token\r\nContent-Length: ' + str(len(raw)).encode() + b'\r\n\r\n' + raw)
+        class Connection:
+            def __init__(self, data): self.data = data
+            def settimeout(self, _): pass
+            def recv(self, count):
+                result, self.data = self.data[:count], self.data[count:]
+                return result
+        received = d.http_request(Connection(wire), 'unit-token', deadline=time.monotonic()+10)
+        self.assertEqual(received, value)
+        self.output = {'action':'HOLD','symbols':['BTCUSDT'],'question':''}
+        result = self.engine.process(received)
+        self.assertEqual(result['decision']['action'], 'HOLD')
+        transmitted = json.loads(self.calls[0]['input'][-1]['content'].rsplit('\n', 1)[1])
+        self.assertEqual(transmitted['candles'], context['candles'])
+        self.assertEqual(sum(map(len, transmitted['candles'].values())), 400)
+
+    def test_explicit_request_clock_binds_both_deadline_and_market_freshness(self):
+        from tests.test_agent_closed_candles_200 import native_context_200, NOW
+        from agent.native_market_context import convert_native_market_context
+        value = request(phase='ANALYSIS', reply='BTCUSDT HOLD')
+        value['market_context'] = convert_native_market_context(native_context_200(NOW), now=NOW)
+        value['deadline_epoch'] = NOW + 80
+        self.assertIs(d.validate_request(value, now=NOW), value)
+        value['deadline_epoch'] = NOW + 200 + 80
+        with self.assertRaisesRegex(d.DialogueError, 'MARKET_CONTEXT_INVALID'):
+            d.validate_request(value, now=NOW + 200)
 
     def test_done_replay_does_not_call_model_or_append_history(self):
         value=request()
@@ -254,7 +290,8 @@ class DialogueServiceTests(unittest.TestCase):
         self.assertEqual(second['reason'],'CLARIFICATION_ALREADY_USED')
         self.assertEqual(second['decision']['question'],'')
         self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
-        self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport)
+        self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport,
+            daily_requests=math.inf,daily_input_tokens=math.inf,daily_output_tokens=math.inf)
         self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
         third=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT belum ada keputusan',index=3))
         self.assertFalse(third['needs_followup'])

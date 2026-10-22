@@ -19,8 +19,8 @@ def native_context(now):
     for timeframe, interval in INTERVALS.items():
         current = server//interval*interval
         rows = []
-        for index in range(20):
-            opened = current-(19-index)*interval
+        for index in range(202):
+            opened = current-(201-index)*interval
             rows.append({'open_time': opened, 'open': '100.00', 'high': '102.00',
                 'low': '99.00', 'close': '101.00', 'volume': '12.50',
                 'close_time': opened+interval-1})
@@ -37,16 +37,16 @@ class NativeMarketContextTests(unittest.TestCase):
         self.now = time.time()
         self.context = native_context(self.now)
 
-    def test_copies_exact_native_prices_last_three_candles_and_full_series_digest(self):
+    def test_copies_exact_native_prices_400_closed_candles_and_bound_series_digest(self):
         before = copy.deepcopy(self.context)
         result = convert_native_market_context(self.context, now=self.now)
         self.assertEqual(self.context, before)
         self.assertEqual(result['mark_price'], '101.2300')
         self.assertEqual(result['observed_at'], self.now)
-        self.assertEqual(set(result), {'symbol', 'observed_at', 'mark_price', 'provenance', 'recent_candles'})
+        self.assertEqual(set(result), {'symbol', 'observed_at', 'observed_at_utc', 'server_time_ms', 'mark_price', 'mark_time_ms', 'provenance', 'candles', 'running_candles', 'candle_windows'})
         for tf in INTERVALS:
-            self.assertEqual(result['recent_candles'][tf], self.context['timeframes'][tf]['candles'][-3:])
-        raw = json.dumps({tf: self.context['timeframes'][tf]['candles'] for tf in INTERVALS},
+            self.assertEqual(result['candles'][tf], self.context['timeframes'][tf]['candles'][-201:-1])
+        raw = json.dumps({tf: self.context['timeframes'][tf]['candles'][-201:-1] for tf in INTERVALS},
             sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
         self.assertEqual(result['provenance']['candles_sha256'], hashlib.sha256(raw).hexdigest())
         self.assertEqual(result['provenance']['chart_kind'], NATIVE_CHART_KIND)
@@ -54,7 +54,7 @@ class NativeMarketContextTests(unittest.TestCase):
         with patch('agent.llm.time.time', return_value=self.now):
             self.assertEqual(validated_market_context(result), result)
         # Returned facts are independent values, not aliases of worker context.
-        result['recent_candles']['1h'][0]['close'] = '999'
+        result['candles']['1h'][0]['close'] = '999'
         self.assertEqual(self.context, before)
 
     def test_private_and_unselected_extra_values_are_never_serialized_or_forwarded(self):
@@ -94,7 +94,7 @@ class NativeMarketContextTests(unittest.TestCase):
 
     def test_invalid_candle_count_interval_sequence_or_prices_are_rejected(self):
         mutations = (
-            lambda rows: rows.pop(),
+            lambda rows: rows.__delitem__(slice(-2, None)),
             lambda rows: rows.extend(copy.deepcopy(rows)*26),
             lambda rows: rows[0].update(open_time=rows[0]['open_time']+1),
             lambda rows: rows[0].update(close_time=rows[0]['close_time']-1),

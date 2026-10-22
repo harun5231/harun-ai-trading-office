@@ -28,6 +28,28 @@ jobs:
           HARUN_BROWSER_INTEGRATION: '1'
           HARUN_RPC_INTEGRATION: '1'
         run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces. Grant only the
+          # installed test Chromium executable access to its own sandbox; keep
+          # the kernel restriction enabled and do not use --no-sandbox. This
+          # profile exists only on this disposable GitHub-hosted test machine.
+          python3 - <<'PY'
+          import os, pathlib, re
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as manager:
+              executable = pathlib.Path(manager.chromium.executable_path).resolve(strict=True)
+          assert executable.is_file() and re.fullmatch(r'/[A-Za-z0-9_./-]+', str(executable))
+          assert executable.name == 'chrome'
+          profile = pathlib.Path(os.environ['RUNNER_TEMP']) / 'harun-chart-ci-apparmor'
+          profile.write_text('abi <abi/4.0>,\nprofile harun-chart-ci-chromium "' + str(executable) +
+              '" flags=(unconfined) {\n  userns,\n}\n')
+          profile.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('HARUN_TEST_CHROMIUM_EXECUTABLE=' + str(executable) + '\n')
+          PY
+          export HARUN_TEST_CHROMIUM_EXECUTABLE="$(python3 -c 'from playwright.sync_api import sync_playwright; p=sync_playwright().start(); print(p.chromium.executable_path); p.stop()')"
+          profile="$RUNNER_TEMP/harun-chart-ci-apparmor"
+          sudo /usr/sbin/apparmor_parser --replace "$profile"
+          trap 'sudo /usr/sbin/apparmor_parser --remove "$profile"; rm -- "$profile"' EXIT
           python3 -m unittest discover -s tests -v
       - name: Build only the isolated agent image
         run: |

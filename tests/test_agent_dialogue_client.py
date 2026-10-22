@@ -76,6 +76,29 @@ class DialogueClientTests(unittest.TestCase):
         self.assertFalse(first['trading_authority'])
         self.assertEqual(stat.S_IMODE(self.socket.lstat().st_mode),0o660)
 
+    def test_actual_linux_uds_delivers_full_400_candles_above_old_body_limit(self):
+        from tests.test_agent_dialogue_service import request as market_request
+        from agent.native_market_context import candle_digest
+        value = market_request(phase='ANALYSIS', reply='BTCUSDT HOLD')
+        context = value['market_context']
+        for rows in context['candles'].values():
+            for row in rows:
+                row['volume'] = '12345678901234567890123456789012.123456789012345678901234'
+        context['provenance']['candles_sha256'] = candle_digest(context['candles'])
+        self.assertGreater(len(d.canonical(value).encode()), 65536)
+        def transport(payload):
+            self.calls.append(payload)
+            return {'status':'completed','output':[{'type':'message','content':[{'type':'output_text',
+                'text':json.dumps({'action':'HOLD','symbols':['BTCUSDT'],'question':''})}]}]}
+        self.engine.model.transport = transport
+        result = self.client.request(value)
+        self.assertEqual(result['decision']['action'], 'HOLD')
+        transmitted = json.loads(self.calls[0]['input'][-1]['content'].rsplit('\n',1)[1])
+        self.assertEqual(transmitted['candles'], context['candles'])
+        self.assertEqual(sum(map(len, transmitted['candles'].values())), 400)
+        self.assertEqual(self.client.request(value), result)
+        self.assertEqual(len(self.calls), 1)
+
     def test_actual_uds_wrong_bearer_is_rejected_with_zero_model_calls(self):
         other=self.base/'wrong';other.write_text('wrong-dialogue-token-'+'y'*40);other.chmod(0o600)
         client=c.DialogueClient(self.socket,other,caller_uid=os.geteuid(),server_uid=os.geteuid())
@@ -105,7 +128,7 @@ class DialogueClientTests(unittest.TestCase):
         token=self.token.read_text()
         head=('POST /v1/dialogue HTTP/1.1\r\nContent-Type: application/json\r\n'
             'Authorization: Bearer '+token+'\r\n')
-        cases=[(head+'Content-Length: 65537\r\n\r\n').encode(),
+        cases=[(head+'Content-Length: '+str(d.MAX_BODY+1)+'\r\n\r\n').encode(),
             (head+'Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}').encode(),
             b'POST /orders HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}',
             (head+'Transfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}').encode()]

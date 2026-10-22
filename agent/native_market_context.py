@@ -8,6 +8,7 @@ Binance USD-M klines; private account/risk settings never enter this output.
 from __future__ import annotations
 
 import hashlib
+import datetime as dt
 import json
 import math
 import re
@@ -21,6 +22,8 @@ NATIVE_CHART_KIND = 'NATIVE_PUBLIC_KLINES_CONTEXT'
 MAX_AGE = 180
 INTERVALS = {'1h': 3_600_000, '15m': 900_000}
 CANDLE_FIELDS = ('open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time')
+CLOSED_CANDLES_PER_TIMEFRAME = 200
+MAX_CONTEXT_BYTES = 256 * 1024
 NUMBER = re.compile(r'\d{1,32}(?:\.\d{1,24})?\Z', re.ASCII)
 SYMBOL = re.compile(r'[A-Z0-9]{2,18}USDT\Z', re.ASCII)
 
@@ -45,12 +48,44 @@ def _number(value, *, zero=False):
 
 
 def _instant(value):
-    return (type(value) in (int, float) and 0 < value <= 10**13
+    return (type(value) in (int, float) and 0 < value <= 253_402_300_799
             and math.isfinite(value))
 
 
+def closed_candle_window(rows, timeframe, server_time_ms):
+    """Select history closed before Binance's pre-fetch time, never a live bar.
+
+    A response may contain one extra bar after an interval boundary. That bar
+    cannot turn the candle which was open at the cutoff into historical data.
+    Callers validate the row schema/sequence before calling this pure helper.
+    """
+    _need(timeframe in INTERVALS and type(server_time_ms) is int
+          and server_time_ms > 0 and type(rows) is list)
+    interval = INTERVALS[timeframe]
+    current_open = server_time_ms // interval * interval
+    closed = [row for row in rows if row['close_time'] < current_open]
+    running = [row for row in rows if row['open_time'] == current_open]
+    _need(len(closed) >= CLOSED_CANDLES_PER_TIMEFRAME and len(running) == 1)
+    history = [{key: row[key] for key in CANDLE_FIELDS}
+               for row in closed[-CLOSED_CANDLES_PER_TIMEFRAME:]]
+    _need(history[-1]['close_time'] == current_open - 1
+          and history[0]['open_time'] == current_open - interval * CLOSED_CANDLES_PER_TIMEFRAME)
+    active = {key: running[0][key] for key in CANDLE_FIELDS}
+    window = {'closed_count': CLOSED_CANDLES_PER_TIMEFRAME,
+              'closed_as_of_server_time_ms': server_time_ms,
+              'first_open_time_ms': history[0]['open_time'],
+              'last_close_time_ms': history[-1]['close_time'],
+              'running_candle_state': 'OPEN_AT_CUTOFF'}
+    return history, active, window
+
+
+def candle_digest(candles):
+    return hashlib.sha256(json.dumps(candles, sort_keys=True, separators=(',', ':'),
+        ensure_ascii=True, allow_nan=False).encode('ascii')).hexdigest()
+
+
 def convert_native_market_context(context, *, now=None):
-    """Return exact native mark/last-three klines, without invented prices.
+    """Return 400 closed native klines and separately marked running bars.
 
     This accepts the verified native Market.data/analysis_context structure.
     Extra native contract/risk fields are deliberately neither serialized nor
@@ -73,12 +108,13 @@ def convert_native_market_context(context, *, now=None):
     _number(mark['price'])
     frames = context.get('timeframes')
     _need(type(frames) is dict and set(frames) == set(INTERVALS))
-    all_candles, recent = {}, {}
+    candles, running_candles, windows = {}, {}, {}
     for timeframe, interval in INTERVALS.items():
         frame = frames[timeframe]
         _need(type(frame) is dict and set(frame) == {'symbol', 'timeframe', 'candles'}
               and frame['symbol'] == symbol and frame['timeframe'] == timeframe
-              and type(frame['candles']) is list and 20 <= len(frame['candles']) <= 500)
+              and type(frame['candles']) is list
+              and CLOSED_CANDLES_PER_TIMEFRAME + 1 <= len(frame['candles']) <= 500)
         copied, previous = [], None
         for row in frame['candles']:
             _need(type(row) is dict and set(row) == set(CANDLE_FIELDS))
@@ -93,13 +129,15 @@ def convert_native_market_context(context, *, now=None):
             previous = opened
         _need(copied[-1]['open_time'] <= server <= copied[-1]['close_time']
               and now*1000 <= copied[-1]['close_time']+MAX_AGE*1000)
-        all_candles[timeframe] = copied
-        recent[timeframe] = [{key: row[key] for key in CANDLE_FIELDS} for row in copied[-3:]]
-    digest = hashlib.sha256(json.dumps(all_candles, sort_keys=True, separators=(',', ':'),
-        ensure_ascii=True, allow_nan=False).encode('ascii')).hexdigest()
-    result = {'symbol': symbol, 'observed_at': observed, 'mark_price': mark['price'],
+        candles[timeframe], running_candles[timeframe], windows[timeframe] = closed_candle_window(
+            copied, timeframe, server)
+    result = {'symbol': symbol, 'observed_at': observed,
+        'observed_at_utc': dt.datetime.fromtimestamp(observed, dt.timezone.utc).isoformat(),
+        'server_time_ms': server, 'mark_price': mark['price'], 'mark_time_ms': mark['time'],
         'provenance': {'provider': 'BINANCE_FUTURES_PUBLIC', 'market': 'USDT_PERPETUAL',
-            'origin': 'https://fapi.binance.com', 'candles_sha256': digest,
-            'chart_kind': NATIVE_CHART_KIND}, 'recent_candles': recent}
-    _need(len(json.dumps(result, allow_nan=False).encode()) <= 8192)
+            'origin': 'https://fapi.binance.com', 'candles_sha256': candle_digest(candles),
+            'running_candles_sha256': candle_digest(running_candles),
+            'chart_kind': NATIVE_CHART_KIND},
+        'candles': candles, 'running_candles': running_candles, 'candle_windows': windows}
+    _need(len(json.dumps(result, allow_nan=False).encode()) <= MAX_CONTEXT_BYTES)
     return result

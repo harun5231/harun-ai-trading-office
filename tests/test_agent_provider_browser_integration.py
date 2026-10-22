@@ -43,18 +43,22 @@ document.getElementById('submit').onclick = () => {
 class ActualBrowserIntegrationTests(unittest.TestCase):
     def test_actual_existing_browser_attach_send_read_and_off_gate(self):
         from playwright.sync_api import sync_playwright
-        executable = shutil.which("chromium") or shutil.which("chromium-browser")
+        # CI grants a sandbox profile to this exact installed Playwright ELF.
+        # Reuse that executable instead of selecting a different PATH wrapper.
+        configured = os.environ.get("HARUN_TEST_CHROMIUM_EXECUTABLE")
+        executable = configured or shutil.which("chromium") or shutil.which("chromium-browser")
         if not executable:
             with sync_playwright() as setup:
                 candidate = Path(setup.chromium.executable_path)
                 executable = str(candidate) if candidate.is_file() else None
         self.assertIsNotNone(executable, "Opt-in Chromium integration requires an installed browser")
+        self.assertTrue(Path(executable).is_file(), "The configured test browser must exist")
         with tempfile.TemporaryDirectory(prefix="harun-browser-fixture-") as profile:
             with socket.socket() as reservation:
                 reservation.bind(("127.0.0.1", 0))
                 port = reservation.getsockname()[1]
             process = subprocess.Popen([
-                executable, "--headless", "--no-sandbox", "--disable-gpu", "--no-first-run",
+                executable, "--headless", *([] if configured else ["--no-sandbox"]), "--disable-gpu", "--no-first-run",
                 "--disable-background-networking", "--disable-sync", "--disable-dev-shm-usage",
                 "--host-resolver-rules=MAP * ~NOTFOUND", "--remote-debugging-address=127.0.0.1",
                 f"--remote-debugging-port={port}", f"--user-data-dir={profile}", "about:blank",
