@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
 from urllib.parse import urlsplit
-from .core import Ledger,Review,validated_risk_target
+from .core import Ledger,Review,validated_risk_target,day
 from .market import Market
 from .neuroapi import NeuroAPI
 from .state import directory
@@ -154,6 +154,8 @@ class Controller:
                     try:
                         client=BinanceReadOnly()
                         observation=collect(client,include_history=history)
+                        store.reconcile_carry(client,day(),
+                            [row['symbol'] for row in observation['account']['positions']])
                         if history:
                             observation['pnl_calendar']=collect_calendar(client,self.directory,max_requests=1,budget_seconds=10)
                             if observation['pnl_calendar']['checked_at'] is None:

@@ -989,8 +989,8 @@ class OrderPipelineTests(unittest.TestCase):
         before = dict(self.intent())
         positions = copy.deepcopy(self.account.positions)
         original = self.account.signed_get
-        def account_get(path):
-            value = original(path)
+        def account_get(path,*args,**kwargs):
+            value = original(path,*args,**kwargs)
             self.store.configure(dict(robot_on=False))
             return value
         self.account.signed_get = account_get

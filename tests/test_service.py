@@ -192,6 +192,32 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(controller.office()['account']['usdt_wallet_balance'],'116.928')
         self.assertNotIn('PRIVATE_CACHE_DETAIL',output.getvalue());self.assertEqual(self.provider_calls,[])
 
+    def test_off_account_loop_persists_carry_using_the_existing_readonly_client(self):
+        from test_carry_quota import Client,position,DAY
+        controller=self.dormant();client=Client([position()]);seen=[]
+        class StopAfterOne:
+            stopped=False
+            def is_set(self):return self.stopped
+            def set(self):self.stopped=True
+            def wait(self,interval):self.stopped=True;return True
+        controller.stopping=StopAfterOne()
+        def collected(actual,include_history):
+            self.assertIs(actual,client);seen.append(actual)
+            value=observation();value['account'].update(active_positions=1,positions=[dict(symbol='BTCUSDT')])
+            return value
+        with (patch('worker.api_service.BinanceReadOnly',return_value=client),
+              patch('worker.api_service.collect',side_effect=collected),
+              patch('worker.api_service.collect_calendar',return_value={'checked_at':'verified-fixture'}),
+              patch('worker.api_service.day',return_value=DAY),
+              patch('worker.robot_store.day',return_value=DAY)):
+            controller.account_loop()
+            current=controller.robot()
+        self.assertFalse(current['robot_on']);self.assertTrue(current['carry_quota_verified'])
+        self.assertEqual((current['carry_entries_today'],current['available_slots']),(1,1))
+        self.assertEqual(len(seen),1);self.assertEqual(self.provider_calls,[])
+        self.assertEqual(client.positions,[position()])
+        self.assertTrue(all(path in ('/fapi/v3/positionRisk','/fapi/v1/userTrades') for path,_,_ in client.calls))
+
     def test_success_then_account_poll_failure_invalidates_all_real_cache_sections(self):
         controller=self.dormant();ledger=controller.open_ledger()
         value=observation();value['position_history']['items']=[{'id':'synthetic-fill','symbol':'HYPEUSDT'}]
