@@ -26,7 +26,7 @@
   ],
   "non_screening_facts": "BINANCE_FUTURES_PUBLIC_USDT_PERPETUAL_1H_AND_15M",
   "replacement_hold_limit": null,
-  "clarifications_per_conversation_phase": 1,
+  "clarifications_per_conversation_phase": null,
   "history_turn_limit": 12,
   "model_timeout_seconds": 45,
   "ambiguous_operation_replay": false,

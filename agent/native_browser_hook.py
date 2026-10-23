@@ -1,4 +1,4 @@
-"""Add one delegated clarification inside the existing native browser transaction.
+"""Delegate clarification inside the existing native browser transaction.
 
 The native actor, browser profile, first prompt, ROBOT dispatch gate, chart
 capture, response identifier, receipt callback and worker/gateway remain the
@@ -45,7 +45,7 @@ class DelegatedDOMBridge:
         self.converter = converter
         # The authenticated native actor supplies these two application-scoped
         # operations. This DOM hook cannot fetch data, launch a browser or pick
-        # an archive path. Its existing one-question budget stays unchanged.
+        # an archive path. The existing operation deadline remains authoritative.
         if (fresh_charts is not None and not callable(fresh_charts)
                 or followup_receipt is not None and not callable(followup_receipt)):
             raise ValueError('NATIVE_FOLLOWUP_CONFIGURATION_UNVERIFIED')
@@ -81,7 +81,7 @@ class DelegatedDOMBridge:
         state = {'phase': 'INITIAL', 'previous': None, 'stable': 0, 'prefix': None,
                  'question': None, 'url': None, 'reviewed': False,
                  'fresh': None, 'fresh_names': [], 'bound_charts': None,
-                 'followup_intent': None, 'initial_url': None}
+                 'followup_intents': [], 'initial_url': None, 'turn_names': []}
         payload_digest = _digest(payload)
 
         def unknown():
@@ -111,6 +111,39 @@ class DelegatedDOMBridge:
                 return self.bridge._turns()
             finally:
                 self.bridge.uploaded_names = previous_names
+
+        def transcript(*, allow_pending=False):
+            # Native attachment verification accepts names for one upload at a
+            # time. Reconstruct each owned user turn with its own exact names;
+            # never let the latest upload invalidate or disguise earlier turns.
+            rows = turns_with_names([])
+            pending_offset = len(state['prefix']) if allow_pending and state['prefix'] is not None else None
+            unfinished = pending_offset is not None and (len(rows) < pending_offset + 2
+                or rows[pending_offset+1].get('complete') is not True)
+            for index, names in enumerate(state['turn_names']):
+                offset = index * 2
+                # The just-sent user turn/images and streaming answer can appear
+                # incrementally. Wait for completion before attesting this pair;
+                # the previously completed prefix remains strict at every poll.
+                if unfinished and offset == pending_offset:
+                    continue
+                projected = turns_with_names(names)
+                if len(projected) != len(rows) and not (unfinished
+                        and pending_offset <= len(projected) <= pending_offset + 2
+                        and pending_offset <= len(rows) <= pending_offset + 2):
+                    unknown()
+                if offset >= len(rows):
+                    continue
+                for other in range(1, len(rows), 2):
+                    if unfinished and other == pending_offset + 1:
+                        continue
+                    if projected[other] != rows[other]:
+                        unknown()
+                row = projected[offset]
+                if sorted(row.get('attachments', [])) != sorted(names):
+                    unknown()
+                rows[offset] = row
+            return rows
 
         def prepare_fresh_followup(question, market, prefix):
             # Question-only analysis is no longer admitted. A pre-200 release
@@ -178,7 +211,7 @@ class DelegatedDOMBridge:
             if (type(bound) is not list or len(bound) != 2 or len(names) != 2
                     or any(type(name) is not str or not name or len(name) > 240 for name in names)
                     or len(set(names)) != 2
-                    or turns_with_names(state['attachments']) != prefix):
+                    or transcript() != prefix):
                 unknown()
             identifiers = set()
             for row, witness in zip(bound, fresh['chart_evidence']):
@@ -205,6 +238,9 @@ class DelegatedDOMBridge:
                 'followup_chart_evidence': copy.deepcopy(bound), 'followup_attachment_names': names,
                 'observed_at': projected['observed_at'], 'closed_candles_per_timeframe': 200,
                 'closed_candles_total': 400}
+            intent.update(followup_sequence=len(state['followup_intents']) + 1,
+                previous_followup_intent_sha256=(
+                    _digest(state['followup_intents'][-1]) if state['followup_intents'] else None))
             state.update(fresh=fresh, fresh_names=names, bound_charts=copy.deepcopy(bound))
             gate()
             # The actor must create this intent exclusively and durably before
@@ -212,18 +248,22 @@ class DelegatedDOMBridge:
             if self.followup_receipt(stage='INTENT', receipt=copy.deepcopy(intent),
                     deadline=until) is not True:
                 unknown()
-            state['followup_intent'] = intent
+            state['followup_intents'].append(intent)
             gate()
             return rendered
 
         def review(answer):
             gate()
+            observed_turns = transcript()
+            if not observed_turns or observed_turns[-1].get('text') != answer:
+                unknown()
             required = payload.get('output_schema', {}).get('required')
             if type(required) is not list or any(type(key) is not str for key in required):
                 unknown()
             phase = 'SCREENING' if set(required) == {'symbols'} else 'ANALYSIS'
             market = None if phase == 'SCREENING' else self.converter(
-                payload['context'], now=self.wall_clock())
+                state['fresh']['context'] if state['fresh'] is not None else payload['context'],
+                now=self.wall_clock())
             operation = payload.get('operation')
             request_sha = payload.get('request_sha256')
             if type(operation) is not str or type(request_sha) is not str:
@@ -231,7 +271,8 @@ class DelegatedDOMBridge:
             reply_sha = hashlib.sha256(answer.encode()).hexdigest()
             identity = hashlib.sha256(json.dumps({'operation': operation,
                 'request_sha256': request_sha, 'reply_sha256': reply_sha,
-                'phase': phase}, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+                'phase': phase, 'transcript_sha256': _digest(observed_turns)},
+                sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             request = {'schema_version': 1, 'request_id': identity,
                 'conversation_id': operation, 'phase': phase, 'reply': answer,
                 'reply_sha256': reply_sha, 'market_context': market,
@@ -243,6 +284,8 @@ class DelegatedDOMBridge:
             validate_request(request, now=self.wall_clock())
             response = validate_result(self.client.request(request), request)
             gate()
+            if transcript() != observed_turns:
+                unknown()
             state['reviewed'] = True
             # Complete native structured answers proceed immediately. The model
             # cannot force a discussion or override an existing complete setup.
@@ -252,18 +295,19 @@ class DelegatedDOMBridge:
                 output = None  # An incomplete parse never becomes an invented setup.
             complete = type(output) is dict and set(required).issubset(output)
             if not response['needs_followup'] or complete:
-                state['phase'] = 'ACCEPT_INITIAL'
+                state['phase'] = 'ACCEPT'
                 return
             question = response['decision']['question']
             if response['decision']['action'] != 'CLARIFY' or not question:
                 unknown()
-            prefix = copy.deepcopy(self.bridge._turns())
-            if (len(prefix) != 2 or original_answer(state['prompt'], state['attachments']) != answer
+            prefix = copy.deepcopy(observed_turns)
+            if (len(prefix) != 2 * len(state['turn_names'])
+                    or prefix[-1].get('text') != answer
                     or prefix[0].get('role') == prefix[1].get('role')
-                    or prefix[1].get('complete') is not True):
+                    or prefix[-1].get('complete') is not True):
                 unknown()
             # Initial prompt and its schema/marker stay byte-for-byte unchanged.
-            # The only new text is one question and a format reminder in the same chat.
+            # Each new turn adds a question and the same format reminder.
             question += '\nGunakan kembali format JSON dan marker pada permintaan awal.'
             if phase != 'SCREENING':
                 question = prepare_fresh_followup(question, market, prefix)
@@ -274,39 +318,32 @@ class DelegatedDOMBridge:
             gate()
             composer.fill(question, timeout=self.bridge._timeout(5000))
             if (not _same_text(composer.input_value(), question)
-                    or turns_with_names(state['attachments']) != prefix):
+                    or transcript() != prefix):
                 unknown()
             buttons = self.bridge._visible(self.bridge._dom_contract.send)
             if len(buttons) != 1 or not buttons[0].is_enabled():
                 unknown()
             gate()  # Last possible current ROBOT/dispatch/age check before click.
             state.update(phase='FOLLOWUP_SENT', prefix=prefix, question=question,
-                         url=self.bridge.page.url)
+                         url=self.bridge.page.url, previous=None, stable=0)
+            state['turn_names'].append(list(state['fresh_names']))
             buttons[0].click(timeout=self.bridge._timeout(5000))
 
         def final_answer():
             if self.bridge.page.url != state['url']:
                 unknown()
-            turns = turns_with_names(state['attachments'])
-            if len(turns) > 4 or turns[:2] != state['prefix']:
+            # A send may have only its user turn visible while the reply starts.
+            turns = transcript(allow_pending=True)
+            offset = len(state['prefix'])
+            if len(turns) > offset + 2 or turns[:offset] != state['prefix']:
                 unknown()
-            if len(turns) < 4:
+            if len(turns) < offset + 2 or turns[offset+1].get('complete') is not True:
                 return None
-            # Native _turns uses uploaded_names to attest user attachments.
-            # Verify the two immutable initial turns under their own names and
-            # the new user turn under its fresh names (empty for screening).
-            without_uploads = turns_with_names(state['fresh_names'])
-            if (len(without_uploads) != 4 or turns[2].get('role') != state['prefix'][0].get('role')
-                    or without_uploads[2].get('role') != state['prefix'][0].get('role')
-                    or not _same_text(turns[2].get('text'), state['question'])
-                    or not _same_text(without_uploads[2].get('text'), state['question'])
-                    or sorted(without_uploads[2].get('attachments', [])) != sorted(state['fresh_names'])
-                    or turns[3] != without_uploads[3]
-                    or turns[3].get('role') != state['prefix'][1].get('role')):
+            if (turns[offset].get('role') != state['prefix'][0].get('role')
+                    or not _same_text(turns[offset].get('text'), state['question'])
+                    or turns[offset+1].get('role') != state['prefix'][1].get('role')):
                 unknown()
-            if turns[3].get('complete') is not True:
-                return None
-            answer = turns[3].get('text')
+            answer = turns[offset+1].get('text')
             if (type(answer) is not str or not answer
                     or len(answer.encode()) > self.native.MAX_ANSWER):
                 unknown()
@@ -315,19 +352,21 @@ class DelegatedDOMBridge:
         def delegated_answer(prompt, attachment_names=()):
             if self.clock() >= until:
                 unknown()
-            if state['phase'] == 'FOLLOWUP_SENT':
-                return final_answer()
-            answer = original_answer(prompt, attachment_names)
-            if state['phase'] == 'ACCEPT_INITIAL':
+            if not state['turn_names']:
+                state.update(prompt=prompt, attachments=attachment_names)
+                state['turn_names'] = [list(attachment_names)]
+            answer = (final_answer() if state['prefix'] is not None
+                      else original_answer(prompt, attachment_names))
+            if state['phase'] == 'ACCEPT':
                 return answer
             state['stable'] = state['stable'] + 1 if answer and answer == state['previous'] else 0
             state['previous'] = answer
             if answer is None or state['stable'] < 3:
                 return None
-            state.update(prompt=prompt, attachments=attachment_names,
-                         initial_url=self.bridge.page.url)
+            if state['initial_url'] is None:
+                state['initial_url'] = self.bridge.page.url
             review(answer)
-            return answer if state['phase'] == 'ACCEPT_INITIAL' else None
+            return answer if state['phase'] == 'ACCEPT' else None
 
         self.bridge._answer = delegated_answer
         try:
@@ -335,7 +374,7 @@ class DelegatedDOMBridge:
             # waits for stable completion and creates the FINAL receipt/hash/ID.
             result = self.bridge.ask(payload, dispatch_check, chart_images=chart_images,
                 chart_evidence=chart_evidence, deadline=deadline, receipt_callback=None)
-            if state['followup_intent'] is not None:
+            if state['followup_intents']:
                 try:
                     gate()
                     if (type(result) is not dict or type(result.get('assistant_text')) is not str
@@ -344,13 +383,13 @@ class DelegatedDOMBridge:
                             or re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', result['response_id']) is None
                             or result['assistant_text'] != final_answer()):
                         unknown()
-                    complete = {**state['followup_intent'],
-                        'intent_sha256': _digest(state['followup_intent']),
-                        'response_id': result['response_id'],
-                        'final_reply_sha256': hashlib.sha256(result['assistant_text'].encode()).hexdigest()}
-                    if self.followup_receipt(stage='COMPLETE', receipt=copy.deepcopy(complete),
-                            deadline=until) is not True:
-                        unknown()
+                    for intent in state['followup_intents']:
+                        complete = {**intent, 'intent_sha256': _digest(intent),
+                            'response_id': result['response_id'],
+                            'final_reply_sha256': hashlib.sha256(result['assistant_text'].encode()).hexdigest()}
+                        if self.followup_receipt(stage='COMPLETE', receipt=copy.deepcopy(complete),
+                                deadline=until) is not True:
+                            unknown()
                     gate()
                     # The unchanged native receipt code owns the final response
                     # ID and answer. Its existing worker journal receives the

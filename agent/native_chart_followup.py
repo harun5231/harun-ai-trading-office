@@ -1,4 +1,4 @@
-"""Actor-owned fresh public charts and durable receipts for one clarification.
+"""Actor-owned fresh public charts and durable receipts for clarification turns.
 
 Installed only by the source-pinned native image recipe. The persistent Neurobro
 page remains owned by its original actor. This adapter uses an isolated chart
@@ -294,6 +294,17 @@ class ReceiptStore:
              and type(receipt.get('request_sha256')) is str
              and re.fullmatch(r'[a-f0-9]{64}', receipt['request_sha256']))
         key = sha({'operation': receipt['operation'], 'request_sha256': receipt['request_sha256']})
+        # Keep the first-turn filename so historical unknown intents continue
+        # blocking a replay. Later turns extend that exclusive intent chain;
+        # they never overwrite a prior turn or start another native operation.
+        sequence = receipt.get('followup_sequence', 1)
+        previous = receipt.get('previous_followup_intent_sha256')
+        need(type(sequence) is int and sequence >= 1
+             and (previous is None if sequence == 1 else
+                  type(previous) is str and re.fullmatch(r'[a-f0-9]{64}', previous)))
+        base_key = key
+        if sequence > 1:
+            key += '.' + str(sequence)
         parent = _directory(self.root)
         directory = None
         try:
@@ -307,6 +318,14 @@ class ReceiptStore:
             info = os.fstat(directory)
             need(stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
                  and stat.S_IMODE(info.st_mode) == 0o700)
+            if sequence > 1:
+                prior_key = base_key if sequence == 2 else base_key + '.' + str(sequence-1)
+                prior_raw = _private_file(directory, prior_key+'.intent.json', MAX_BYTES)
+                prior = json.loads(prior_raw, object_pairs_hook=pairs)
+                need(sha(prior) == previous
+                     and prior.get('operation') == receipt['operation']
+                     and prior.get('request_sha256') == receipt['request_sha256']
+                     and prior.get('followup_sequence', 1) == sequence-1)
             if stage == 'COMPLETE':
                 intent = {k: v for k, v in receipt.items()
                           if k not in ('intent_sha256', 'response_id', 'final_reply_sha256')}

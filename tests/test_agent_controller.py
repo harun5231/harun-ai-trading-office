@@ -136,6 +136,31 @@ class ControllerTests(unittest.TestCase):
         self.bridge.account = replace(self.bridge.account, daily_new_trades=2)
         self.assertEqual(self.controller().tick().state, "IDLE")
 
+    def test_analysis_clarifications_continue_past_two_and_restart_with_fresh_charts(self):
+        self.bridge.account = replace(self.bridge.account, positions=(Position("ETHUSDT", Decimal("1")),))
+        clarify = DialogueDecision("CLARIFY", (), "Mohon lengkapi keputusan Neurobro?")
+        controller = self.controller(("BTCUSDT",) + ("BTCUSDT belum lengkap",)*8 + (SETUP,),
+            (DialogueDecision("SCREENING", ("BTCUSDT",)),) + (clarify,)*8)
+        provider, model = self.provider, self.model
+        restarted = False
+        for _ in range(60):
+            controller.tick()
+            cycle = self.memory.get("active_cycle")
+            if cycle and cycle.get("followups") == 4 and not restarted:
+                restarted = True
+                self.memory.close()
+                self.memory = Memory(Path(self.temp.name)/"agent.sqlite3")
+                controller = Controller(bridge=self.bridge,provider=provider,market=self.market,
+                    llm=model,memory=self.memory,analysis_prompt=ANALYSIS,
+                    render_chart=lambda *_:PNG,parse_setup=parse_setup)
+            if self.bridge.handoffs:
+                break
+        self.assertEqual(len(self.bridge.handoffs),1)
+        self.assertEqual(self.bridge.handoffs[0][0].source_text,SETUP)
+        self.assertEqual(len(provider.calls),10)
+        self.assertEqual(len(self.market.calls),9)
+        self.assertTrue(all(len(kwargs["attachments_png"])==2 for _,kwargs in provider.calls[1:]))
+
     def test_manual_pending_occupies_slot_but_is_not_reviewed_or_modified(self):
         self.bridge.account = replace(self.bridge.account, pending=(PendingOrder("manual", "ETHUSDT", time.time() - 25000,
             Decimal("1"), Decimal("0"), "r", owned=False),))

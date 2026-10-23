@@ -63,7 +63,7 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertEqual(value['service_uid'],10002)
         self.assertEqual(value['native_caller_uid'],10001)
         self.assertIsNone(value['replacement_hold_limit'])
-        self.assertEqual(value['clarifications_per_conversation_phase'],1)
+        self.assertIsNone(value['clarifications_per_conversation_phase'])
         for key in ('trading_authority','model_price_authority','financial_database_access',
             'browser_dispatch_authority','ambiguous_operation_replay','health_contact_provider',
             'deployment_authorized'):

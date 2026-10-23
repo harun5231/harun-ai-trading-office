@@ -265,6 +265,29 @@ class ReceiptStoreTests(unittest.TestCase):
         directory = self.root/'dialogue-200-followup'
         self.assertEqual(sorted(path.name for path in directory.iterdir()), [self.key+'.intent.json'])
         with self.assertRaises(FileExistsError): self.store(stage='INTENT', receipt=self.intent, deadline=10)
+
+    def test_later_turns_chain_exclusive_receipts_and_preserve_legacy_first_intent(self):
+        self.store(stage='INTENT',receipt=self.intent,deadline=10)
+        second={**self.intent,'followup_sequence':2,
+            'previous_followup_intent_sha256':followup.sha(self.intent),'proof':'second'}
+        self.assertTrue(self.store(stage='INTENT',receipt=second,deadline=10))
+        with self.assertRaises(FileExistsError):
+            self.store(stage='INTENT',receipt=second,deadline=10)
+        third={**second,'followup_sequence':3,
+            'previous_followup_intent_sha256':followup.sha(second),'proof':'third'}
+        with self.assertRaises(followup.FollowupUnavailable):
+            self.store(stage='INTENT',receipt={**third,'previous_followup_intent_sha256':'c'*64},deadline=10)
+        self.assertTrue(self.store(stage='INTENT',receipt=third,deadline=10))
+        for row in (self.intent,second,third):
+            complete={**row,'intent_sha256':followup.sha(row),
+                'response_id':'native:final','final_reply_sha256':'d'*64}
+            self.assertTrue(self.store(stage='COMPLETE',receipt=complete,deadline=10))
+        directory=self.root/'dialogue-200-followup'
+        self.assertEqual(len(list(directory.iterdir())),6)
+        self.assertEqual((directory/(self.key+'.intent.json')).read_bytes(),followup.canonical(self.intent))
+        restarted=followup.ReceiptStore(self.root,monotonic=lambda:1)
+        with self.assertRaises(FileExistsError):
+            restarted(stage='INTENT',receipt=self.intent,deadline=10)
     def test_missing_intent_symlink_directory_or_unsafe_existing_intent_is_refused(self):
         with self.assertRaises(FileNotFoundError): self.store(stage='COMPLETE', receipt=self.complete, deadline=10)
         directory = self.root/'dialogue-200-followup'
