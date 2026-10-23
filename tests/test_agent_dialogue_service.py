@@ -281,22 +281,25 @@ class DialogueServiceTests(unittest.TestCase):
         self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
         self.assertEqual(self.memory.counts()['operations'],{'DONE':9})
 
-    def test_only_one_clarification_per_conversation_phase_survives_restart(self):
+    def test_clarifications_continue_across_restart_without_a_round_ceiling(self):
         self.output={'action':'CLARIFY','symbols':[],'question':'Mohon lengkapi keputusan Neurobro?'}
-        first=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT belum lengkap',index=1))
-        second=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT masih belum lengkap',index=2))
-        self.assertTrue(first['needs_followup'])
-        self.assertFalse(second['needs_followup'])
-        self.assertEqual(second['reason'],'CLARIFICATION_ALREADY_USED')
-        self.assertEqual(second['decision']['question'],'')
-        self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
-        self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport,
-            daily_requests=math.inf,daily_input_tokens=math.inf,daily_output_tokens=math.inf)
-        self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
-        third=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT belum ada keputusan',index=3))
-        self.assertFalse(third['needs_followup'])
-        other=self.engine.process(request(phase='PENDING_REVIEW',reply='BTCUSDT belum ada keputusan',index=4))
-        self.assertTrue(other['needs_followup'])
+        legacy_key='dialogue-clarification:'+hashlib.sha256(b'native-cycle:one\0ANALYSIS').hexdigest()
+        self.memory.put(legacy_key, True)
+        for index in range(8):
+            if index == 4:
+                self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
+                self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport,
+                    daily_requests=math.inf,daily_input_tokens=math.inf,daily_output_tokens=math.inf)
+                self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
+            latest=request(phase='ANALYSIS',reply='BTCUSDT belum lengkap',index=index)
+            value=self.engine.process(latest)
+            self.assertTrue(value['needs_followup'])
+            self.assertEqual(value['reason'],'DIALOGUE_DECISION')
+        self.assertTrue(self.memory.get(legacy_key))
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':8})
+        replay=self.engine.process(latest)
+        self.assertEqual(replay,value)
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':8})
 
     def test_foreign_symbols_prices_and_question_foreign_symbols_are_rejected(self):
         cases=[{'action':'SCREENING','symbols':['ETHUSDT'],'question':''},

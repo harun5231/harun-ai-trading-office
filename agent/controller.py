@@ -20,19 +20,17 @@ from .llm import market_context_from_snapshot
 class Controller:
     def __init__(self, *, bridge, provider, market, llm, memory, analysis_prompt,
                  render_chart, parse_setup, screening_prompt="", clock=time.time,
-                 max_followups=2, max_market_age=180,
+                 max_market_age=180,
                  account_max_age=30, monotonic=time.monotonic):
         if not isinstance(analysis_prompt, str) or not 1 <= len(analysis_prompt) <= 16000:
             raise ValueError("EXACT_ANALYSIS_PROMPT_REQUIRED")
-        if max_followups not in (0, 1, 2):
-            raise ValueError("DIALOGUE_BOUND_INVALID")
         if analysis_prompt != ANALYSIS:
             raise ValueError("EXACT_APPROVED_ANALYSIS_PROMPT_MISMATCH")
         self.bridge, self.provider, self.market, self.llm = bridge, provider, market, llm
         self.memory, self.analysis_prompt = memory, analysis_prompt
         self.render_chart, self.parse_setup = render_chart, parse_setup
         self.screening_prompt = screening_prompt
-        self.clock, self.max_followups = clock, max_followups
+        self.clock = clock
         self.max_market_age = max_market_age
         self.account_max_age = account_max_age
         self._tick_lock = threading.Lock()
@@ -223,8 +221,6 @@ class Controller:
         self._save(cycle)
 
     def _clarify(self, cycle, decision, phase):
-        if cycle.get("followups", 0) >= self.max_followups:
-            return self._finish(cycle, "DIALOGUE_LIMIT_REACHED")
         question = decision.get("question", "")
         if not question or len(question) > 400:
             return self._finish(cycle, "NO_BOUNDED_CLARIFICATION")

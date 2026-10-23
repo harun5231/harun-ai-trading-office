@@ -99,11 +99,12 @@ def request():
 
 def client(action='CLARIFY'):
  def run(value):
+  decision = 'COMPLETE' if action == 'CLARIFY' and value['reply'] == 'FINAL_NATIVE_REPLY' else action
   return {'schema_version':1,'ok':True,
    **{key:value[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
    'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
-   'decision':{'action':action,'symbols':[],'question':'Coin mana yang perlu diperjelas?' if action=='CLARIFY' else ''},
-   'needs_followup':action=='CLARIFY','reason':'DIALOGUE_DECISION'}
+   'decision':{'action':decision,'symbols':[],'question':'Coin mana yang perlu diperjelas?' if decision=='CLARIFY' else ''},
+   'needs_followup':decision=='CLARIFY','reason':'DIALOGUE_DECISION'}
  return Mock(request=Mock(side_effect=run))
 
 
@@ -132,7 +133,7 @@ class NativeHookTests(unittest.TestCase):
   self.assertTrue(result['response_id'].endswith(expected))
   self.assertEqual(set(result),{'output','assistant_text','response_id','chart_evidence'})
   self.assertEqual(self.bridge._answer,original)
-  self.reasoner.request.assert_called_once();self.assertGreaterEqual(self.gate.call_count,4)
+  self.assertEqual(self.reasoner.request.call_count,2);self.assertGreaterEqual(self.gate.call_count,4)
   self.assertTrue(all(item[0][0]['gate']=={'robot_on':True,'native_dispatch_verified':True}
                       for item in self.reasoner.request.call_args_list))
 
@@ -142,6 +143,34 @@ class NativeHookTests(unittest.TestCase):
   result=hook.ask(request(),self.gate,deadline=80)
   self.assertEqual(result['assistant_text'],self.bridge.initial)
   self.assertEqual(self.bridge.clicks,1);self.reasoner.request.assert_called_once()
+
+ def test_eight_clarifications_stay_in_one_chat_and_bind_repeated_replies_to_distinct_turns(self):
+  bridge=Bridge(initial='BTCUSDT belum lengkap',final='BTCUSDT belum lengkap')
+  bridge.after_click=lambda b:b.messages[-1].update(text='FINAL_NATIVE_REPLY' if b.clicks==9 else b.final)
+  hook=self.setup_hook(bridge=bridge);before=copy.deepcopy(request())
+  result=hook.ask(before,self.gate,deadline=80)
+  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY')
+  self.assertEqual(bridge.clicks,9);self.assertEqual(bridge.fresh_calls,1)
+  self.assertEqual(bridge.messages[0]['text'],request()['prompt'])
+  requests=[call.args[0] for call in self.reasoner.request.call_args_list]
+  self.assertEqual(len(requests),9)
+  self.assertEqual(len({value['request_id'] for value in requests}),9)
+  self.assertEqual({value['conversation_id'] for value in requests},{request()['operation']})
+  self.assertEqual(before,request())
+
+ def test_off_after_several_replies_stops_before_another_send(self):
+  bridge=Bridge(initial='BTCUSDT incomplete',final='BTCUSDT incomplete')
+  def after_click(b):
+   if b.clicks==4:self.enabled=False
+  bridge.after_click=after_click;hook=self.setup_hook(bridge=bridge)
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=80)
+  self.assertEqual(bridge.clicks,4)
+
+ def test_repeated_incomplete_answers_obey_original_transport_deadline(self):
+  bridge=Bridge(initial='BTCUSDT incomplete',final='BTCUSDT incomplete')
+  hook=self.setup_hook(bridge=bridge)
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=8)
+  self.assertGreater(bridge.clicks,2);self.assertLessEqual(bridge.current,8)
 
  def test_malformed_initial_json_can_receive_one_question_without_inventing_output(self):
   module=native();module.exact_json.side_effect=ValueError('malformed initial JSON')
@@ -405,7 +434,7 @@ class NativeFreshFollowupTests(unittest.TestCase):
   self.harness();before=copy.deepcopy(self.value);result=self.ask()
   self.assertEqual(self.value,before);self.assertEqual(self.bridge.clicks,2)
   self.assertEqual(self.bridge.fresh_calls,1);self.assertEqual(len(self.bridge.uploads),1)
-  self.reasoner.request.assert_called_once();self.refresh.assert_called_once()
+  self.assertEqual(self.reasoner.request.call_count,2);self.refresh.assert_called_once()
   prompt=self.bridge.messages[2]['text'];self.assertTrue(prompt.startswith('Coin mana'))
   start=prompt.index('\nCONTEXT_JSON:\n')+len('\nCONTEXT_JSON:\n')
   context=json.loads(prompt[start:prompt.index('\nMARKER:')])
@@ -422,6 +451,65 @@ class NativeFreshFollowupTests(unittest.TestCase):
   self.assertTrue(all('attachment_id' in row for row in result['chart_evidence']))
   self.assertEqual(self.bridge.messages[0]['text'],before['prompt'])
   self.assertEqual(set(result),{'output','assistant_text','response_id','chart_evidence'})
+
+ def test_multiple_analysis_turns_refresh_both_charts_and_chain_all_durable_intents(self):
+  self.harness();self.bridge.final='BTCUSDT masih belum lengkap'
+  initial_after_click=self.bridge.after_click
+  def after_click(b):
+   initial_after_click(b)
+   if b.clicks==5:b.messages[-1]['text']='FINAL_NATIVE_REPLY'
+  self.bridge.after_click=after_click
+  original_refresh=self.refresh.side_effect
+  def refresh(**kwargs):
+   self.now+=1
+   from tests.test_agent_closed_candles_200 import native_context_200
+   self.fresh['context']=native_context_200(self.now)
+   for row in self.fresh['chart_evidence']:
+    row['captured_at']=datetime.fromtimestamp(self.now,timezone.utc).isoformat()
+    row['sha256']=hashlib.sha256((row['timeframe']+str(self.now)).encode()).hexdigest()
+   return original_refresh(**kwargs)
+  self.refresh.side_effect=refresh
+  result=self.ask()
+  self.assertEqual(self.bridge.clicks,5);self.assertEqual(self.refresh.call_count,4)
+  self.assertEqual(len(self.bridge.uploads),4);self.assertEqual(self.bridge.fresh_calls,1)
+  intents=[e[2] for e in self.events if e[0]=='INTENT']
+  completes=[e[2] for e in self.events if e[0]=='COMPLETE']
+  self.assertEqual([r['followup_sequence'] for r in intents],[1,2,3,4])
+  for index,intent in enumerate(intents):
+   previous=None if index==0 else hashlib.sha256(json.dumps(intents[index-1],
+    sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest()
+   self.assertEqual(intent['previous_followup_intent_sha256'],previous)
+   self.assertEqual(intent['closed_candles_total'],400)
+   self.assertEqual(completes[index]['response_id'],result['response_id'])
+  self.assertEqual(result['chart_evidence'],intents[-1]['followup_chart_evidence'])
+  self.assertEqual(len({tuple(r['followup_attachment_names']) for r in intents}),4)
+
+ def test_incomplete_followup_turn_waits_for_thumbnail_and_stream_completion(self):
+  self.harness();original_click=self.bridge.after_click
+  pending={}
+  def clicked(b):
+   original_click(b)
+   if b.clicks==2:
+    pending['answer']=b.messages.pop()
+    pending['names']=list(b.messages[-1]['attachments'])
+    b.messages[-1]['attachments']=[]
+    pending['waits']=0
+  self.bridge.after_click=clicked
+  original_wait=self.bridge.page.wait_for_timeout
+  def wait(milliseconds):
+   original_wait(milliseconds)
+   if pending:
+    pending['waits']+=1
+    if pending['waits']==2:
+     self.bridge.messages[-1]['attachments']=pending['names']
+     self.bridge.messages.append({**pending['answer'],'text':'streaming','complete':False})
+    elif pending['waits']==4:
+     self.bridge.messages[-1]=pending['answer']
+  self.bridge.page.wait_for_timeout=wait
+  result=self.ask()
+  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY')
+  self.assertGreaterEqual(pending['waits'],4);self.assertEqual(self.bridge.clicks,2)
+  self.assertEqual([e[0] for e in self.events],['REFRESH','INTENT','COMPLETE'])
 
  def test_missing_callbacks_refuse_analysis_before_second_fill_or_send(self):
   for missing in ('fresh_charts','followup_receipt'):
@@ -531,7 +619,7 @@ class NativeFreshFollowupTests(unittest.TestCase):
    self.assertEqual(self.bridge.clicks,1);self.assertEqual(self.bridge.composer.input_value(),'')
    self.assertEqual(len(self.bridge.uploads),1 if point=='fill_composer' else 0)
 
- def test_callback_cannot_mutate_original_request_or_use_extra_rounds(self):
+ def test_callback_cannot_mutate_original_request(self):
   self.harness();original=self.refresh.side_effect
   def refresh(**kwargs):
    result=original(**kwargs);kwargs['payload']['prompt']='mutated private copy'
@@ -539,7 +627,7 @@ class NativeFreshFollowupTests(unittest.TestCase):
   self.refresh.side_effect=refresh;before=copy.deepcopy(self.value);result=self.ask()
   self.assertEqual(self.value,before);self.assertEqual(self.bridge.clicks,2)
   self.assertEqual(result['assistant_text'],self.bridge.final)
-  self.reasoner.request.assert_called_once();self.refresh.assert_called_once()
+  self.assertEqual(self.reasoner.request.call_count,2);self.refresh.assert_called_once()
 
  def test_factory_requires_configured_dialogue_and_preserves_explicit_callback_identity(self):
   self.harness()

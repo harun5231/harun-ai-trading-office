@@ -9,7 +9,7 @@ agent image copies only `worker/core.py`, `worker/prompts.py` and `worker/__init
 from that baseline. It does not contain the public placeholder gateway,
 `Coordinator`, the worker service, exchange credentials or a financial database.
 
-The agent uses GPT-5 Mini through the OpenAI Responses API for bounded dialogue
+The agent uses GPT-5 Mini through the OpenAI Responses API for dialogue
 control. Model output has only an action, explicitly quoted screening symbols,
 and one short question; no price or order fields. ENTRY/TP/SL are parsed from the
 attributed Neurobro message. The unchanged deterministic Risk Manager validates
@@ -38,7 +38,7 @@ executor is installed, and LIVE capability is not disabled.
   GET-only requests. PNG charts are rendered from those numeric candles with
   source, timeframe and time evidence. **They are data-derived chart images,
   not screenshots of Binance's website UI.** No invented market prices are used.
-- Bounded clarifications and fresh market facts, followed immediately by risk
+- Clarifications without a fixed round limit and fresh market facts, followed immediately by risk
   handoff when the Neurobro setup is complete. Quantity uses actual commission
   evidence and the existing fee/slippage risk model, normally 5 USDT from the
   backend setting. Cross 75x, lot/tick, margin and net 2R checks stay deterministic.

@@ -320,22 +320,11 @@ class DialogueEngine:
                     self._authenticated_key_identity = dispatched_key[0]
                 value = validate_decision({'action':decision.action,
                     'symbols':list(decision.symbols),'question':decision.question}, request)
-                phase_key = 'dialogue-clarification:' + hashlib.sha256(
-                    (conversation+'\0'+request['phase']).encode()).hexdigest()
-                reason = 'DIALOGUE_DECISION'
-                if value['action'] == 'CLARIFY':
-                    used = self.memory.get(phase_key, False)
-                    need(type(used) is bool, 'DIALOGUE_MODEL_RESULT_INVALID')
-                    if used:
-                        value = {'action':'CLARIFY','symbols':[],'question':''}
-                        reason = 'CLARIFICATION_ALREADY_USED'
-                    else:
-                        self.memory.put(phase_key, True)
                 result = {'schema_version':1, 'ok':True,
                     **{key:request[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
                     'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
                     'decision':value,'needs_followup':value['action']=='CLARIFY' and bool(value['question']),
-                    'reason':reason}
+                    'reason':'DIALOGUE_DECISION'}
                 validate_result(result, request)
                 self.memory.append(conversation, 'user', request['reply'], self.clock())
                 self.memory.append(conversation, 'assistant', canonical(value), self.clock())
