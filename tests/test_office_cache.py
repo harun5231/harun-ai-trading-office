@@ -91,14 +91,21 @@ class OfficeCacheTests(unittest.TestCase):
                 ('closed-'+str(index),'ETHUSDT',day(),now()))
         current=self.store.snapshot()
         self.assertEqual((current['bot_entries_today'],current['available_slots']),(2,0))
-        # A cached account may still be current across midnight. New quota is
-        # derived from the new day, while the carried position remains present.
+        # A cached account alone cannot prove the new day's carry quantity.
         with patch('worker.robot_store.day',return_value='2099-01-01'):
             current=self.store.snapshot()
+            self.assertFalse(current['carry_quota_verified'])
+            self.assertEqual(current['available_slots'],0)
+            self.ledger.db.execute('INSERT INTO robot_daily_carry VALUES(?,?,?,?,?)',
+                ('2099-01-01','BTCUSDT',1,1,'a'*64))
+            current=self.store.snapshot()
         self.assertEqual((current['bot_entries_today'],current['running_positions'],current['available_slots']),(0,1,1))
+        self.assertEqual(current['carry_entries_today'],1)
 
     def test_pending_entry_reserves_daily_quota_and_is_not_double_counted_as_a_position(self):
         self.store.report_office(self.observation())
+        self.ledger.db.execute('INSERT INTO robot_daily_carry VALUES(?,?,?,?,?)',
+            (day(),'BTCUSDT',0,1,'a'*64))
         self.ledger.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
             ('pending','pending','BTCUSDT','ENTRY_PENDING','{}',None,None,now(),now()))
         self.assertEqual(self.store.snapshot()['available_slots'],1)

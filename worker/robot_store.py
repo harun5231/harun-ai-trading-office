@@ -8,6 +8,7 @@ from .migration import retire_previous_runtime, upgrade_cycle_namespaces
 from .order_gateway import OrderGateway
 from .robot_provenance import verify
 from .pnl_calendar import unavailable as unavailable_calendar
+from . import carry_quota
 
 ACTIVE_ORDERS = ('READY_FOR_EXECUTION', 'EXECUTION_BLOCKED', 'SUBMITTING',
                  'ENTRY_PENDING', 'POSITION_PROTECTED', 'NEEDS_REVIEW')
@@ -56,6 +57,7 @@ class RobotStore:
         CREATE TABLE IF NOT EXISTS office_cache(id INTEGER PRIMARY KEY CHECK(id=1),data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS office_activity(seq INTEGER PRIMARY KEY,at TEXT NOT NULL,state TEXT NOT NULL,agent TEXT NOT NULL,message TEXT NOT NULL);
         ''')
+        db.executescript(carry_quota.SCHEMA)
 
     def settings(self):
         row = self.db.execute('SELECT enabled,risk FROM robot_settings WHERE id=1').fetchone()
@@ -84,16 +86,29 @@ class RobotStore:
     def entries(self, today):
         return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?', (today,)).fetchone()[0]
 
+    def reconcile_carry(self, client, today, symbols):
+        try:
+            carry_quota.reconcile(self,client,today,symbols)
+            return True
+        except Exception:
+            # Incomplete quota evidence blocks new entries through ready(),
+            # while the original position/protection monitor can still run.
+            return False
+
     def available_slots(self, running, symbols, today, *, pending_symbols=()):
         """One capacity rule for submission, screening, and read-only Office."""
-        active=list(self.db.execute("SELECT symbol,state FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
-        pending=sum(row['state']=='ENTRY_PENDING' for row in active)
+        if not carry_quota.ready(self.db,today,symbols):
+            return 0
+        active=list(self.db.execute("SELECT symbol,state,payload FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
+        carry=carry_quota.charged_symbols(self.db,today)
+        pending=sum(row['state']=='ENTRY_PENDING' and not
+            carry_quota.pending_remainder_is_charged(self.db,row,today,carry) for row in active)
         # A symbol already running or present in Binance open entry orders is
         # counted once, even when the same bot intent also reserves that symbol.
         represented=set(symbols)
         reserved=set(pending_symbols)|{row['symbol'] for row in active}
         unrepresented=len(reserved-represented)
-        return slots(running,self.entries(today),pending=pending,unrepresented=unrepresented)
+        return slots(running,self.entries(today),pending=pending,unrepresented=unrepresented,carry=len(carry))
 
     def results(self, cycle):
         return list(self.db.execute('SELECT * FROM robot_candidates WHERE cycle=?', (cycle,)))
@@ -116,6 +131,9 @@ class RobotStore:
         value = empty_account()
         value.update(json.loads(row[0]) if row else dict(bot_status='OFF', checked_at=None, failure_code=None, wait_reason='ROBOT_OFF'))
         value.update(self.settings(), bot_entries_today=self.entries(today), execution_gateway=OrderGateway().status())
+        value['carry_quota_verified']=carry_quota.ready(self.db,today,value.get('running_symbols') or ())
+        value['carry_entries_today']=(len(carry_quota.charged_symbols(self.db,today))
+            if value['carry_quota_verified'] else None)
         running=value.get('running_positions');symbols=value.get('running_symbols')
         if type(running) is int and running>=0 and isinstance(symbols,list) and not value.get('account_failure_code'):
             value['available_slots']=self.available_slots(running,symbols,today,

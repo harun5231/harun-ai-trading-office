@@ -127,8 +127,8 @@ class WorkflowV2Tests(unittest.TestCase):
     def test_pending_entry_fill_between_order_and_position_reads_never_frees_a_slot(self):
         f = self.fixture();f.account.open_orders = [entry('ZECUSDT')]
         original = f.account.signed_get
-        def fills(path):
-            value = original(path)
+        def fills(path,*args,**kwargs):
+            value = original(path,*args,**kwargs)
             if path == '/fapi/v1/openOrders':
                 f.account.open_orders = [];f.account.position('ZECUSDT', '1')
             return value
@@ -136,6 +136,22 @@ class WorkflowV2Tests(unittest.TestCase):
         account = account_state(f.account, f.store, day())
         self.assertEqual((account['running_symbols'], account['open_entry_symbols'], account['available_slots']),
                          (['ZECUSDT'], ['ZECUSDT'], 1))
+
+    def test_unavailable_carry_history_blocks_new_entry_but_preserves_pending_protection(self):
+        f=self.fixture();f.one_slot_ready();gateway=f.connected()
+        self.assertEqual(f.robot.tick()['bot_status'],'ENTRY_PENDING')
+        f.ledger.db.execute('DELETE FROM robot_daily_carry')
+        original=f.account.signed_get
+        def history_failed(path,*args,**kwargs):
+            if path=='/fapi/v1/userTrades':raise TimeoutError('private history unavailable')
+            return original(path,*args,**kwargs)
+        f.account.signed_get=history_failed
+        gateway.on_reconcile=lambda intent:gateway.observation(intent,'POSITION_PROTECTED',intent['entry']['quantity'])
+        result=f.robot.tick()
+        self.assertEqual(f.intent()['state'],'POSITION_PROTECTED')
+        self.assertEqual(result['wait_reason'],'ROBOT_CAPACITY_FULL')
+        self.assertFalse(result['carry_quota_verified']);self.assertEqual(result['available_slots'],0)
+        self.assertEqual(len(gateway.submissions),1);self.assertEqual(len(gateway.reconciliations),1)
 
     def test_invalid_pending_read_blocks_account_instead_of_assuming_empty(self):
         for rows, algo in ((None, False), ([entry('ZECUSDT', reduceOnly='false')], False),

@@ -1,7 +1,7 @@
 """Shared offline provider/account fixtures for the automatic pipeline tests."""
 import copy
 import time
-from datetime import datetime,timezone
+from datetime import datetime,timezone,timedelta
 from urllib.parse import parse_qs, urlsplit
 
 from worker.core import D, Rules
@@ -89,7 +89,24 @@ class Account:
     def sync_time(self):
         pass
 
-    def signed_get(self, path):
+    def server_time_ms(self):
+        from worker.robot import day
+        # Follow the pipeline fixture's injected calendar day at rollover.
+        instant=datetime.fromisoformat(day()).replace(tzinfo=timezone(timedelta(hours=7)),hour=12)
+        return int(instant.timestamp()*1000)
+
+    def signed_get(self, path, symbol=None, **options):
+        if path == '/fapi/v3/positionRisk':
+            self.calls.append(('GET', path))
+            return [dict(row,updateTime=0) for row in copy.deepcopy(self.positions)]
+        if path == '/fapi/v1/userTrades':
+            self.calls.append(('GET', path))
+            # Existing pipeline fixtures explicitly start their positions today.
+            # Carryover provenance has its own complete-history tests.
+            amount=sum((D(row['positionAmt']) for row in self.positions if row['symbol']==symbol),D(0))
+            start=int(datetime.fromtimestamp(self.server_time_ms()/1000,timezone(timedelta(hours=7))).replace(hour=0,minute=0,second=0,microsecond=0).timestamp())*1000
+            return [] if not amount else [dict(symbol=symbol,positionSide='BOTH',
+                side='BUY' if amount>0 else 'SELL',qty=str(abs(amount)),time=start,id=1,orderId=1)]
         if path == '/fapi/v1/openOrders':
             self.calls.append(('GET', path))
             return copy.deepcopy(self.open_orders)

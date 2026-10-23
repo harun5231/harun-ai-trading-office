@@ -30,14 +30,17 @@ financial journal, receipt, settings, secret, dan order existing.
 ## Aturan robot
 
 - Maksimal dua first fill entry bot per hari WIB, UTC+7, dan dua occupancy
-  bersamaan. Posisi manual/carryover serta pending entry manual dan bot memakai
-  kapasitas; symbol yang sama dihitung sekali. HYPEUSDT manual-only.
+  bersamaan. Posisi yang terbuka pada 00.00 WIB memakai kuota hari itu sampai
+  pergantian hari berikutnya, termasuk setelah ditutup. Bukti carry untuk symbol
+  aktif/terpantau dipulihkan dari fill Binance dan disimpan lintas restart.
+  Posisi manual serta pending entry memakai kapasitas; symbol yang sama dihitung
+  sekali. HYPEUSDT manual-only.
 - Screening meminta satu atau dua coin sesuai slot. Analisis memakai USDT
   perpetual aktif, candle Futures fresh 15m/1h, filter kontrak, dan commission
   akun per symbol. NeuroAPI mengembalikan LONG, SHORT, atau HOLD.
-- HOLD dan RR di bawah 1:2 sebelum plan/intent meminta coin berbeda, maksimal
-  tiga putaran pengganti. Unknown outcome tidak diulang. Polling/restart tidak
-  membuka cycle berbayar tanpa batas setelah putaran habis.
+- HOLD dan RR di bawah 1:2 sebelum plan/intent meminta coin berbeda selama
+  kapasitas dan kuota tersedia, tanpa batas putaran pengganti. Coin HOLD tidak
+  diulang dalam siklus yang sama. Unknown outcome tidak diulang.
 - Risk target tetap editable pada menu lama: default 5 USDT, positif sampai
   100 USDT. Quantity legal terbesar mencakup taker fee entry/SL dan cadangan
   exit SL merugikan 0,5%. Leverage 75× tidak memperbesar budget risiko.

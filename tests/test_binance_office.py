@@ -188,6 +188,7 @@ class OfficeTests(unittest.TestCase):
         database.execute('CREATE TABLE robot_entry_receipts(id TEXT,symbol TEXT,entry_day TEXT,confirmed_at TEXT)')
         database.execute("INSERT INTO robot_entry_receipts VALUES('old-bot-fill','BTCUSDT','2026-10-01','2026-10-01T12:00:00Z')")
         store=SimpleNamespace(db=database,entries=lambda today:0,
+                              reconcile_carry=lambda client,today,symbols:None,
                               available_slots=lambda running,symbols,today,**kwargs:slots(running,0))
         self.client.account['positions'].append(dict(symbol='BTCUSDT',positionSide='BOTH',positionAmt='0.1'))
         self.client.check=lambda:dict(status='BINANCE_CONNECTED',position_mode='ONE_WAY',can_trade=True,

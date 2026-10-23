@@ -68,10 +68,10 @@ def screening_contract(count):
     if count==2:return SCREENING,SCREEN_SCHEMA
     raise Review('INVALID_SCREENING_COUNT')
 
-def slots(running,entries=0,*,pending=0,unrepresented=0):
-    # Carryover/manual positions consume concurrency; first fills consume that
-    # calendar day's two-entry allowance even after their positions are closed.
-    return max(0,min(2-running-unrepresented,2-entries-pending))
+def slots(running,entries=0,*,pending=0,unrepresented=0,carry=0):
+    # Midnight carry and today's first fills both consume the daily allowance.
+    # Carry remains charged after closure; physical occupancy is independent.
+    return max(0,min(2-running-unrepresented,2-entries-pending-carry))
 
 def open_entry_symbols(rows,*,algo=False,allow_hedge=False):
     """Validate global regular open orders; reducing exits reserve no new slot."""
@@ -114,6 +114,7 @@ def account_state(client,store,today):
         if D(amount)==0:continue
         if row.get('positionSide')!='BOTH':raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
         running.add(symbol)
+    store.reconcile_carry(client,today,sorted(running))
     entries=store.entries(today)
     # A historical entry receipt does not identify a currently open position.
     # Until the gateway supplies current ownership evidence, every existing
