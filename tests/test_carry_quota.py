@@ -119,6 +119,11 @@ class CarryQuotaTests(unittest.TestCase):
         self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
             ('new','new','BTCUSDT','ENTRY_PENDING','{"client_order_id":"new-entry"}',None,None,'today','now'))
         self.assertEqual(self.store.available_slots(0,[],DAY),0)
+    def test_historical_intent_without_persisted_discovery_cannot_offer_free_quota(self):
+        self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
+            ('old','old','BTCUSDT','CLOSED','{}',None,None,'prior-day','today'))
+        self.assertFalse(quota.ready(self.db,DAY,[]))
+        self.assertEqual(self.store.available_slots(0,[],DAY),0)
 
 
 if __name__=='__main__': unittest.main()

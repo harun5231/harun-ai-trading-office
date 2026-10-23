@@ -147,6 +147,9 @@ def charged_symbols(db, today):
 def ready(db, today, symbols=()):
     known = set(symbols)
     known.update(row[0] for row in db.execute('SELECT symbol FROM robot_carry_symbols'))
+    # A just-created, proven-unsent intent cannot be a carry. Every other
+    # historical intent remains relevant even if discovery persistence failed.
+    known.update(row[0] for row in db.execute("SELECT DISTINCT symbol FROM order_intents WHERE state NOT IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')"))
     proved = {row[0] for row in db.execute('SELECT symbol FROM robot_daily_carry WHERE day=?', (today,))}
     return known <= proved
 
