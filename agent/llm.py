@@ -26,6 +26,11 @@ trade, invent a symbol, price, setup, or calculate an order. Only extract symbol
 explicitly named by Neurobro and choose a dialogue action. HOLD means request a
 replacement coin. For pending LIMIT review, only Neurobro may decide TAHAN or
 BATALKAN. Ask a short relevant clarification when a response is incomplete.
+Use only symbols attributed to the current reply, not earlier conversation.
+The allowed symbols can include comparisons or dollar amounts; return only
+Neurobro's recommendation(s), not comparisons or dollar amounts.
+SCREENING selects screening symbols, not a complete setup.
+COMPLETE is only for a complete ANALYSIS setup; TAHAN/BATALKAN only for pending review.
 Continue clarifying incomplete replies without a fixed round limit. Stop
 discussing as soon as Neurobro supplies a complete setup.
 Return only the required JSON. Never place credentials or hidden reasoning in it.
@@ -38,6 +43,34 @@ SCHEMA = {
         "question": {"type": "string", "maxLength": 400},
     }, "required": ["action", "symbols", "question"],
 }
+
+
+def dialogue_schema(phase, reply):
+    """Constrain format to this phase and explicitly attributed current symbols.
+
+    Keep these two match grammars equivalent to dialogue_service.validate_decision.
+    Attribution does not establish a recommendation or a native catalog listing.
+    """
+    symbols = {base + "USDT" for base in re.findall(
+        r"(?<![A-Z0-9])([A-Z0-9]{2,20})(?:[/ -]?USDT)(?![A-Z0-9])", reply.upper())}
+    for base in re.findall(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:([A-Z0-9]{2,20}))'''
+                           r'''(?=\.?(?:$|[\s,;:!?()\[\]{}*'"`]))''', reply):
+        base = base.upper()
+        # A cashtag already spelling a full pair must not gain a second quote.
+        symbols.add(base if re.fullmatch(r"[A-Z0-9]{2,20}USDT", base) else base + "USDT")
+    actions = {"SCREENING": ["SCREENING", "CLARIFY", "HOLD"],
+               "ANALYSIS": ["CLARIFY", "HOLD", "COMPLETE"],
+               "PENDING_REVIEW": ["CLARIFY", "HOLD", "TAHAN", "BATALKAN"]}[phase]
+    # OpenAI Structured Outputs permits at most 1,000 enum values per schema.
+    # Refuse an unrepresentable format without truncating attributed candidates.
+    if len(symbols) + len(actions) > 1000:
+        raise AgentError("MODEL_INPUT_TOO_LARGE")
+    items = dict(SCHEMA["properties"]["symbols"]["items"])
+    if symbols:
+        items["enum"] = sorted(symbols)
+    return {**SCHEMA, "properties": {**SCHEMA["properties"],
+        "action": {"type": "string", "enum": actions},
+        "symbols": {"type": "array", "maxItems": 2 if symbols else 0, "items": items}}}
 
 
 MARKET_CONTEXT_FIELDS = frozenset({"symbol", "observed_at", "observed_at_utc", "server_time_ms",
@@ -274,15 +307,16 @@ class OpenAIDialogue:
         encoded = json.dumps(messages, ensure_ascii=False).encode()
         if len(encoded) > MAX_MODEL_INPUT_BYTES:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
+        schema = dialogue_schema(phase, reply)
         # Reserve a conservative UTF-8-byte upper bound before dispatch. Failed or
         # interrupted requests retain their reservation; there are no blind retries.
-        self.memory.reserve_budget(jakarta_day, len(encoded) + len(INSTRUCTIONS.encode()),
+        self.memory.reserve_budget(jakarta_day, len(encoded) + len(INSTRUCTIONS.encode()) + len(json.dumps(schema).encode()),
                                    self.max_output_tokens, **self.limits)
         payload = {"model": self.model, "store": False, "instructions": INSTRUCTIONS,
                    "input": messages, "max_output_tokens": self.max_output_tokens,
                    "reasoning": {"effort": "low"},
                    "text": {"format": {"type": "json_schema", "name": "neurobro_dialogue",
-                                        "strict": True, "schema": SCHEMA}}}
+                                        "strict": True, "schema": schema}}}
         result = self.transport(payload)
         if not isinstance(result, dict) or result.get("status") != "completed":
             raise AgentError("MODEL_RESPONSE_INCOMPLETE")
@@ -304,9 +338,10 @@ class OpenAIDialogue:
         except (ValueError, TypeError):
             raise AgentError("MODEL_RESPONSE_INVALID") from None
         if (not isinstance(value, dict) or set(value) != {"action", "symbols", "question"} or
-                value["action"] not in SCHEMA["properties"]["action"]["enum"] or
+                value["action"] not in schema["properties"]["action"]["enum"] or
                 not isinstance(value["symbols"], list) or len(value["symbols"]) > 2 or
                 any(not isinstance(s, str) or not re.fullmatch(r"[A-Z0-9]{2,20}USDT", s) for s in value["symbols"]) or
+                any(s not in schema["properties"]["symbols"]["items"].get("enum", []) for s in value["symbols"]) or
                 len(set(value["symbols"])) != len(value["symbols"]) or
                 not isinstance(value["question"], str) or len(value["question"]) > 400):
             raise AgentError("MODEL_RESPONSE_INVALID")

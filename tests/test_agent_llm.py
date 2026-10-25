@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from agent.llm import OpenAIDialogue, read_api_key, validated_market_context
+from agent.llm import INSTRUCTIONS, SCHEMA, OpenAIDialogue, dialogue_schema, read_api_key, validated_market_context
 from agent.memory import Memory
 from agent.models import AgentError, BudgetExceeded
 
@@ -43,6 +43,107 @@ class LLMTests(unittest.TestCase):
         self.assertIs(payload["store"], False)
         self.assertNotIn("tools", payload)
         self.assertEqual(set(payload["text"]["format"]["schema"]["properties"]), {"action", "symbols", "question"})
+
+    def test_current_reply_schema_keeps_model_choice_between_recommendation_and_comparison(self):
+        reply = 'Prioritas **$ZEC**, dibandingkan ($HYPE).'
+        model = self.model({"action": "SCREENING", "symbols": ["ZECUSDT"], "question": ""})
+        answer = model.plan([{"role": "assistant", "content": "$BTC"}], reply,
+                            phase="SCREENING", jakarta_day="2026-10-19")
+        schema = self.calls[0]["text"]["format"]["schema"]
+        self.assertEqual(schema, dialogue_schema("SCREENING", reply))
+        self.assertEqual(schema["properties"]["symbols"]["items"]["enum"], ["HYPEUSDT", "ZECUSDT"])
+        self.assertEqual(answer.symbols, ("ZECUSDT",))
+        self.assertIn("comparison", self.calls[0]["instructions"])
+        self.assertIn("dollar amounts", self.calls[0]["instructions"])
+        for symbols in (["BTCUSDT"], ["ZECIFEEDERRORHYPEZECUSDT", "HYPEUSDT"]):
+            with self.subTest(symbols=symbols), self.assertRaisesRegex(AgentError, "MODEL_RESPONSE_INVALID"):
+                self.model({"action": "SCREENING", "symbols": symbols, "question": ""}).plan(
+                    [{"role": "assistant", "content": "$BTC"}], reply,
+                    phase="SCREENING", jakarta_day="2026-10-19")
+
+    def test_phase_actions_and_empty_symbols_form_a_valid_nonempty_item_schema(self):
+        expected = {"SCREENING": ["SCREENING", "CLARIFY", "HOLD"],
+                    "ANALYSIS": ["CLARIFY", "HOLD", "COMPLETE"],
+                    "PENDING_REVIEW": ["CLARIFY", "HOLD", "TAHAN", "BATALKAN"]}
+        original = copy.deepcopy(SCHEMA)
+        for phase, actions in expected.items():
+            with self.subTest(phase=phase):
+                schema = dialogue_schema(phase, "No explicit symbols")
+                self.assertEqual(schema["properties"]["action"]["enum"], actions)
+                symbols = schema["properties"]["symbols"]
+                self.assertEqual(symbols["maxItems"], 0)
+                self.assertEqual(symbols["items"]["type"], "string")
+                self.assertNotIn("enum", symbols["items"])
+        self.assertEqual(SCHEMA, original)
+        for phase, action, accepted in (("SCREENING", "COMPLETE", False),
+                ("ANALYSIS", "COMPLETE", True), ("PENDING_REVIEW", "COMPLETE", False),
+                ("ANALYSIS", "SCREENING", False), ("SCREENING", "TAHAN", False),
+                ("ANALYSIS", "BATALKAN", False), ("PENDING_REVIEW", "TAHAN", True),
+                ("PENDING_REVIEW", "BATALKAN", True), ("SCREENING", "CLARIFY", True)):
+            with self.subTest(phase=phase, action=action):
+                model = self.model({"action": action, "symbols": [], "question": "Konfirmasi?" if action == "CLARIFY" else ""})
+                if accepted:
+                    self.assertEqual(model.plan([], "TAHAN BATALKAN", phase=phase,
+                        jakarta_day="2026-10-19").action, action)
+                else:
+                    with self.assertRaisesRegex(AgentError, "MODEL_RESPONSE_INVALID"):
+                        model.plan([], "TAHAN BATALKAN", phase=phase, jakarta_day="2026-10-19")
+
+    def test_schema_attribution_matches_installed_validator_boundaries(self):
+        from agent.dialogue_service import DialogueError, validate_decision
+        replies = ('ZECUSDT', 'ZEC/USDT', 'ZEC-USDT', 'ZEC USDT', '$ZEC/USDT',
+            '$ZEC', '($ZEC),', '**$ZEC**.', '$ZEC.', '$zec!', 'Pilihan: $ZEC;',
+            '$HYPE', 'ZEC', 'Zcash', '$ZECO', '$AZEC', '$ZEC2', '$ZEC_USDT',
+            '$ZEC/USDC', '$ZEC/', '$ZEC-USDC', '$ZEC.USDC', '$$ZEC', 'prefix$ZEC',
+            'é$ZEC', '$ZECé', '$ZEC\u0301', 'é\u0301$ZEC', '/$ZEC', '-$ZEC', '$ZEC—',
+            '$ıcp', '$ſol', '$ﬂoki', '$ß', '1000PEPEUSDT', '$7M')
+        candidates = ('ZECUSDT', 'HYPEUSDT', 'ZECOUSDT', 'AZECUSDT', 'ZEC2USDT',
+                      'ICPUSDT', 'SOLUSDT', 'FLOKIUSDT', 'SSUSDT', '1000PEPEUSDT', '7MUSDT')
+        for reply in replies:
+            allowed = dialogue_schema("SCREENING", reply)["properties"]["symbols"]["items"].get("enum", [])
+            for symbol in candidates:
+                with self.subTest(reply=reply, symbol=symbol):
+                    decision = {"action": "SCREENING", "symbols": [symbol], "question": ""}
+                    try:
+                        validate_decision(decision, {"phase": "SCREENING", "reply": reply})
+                    except DialogueError:
+                        accepted = False
+                    else:
+                        accepted = True
+                    self.assertEqual(symbol in allowed, accepted)
+        schema = dialogue_schema("SCREENING", '$BTCUSDT $zecusdt $HYPE $7M')
+        self.assertEqual(schema["properties"]["symbols"]["items"]["enum"],
+                         ['7MUSDT', 'BTCUSDT', 'HYPEUSDT', 'ZECUSDT'])
+
+    def test_schema_bytes_are_reserved_before_transport_with_existing_limits(self):
+        model = self.model({"action": "SCREENING", "symbols": ["ZECUSDT"], "question": ""})
+        with patch.object(self.memory, "reserve_budget", wraps=self.memory.reserve_budget) as reserve:
+            model.plan([], "$ZEC", phase="SCREENING", jakarta_day="2026-10-19")
+        payload = self.calls[0]
+        expected = len(json.dumps(payload["input"], ensure_ascii=False).encode()) + len(INSTRUCTIONS.encode())
+        expected += len(json.dumps(payload["text"]["format"]["schema"]).encode())
+        self.assertEqual(reserve.call_args.args, ("2026-10-19", expected, model.max_output_tokens))
+        self.assertEqual(reserve.call_args.kwargs, model.limits)
+        self.calls.clear()
+        constrained = self.model({"action": "SCREENING", "symbols": ["ZECUSDT"], "question": ""},
+                                 daily_input_tokens=expected - 1)
+        with self.assertRaises(BudgetExceeded):
+            constrained.plan([], "$ZEC", phase="SCREENING", jakarta_day="2026-10-20")
+        self.assertEqual(self.calls, [])
+
+    def test_unrepresentable_provider_enum_is_rejected_before_reservation_or_dispatch(self):
+        reply = ' '.join('$A' + str(index) for index in range(1200))
+        self.assertLess(len(reply), 16000)
+        model = self.model({"action": "CLARIFY", "symbols": [], "question": "Konfirmasi?"})
+        with patch.object(self.memory, "reserve_budget") as reserve:
+            with self.assertRaisesRegex(AgentError, "MODEL_INPUT_TOO_LARGE"):
+                model.plan([], reply, phase="SCREENING", jakarta_day="2026-10-19")
+        reserve.assert_not_called()
+        self.assertEqual(self.calls, [])
+        boundary = ' '.join('$A' + str(index) for index in range(997))
+        self.assertEqual(len(dialogue_schema("SCREENING", boundary)["properties"]["symbols"]["items"]["enum"]), 997)
+        with self.assertRaisesRegex(AgentError, "MODEL_INPUT_TOO_LARGE"):
+            dialogue_schema("PENDING_REVIEW", boundary)
 
     def test_model_authored_prices_are_rejected(self):
         model = self.model({"action": "COMPLETE", "symbols": [], "question": "", "entry": "100"})
