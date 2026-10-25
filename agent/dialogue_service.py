@@ -125,8 +125,13 @@ def validate_decision(value, request):
     question_symbols = re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', question.upper())
     for symbol in [*symbols, *question_symbols]:
         base = re.escape(symbol[:-4])
-        need(re.search(r'(?<![A-Z0-9])'+base+r'(?:[/ -]?USDT)(?![A-Z0-9])',
-                       request['reply'].upper()) is not None, 'DIALOGUE_FOREIGN_SYMBOL')
+        reply = request['reply'].upper()
+        full_pair = re.search(r'(?<![A-Z0-9])'+base+r'(?:[/ -]?USDT)(?![A-Z0-9])', reply)
+        # A standalone cashtag names this exact base; compound/foreign pairs do
+        # not become USDT attribution merely because they begin with "$BASE".
+        cashtag = re.search(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:'''+base+
+                            r''')(?=\.?(?:$|[\s,;:!?()\[\]{}*'"`]))''', request['reply'])
+        need(full_pair is not None or cashtag is not None, 'DIALOGUE_FOREIGN_SYMBOL')
     if action == 'CLARIFY':
         need(bool(question) and '\n' not in question and '\t' not in question,
              'DIALOGUE_MODEL_RESULT_INVALID')
