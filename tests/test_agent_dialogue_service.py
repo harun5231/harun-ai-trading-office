@@ -347,7 +347,8 @@ class DialogueServiceTests(unittest.TestCase):
     def test_cashtag_in_dialogue_history_does_not_authorize_a_foreign_current_symbol(self):
         self.output={'action':'SCREENING','symbols':['ZECUSDT'],'question':''}
         self.engine.process(request(reply='$ZEC',index=70))
-        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+        # The planner now rejects the history-only symbol before service validation.
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_MODEL_UNAVAILABLE'):
             self.engine.process(request(reply='$HYPE',index=71))
         self.assertIn('$ZEC',json.dumps(self.calls[-1]))
 
@@ -361,6 +362,13 @@ class DialogueServiceTests(unittest.TestCase):
         value=self.engine.process(request(phase='PENDING_REVIEW',reply='KEPUTUSAN: BATALKAN',index=1))
         self.assertEqual(value['decision']['action'],'BATALKAN')
         self.assertFalse(value['trading_authority'])
+
+    def test_complete_is_only_valid_during_analysis(self):
+        decision={'action':'COMPLETE','symbols':['BTCUSDT'],'question':''}
+        self.assertIs(d.validate_decision(decision,{'phase':'ANALYSIS','reply':'BTCUSDT'}),decision)
+        for phase in ('SCREENING','PENDING_REVIEW'):
+            with self.subTest(phase=phase),self.assertRaisesRegex(d.DialogueError,'DIALOGUE_MODEL_RESULT_INVALID'):
+                d.validate_decision(decision,{'phase':phase,'reply':'BTCUSDT'})
 
     def test_gate_deadline_rechecked_after_budget_reservation_immediately_before_transport(self):
         value=request()

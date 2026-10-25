@@ -44,7 +44,7 @@ class Page:
 
 
 class Bridge:
- def __init__(self,initial='BTCUSDT needs clarification',final='FINAL_NATIVE_REPLY'):
+ def __init__(self,initial='BTCUSDT needs clarification',final='FINAL_NATIVE_REPLY BTCUSDT'):
   self.initial,self.final=initial,final;self.current=0.0;self.clock=lambda:self.current
   self.timeout=90;self.operation_deadline=None;self._operation_contract=None
   self._dom_contract=SimpleNamespace(composer='native-composer',send='native-send')
@@ -99,11 +99,11 @@ def request():
 
 def client(action='CLARIFY'):
  def run(value):
-  decision = 'COMPLETE' if action == 'CLARIFY' and value['reply'] == 'FINAL_NATIVE_REPLY' else action
+  decision = ('SCREENING' if value['phase']=='SCREENING' else 'COMPLETE') if action == 'CLARIFY' and value['reply'] == 'FINAL_NATIVE_REPLY BTCUSDT' else action
   return {'schema_version':1,'ok':True,
    **{key:value[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
    'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
-   'decision':{'action':decision,'symbols':[],'question':'Coin mana yang perlu diperjelas?' if decision=='CLARIFY' else ''},
+   'decision':{'action':decision,'symbols':['BTCUSDT'] if decision=='SCREENING' else [],'question':'Coin mana yang perlu diperjelas?' if decision=='CLARIFY' else ''},
    'needs_followup':decision=='CLARIFY','reason':'DIALOGUE_DECISION'}
  return Mock(request=Mock(side_effect=run))
 
@@ -146,10 +146,10 @@ class NativeHookTests(unittest.TestCase):
 
  def test_eight_clarifications_stay_in_one_chat_and_bind_repeated_replies_to_distinct_turns(self):
   bridge=Bridge(initial='BTCUSDT belum lengkap',final='BTCUSDT belum lengkap')
-  bridge.after_click=lambda b:b.messages[-1].update(text='FINAL_NATIVE_REPLY' if b.clicks==9 else b.final)
+  bridge.after_click=lambda b:b.messages[-1].update(text='FINAL_NATIVE_REPLY BTCUSDT' if b.clicks==9 else b.final)
   hook=self.setup_hook(bridge=bridge);before=copy.deepcopy(request())
   result=hook.ask(before,self.gate,deadline=80)
-  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY')
+  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY BTCUSDT')
   self.assertEqual(bridge.clicks,9);self.assertEqual(bridge.fresh_calls,1)
   self.assertEqual(bridge.messages[0]['text'],request()['prompt'])
   requests=[call.args[0] for call in self.reasoner.request.call_args_list]
@@ -179,12 +179,18 @@ class NativeHookTests(unittest.TestCase):
   self.assertEqual(result['assistant_text'],self.bridge.final)
   self.assertEqual(self.bridge.clicks,2)
 
- def test_model_stop_returns_original_reply_and_does_not_supply_prices_or_setup(self):
-  hook=self.setup_hook(reasoner=client('COMPLETE'))
+ def test_model_screening_stop_returns_original_reply_and_does_not_supply_prices_or_setup(self):
+  hook=self.setup_hook(reasoner=client('SCREENING'))
   result=hook.ask(request(),self.gate,deadline=80)
   self.assertEqual(self.bridge.clicks,1)
   self.assertEqual(result['assistant_text'],self.bridge.initial)
   self.assertIsNone(result['output'])
+
+ def test_complete_during_screening_is_refused_before_a_followup_send(self):
+  hook=self.setup_hook(reasoner=client('COMPLETE'))
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=80)
+  self.assertEqual(self.bridge.clicks,1)
+  self.assertEqual(self.reasoner.request.call_count,1)
 
  def test_robot_off_before_initial_send_makes_no_browser_or_model_request(self):
   hook=self.setup_hook();self.enabled=False
@@ -457,7 +463,7 @@ class NativeFreshFollowupTests(unittest.TestCase):
   initial_after_click=self.bridge.after_click
   def after_click(b):
    initial_after_click(b)
-   if b.clicks==5:b.messages[-1]['text']='FINAL_NATIVE_REPLY'
+   if b.clicks==5:b.messages[-1]['text']='FINAL_NATIVE_REPLY BTCUSDT'
   self.bridge.after_click=after_click
   original_refresh=self.refresh.side_effect
   def refresh(**kwargs):
@@ -507,7 +513,7 @@ class NativeFreshFollowupTests(unittest.TestCase):
      self.bridge.messages[-1]=pending['answer']
   self.bridge.page.wait_for_timeout=wait
   result=self.ask()
-  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY')
+  self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY BTCUSDT')
   self.assertGreaterEqual(pending['waits'],4);self.assertEqual(self.bridge.clicks,2)
   self.assertEqual([e[0] for e in self.events],['REFRESH','INTENT','COMPLETE'])
 

@@ -148,7 +148,7 @@ def validate_decision(value, request):
     if action in {'HOLD', 'TAHAN', 'BATALKAN'}:
         need(re.search(r'\b'+action+r'\b', request['reply'], re.I) is not None,
              'DIALOGUE_MODEL_RESULT_INVALID')
-    need(action != 'COMPLETE' or phase != 'PENDING_REVIEW', 'DIALOGUE_MODEL_RESULT_INVALID')
+    need(action != 'COMPLETE' or phase == 'ANALYSIS', 'DIALOGUE_MODEL_RESULT_INVALID')
     return value
 
 
