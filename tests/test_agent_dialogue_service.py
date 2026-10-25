@@ -310,6 +310,47 @@ class DialogueServiceTests(unittest.TestCase):
             with self.subTest(output=output),self.assertRaises(d.DialogueError):
                 self.engine.process(request(index=index))
 
+    def test_explicit_cashtags_in_current_reply_authorize_canonical_screening_symbols(self):
+        self.output={'action':'SCREENING','symbols':['ZECUSDT','HYPEUSDT'],'question':''}
+        value=self.engine.process(request(reply='Prioritas **$ZEC**, dibandingkan ($HYPE).'))
+        self.assertEqual(value['decision'],self.output)
+        self.assertFalse(value['trading_authority'])
+
+    def test_cashtag_attribution_keeps_existing_pair_forms_and_prose_punctuation(self):
+        decision={'action':'SCREENING','symbols':['ZECUSDT'],'question':''}
+        for reply in ('ZECUSDT','ZEC/USDT','ZEC-USDT','ZEC USDT','$ZEC/USDT',
+                      '$ZEC','($ZEC),','**$ZEC**.','$ZEC.','$zec!','Pilihan: $ZEC;'):
+            with self.subTest(reply=reply):
+                self.assertIs(d.validate_decision(decision,{'phase':'SCREENING','reply':reply}),decision)
+
+    def test_cashtags_reject_foreign_substrings_and_compound_tokens(self):
+        decision={'action':'SCREENING','symbols':['ZECUSDT'],'question':''}
+        for reply in ('$HYPE','ZEC','Zcash','$ZECO','$AZEC','$ZEC2','$ZEC_USDT',
+                      '$ZEC/USDC','$ZEC/','$ZEC-USDC','$ZEC.USDC','$$ZEC',
+                      'prefix$ZEC','é$ZEC','$ZECé','$ZEC\u0301','é\u0301$ZEC','/$ZEC','-$ZEC'):
+            with self.subTest(reply=reply),self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+                d.validate_decision(decision,{'phase':'SCREENING','reply':reply})
+
+    def test_cashtags_do_not_normalize_non_ascii_letters_into_canonical_bases(self):
+        for symbol,reply in (('ICPUSDT','$ıcp'),('SOLUSDT','$ſol'),
+                             ('FLOKIUSDT','$ﬂoki'),('SSUSDT','$ß')):
+            decision={'action':'SCREENING','symbols':[symbol],'question':''}
+            with self.subTest(reply=reply),self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+                d.validate_decision(decision,{'phase':'SCREENING','reply':reply})
+
+    def test_question_symbol_requires_the_same_current_reply_cashtag(self):
+        decision={'action':'CLARIFY','symbols':[],'question':'Mohon konfirmasi ZECUSDT?'}
+        self.assertIs(d.validate_decision(decision,{'phase':'SCREENING','reply':'$ZEC'}),decision)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+            d.validate_decision(decision,{'phase':'SCREENING','reply':'$HYPE'})
+
+    def test_cashtag_in_dialogue_history_does_not_authorize_a_foreign_current_symbol(self):
+        self.output={'action':'SCREENING','symbols':['ZECUSDT'],'question':''}
+        self.engine.process(request(reply='$ZEC',index=70))
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+            self.engine.process(request(reply='$HYPE',index=71))
+        self.assertIn('$ZEC',json.dumps(self.calls[-1]))
+
     def test_complete_immediately_stops_discussion_and_pending_decision_has_no_order_authority(self):
         self.output={'action':'COMPLETE','symbols':['BTCUSDT'],'question':''}
         value=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT\nLONG\nENTRY:100\nTP:120\nSL:90'))
