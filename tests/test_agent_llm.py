@@ -89,16 +89,16 @@ class LLMTests(unittest.TestCase):
                     with self.assertRaisesRegex(AgentError, "MODEL_RESPONSE_INVALID"):
                         model.plan([], "TAHAN BATALKAN", phase=phase, jakarta_day="2026-10-19")
 
-    def test_schema_attribution_matches_installed_validator_boundaries(self):
+    def test_schema_attribution_preserves_installed_validator_token_boundaries(self):
         from agent.dialogue_service import DialogueError, validate_decision
         replies = ('ZECUSDT', 'ZEC/USDT', 'ZEC-USDT', 'ZEC USDT', '$ZEC/USDT',
             '$ZEC', '($ZEC),', '**$ZEC**.', '$ZEC.', '$zec!', 'Pilihan: $ZEC;',
             '$HYPE', 'ZEC', 'Zcash', '$ZECO', '$AZEC', '$ZEC2', '$ZEC_USDT',
             '$ZEC/USDC', '$ZEC/', '$ZEC-USDC', '$ZEC.USDC', '$$ZEC', 'prefix$ZEC',
             'é$ZEC', '$ZECé', '$ZEC\u0301', 'é\u0301$ZEC', '/$ZEC', '-$ZEC', '$ZEC—',
-            '$ıcp', '$ſol', '$ﬂoki', '$ß', '1000PEPEUSDT', '$7M')
+            '$ıcp', '$ſol', '$ﬂoki', '$ß', '1000PEPEUSDT')
         candidates = ('ZECUSDT', 'HYPEUSDT', 'ZECOUSDT', 'AZECUSDT', 'ZEC2USDT',
-                      'ICPUSDT', 'SOLUSDT', 'FLOKIUSDT', 'SSUSDT', '1000PEPEUSDT', '7MUSDT')
+                      'ICPUSDT', 'SOLUSDT', 'FLOKIUSDT', 'SSUSDT', '1000PEPEUSDT')
         for reply in replies:
             allowed = dialogue_schema("SCREENING", reply)["properties"]["symbols"]["items"].get("enum", [])
             for symbol in candidates:
@@ -113,7 +113,22 @@ class LLMTests(unittest.TestCase):
                     self.assertEqual(symbol in allowed, accepted)
         schema = dialogue_schema("SCREENING", '$BTCUSDT $zecusdt $HYPE $7M')
         self.assertEqual(schema["properties"]["symbols"]["items"]["enum"],
-                         ['7MUSDT', 'BTCUSDT', 'HYPEUSDT', 'ZECUSDT'])
+                         ['BTCUSDT', 'HYPEUSDT', 'ZECUSDT'])
+
+    def test_dollar_amount_cashtags_are_excluded_without_filtering_explicit_pairs(self):
+        reply = '$ZEC near $98 with $7M volume; compare $HYPE. $12k $9b $2T'
+        symbols = dialogue_schema("SCREENING", reply)["properties"]["symbols"]["items"]["enum"]
+        self.assertEqual(symbols, ['HYPEUSDT', 'ZECUSDT'])
+        schema = dialogue_schema("SCREENING", '$7m $98')
+        self.assertEqual(schema["properties"]["symbols"]["maxItems"], 0)
+        self.assertNotIn("enum", schema["properties"]["symbols"]["items"])
+        schema = dialogue_schema("SCREENING", '7MUSDT 98USDT $7MUSDT $1000SHIB $1INCH')
+        self.assertEqual(schema["properties"]["symbols"]["items"]["enum"],
+                         ['1000SHIBUSDT', '1INCHUSDT', '7MUSDT', '98USDT'])
+        for amount in ('7MUSDT', '98USDT'):
+            with self.subTest(amount=amount), self.assertRaisesRegex(AgentError, "MODEL_RESPONSE_INVALID"):
+                self.model({"action": "SCREENING", "symbols": [amount], "question": ""}).plan(
+                    [], reply, phase="SCREENING", jakarta_day="2026-10-19")
 
     def test_schema_bytes_are_reserved_before_transport_with_existing_limits(self):
         model = self.model({"action": "SCREENING", "symbols": ["ZECUSDT"], "question": ""})

@@ -48,7 +48,8 @@ SCHEMA = {
 def dialogue_schema(phase, reply):
     """Constrain format to this phase and explicitly attributed current symbols.
 
-    Keep these two match grammars equivalent to dialogue_service.validate_decision.
+    Use dialogue_service.validate_decision's match grammars, conservatively
+    excluding amount-only cashtags and avoiding a second USDT quote suffix.
     Attribution does not establish a recommendation or a native catalog listing.
     """
     symbols = {base + "USDT" for base in re.findall(
@@ -56,6 +57,8 @@ def dialogue_schema(phase, reply):
     for base in re.findall(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:([A-Z0-9]{2,20}))'''
                            r'''(?=\.?(?:$|[\s,;:!?()\[\]{}*'"`]))''', reply):
         base = base.upper()
+        if re.fullmatch(r"[0-9]+[KMBT]?", base):
+            continue  # Dollar amounts are not symbol choices; explicit pairs remain.
         # A cashtag already spelling a full pair must not gain a second quote.
         symbols.add(base if re.fullmatch(r"[A-Z0-9]{2,20}USDT", base) else base + "USDT")
     actions = {"SCREENING": ["SCREENING", "CLARIFY", "HOLD"],
