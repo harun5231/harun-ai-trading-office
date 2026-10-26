@@ -350,4 +350,6 @@ class OpenAIDialogue:
             raise AgentError("MODEL_RESPONSE_INVALID")
         if self._live_transport:
             self._completed_at = time.time()
-        return DialogueDecision(value["action"], tuple(value["symbols"]), value["question"])
+        # Only CLARIFY uses a question; validate every raw field before discarding it.
+        question = value["question"] if value["action"] == "CLARIFY" else ""
+        return DialogueDecision(value["action"], tuple(value["symbols"]), question)
