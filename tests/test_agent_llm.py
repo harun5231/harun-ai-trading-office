@@ -165,6 +165,47 @@ class LLMTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError, "RESPONSE_INVALID"):
             model.plan([], "text", phase="ANALYSIS", jakarta_day="2026-10-19")
 
+    def test_unused_question_is_cleared_after_validation_without_changing_action_or_symbols(self):
+        from agent.dialogue_service import DialogueError, validate_decision
+        # Match the retained fault's SCREENING/ZECUSDT/77-character question shape.
+        question = "Clarification text retained in the raw provider result.".ljust(77, "?")
+        for phase, action in (("SCREENING", "SCREENING"), ("ANALYSIS", "COMPLETE"),
+                ("ANALYSIS", "HOLD"), ("PENDING_REVIEW", "TAHAN"), ("PENDING_REVIEW", "BATALKAN")):
+            with self.subTest(phase=phase, action=action):
+                raw = {"action": action, "symbols": ["ZECUSDT"], "question": question}
+                reply = "$ZEC " + action
+                with self.assertRaisesRegex(DialogueError, "DIALOGUE_MODEL_RESULT_INVALID"):
+                    validate_decision(raw, {"phase": phase, "reply": reply})
+                answer = self.model(raw).plan([], reply, phase=phase, jakarta_day="2026-10-19")
+                normalized = {"action": answer.action, "symbols": list(answer.symbols), "question": answer.question}
+                self.assertEqual(normalized, {**raw, "question": ""})
+                self.assertIs(validate_decision(normalized, {"phase": phase, "reply": reply}), normalized)
+                self.assertEqual(raw["question"], question)
+                self.assertEqual(len(raw["question"]), 77)
+
+    def test_clarify_question_is_preserved_and_native_validation_stays_strict(self):
+        from agent.dialogue_service import DialogueError, validate_decision
+        for question in ("Mohon konfirmasi ZECUSDT?", "Apakah ENTRY: 100 tepat?"):
+            raw = {"action": "CLARIFY", "symbols": [], "question": question}
+            answer = self.model(raw).plan([], "$ZEC", phase="SCREENING", jakarta_day="2026-10-19")
+            self.assertEqual(answer.question, question)
+            normalized = {"action": answer.action, "symbols": list(answer.symbols), "question": answer.question}
+            if "100" in question:
+                with self.assertRaisesRegex(DialogueError, "DIALOGUE_PRICE_PROPOSAL_REFUSED"):
+                    validate_decision(normalized, {"phase": "SCREENING", "reply": "$ZEC"})
+            else:
+                self.assertIs(validate_decision(normalized, {"phase": "SCREENING", "reply": "$ZEC"}), normalized)
+
+    def test_unused_question_normalization_cannot_hide_invalid_raw_fields(self):
+        base = {"action": "SCREENING", "symbols": ["ZECUSDT"], "question": "unused"}
+        changes = ({"question": None}, {"question": 77}, {"question": ["unused"]},
+            {"question": "x" * 401}, {"action": "COMPLETE"}, {"action": []},
+            {"symbols": "ZECUSDT"}, {"symbols": ["HYPEUSDT"]},
+            {"symbols": ["ZECUSDT", "ZECUSDT"]}, {"entry": "100"})
+        for change in changes:
+            with self.subTest(change=change), self.assertRaisesRegex(AgentError, "MODEL_RESPONSE_INVALID"):
+                self.model({**base, **change}).plan([], "$ZEC", phase="SCREENING", jakarta_day="2026-10-19")
+
     def test_output_timeout_has_no_automatic_retry(self):
         calls = []
         def transport(payload):
