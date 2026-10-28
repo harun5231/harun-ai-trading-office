@@ -59,6 +59,7 @@ class Fixture:
         self._dom_contract=SimpleNamespace(area='area',send='send')
         self.composer=SimpleNamespace(locator=lambda _:Area(self))
         self._upload=self.native_upload; self._turns=self.native_turns
+        self._answer=self.native_answer
     def native_upload(self, *args):
         self.actions.append('native-png-upload')
         self.uploaded_names=['15m.png','1h.png']
@@ -69,6 +70,12 @@ class Fixture:
             if row['role']=='user':
                 row['attachments']=(list(self.uploaded_names) if self.uploaded_names==['15m.png','1h.png'] else ['UNCONFIRMED'])
         return result
+    def native_answer(self, prompt, attachment_names=()):
+        rows=self._turns()
+        if (len(rows)!=2 or rows[0]['text']!=prompt
+                or rows[0]['attachments']!=list(attachment_names)
+                or rows[1].get('complete')is not True): return None
+        return rows[1]['text']
     def clock(self): return self.current
     def _until(self, seconds): return self.current+seconds
     def _timeout(self, _): return 5000

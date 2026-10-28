@@ -70,13 +70,20 @@ class DelegatedDOMBridge:
             delivery = None
             if data_file_mode(self.native, payload):
                 def callback_gate():
-                    if dispatch_check() is not True or self.bridge.status() != 'CONNECTED':
+                    # Native OFF probe dispatch_check is a one-use consume,
+                    # not a repeatable predicate. DOM.ask owns its sole call
+                    # immediately before Send, as with the native PNG path.
+                    if (self.bridge.status() != 'CONNECTED'
+                            or deadline is not None and (type(deadline) not in (int, float)
+                                or not math.isfinite(deadline) or self.clock() >= deadline)):
                         raise self.native.OutcomeUnknown()
                 delivery = NativeDataFileDelivery(self.bridge, self.native, callback_gate,
                     wall_clock=self.wall_clock).install()
             try:
                 return self.bridge.ask(payload, dispatch_check, chart_images=chart_images,
-                    chart_evidence=chart_evidence, deadline=deadline, receipt_callback=receipt_callback)
+                    chart_evidence=chart_evidence, deadline=deadline,
+                    receipt_callback=(delivery.receipt_callback(receipt_callback)
+                        if delivery is not None else receipt_callback))
             finally:
                 if delivery is not None:
                     delivery.close()
@@ -367,6 +374,8 @@ class DelegatedDOMBridge:
         def delegated_answer(prompt, attachment_names=()):
             if self.clock() >= until:
                 unknown()
+            if delivery is not None:
+                attachment_names = delivery.attachment_names(attachment_names)
             if not state['turn_names']:
                 state.update(prompt=prompt, attachments=attachment_names)
                 state['turn_names'] = [list(attachment_names)]
