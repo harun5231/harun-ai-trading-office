@@ -105,6 +105,7 @@ class NativeDataFileDelivery:
         return self.original_answer(prompt, self.attachment_names(attachment_names))
 
     def receipt_callback(self, callback):
+        """Verify CSV user tiles while preserving the native PNG receipt ABI."""
         def retain(receipt):
             self.gate()
             self._need(type(receipt) is dict and type(receipt.get('attachment_names')) is list)
@@ -116,8 +117,9 @@ class NativeDataFileDelivery:
                 and row['text'].replace('\r\n', '\n').strip() == prompt.strip()
                 and row.get('attachments') == names for row in self.reader.read()))
             # CSV witnesses were checked on the submitted user turn above.
-            # Keep the native answer, response ID and PNG evidence unchanged.
-            callback({**receipt, 'attachment_names': names})
+            # The native receipt's attachment_names correspond to its two
+            # chart_evidence PNGs. Keep that existing ABI and object unchanged.
+            callback(receipt)
         return retain
 
     def _need(self, value):

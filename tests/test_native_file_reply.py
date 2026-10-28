@@ -1,5 +1,4 @@
 """Native PNG arguments must still identify the submitted four-file user turn."""
-import copy
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -38,9 +37,10 @@ class StrictNativeBridge(Fixture):
             if answer is not None and stable>=3:
                 if receipt_callback is not None:
                     if self.before_callback:self.before_callback(self)
-                    receipt_callback({'rendered_prompt':prompt,'assistant_text':answer,
+                    self.last_native_receipt={'rendered_prompt':prompt,'assistant_text':answer,
                         'response_id':'native-owned-response','chart_evidence':bound,
-                        'attachment_names':native_names})
+                        'attachment_names':native_names}
+                    receipt_callback(self.last_native_receipt)
                 return {'output':{},'assistant_text':answer,
                     'response_id':'native-owned-response','chart_evidence':bound}
             self.wait_for_timeout(250)
@@ -85,8 +85,11 @@ class FourFileNativeReplyTests(unittest.TestCase):
         self.assertEqual(len(bridge._turns()[0]['attachments']),4)
         self.assertEqual(bridge._answer,bridge.native_answer)
 
-    def test_off_callback_consumes_once_at_send_and_attests_actual_four_files(self):
+    def test_off_callback_consumes_once_and_verifies_csv_before_unchanged_native_receipt(self):
         bridge,client,hook,payload=self.setup();callback=Mock();calls=[]
+        witness_counts=[]
+        bridge.before_callback=lambda b:witness_counts.append(len(b.witnesses))
+        callback.side_effect=lambda _:witness_counts.append(len(bridge.witnesses))
         def consume():
             calls.append('CONSUME')
             if len(calls)>1:raise AssertionError('one-use authorization consumed twice')
@@ -95,8 +98,10 @@ class FourFileNativeReplyTests(unittest.TestCase):
         self.assertEqual(calls,['CONSUME']);self.assertEqual(bridge.sent,1)
         client.request.assert_not_called();callback.assert_called_once()
         receipt=callback.call_args.args[0]
-        self.assertEqual(receipt['attachment_names'],bridge.uploaded_names)
-        self.assertEqual(len(receipt['attachment_names']),4)
+        self.assertIs(receipt,bridge.last_native_receipt)
+        self.assertEqual(receipt['attachment_names'],['15m.png','1h.png'])
+        self.assertGreater(witness_counts[1],witness_counts[0])
+        self.assertEqual(len(bridge._turns()[0]['attachments']),4)
         self.assertEqual(receipt['assistant_text'],result['assistant_text'])
         self.assertEqual(receipt['response_id'],result['response_id'])
         self.assertEqual(receipt['chart_evidence'],result['chart_evidence'])
@@ -123,7 +128,9 @@ class FourFileNativeReplyTests(unittest.TestCase):
         hook.ask(payload,lambda:True,deadline=80,receipt_callback=callback)
         callback.assert_called_once()
         self.assertEqual(callback.call_args.args[0]['rendered_prompt'],payload['prompt'])
-        self.assertEqual(callback.call_args.args[0]['attachment_names'],bridge.uploaded_names)
+        self.assertIs(callback.call_args.args[0],bridge.last_native_receipt)
+        self.assertEqual(callback.call_args.args[0]['attachment_names'],['15m.png','1h.png'])
+        self.assertEqual(len(bridge._turns()[0]['attachments']),4)
 
     def test_expired_callback_budget_consumes_nothing(self):
         bridge,client,hook,payload=self.setup();consume=Mock(return_value=True)
