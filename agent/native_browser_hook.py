@@ -16,6 +16,8 @@ import re
 import time
 from datetime import datetime, timezone
 
+from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
+
 
 def _same_text(left, right):
     return (type(left) is str and type(right) is str
@@ -65,8 +67,19 @@ class DelegatedDOMBridge:
         # Explicit native probe/evidence callbacks retain their existing path.
         # Normal BrowserActor._research has no callback and owns this transaction.
         if receipt_callback is not None:
-            return self.bridge.ask(payload, dispatch_check, chart_images=chart_images,
-                chart_evidence=chart_evidence, deadline=deadline, receipt_callback=receipt_callback)
+            delivery = None
+            if data_file_mode(self.native, payload):
+                def callback_gate():
+                    if dispatch_check() is not True or self.bridge.status() != 'CONNECTED':
+                        raise self.native.OutcomeUnknown()
+                delivery = NativeDataFileDelivery(self.bridge, self.native, callback_gate,
+                    wall_clock=self.wall_clock).install()
+            try:
+                return self.bridge.ask(payload, dispatch_check, chart_images=chart_images,
+                    chart_evidence=chart_evidence, deadline=deadline, receipt_callback=receipt_callback)
+            finally:
+                if delivery is not None:
+                    delivery.close()
         if not callable(dispatch_check):
             raise ValueError('NATIVE_DISPATCH_CALLBACK_UNVERIFIED')
         started = self.clock()
@@ -83,6 +96,8 @@ class DelegatedDOMBridge:
                  'fresh': None, 'fresh_names': [], 'bound_charts': None,
                  'followup_intents': [], 'initial_url': None, 'turn_names': []}
         payload_digest = _digest(payload)
+        file_mode = data_file_mode(self.native, payload)
+        delivery = None
 
         def unknown():
             raise self.native.OutcomeUnknown()
@@ -199,8 +214,8 @@ class DelegatedDOMBridge:
             rendered = self.native.user_prompt(followup_payload)
             if (type(rendered) is not str or not rendered.startswith(question)
                     or len(rendered.encode()) > 384*1024
-                    or json.dumps(projected, sort_keys=True, separators=(',', ':'),
-                        ensure_ascii=False, allow_nan=False) not in rendered):
+                    or (not file_mode and json.dumps(projected, sort_keys=True, separators=(',', ':'),
+                        ensure_ascii=False, allow_nan=False) not in rendered)):
                 unknown()
             composers = self.bridge._visible(self.bridge._dom_contract.composer)
             if len(composers) != 1 or composers[0].input_value():
@@ -208,9 +223,9 @@ class DelegatedDOMBridge:
             gate()  # A PNG upload is an external browser action as well.
             bound = self.bridge._upload(composers[0], followup_payload, artifacts)
             names = list(self.bridge.uploaded_names)
-            if (type(bound) is not list or len(bound) != 2 or len(names) != 2
+            if (type(bound) is not list or len(bound) != 2 or len(names) != (4 if file_mode else 2)
                     or any(type(name) is not str or not name or len(name) > 240 for name in names)
-                    or len(set(names)) != 2
+                    or len(set(names)) != (4 if file_mode else 2)
                     or transcript() != prefix):
                 unknown()
             identifiers = set()
@@ -368,6 +383,9 @@ class DelegatedDOMBridge:
             review(answer)
             return answer if state['phase'] == 'ACCEPT' else None
 
+        if file_mode:
+            delivery = NativeDataFileDelivery(self.bridge, self.native, gate,
+                wall_clock=self.wall_clock).install()
         self.bridge._answer = delegated_answer
         try:
             # The original native implementation still sends the first prompt,
@@ -400,6 +418,8 @@ class DelegatedDOMBridge:
             return result
         finally:
             self.bridge._answer = original_answer
+            if delivery is not None:
+                delivery.close()
 
 
 def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None):
