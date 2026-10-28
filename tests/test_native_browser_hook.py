@@ -412,8 +412,16 @@ class NativeFreshFollowupTests(unittest.TestCase):
   # Native actor.encode preserves insertion order. The public projection hook
   # must canonicalize its new copy before this unchanged formatter sees it.
   formatter={'user_prompt':lambda value:value['prompt']+'\nCONTEXT_JSON:\n'+json.dumps(value['context'],separators=(',',':'))+'\nMARKER:'+value['marker']}
-  install(formatter,expected_prompt=formatter['user_prompt'],context_key='context',wall_clock=lambda:self.now)
-  self.module.user_prompt=formatter['user_prompt']
+  # This suite retains the previous image-only formatter ABI to verify that
+  # the additive hook still preserves existing transaction/receipt semantics.
+  # CSV chooser and four-attachment admission are covered separately.
+  previous_formatter=formatter['user_prompt']
+  def legacy_prompt(value):
+   projected=copy.deepcopy(value)
+   projected['context']=json.loads(json.dumps(convert_native_market_context(
+    value['context'],now=self.now),sort_keys=True,separators=(',',':')))
+   return previous_formatter(projected)
+  self.module.user_prompt=legacy_prompt
   self.events=[];self.enabled=True
   self.gate=Mock(side_effect=lambda:self.enabled)
   def refresh(**kwargs):

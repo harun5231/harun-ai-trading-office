@@ -7,12 +7,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from test_agent_closed_candles_200 import NOW, native_context_200
 from agent.native_chart_prompt import install
+from agent.native_data_files import deliver_market_data_files
 from agent.native_market_context import NativeContextUnavailable, convert_native_market_context
 
 
 def formatter(payload):
     encode = lambda value: json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-    return payload['prompt'] + '\nSCHEMA\n' + encode(payload['output_schema']) + '\nCONTEXT\n' + encode(payload['context']) + '\nMARKER\n' + payload['marker']
+    return (payload['prompt'] + '\n\nCONTEXT_JSON:\n' + encode(payload['context'])
+        + '\n\nOUTPUT_JSON_SCHEMA:\n' + encode(payload['output_schema'])
+        + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.')
 
 
 class NativeChartPromptTests(unittest.TestCase):
@@ -28,22 +31,25 @@ class NativeChartPromptTests(unittest.TestCase):
         return namespace, install(namespace, expected_prompt=original,
                                   context_key='context', wall_clock=lambda: NOW)
 
-    def test_full_400_serialized_without_mutating_original_request_or_prompt(self):
+    def test_exact_400_delivered_as_files_with_owner_prompt_and_schema_unchanged(self):
         namespace, hook = self.hook()
         payload = self.payload(); before = copy.deepcopy(payload)
-        expected = convert_native_market_context(payload['context'], now=NOW)
+        files = deliver_market_data_files(payload['context'], now=NOW)
         result = hook(payload)
         self.assertEqual(payload, before)
-        self.assertTrue(result.startswith(payload['prompt'] + '\nSCHEMA\n'))
-        self.assertTrue(result.endswith('\nMARKER\nTEST_MARKER_V1'))
-        actual = json.loads(result.split('\nCONTEXT\n')[1].split('\nMARKER\n')[0])
-        self.assertEqual(actual, expected)
-        self.assertEqual(sum(len(rows) for rows in actual['candles'].values()), 400)
-        self.assertNotIn('risk_constraints', actual)
+        self.assertTrue(result.startswith(payload['prompt'] + '\n\n'))
+        self.assertTrue(result.endswith(formatter({**payload, 'context': None}).split(
+            '\n\nOUTPUT_JSON_SCHEMA:\n', 1)[1]))
+        self.assertNotIn('CONTEXT_JSON:', result)
+        self.assertNotIn('private_user_setting', result)
+        self.assertNotIn('"candles"', result)
+        self.assertLess(len(result), 4000)
         self.assertIs(namespace['user_prompt'], hook)
-        for tf in ('1h', '15m'):
-            self.assertEqual(len(actual['candles'][tf]), 200)
-            self.assertNotIn(actual['running_candles'][tf], actual['candles'][tf])
+        self.assertTrue(hook.__harun_data_files_v1__)
+        for file in files:
+            self.assertIn(file['name'], result)
+            self.assertEqual(file['closed_count'], 200)
+            self.assertEqual(len(file['buffer'].decode().splitlines()), 201)
 
     def test_screening_formatter_retained_byte_for_byte(self):
         _, hook = self.hook(); payload = self.payload(); payload['context'] = None
@@ -63,24 +69,19 @@ class NativeChartPromptTests(unittest.TestCase):
                 + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.')
         _, hook = self.hook(native_formatter)
         payload = self.payload(); before = copy.deepcopy(payload)
-        expected = convert_native_market_context(payload['context'], now=NOW)
-        # This fixture proves the original native ABI preserves insertion order
-        # and would not emit the converter's symbol-first dict canonically.
-        encoded = json.dumps(expected, sort_keys=True, separators=(',', ':'))
-        self.assertNotEqual(native_encode(expected), encoded)
         rendered = hook(payload)
-        actual = rendered.split('\n\nCONTEXT_JSON:\n')[1].split('\n\nOUTPUT_JSON_SCHEMA:\n')[0]
-        self.assertEqual(actual, encoded)
-        self.assertEqual(json.loads(actual), expected)
-        self.assertEqual(sum(len(rows) for rows in json.loads(actual)['candles'].values()), 400)
         self.assertEqual(payload, before)
-        self.assertTrue(rendered.startswith(payload['prompt'] + '\n\nCONTEXT_JSON:\n'))
+        self.assertTrue(rendered.startswith(payload['prompt'] + '\n\n'))
+        self.assertNotIn('CONTEXT_JSON:', rendered)
         self.assertTrue(rendered.endswith(native_encode(payload['output_schema'])
             + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.'))
+        for file in deliver_market_data_files(payload['context'], now=NOW):
+            self.assertIn(file['name'], rendered)
+        self.assertLess(len(rendered), 4000)
 
     def test_truncating_formatter_is_rejected(self):
         _, hook = self.hook(lambda payload: payload['prompt'])
-        with self.assertRaisesRegex(ValueError, 'CONTEXT_NOT_SERIALIZED'):
+        with self.assertRaisesRegex(ValueError, 'NATIVE_DATA_FILES_UNVERIFIED'):
             hook(self.payload())
 
     def test_legacy_insufficient_history_rejected_before_formatter(self):
