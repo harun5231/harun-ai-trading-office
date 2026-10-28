@@ -81,7 +81,7 @@
     }
     const labels = { CONNECTED: 'Terhubung', LOGIN_REQUIRED: 'Login diperlukan', LOGIN_IN_PROGRESS: 'Akses login sedang aktif',
       UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi login diperlukan', BUSY: 'Analisis sedang berjalan' };
-    return { status: research.status, label: labels[research.status], login: ['LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
+    return { status: research.status, label: labels[research.status], login: ['CONNECTED', 'LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
   }
   function agentState() {
     const agent = snapshot?.agent;
@@ -243,8 +243,9 @@
   }
   function renderNeurobro() {
     const state = researchState(), research = snapshot?.research, access = currentLoginAccess(state);
+    const browserAccess = state.status === 'CONNECTED' || access?.browserAccess;
     const main = section('SESI NEUROBRO');
-    const status = element('p', access ? 'Akses login siap' : state.label, 'dashboard-status neurobro-status');
+    const status = element('p', access ? (browserAccess ? 'Akses browser siap' : 'Akses login siap') : state.label, 'dashboard-status neurobro-status');
     status.id = 'neurobroStatus'; status.dataset.status = state.status; status.setAttribute('role', 'status'); main.append(status);
     if (online && research?.provider === 'NEUROBRO_WEB' && timestamp(research.checked_at) !== null) {
       main.append(notice('Diperiksa '+date(research.checked_at), state.status === 'UNAVAILABLE' ? 'warning' : 'normal'));
@@ -252,8 +253,9 @@
     if (state.status === 'API_ACTIVE') main.append(notice('Worker masih memakai koneksi sebelumnya. Login browser tersedia setelah pembaruan worker.', 'warning'));
     else if (state.status === 'CONNECTED' || state.status === 'BUSY') {
       main.append(notice('Robot memakai chatbot Neurobro di browser VPS. Sesi login disimpan agar tetap dapat digunakan setelah worker dimulai ulang, sampai sesi berakhir di situs Neurobro.'));
+      if (state.status === 'CONNECTED') main.append(notice('Jika halaman chat meminta verifikasi keamanan, tekan BUKA BROWSER NEUROBRO untuk menyelesaikannya pada browser VPS yang sama. Sesi dan percakapan yang ada tetap digunakan.'));
     } else if (access) {
-      main.append(notice('Tekan BUKA BROWSER LOGIN untuk membuka tab browser VPS, lalu selesaikan login Neurobro di sana. Tautan ini hanya dapat digunakan sekali dan berlaku paling lama 60 detik.'));
+      main.append(notice(browserAccess ? 'Tekan BUKA BROWSER NEUROBRO untuk membuka browser VPS yang sama dan menyelesaikan verifikasi keamanan. Tautan ini hanya dapat digunakan sekali dan berlaku paling lama 60 detik.' : 'Tekan BUKA BROWSER LOGIN untuk membuka tab browser VPS, lalu selesaikan login Neurobro di sana. Tautan ini hanya dapat digunakan sekali dan berlaku paling lama 60 detik.'));
     } else if (state.status === 'LOGIN_IN_PROGRESS') {
       main.append(notice('Akses login masih aktif di VPS. Jika tab login tidak terbuka, tunggu sampai tombol LOGIN NEURO tersedia kembali. Tautan awal berlaku 60 detik; akses browser yang sudah dibuka berlaku 10 menit.'));
     } else {
@@ -261,7 +263,7 @@
     }
     if (access) {
       const actions = element('div', undefined, 'dashboard-actions');
-      const link = element('a', 'BUKA BROWSER LOGIN'); link.id = 'neurobroLoginOpen';
+      const link = element('a', browserAccess ? 'BUKA BROWSER NEUROBRO' : 'BUKA BROWSER LOGIN'); link.id = 'neurobroLoginOpen';
       link.setAttribute('href', access.url); link.setAttribute('target', '_blank'); link.setAttribute('rel', 'noopener noreferrer');
       link.onclick = event => {
         if (currentLoginAccess() !== access) { event.preventDefault(); paint(); }
@@ -269,7 +271,7 @@
       actions.append(link); main.append(actions);
     } else if (state.login || !origin || !online) {
       const actions = element('div', undefined, 'dashboard-actions');
-      const button = element('button', loginBusy ? 'MEMBUKA LOGIN…' : 'LOGIN NEURO');
+      const button = element('button', loginBusy ? (browserAccess ? 'MEMBUKA BROWSER…' : 'MEMBUKA LOGIN…') : browserAccess ? 'BUKA BROWSER NEUROBRO' : 'LOGIN NEURO');
       button.id = 'neurobroLogin'; button.disabled = !origin || !online || loginBusy;
       button.onclick = startNeurobroLogin; actions.append(button); main.append(actions);
     }
@@ -300,18 +302,21 @@
   function currentLoginAccess(state = researchState()) {
     if (!loginAccess) return null;
     if (!origin || !online || loginAccess.generation !== generation || loginAccess.origin !== origin ||
-        ['CONNECTED', 'BUSY', 'API_ACTIVE'].includes(state.status)) {
+        ['BUSY', 'API_ACTIVE'].includes(state.status)) {
       clearLoginAccess(); loginMessage = ''; return null;
     }
     if (performance.now() >= loginAccess.expiresAt) {
-      clearLoginAccess(); loginMessage = 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; return null;
+      const browserAccess = loginAccess.browserAccess;
+      clearLoginAccess(); loginMessage = browserAccess ? 'Tautan akses browser kedaluwarsa. Tekan BUKA BROWSER NEUROBRO untuk membuat akses baru.' : 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; return null;
     }
     return loginAccess;
   }
   async function startNeurobroLogin() {
-    if (!origin || !online || loginBusy || currentLoginAccess() || !researchState().login) return;
+    const state = researchState();
+    if (!origin || !online || loginBusy || currentLoginAccess(state) || !state.login) return;
+    const browserAccess = state.status === 'CONNECTED';
     const currentGeneration = generation, loginOrigin = origin, startedAt = performance.now();
-    clearLoginAccess(); loginBusy = true; loginMessage = 'Menyiapkan akses login Neurobro…'; paint();
+    clearLoginAccess(); loginBusy = true; loginMessage = browserAccess ? 'Menyiapkan akses browser Neurobro…' : 'Menyiapkan akses login Neurobro…'; paint();
     try {
       const result = await request('/neurobro/login/start', 'POST', {});
       if (currentGeneration !== generation || origin !== loginOrigin) return;
@@ -319,14 +324,14 @@
           !Number.isInteger(result.expires_in) || result.expires_in < 1 || result.expires_in > 60) throw Error('Respons login worker tidak sesuai kontrak.');
       const expiresAt = startedAt + result.expires_in * 1000;
       if (performance.now() >= expiresAt) throw Error('Akses login kedaluwarsa sebelum siap.');
-      loginAccess = { url: loginOrigin+'/neurobro/login#'+result.ticket, origin: loginOrigin, generation: currentGeneration, expiresAt };
+      loginAccess = { url: loginOrigin+'/neurobro/login#'+result.ticket, origin: loginOrigin, generation: currentGeneration, expiresAt, browserAccess };
       loginExpiryTimer = setTimeout(() => {
         if (currentGeneration !== generation) return;
-        clearLoginAccess(); loginMessage = 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; paint();
+        clearLoginAccess(); loginMessage = browserAccess ? 'Tautan akses browser kedaluwarsa. Tekan BUKA BROWSER NEUROBRO untuk membuat akses baru.' : 'Tautan login kedaluwarsa. Tunggu tombol LOGIN NEURO tersedia untuk membuat akses baru.'; paint();
       }, expiresAt - performance.now());
       loginMessage = '';
     } catch (error) {
-      if (currentGeneration === generation) { clearLoginAccess(); loginMessage = error.message+' Login belum terhubung.'; }
+      if (currentGeneration === generation) { clearLoginAccess(); loginMessage = error.message+(browserAccess ? ' Akses browser belum tersedia.' : ' Login belum terhubung.'); }
     } finally {
       if (currentGeneration === generation) { loginBusy = false; paint(); poll(); }
     }
