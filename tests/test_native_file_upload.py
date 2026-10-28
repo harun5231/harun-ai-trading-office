@@ -19,8 +19,12 @@ class Items:
 
 
 class Image:
+    def __init__(self, fixture): self.f = fixture
     def is_visible(self): return True
-    def evaluate(self, _): return True
+    def evaluate(self, _):
+        return {'complete':self.f.images_loaded,
+                'width':200 if self.f.images_loaded else 0,
+                'height':100 if self.f.images_loaded else 0}
 
 
 class Label:
@@ -37,7 +41,7 @@ class Area:
     def locator(self, selector):
         if selector == 'button:has(svg.lucide-plus)': return Items([Label(self.f, 'plus')])
         if selector == 'xpath=..': return self
-        if selector == 'img': return Items([Image(), Image()] if self.f.keep_images else [])
+        if selector == 'img': return Items([Image(self.f), Image(self.f)] if self.f.keep_images else [])
         raise AssertionError(selector)
     def get_attribute(self, name):
         assert name=='role'
@@ -46,18 +50,21 @@ class Area:
         # Represents the actual independent attachment area: filenames quoted
         # in the message body do not create file tiles here.
         self.f.witnesses.append(copy.deepcopy(arg))
-        return [{'name':name, 'ready':self.f.file_tiles and self.f.current >= .3,
-                 'matches':1 if self.f.file_tiles else 0} for name in arg['names']]
+        present=self.f.file_tiles and self.f.show_file_tiles
+        return [{'name':name, 'ready':present and not self.f.files_busy and self.f.current >= .3,
+                 'matches':1 if present else 0} for name in arg['names']]
 
 
 class Fixture:
     def __init__(self):
         self.current=0.; self.menu=False; self.actions=[]; self.witnesses=[]
         self.file_tiles=False; self.keep_images=True; self.uploaded_names=[]
+        self.show_file_tiles=True; self.files_busy=False; self.images_loaded=True
+        self.input_text=''; self.send_allowed=True; self.send_present=True
         self.sent=0; self.files=None; self.listeners={}; self.rows=[]
         self.timeout=30; self.page=self
         self._dom_contract=SimpleNamespace(area='area',send='send')
-        self.composer=SimpleNamespace(locator=lambda _:Area(self))
+        self.composer=SimpleNamespace(locator=lambda _:Area(self),input_value=lambda:self.input_text)
         self._upload=self.native_upload; self._turns=self.native_turns
         self._answer=self.native_answer
     def native_upload(self, *args):
@@ -80,7 +87,8 @@ class Fixture:
     def _until(self, seconds): return self.current+seconds
     def _timeout(self, _): return 5000
     def _visible(self, selector):
-        if selector=='send': return [SimpleNamespace(is_enabled=lambda:True)]
+        if selector=='send':
+            return [SimpleNamespace(is_enabled=lambda:self.send_allowed and bool(self.input_text))] if self.send_present else []
         if selector=='messages': return [Area(self,user=True) for _ in self.rows]
         raise AssertionError(selector)
     def get_by_text(self, label, **kwargs):
@@ -145,6 +153,44 @@ class DataFileUploadTests(unittest.TestCase):
         self.assertFalse(d.observations[0]['preview_verified']);self.assertEqual(f.sent,0)
         self.assertEqual(set(f.listeners),{'response','requestfailed'})
         d.close();self.assertEqual(f.listeners,{})
+
+    def test_empty_composer_can_finish_ready_attachments_before_send_is_enabled(self):
+        f,d,payload=self.setup()
+        self.assertFalse(f._visible('send')[0].is_enabled())
+        f._upload(f.composer,payload,[])
+        preview=d.observations[0]['last_preview']
+        self.assertTrue(d.observations[0]['preview_verified'])
+        self.assertTrue(preview['composer_empty']);self.assertFalse(preview['send_enabled'])
+        self.assertEqual(preview['image_count'],2)
+        self.assertEqual(preview['images'],[{'complete':True,'width':200,'height':100}]*2)
+        self.assertTrue(all(row['ready'] and row['matches']==1 for row in preview['file_witness']))
+        self.assertEqual(f.input_text,'');self.assertEqual(f.sent,0)
+        f.input_text='actual prompt'
+        self.assertTrue(f._visible('send')[0].is_enabled());d.close()
+
+    def test_missing_or_busy_csv_still_refuses_and_retains_last_preview(self):
+        for state in ('missing','busy'):
+            with self.subTest(state=state):
+                f,d,payload=self.setup()
+                f.show_file_tiles=state!='missing';f.files_busy=state=='busy'
+                with self.assertRaises(NotSubmitted):f._upload(f.composer,payload,[])
+                record=d.observations[0];self.assertFalse(record['preview_verified'])
+                rows=record['last_preview']['file_witness']
+                self.assertTrue(all(not row['ready']for row in rows))
+                self.assertEqual([row['matches']for row in rows],[0,0]if state=='missing'else[1,1])
+                self.assertEqual(f.sent,0);d.close()
+
+    def test_unloaded_images_or_missing_send_control_still_refuses(self):
+        for state in ('unloaded','missing-send'):
+            with self.subTest(state=state):
+                f,d,payload=self.setup()
+                f.images_loaded=state!='unloaded';f.send_present=state!='missing-send'
+                with self.assertRaises(NotSubmitted):f._upload(f.composer,payload,[])
+                record=d.observations[0];self.assertFalse(record['preview_verified'])
+                preview=record['last_preview']
+                if state=='unloaded':self.assertEqual(preview['images'][0]['width'],0)
+                else:self.assertEqual(preview['send_button_count'],0)
+                self.assertEqual(f.sent,0);d.close()
 
     def test_stopped_dispatch_cannot_open_attachment_menu(self):
         f,d,payload=self.setup()
