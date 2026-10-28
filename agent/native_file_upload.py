@@ -112,7 +112,8 @@ class NativeDataFileDelivery:
             self._need(len(names) == 4 and tuple(names) in self.reader.turn_files)
             prompt = receipt.get('rendered_prompt')
             self._need(type(prompt) is str and any(
-                row.get('role') == 'user' and row.get('text') == prompt
+                row.get('role') == 'user' and type(row.get('text')) is str
+                and row['text'].replace('\r\n', '\n').strip() == prompt.strip()
                 and row.get('attachments') == names for row in self.reader.read()))
             # CSV witnesses were checked on the submitted user turn above.
             # Keep the native answer, response ID and PNG evidence unchanged.

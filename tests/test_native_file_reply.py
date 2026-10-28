@@ -115,6 +115,16 @@ class FourFileNativeReplyTests(unittest.TestCase):
             hook.ask(payload,lambda:True,deadline=80,receipt_callback=callback)
         self.assertEqual(bridge.sent,1);callback.assert_not_called()
 
+    def test_receipt_uses_same_crlf_and_outer_whitespace_rules_as_native_answer(self):
+        bridge,client,hook,payload=self.setup();callback=Mock()
+        payload['prompt']='ORIGINAL OWNER\nANALYSIS PROMPT\n'
+        bridge.before_callback=lambda b:b.rows[0].update(
+            text='\r\n'+payload['prompt'].replace('\n','\r\n')+'\r\n')
+        hook.ask(payload,lambda:True,deadline=80,receipt_callback=callback)
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args.args[0]['rendered_prompt'],payload['prompt'])
+        self.assertEqual(callback.call_args.args[0]['attachment_names'],bridge.uploaded_names)
+
     def test_expired_callback_budget_consumes_nothing(self):
         bridge,client,hook,payload=self.setup();consume=Mock(return_value=True)
         with self.assertRaises(OutcomeUnknown):
