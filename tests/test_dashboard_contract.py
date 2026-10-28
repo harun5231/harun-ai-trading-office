@@ -238,7 +238,31 @@ document.getElementById('neurobroLogin').click();assert.equal(document.getElemen
 const post=calls.filter(call=>call.method==='POST');assert.equal(post.length,1);assert.equal(post[0].url,'https://worker.test/neurobro/login/start');assert.equal(post[0].headers.Authorization,'Bearer '+'C'.repeat(32));assert.equal(post[0].credentials,'omit');assert.equal(post[0].redirect,'error');assert.equal(post[0].cache,'no-store');assert.deepEqual(JSON.parse(post[0].body),{});
 data.research.status='LOGIN_IN_PROGRESS';[...intervals.values()][0]();await flush();assert.doesNotMatch(content.textContent,/tab Neurobro yang sudah terbuka/);finish();await flush();
 const link=document.getElementById('neurobroLoginOpen');assert.equal(link.tagName,'A');assert.equal(link.textContent,'BUKA BROWSER LOGIN');assert.equal(link.attributes.href,'https://worker.test/neurobro/login#'+'a'.repeat(64));assert.equal(link.attributes.target,'_blank');assert.equal(link.attributes.rel,'noopener noreferrer');assert.equal(link.attributes.href.includes('C'.repeat(32)),false);assert.equal(content.textContent.includes('a'.repeat(64)),false);assert.match(content.textContent,/Akses login siap/);assert.equal(link.click().defaultPrevented,false);assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(data.robot.robot_on,false);assert.equal(calls.some(call=>/\/robot\/settings|\/order|\/cancel|\/close/.test(call.url)),false);
-data.research.status='CONNECTED';[...intervals.values()][0]();await flush();assert.match(document.getElementById('neurobroMenuStatus').textContent,/Terhubung/);assert.equal(document.getElementById('neurobroLogin'),null);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(link.attributes.href,undefined);assert.equal(timeouts.size,0);
+data.research.status='CONNECTED';[...intervals.values()][0]();await flush();assert.match(document.getElementById('neurobroMenuStatus').textContent,/Terhubung/);assert.equal(document.getElementById('neurobroLogin'),null);assert.equal(document.getElementById('neurobroLoginOpen').textContent,'BUKA BROWSER NEUROBRO');assert.equal(document.getElementById('neurobroLoginOpen').attributes.href,link.attributes.href);assert.equal(timeouts.size,1);assert.equal(calls.filter(call=>call.method==='POST').length,1);
+""")
+
+    def test_connected_session_can_open_same_browser_and_ticket_survives_poll_until_expiry(self):
+        self.run_dom(r"""
+data.research.status='CONNECTED';await connect();open('neurobro');
+assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(document.getElementById('neurobroLogin').disabled,false);assert.match(content.textContent,/browser VPS yang sama/);assert.equal(calls.filter(call=>call.method==='POST').length,0);
+let finish;responseOverride=url=>url.endsWith('/neurobro/login/start')?new Promise(resolve=>{finish=()=>resolve(response({ticket:'6'.repeat(64),expires_in:60,path:'/neurobro/login'}));}):null;
+document.getElementById('neurobroLogin').click();await flush();data.research.status='LOGIN_IN_PROGRESS';[...intervals.values()][0]();await flush();finish();await flush();
+let link=document.getElementById('neurobroLoginOpen');assert.equal(link.textContent,'BUKA BROWSER NEUROBRO');assert.match(content.textContent,/Akses browser siap/);assert.equal(link.attributes.href,'https://worker.test/neurobro/login#'+'6'.repeat(64));
+data.research.status='CONNECTED';[...intervals.values()][0]();await flush();link=document.getElementById('neurobroLoginOpen');assert.equal(link.textContent,'BUKA BROWSER NEUROBRO');assert.equal(link.click().defaultPrevented,false);assert.equal(timeouts.size,1);assert.equal(calls.filter(call=>call.method==='POST').length,1);
+const post=calls.find(call=>call.method==='POST');assert.equal(post.url,'https://worker.test/neurobro/login/start');assert.equal(post.headers.Authorization,'Bearer '+'C'.repeat(32));assert.deepEqual(JSON.parse(post.body),{});assert.equal(post.credentials,'omit');assert.equal(post.redirect,'error');assert.equal(post.cache,'no-store');
+clock+=60000;[...timeouts.values()][0].fn();assert.equal(link.attributes.href,undefined);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(timeouts.size,0);assert.equal(data.robot.robot_on,false);assert.equal(calls.some(call=>/\/robot\/settings|\/order|\/cancel|\/close/.test(call.url)),false);
+""")
+
+    def test_connected_browser_access_still_refuses_busy_and_clears_prepared_ticket(self):
+        self.run_dom(r"""
+data.research.status='CONNECTED';await connect();open('neurobro');const button=document.getElementById('neurobroLogin');responseOverride=url=>url.endsWith('/neurobro/login/start')?response({ticket:'8'.repeat(64),expires_in:60,path:'/neurobro/login'}):null;button.click();await flush();const link=document.getElementById('neurobroLoginOpen');
+data.research.status='BUSY';[...intervals.values()][0]();await flush();button.click();await flush();assert.equal(link.attributes.href,undefined);assert.equal(link.click().defaultPrevented,true);assert.equal(timeouts.size,0);assert.equal(document.getElementById('neurobroLogin'),null);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(data.robot.robot_on,false);
+""")
+
+    def test_connected_browser_ticket_is_cleared_when_worker_origin_changes(self):
+        self.run_dom(r"""
+data.research.status='CONNECTED';await connect();open('neurobro');responseOverride=url=>url.endsWith('/neurobro/login/start')?response({ticket:'7'.repeat(64),expires_in:60,path:'/neurobro/login'}):null;document.getElementById('neurobroLogin').click();await flush();const link=document.getElementById('neurobroLoginOpen');
+document.getElementById('apiOrigin').value='https://other-worker.test';document.getElementById('apiToken').value='D'.repeat(32);document.getElementById('apiConnect').click();await flush();assert.equal(link.attributes.href,undefined);assert.equal(link.click().defaultPrevented,true);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(data.robot.robot_on,false);
 """)
 
     def test_neurobro_login_rejects_invalid_ticket_and_late_disconnect(self):
@@ -273,7 +297,7 @@ data.research.status='LOGIN_REQUIRED';[...intervals.values()][0]();await flush()
 
     def test_neurobro_session_staleness_logout_challenge_and_legacy_provider(self):
         self.run_dom(r"""
-data.research.status='CONNECTED';await connect();open('neurobro');assert.equal(document.getElementById('neurobroStatus').dataset.status,'CONNECTED');assert.equal(document.getElementById('neurobroLogin'),null);
+data.research.status='CONNECTED';await connect();open('neurobro');assert.equal(document.getElementById('neurobroStatus').dataset.status,'CONNECTED');assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(document.getElementById('neurobroLogin').disabled,false);
 clock+=90000;data.generated_at=now();[...intervals.values()][0]();await flush();assert.equal(document.getElementById('neurobroStatus').dataset.status,'UNAVAILABLE');assert.doesNotMatch(document.getElementById('neurobroMenuStatus').textContent,/Terhubung/);assert.equal(document.getElementById('neurobroLogin').disabled,false);
 data.research.checked_at=now();for(const state of ['LOGIN_REQUIRED','CHALLENGE_REQUIRED','UNAVAILABLE']){data.research.status=state;[...intervals.values()][0]();await flush();assert.equal(document.getElementById('neurobroStatus').dataset.status,state);assert.equal(document.getElementById('neurobroLogin').disabled,false);}
 data.research.status='CONNECTED';data.research.checked_at=new Date(clock+30000).toISOString();[...intervals.values()][0]();await flush();assert.equal(document.getElementById('neurobroStatus').dataset.status,'UNAVAILABLE');assert.equal(document.getElementById('neurobroLogin').disabled,false);data.research.checked_at=now();
