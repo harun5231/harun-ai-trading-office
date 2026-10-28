@@ -50,6 +50,16 @@ class NativeFileTurnReader:
         self.original_turns = bridge._turns
         self.turn_files = {}
 
+    def attachment_names(self, names):
+        # Native DOM.ask still derives this argument from its two PNGs. Match
+        # only an exact registered pair, never an arbitrary filename prefix.
+        values = tuple(names)
+        matches = [all_names for all_names, (png_names, _, _) in self.turn_files.items()
+            if values in (all_names, png_names)]
+        if len(matches) > 1:
+            raise self.native.NotSubmitted('UNAVAILABLE')
+        return list(matches[0]) if matches else list(names)
+
     def read(self):
         all_names = tuple(self.bridge.uploaded_names)
         data = self.turn_files.get(all_names)
@@ -76,6 +86,7 @@ class NativeDataFileDelivery:
         self.bridge, self.native, self.gate = bridge, native, gate
         self.wall_clock = wall_clock
         self.original_upload = bridge._upload
+        self.original_answer = bridge._answer
         reader = getattr(bridge, '_harun_file_turn_reader', None)
         if reader is None:
             reader = NativeFileTurnReader(bridge, native)
@@ -86,6 +97,30 @@ class NativeDataFileDelivery:
         self.observations = []
         self.installed = False
         self.network_errors = []
+
+    def attachment_names(self, names):
+        return self.reader.attachment_names(names)
+
+    def _answer(self, prompt, attachment_names=()):
+        return self.original_answer(prompt, self.attachment_names(attachment_names))
+
+    def receipt_callback(self, callback):
+        """Verify CSV user tiles while preserving the native PNG receipt ABI."""
+        def retain(receipt):
+            self.gate()
+            self._need(type(receipt) is dict and type(receipt.get('attachment_names')) is list)
+            names = self.attachment_names(receipt['attachment_names'])
+            self._need(len(names) == 4 and tuple(names) in self.reader.turn_files)
+            prompt = receipt.get('rendered_prompt')
+            self._need(type(prompt) is str and any(
+                row.get('role') == 'user' and type(row.get('text')) is str
+                and row['text'].replace('\r\n', '\n').strip() == prompt.strip()
+                and row.get('attachments') == names for row in self.reader.read()))
+            # CSV witnesses were checked on the submitted user turn above.
+            # The native receipt's attachment_names correspond to its two
+            # chart_evidence PNGs. Keep that existing ABI and object unchanged.
+            callback(receipt)
+        return retain
 
     def _need(self, value):
         if not value:
@@ -241,6 +276,7 @@ class NativeDataFileDelivery:
         self._need(not self.installed)
         self.reader.turn_files.clear()
         self.bridge._upload, self.bridge._turns = self._upload, self.reader.read
+        self.bridge._answer = self._answer
         self.bridge.data_file_deliveries = self.observations
         self.bridge.data_file_network_errors = self.network_errors
         self.bridge.page.on('response', self._observe_error_response)
@@ -251,6 +287,7 @@ class NativeDataFileDelivery:
     def close(self):
         if self.installed:
             self.bridge._upload = self.original_upload
+            self.bridge._answer = self.original_answer
             for event, callback in (('response', self._observe_error_response),
                     ('requestfailed', self._observe_request_failure)):
                 try:
