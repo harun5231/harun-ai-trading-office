@@ -150,15 +150,21 @@ class NativeDataFileDelivery:
         self._need(len(candidates) == 1)
         return candidates[0]
 
-    def _witness(self, root, names, *, user=False):
+    def _witness_rows(self, root, names, *, user=False):
         selector = getattr(self.native, 'USER_BODY', None) if user else None
         if user:
             self._need(type(selector) is str and selector)
-        value = root.evaluate(FILE_WITNESS, {'names': list(names), 'bodySelector': selector})
+        return root.evaluate(FILE_WITNESS, {'names': list(names), 'bodySelector': selector})
+
+    @staticmethod
+    def _witness_ready(value, names):
         return (type(value) is list and len(value) == len(names)
             and all(type(row) is dict and row.get('name') == name
                 and row.get('ready') is True and row.get('matches') == 1
                 for row, name in zip(value, names)))
+
+    def _witness(self, root, names, *, user=False):
+        return self._witness_ready(self._witness_rows(root, names, user=user), names)
 
     def _upload(self, composer, payload, artifacts):
         files = deliver_market_data_files(payload['context'], now=self.wall_clock())
@@ -208,10 +214,34 @@ class NativeDataFileDelivery:
                 self.gate()
                 buttons = self.bridge._visible(self.bridge._dom_contract.send)
                 images = self._visible(scope.locator('img'))
-                loaded = len(images) == 2 and all(image.evaluate(
-                    '(e) => e.complete && e.naturalWidth > 0 && e.naturalHeight > 0') for image in images)
-                ready = (loaded and self._witness(scope, names)
-                    and len(buttons) == 1 and buttons[0].is_enabled())
+                image_states = [image.evaluate(
+                    '(e) => ({complete:e.complete,width:e.naturalWidth,height:e.naturalHeight})')
+                    for image in images]
+                loaded = len(images) == 2 and all(type(row) is dict
+                    and row.get('complete') is True and type(row.get('width')) is int
+                    and row['width'] > 0 and type(row.get('height')) is int and row['height'] > 0
+                    for row in image_states)
+                file_witness = self._witness_rows(scope, names)
+                record['last_preview'] = {
+                    'image_count': len(images),
+                    'images': [{key: row.get(key) if type(row) is dict
+                        and type(row.get(key)) is kind else None
+                        for key, kind in (('complete', bool), ('width', int), ('height', int))}
+                        for row in image_states],
+                    'file_witness': [{
+                        'name': name, 'name_matches': type(row) is dict and row.get('name') == name,
+                        'ready': type(row) is dict and row.get('ready') is True,
+                        'matches': row.get('matches') if type(row) is dict
+                            and type(row.get('matches')) is int else None}
+                        for name, row in zip(names, file_witness if type(file_witness) is list else [])],
+                    'send_button_count': len(buttons),
+                    'send_enabled': len(buttons) == 1 and buttons[0].is_enabled(),
+                    'composer_empty': not composer.input_value(),
+                    'contract': getattr(self.bridge._dom_contract, 'name', None)}
+                # Native DOM.ask fills the prompt after this method returns,
+                # then checks Send is enabled immediately before dispatch.
+                # The current UI disables Send while this draft is empty.
+                ready = loaded and self._witness_ready(file_witness, names) and len(buttons) == 1
                 stable = stable + 1 if ready else 0
                 if stable >= 3:
                     break
