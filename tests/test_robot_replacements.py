@@ -42,21 +42,28 @@ class RobotReplacementTests(unittest.TestCase):
             'SELECT * FROM robot_candidates WHERE symbol=? ORDER BY rowid DESC LIMIT 1',
             (symbol,)).fetchone()
 
-    def test_model_far_tp_is_audited_and_normalized_without_replacement(self):
+    def test_unconfirmed_far_tp_is_rejected_without_silent_normalization(self):
         fixture=self.fixture();fixture.connected();fixture.account.position('HYPEUSDT','4.16')
-        fixture.screens=[['BTCUSDT']];fixture.on();fixture.robot.tick()
-        with patch.dict(pipeline.GOOD,take_profit=110,risk_reward=5):
-            self.assertEqual(fixture.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
-        plan=json.loads(self.candidate(fixture,'BTCUSDT')['plan'])
-        self.assertEqual(plan['tp_normalization']['model_tp'],'110')
-        self.assertEqual(fixture.robot.tick()['bot_status'],'ENTRY_PENDING')
-        intent=fixture.gateway.submissions[0]
-        self.assertEqual(intent['symbol'],'BTCUSDT')
-        self.assertEqual(intent['protection']['take_profit'],plan['tp'])
-        self.assertNotEqual(plan['tp'],'110')
-        self.assertEqual(intent['reward_risk_policy'],'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE')
+        fixture.screens=[['BTCUSDT']]
+        transport=fixture.client.transport
+        def unconfirmed_provider(*args,**kwargs):
+            status,headers,value=transport(*args,**kwargs)
+            if value['output'].get('side')=='LONG':
+                value['output'].update(take_profit=D('110'),risk_reward=D('5'))
+            return status,headers,value
+        fixture.client.transport=unconfirmed_provider
+        fixture.on();fixture.robot.tick()
+        result=fixture.robot.tick()
+        self.assertEqual((result['bot_status'],result['failure_code']),
+                         ('REJECTED','ORDER_COSTS_CHANGED'))
+        candidate=self.candidate(fixture,'BTCUSDT')
+        self.assertIsNone(candidate['plan'])
+        output=json.loads(fixture.ledger.db.execute('SELECT output FROM api_requests WHERE operation=?',
+            (candidate['id'],)).fetchone()[0],parse_float=D)
+        self.assertEqual((output['take_profit'],output['risk_reward']),(D('110'),D('5')))
+        self.assertEqual(fixture.gateway.submissions,[])
+        self.assertEqual(fixture.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0],0)
         self.assertEqual(fixture.screen_counts(),[1])
-        self.assertEqual(json.loads(fixture.current_cycle()[0]['data'])['replacements'],0)
 
     def test_low_declared_rr_and_hold_continue_beyond_three_rounds_after_restart(self):
         fixture = self.fixture()
