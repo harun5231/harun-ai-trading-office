@@ -6,17 +6,32 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from support import Account, GOOD, RobotMarket, hold
 from worker.account_state import account_state, SCREENING_ONE, SCREENING
 from worker.binance_private import BinanceReadOnly
-from worker.core import D, Ledger, Review, day, now
+from worker.core import D, Ledger, Review, day, now, normalized_reward_risk_tp
 from worker.neuroapi import NeuroAPI, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, SETUP_SCHEMA
 from worker.order_gateway import OrderGateway, GatewayUnavailable, NOT_CONNECTED, build_intent
 from worker.robot import Coordinator
 from worker.robot_store import RobotStore
+
+
+def confirmed_output(value, context):
+    """The fixture provider acknowledges the same existing RM target as WEB."""
+    value = copy.deepcopy(value)
+    if value.get('side') not in ('LONG', 'SHORT'):
+        return value
+    contract, risk = context['contract_rules'], context['risk_constraints']
+    rules = SimpleNamespace(tick=D(contract['tickSize']),
+        taker_fee_rate=D(risk['entry_fee_rate']), fee_source=risk['fee_source'],
+        fee_symbol=risk['fee_symbol'], fee_observed_at=risk['fee_observed_at'])
+    value['take_profit'] = normalized_reward_risk_tp(value['limit_entry'],
+        value['stop_loss'], value['side'], rules, symbol=value['symbol'])
+    return value
 
 
 class FixtureGateway:
@@ -68,10 +83,11 @@ class OrderPipelineTests(unittest.TestCase):
         if body['output_schema'] in (SCREEN_SCHEMA, SCREEN_ONE_SCHEMA):
             value = dict(symbols=self.screens.pop(0))
         else:
-            symbol = json.loads(body['message_history'][0]['content'])['symbol']
+            context = json.loads(body['message_history'][0]['content'])
+            symbol = context['symbol']
             choice = self.decisions.get(symbol, 'LONG')
             if choice == 'NETWORK': raise TimeoutError('private transport details')
-            value = hold(symbol) if choice == 'HOLD' else {**GOOD, 'symbol': symbol}
+            value = hold(symbol) if choice == 'HOLD' else confirmed_output({**GOOD, 'symbol': symbol}, context)
         return 200, {}, dict(mode='smart', answer=None, output=value)
 
     def make(self):
