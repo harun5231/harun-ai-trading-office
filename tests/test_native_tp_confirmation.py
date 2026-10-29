@@ -176,6 +176,33 @@ class NativeTPConversation(unittest.TestCase):
         self.assertEqual(f.reasoner.request.call_count, 1)
         self.assertEqual(f.events, [])
 
+    def test_unbound_hold_requires_only_same_decision_format_restatement(self):
+        from tests.test_native_browser_hook import client
+        f, _, final, _ = self.fixture(hold=True)
+        original = ('Keputusan tetap HOLD; saya tidak mengeluarkan marker.\n```json\n'
+            +json.dumps(final)+'\n```')
+        bound = f.value['marker']+'\n```json\n'+json.dumps(final)+'\n```'
+        f.bridge.initial, f.bridge.final = original, bound
+        # The native parser cannot bind a fragment without its original marker.
+        # This fixture models that contract, rather than accepting the JSON alone.
+        f.module.exact_json.side_effect=lambda text,marker:(final if marker in text else None)
+        f.reasoner=client('HOLD');f.hook.client=f.reasoner
+        before=copy.deepcopy(f.value)
+        result=f.ask()
+        self.assertEqual(f.value,before)
+        self.assertEqual(result['assistant_text'],bound)
+        self.assertEqual((f.bridge.fresh_calls,f.bridge.clicks),(1,2))
+        self.assertEqual(f.bridge.messages[1]['text'],original)
+        question=f.bridge.messages[2]['text']
+        self.assertIn('Pertahankan keputusan dan level',question)
+        self.assertIn('Jika keputusanmu HOLD, tetap HOLD',question)
+        self.assertIn(f.value['marker'],question)
+        self.assertNotIn('Konfirmasi TP final',question)
+        self.assertEqual(f.reasoner.request.call_count,2)
+        self.assertEqual([row[0]for row in f.events],['REFRESH','INTENT','COMPLETE'])
+        self.assertEqual(f.events[1][2]['closed_candles_total'],400)
+        self.assertEqual(len(f.events[1][2]['followup_chart_evidence']),2)
+
 
 if __name__ == '__main__':
     unittest.main()
