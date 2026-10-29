@@ -66,14 +66,23 @@ class NativeFileTurnReader:
         if data is None:
             return self.original_turns()
         png_names, csv_names, witness = data
-        try:
-            self.bridge.uploaded_names = list(png_names)
-            rows = self.original_turns()
-        finally:
-            self.bridge.uploaded_names = list(all_names)
-        turns = self.bridge._visible(self.native.MESSAGE)
-        if len(turns) != len(rows):
-            raise self.native.NotSubmitted('UNAVAILABLE')
+        # React may append the assistant turn between the native snapshot and
+        # the visible-node snapshot. Neither half is a complete receipt. Rescan
+        # within the existing native timeout/operation deadline; do not turn a
+        # pending read after Send into another submission or a forged reply.
+        until = self.bridge._until(self.bridge.timeout)
+        while True:
+            try:
+                self.bridge.uploaded_names = list(png_names)
+                rows = self.original_turns()
+            finally:
+                self.bridge.uploaded_names = list(all_names)
+            turns = self.bridge._visible(self.native.MESSAGE)
+            if len(turns) == len(rows):
+                break
+            if self.bridge.clock() >= until:
+                raise self.native.NotSubmitted('UNAVAILABLE')
+            self.bridge.page.wait_for_timeout(self.bridge._timeout(25))
         for turn, row in zip(turns, rows):
             if row.get('role') == 'user' and row.get('attachments') == list(png_names):
                 row['attachments'] = (list(all_names) if witness(turn, csv_names, user=True)
