@@ -51,7 +51,7 @@ class ProviderValidationReplacementTests(unittest.TestCase):
                     elif choice == 'BELOW':
                         output.update(risk_reward=D('1.99'))
                     elif choice == 'TARGET':
-                        output.update(take_profit=D('104.31'), risk_reward=D('2.155'))
+                        output = pipeline.confirmed_output(output, context.get('data', context))
             return 200, {}, dict(mode='smart', answer=None, output=output)
 
         fixture.transport = transport
