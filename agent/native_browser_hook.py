@@ -427,14 +427,24 @@ class DelegatedDOMBridge:
                         now=self.wall_clock())
                 except NativeTPConfirmationUnavailable:
                     unknown()
-            if tp_question is None and (not response['needs_followup'] or complete):
+            required_question = tp_question
+            if phase == 'ANALYSIS' and not complete and not response['needs_followup']:
+                # A model HOLD/COMPLETE decision cannot replace the native
+                # marker/schema binding. Ask the WEB author to restate its own
+                # answer; never turn an unbound fragment into a local setup.
+                required_question = (
+                    'Pertahankan keputusan dan level yang baru saja kamu berikan; '
+                    'jangan membuat rekomendasi atau level baru. Tuliskan kembali jawaban '
+                    'yang sama dalam JSON lengkap sesuai format permintaan awal. '
+                    'Jika keputusanmu HOLD, tetap HOLD dengan level order null. '
+                    'Sertakan marker persis dari permintaan awal: ' + payload['marker'])
+            if required_question is None and (not response['needs_followup'] or complete):
                 state['phase'] = 'ACCEPT'
                 return
-            if tp_question is not None:
-                # This is the existing Risk Manager's required price question,
-                # not a changed or invented Mini response. Keep the actual model
-                # request/result and the original Neurobro answer untouched.
-                question = tp_question
+            if required_question is not None:
+                # Required format/price clarification keeps the actual Mini
+                # result and the original Neurobro answer untouched.
+                question = required_question
             else:
                 question = response['decision']['question']
                 if response['decision']['action'] != 'CLARIFY' or not question:

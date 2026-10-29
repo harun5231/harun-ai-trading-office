@@ -247,6 +247,8 @@ class NativeHookTests(unittest.TestCase):
   from agent.native_market_context import convert_native_market_context
   from tests.test_agent_native_market_context import native_context
   hook=self.setup_hook(reasoner=client('COMPLETE'))
+  self.module.exact_json.return_value={'symbol':'BTCUSDT','side':'HOLD','entry_price':None,
+   'stop_loss':None,'take_profit':None,'risk_reward':None}
   hook.converter=convert_native_market_context
   value=request();value['context']=native_context(time.time())
   value['output_schema']={'required':['symbol','side','entry_price','stop_loss','take_profit','risk_reward']}
@@ -397,6 +399,9 @@ class NativeFreshFollowupTests(unittest.TestCase):
     return [{**item[2],'attachment_id':'native:'+hashlib.sha256(name.encode()).hexdigest()}
      for name,item in zip(bridge.pending_names,artifacts)]
   self.bridge=AttachmentBridge();self.module=native()
+  self.module.exact_json.side_effect=lambda text,marker:({'symbol':'BTCUSDT','side':'HOLD',
+   'entry_price':None,'limit_entry':None,'stop_loss':None,'take_profit':None,'risk_reward':None}
+   if text=='FINAL_NATIVE_REPLY BTCUSDT'else None)
   self.value=request();self.value['context']=native_context_200(NOW)
   self.value['output_schema']={'required':['symbol','side','entry_price','stop_loss','take_profit','risk_reward']}
   self.initial=[{'source':SOURCE,'symbol':'BTCUSDT','timeframe':tf,
