@@ -586,6 +586,9 @@ class Coordinator:
                     else:rules=refreshed
                 plan=risk_check(signal,rules,target,risk_model=RISK_MODEL,
                     reward_risk_policy=NORMALIZED_REWARD_RISK_POLICY);plan['risk_target_usdt']=target
+                # The WEB reply owns final prices. A fresh fee/tick change must
+                # not silently replace a TP already confirmed in that dialogue.
+                if D(plan['tp'])!=signal.tp:raise Review('ORDER_COSTS_CHANGED')
                 # New Binance TP/SL use the requested Last Price trigger.
                 # Historical plans remain immutable and retain their own trigger.
                 plan['protection_working_type']='CONTRACT_PRICE'

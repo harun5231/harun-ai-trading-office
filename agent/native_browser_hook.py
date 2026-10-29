@@ -33,6 +33,105 @@ def _digest(value):
     return hashlib.sha256(_canonical(value)).hexdigest()
 
 
+# This subset is verbatim source from the unchanged production Risk Manager.
+# It defines only the existing TP calculation and its pure dependencies.
+_NATIVE_TP_CORE_SHA256 = '2c694f4cb7916aa7205d79a26cb426ae36a9098196bfe26dd9faadc9b0fe2166'
+_NATIVE_TP_SOURCE_SHA256 = '63c73a52da90a0a5e6cf7b9eda852329c69771ea43951f657f3de908eac290a6'
+_NATIVE_TP_SOURCE = 'D = Decimal\n\nFEE_SOURCE = \'BINANCE_FUTURES_COMMISSION_RATE\'\n\nEXIT_SLIPPAGE_RATE = D(\'0.005\')\n\nclass Review(Exception): pass\n\ndef number(value):\n    if not isinstance(value, (str,int,Decimal)) or isinstance(value,bool):\n        raise Review(\'NEEDS_REVIEW: nilai numerik harus eksplisit\')\n    if isinstance(value,D):\n        if not value.is_finite():raise Review(\'NEEDS_REVIEW: angka harus positif\')\n        if abs(value.as_tuple().exponent)>64:raise Review(\'INVALID_NUMBER_SIZE\')\n        text=format(value,\'f\')\n    else:text=str(value).strip()\n    if len(text)>64:raise Review(\'INVALID_NUMBER_SIZE\')\n    if not re.fullmatch(r\'\\d+(?:\\.\\d+)?\',text):\n        raise Review(\'NEEDS_REVIEW: angka ambigu / rentang / pemisah ribuan\')\n    try: value = D(text)\n    except InvalidOperation: raise Review(\'NEEDS_REVIEW: angka tidak valid\')\n    if not value.is_finite() or value <= 0: raise Review(\'NEEDS_REVIEW: angka harus positif\')\n    return value\n\ndef _exact_decimal(value):\n    """Convert finite decimal fractions exactly, independently of Decimal context."""\n    value=Fraction(value);denominator=value.denominator;twos=fives=0\n    while denominator%2==0:denominator//=2;twos+=1\n    while denominator%5==0:denominator//=5;fives+=1\n    if denominator!=1:raise Review(\'INVALID_COST_MODEL\')\n    places=max(twos,fives)\n    coefficient=value.numerator*2**(places-twos)*5**(places-fives)\n    digits=str(abs(coefficient)).rjust(places+1,\'0\')\n    text=digits if not places else digits[:-places]+\'.\'+digits[-places:]\n    return D((\'-\' if coefficient<0 else \'\')+text)\n\ndef validated_fee_rate(rules,symbol=None,*,check_fresh=True):\n    """Require per-symbol account evidence; an absent fee is never assumed zero."""\n    if any(getattr(rules,key,None) is None for key in\n           (\'taker_fee_rate\',\'fee_observed_at\',\'fee_symbol\',\'fee_source\')):\n        raise Review(\'FEE_EVIDENCE_UNAVAILABLE\')\n    rate=rules.taker_fee_rate;observed=rules.fee_observed_at\n    if (rules.fee_source!=FEE_SOURCE or not isinstance(rules.fee_symbol,str)\n            or not re.fullmatch(r\'[A-Z0-9]{2,18}USDT\',rules.fee_symbol)\n            or symbol is not None and rules.fee_symbol!=symbol\n            or not isinstance(rate,D) or not rate.is_finite() or not 0<=rate<1\n            or abs(rate.as_tuple().exponent)>64 or len(format(rate,\'f\'))>64\n            or type(observed) not in (int,float) or not math.isfinite(observed) or observed<0):\n        raise Review(\'INVALID_FEE_EVIDENCE\')\n    if check_fresh and not 0<=time.time()-observed<=300:raise Review(\'STALE_FEE_EVIDENCE\')\n    return rate\n\ndef _adverse_exit_price(trigger,side):\n    if side not in (\'LONG\',\'SHORT\'):raise Review(\'INVALID_SIDE\')\n    factor=1-Fraction(EXIT_SLIPPAGE_RATE) if side==\'LONG\' else 1+Fraction(EXIT_SLIPPAGE_RATE)\n    return Fraction(trigger)*factor\n\ndef _reserve_unit_loss(entry,sl,side,fee):\n    if side not in (\'LONG\',\'SHORT\'):raise Review(\'INVALID_SIDE\')\n    if not (sl<entry if side==\'LONG\' else sl>entry):raise Review(\'INVALID_ENTRY_TP_SL\')\n    adverse=_adverse_exit_price(sl,side)\n    return abs(entry-sl)+sl*Fraction(EXIT_SLIPPAGE_RATE)+fee*(entry+adverse)\n\ndef normalized_reward_risk_tp(entry,stop_loss,side,rules,*,symbol=None,check_fresh=False):\n    """First legal trigger whose reserved adverse TP fill yields planned net 1:2."""\n    e,sl,tick=(Fraction(number(value)) for value in (entry,stop_loss,rules.tick))\n    fee=Fraction(validated_fee_rate(rules,symbol,check_fresh=check_fresh))\n    reserve=Fraction(EXIT_SLIPPAGE_RATE)\n    loss=_reserve_unit_loss(e,sl,side,fee)\n    target=(e*(1+fee)+2*loss)/((1-reserve)*(1-fee)) if side==\'LONG\' else (e*(1-fee)-2*loss)/((1+reserve)*(1+fee))\n    steps=target/tick\n    count=-(-steps.numerator//steps.denominator) if side==\'LONG\' else steps.numerator//steps.denominator\n    price=count*tick\n    if price<=0 or not (price>e if side==\'LONG\' else price<e):raise Review(\'INVALID_ENTRY_TP_SL\')\n    return _exact_decimal(price)\n'
+
+
+class NativeTPConfirmationUnavailable(ValueError):
+    pass
+
+
+def _neurobro_tp_confirmation(output, context, *, now):
+    """Ask Neurobro for the actual TP; never alter its returned setup.
+
+    The existing core's exact calculation supplies a proposal only. A matching
+    Neurobro TP or HOLD needs no extra turn. The model decision and original
+    answer remain immutable; the caller owns any required clarification.
+    """
+    import hashlib
+    import math
+    import re
+    from decimal import Decimal, InvalidOperation
+    from fractions import Fraction
+    from types import SimpleNamespace
+
+    def need(value):
+        if not value:
+            raise NativeTPConfirmationUnavailable('NEUROBRO_TP_RULES_UNAVAILABLE')
+
+    if type(output) is not dict or output.get('side') not in ('LONG', 'SHORT'):
+        return None
+    need(type(now) in (int, float) and math.isfinite(now) and now > 0)
+    need(type(context) is dict)
+    contract, risk = context.get('contract_rules'), context.get('risk_constraints')
+    need(type(contract) is dict and type(risk) is dict)
+    symbol, side = output.get('symbol'), output['side']
+    need(type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,18}USDT', symbol)
+        and context.get('symbol') == contract.get('symbol') == risk.get('fee_symbol') == symbol
+        and contract.get('source') == 'Binance Futures /fapi/v1/exchangeInfo'
+        and risk.get('fee_source') == 'BINANCE_FUTURES_COMMISSION_RATE'
+        and risk.get('risk_model') == 'FEE_SLIPPAGE_RISK_V3'
+        and risk.get('reward_risk_policy') == 'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE')
+    observed, fee_observed = contract.get('observed_at'), risk.get('fee_observed_at')
+    # The worker already authenticated this request's fee/rule snapshot. A
+    # discussion must not invent a new expiry for that immutable snapshot;
+    # the native operation deadline and final worker refresh remain decisive.
+    need(all(type(v) in (int, float) and math.isfinite(v) and 0 < v <= now
+        for v in (observed, fee_observed)))
+    need(hashlib.sha256(_NATIVE_TP_SOURCE.encode()).hexdigest() == _NATIVE_TP_SOURCE_SHA256)
+    namespace = {'__name__': 'unchanged_native_tp_risk_definitions', 'Decimal': Decimal, 'InvalidOperation': InvalidOperation,
+        'Fraction': Fraction, 'math': math, 're': re, 'time': SimpleNamespace(time=lambda: now)}
+    exec(compile(_NATIVE_TP_SOURCE, '<unchanged-production-tp-calculation>', 'exec'), namespace)
+
+    def number(value, *, zero=False):
+        # Native DOM JSON can contain floats; preserve its serialized decimal
+        # value, never Decimal(binary_float). The worker then reads that text.
+        need(type(value) in (str, int, float, Decimal) and not isinstance(value, bool))
+        if type(value) is float:
+            need(math.isfinite(value))
+            value = str(value)
+        try:
+            parsed = Decimal(value)
+            need(parsed.is_finite() and (parsed >= 0 if zero else parsed > 0) and abs(parsed.adjusted()) <= 63)
+            if zero and parsed == 0:
+                return parsed
+            return namespace['number'](format(parsed, 'f'))
+        except (InvalidOperation, namespace['Review']):
+            raise NativeTPConfirmationUnavailable('NEUROBRO_TP_RULES_UNAVAILABLE') from None
+
+    entry, current, stop = (number(output.get(k)) for k in ('limit_entry', 'take_profit', 'stop_loss'))
+    tick, rate = number(contract.get('tickSize')), number(risk.get('entry_fee_rate'), zero=True)
+    need(Decimal('0') <= rate < Decimal('1'))
+    need(all(number(risk.get(k), zero=True) == rate for k in ('sl_exit_fee_rate', 'tp_exit_fee_rate')))
+    need(number(risk.get('exit_slippage_rate')) == namespace['EXIT_SLIPPAGE_RATE'])
+    need(stop < entry < current if side == 'LONG' else current < entry < stop)
+    rules = SimpleNamespace(tick=tick, taker_fee_rate=rate, fee_observed_at=fee_observed,
+        fee_symbol=symbol, fee_source=risk['fee_source'])
+    try:
+        proposed = namespace['normalized_reward_risk_tp'](entry, stop, side, rules,
+            symbol=symbol, check_fresh=False)
+    except namespace['Review']:
+        raise NativeTPConfirmationUnavailable('NEUROBRO_TP_RULES_UNAVAILABLE') from None
+    if current == proposed:
+        return None
+    def text(value):
+        return format(value, 'f')
+    return ('Konfirmasi TP final oleh Neurobro diperlukan untuk setup ' + symbol + ' ' + side
+        + '. Jawabanmu menetapkan ENTRY ' + text(entry) + ', SL ' + text(stop) + ', TP ' + text(current)
+        + '. Dengan fee akun ' + text(rate) + ' untuk entry/exit dan estimasi slippage exit '
+        + text(namespace['EXIT_SLIPPAGE_RATE']) + ', rumus Risk Manager produksi menghitung TP eksekusi '
+        + text(proposed) + ' agar RR bersih 1:2 sesudah fee dan slippage. '
+        + 'TP belum diubah atau diotorisasi. Kamu tetap penentu setup. Jika setup masih valid, '
+        + 'konfirmasikan TP final ' + text(proposed) + ' dalam jawaban lengkap LONG/SHORT; '
+        + 'atau revisi ENTRY/SL dan tetapkan TP yang memenuhi perhitungan tersebut. '
+        + 'Untuk jawaban lanjutan ini, isi field take_profit dengan TP final yang kamu setujui, '
+        + 'bukan proposal awal; tidak ada TP eksekusi lain yang boleh menggantinya. '
+        + 'Jika setup tidak valid, berikan HOLD. Quantity tetap dihitung Risk Manager dari anggaran risiko Office.')
+
+
 class DelegatedDOMBridge:
     """Use native DOM completion/provenance code for the actual final answer."""
     def __init__(self, bridge, client, *, native=None, converter=None,
@@ -309,19 +408,37 @@ class DelegatedDOMBridge:
             if transcript() != observed_turns:
                 unknown()
             state['reviewed'] = True
-            # Complete native structured answers proceed immediately. The model
-            # cannot force a discussion or override an existing complete setup.
+            # The model cannot replace the native setup. A directional answer
+            # must also name the exact TP the existing Risk Manager will use;
+            # a different execution TP is discussed with Neurobro in this chat.
             try:
                 output = self.native.exact_json(answer, payload['marker'])
             except (ValueError, TypeError, UnicodeError):
                 output = None  # An incomplete parse never becomes an invented setup.
             complete = type(output) is dict and set(required).issubset(output)
-            if not response['needs_followup'] or complete:
+            tp_question = None
+            if complete and phase == 'ANALYSIS':
+                try:
+                    # A fresh chart callback contains public candles only. The
+                    # immutable worker request owns the account fee/rule facts;
+                    # the worker rechecks the final TP after its own fee/rule
+                    # refresh before stamping, without expiring this discussion.
+                    tp_question = _neurobro_tp_confirmation(output, payload['context'],
+                        now=self.wall_clock())
+                except NativeTPConfirmationUnavailable:
+                    unknown()
+            if tp_question is None and (not response['needs_followup'] or complete):
                 state['phase'] = 'ACCEPT'
                 return
-            question = response['decision']['question']
-            if response['decision']['action'] != 'CLARIFY' or not question:
-                unknown()
+            if tp_question is not None:
+                # This is the existing Risk Manager's required price question,
+                # not a changed or invented Mini response. Keep the actual model
+                # request/result and the original Neurobro answer untouched.
+                question = tp_question
+            else:
+                question = response['decision']['question']
+                if response['decision']['action'] != 'CLARIFY' or not question:
+                    unknown()
             prefix = copy.deepcopy(observed_turns)
             if (len(prefix) != 2 * len(state['turn_names'])
                     or prefix[-1].get('text') != answer

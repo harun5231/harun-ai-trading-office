@@ -38,7 +38,8 @@ class WorkflowV2Tests(unittest.TestCase):
             f.calls.append(copy.deepcopy(body))
             context = json.loads(body['message_history'][0]['content'])
             symbol = context.get('symbol') or context['data']['symbol']
-            value = copy.deepcopy(f.responses.get(symbol, {**GOOD, 'symbol': symbol}))
+            value = copy.deepcopy(f.responses[symbol] if symbol in f.responses else
+                pipeline.confirmed_output({**GOOD, 'symbol': symbol}, context))
             return 200, {}, dict(mode='smart', answer=None, output=value)
         f.transport = transport
         f.make()
@@ -47,7 +48,7 @@ class WorkflowV2Tests(unittest.TestCase):
     def candidate(self, f, symbol='BTCUSDT'):
         return f.ledger.db.execute('SELECT * FROM robot_candidates WHERE symbol=?', (symbol,)).fetchone()
 
-    def test_model_tp_is_preserved_but_new_order_tp_is_net_normalized_with_reserve(self):
+    def test_unconfirmed_model_tp_is_rejected_before_intent_without_changing_risk_math(self):
         for model_tp, declared in ((104, 2), (110, 5), (104, 99)):
             with self.subTest(model_tp=model_tp, declared=declared):
                 f = self.fixture()
@@ -55,20 +56,29 @@ class WorkflowV2Tests(unittest.TestCase):
                 f.screens = [['BTCUSDT']]
                 f.responses['BTCUSDT'] = {**GOOD, 'take_profit': model_tp, 'risk_reward': declared}
                 f.on();f.robot.tick()
-                self.assertEqual(f.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
+                result=f.robot.tick()
+                self.assertEqual((result['bot_status'],result['failure_code']),('REJECTED','ORDER_COSTS_CHANGED'))
                 candidate = self.candidate(f)
-                plan = json.loads(candidate['plan'])
+                self.assertIsNone(candidate['plan'])
                 output = json.loads(f.ledger.db.execute('SELECT output FROM api_requests WHERE operation=?',
                     (candidate['id'],)).fetchone()[0], parse_float=D)
                 self.assertEqual((output['take_profit'], output['risk_reward']), (D(model_tp), D(declared)))
-                self.assertEqual(D(plan['tp_normalization']['model_tp']), D(model_tp))
-                self.assertEqual((plan['entry'], plan['sl']), ('100', '98'))
-                self.assertNotEqual(D(plan['tp']), D(model_tp))
-                self.assertEqual(plan['risk_model'], 'FEE_SLIPPAGE_RISK_V3')
-                self.assertEqual(plan['reward_risk_policy'], 'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE')
-                self.assertLessEqual(D(plan['risk']), D('5'))
-                self.assertGreaterEqual(D(plan['net_rr']), D('2'))
-                self.assertEqual(plan['protection_working_type'], 'CONTRACT_PRICE')
+                self.assertEqual(f.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0],0)
+                self.assertEqual(f.ledger.db.execute('SELECT state FROM robot_cycles').fetchone()[0],'ACTIVE')
+
+    def test_neurobro_confirmed_final_tp_reaches_execution_with_unchanged_quantity_math(self):
+        f=self.fixture();f.account.position('HYPEUSDT','4.16');f.screens=[['BTCUSDT']]
+        f.on();f.robot.tick()
+        self.assertEqual(f.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
+        candidate=self.candidate(f);plan=json.loads(candidate['plan'])
+        output=json.loads(f.ledger.db.execute('SELECT output FROM api_requests WHERE operation=?',
+            (candidate['id'],)).fetchone()[0],parse_float=D)
+        self.assertEqual(D(plan['tp']),output['take_profit'])
+        self.assertEqual(D(plan['tp_normalization']['model_tp']),output['take_profit'])
+        self.assertEqual((plan['entry'],plan['sl']),('100','98'))
+        self.assertEqual(plan['risk_model'],'FEE_SLIPPAGE_RISK_V3')
+        self.assertLessEqual(D(plan['risk']),D('5'))
+        self.assertGreaterEqual(D(plan['net_rr']),D('2'))
 
     def test_declared_or_price_rr_below_two_is_known_rejection_and_one_replacement(self):
         for changes in (dict(risk_reward=D('1.99')), dict(take_profit=D('103.99'), risk_reward=99)):
@@ -160,12 +170,13 @@ class WorkflowV2Tests(unittest.TestCase):
             with self.subTest(rows=rows, algo=algo), self.assertRaisesRegex(Review, 'ROBOT_ACCOUNT_UNAVAILABLE'):
                 open_entry_symbols(rows, algo=algo)
 
-    def cached_analysis(self, *, age=0, state='PENDING', context_age=0):
+    def cached_analysis(self, *, age=0, state='PENDING', context_age=0, confirmed=True):
         f = self.fixture();f.account.position('HYPEUSDT', '4.16');f.screens = [['BTCUSDT']]
         f.on();f.robot.tick();cycle,data = f.current_cycle()
         operation = cycle['id']+':analysis-v9:BTCUSDT'
-        f.responses['BTCUSDT'] = {**GOOD, 'take_profit': 110, 'risk_reward': 5}
         context,_=analysis_context(f.market,'BTCUSDT','5',f.account)
+        original = {**GOOD, 'take_profit': 110, 'risk_reward': 5}
+        f.responses['BTCUSDT'] = pipeline.confirmed_output(original, context) if confirmed else original
         context['fetched_at']-=context_age
         self.assertTrue(f.robot.claim(operation,cycle['id'],'ANALYSIS','BTCUSDT',day(),'5',data=data,context=context))
         f.client.ask(operation, 'historical analysis literal', SETUP_SCHEMA,
@@ -187,6 +198,20 @@ class WorkflowV2Tests(unittest.TestCase):
                 self.assertEqual(plan['risk_target_usdt'],'5')
                 self.assertEqual(len(f.calls),2)
                 self.assertEqual(f.ledger.db.execute('SELECT state FROM robot_jobs WHERE operation=?',(operation,)).fetchone()[0],'COMPLETE')
+
+    def test_unconfirmed_cached_analysis_is_rejected_without_paid_replay(self):
+        f,operation = self.cached_analysis(confirmed=False)
+        before = dict(f.ledger.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone())
+        f.restart()
+        with patch.object(f.client,'ask',side_effect=AssertionError('paid replay')):
+            result = f.robot.tick()
+        self.assertEqual((result['bot_status'], result['failure_code']), ('REJECTED','ORDER_COSTS_CHANGED'))
+        after = dict(f.ledger.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone())
+        self.assertEqual(after.pop('failure_code'), 'ORDER_COSTS_CHANGED')
+        before.pop('failure_code')
+        self.assertEqual(after, before)
+        self.assertIsNone(self.candidate(f)['plan'])
+        self.assertEqual(f.ledger.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0],0)
 
     def test_stale_complete_analysis_is_rejected_without_paid_replay_or_reset(self):
         f,operation = self.cached_analysis(age=500)
