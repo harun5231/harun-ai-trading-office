@@ -192,13 +192,8 @@ class RobotRiskSettingTests(unittest.TestCase):
     def positive_fee_setup(self,target='5'):
         f=self.prepare_one_slot(target)
         f.account.taker_fee='0.0005'
-        original=f.client.transport
-        def transport(*args,**kwargs):
-            status,headers,body=original(*args,**kwargs)
-            body['output']['take_profit']=D('104.31')
-            body['output']['risk_reward']=D('2.155')
-            return status,headers,body
-        f.client.transport=transport
+        # The common fixture provider confirms the existing RM target using
+        # this account's fee quote; do not replace it with an unsigned TP.
         self.assertEqual(f.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
         return f
 

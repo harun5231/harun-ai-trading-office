@@ -3,10 +3,12 @@ import copy
 import hashlib
 import json
 import unittest
+from dataclasses import asdict
 from unittest.mock import patch
 
 import test_order_pipeline as pipeline
-from worker.core import D, Review, Rules, preflight, risk_check
+from worker.core import D, Review, preflight, risk_check
+from worker.analysis import analysis_context
 from worker.neuroapi import setup
 from worker.order_gateway import build_intent
 from worker.robot_provenance import stamp, verify
@@ -37,23 +39,35 @@ class ProtectionTriggerContractTests(unittest.TestCase):
         self.addCleanup(self.fixture.doCleanups)
         self.fixture.account.position('HYPEUSDT', '4.16')
         self.fixture.screens = [['ETHUSDT']]
+        # This fixture represents an archived fee-only command, not a new
+        # order under the current confirmation policy. Keep its original TP.
+        transport = self.fixture.transport
+        def archived_provider(*args, **kwargs):
+            status, headers, response = transport(*args, **kwargs)
+            if response['output'].get('side') == 'LONG':
+                response['output']['take_profit'] = D('104')
+                response['output']['risk_reward'] = D('2')
+            return status, headers, response
+        self.fixture.transport = archived_provider
+        self.fixture.make()
         self.fixture.on()
-        self.fixture.ticks(2)
+        self.fixture.robot.tick()
+        _, self.rules = analysis_context(self.fixture.market, 'ETHUSDT', '5', self.fixture.account)
+        result = self.fixture.robot.tick()
+        self.assertEqual((result['bot_status'], result['failure_code']),
+                         ('REJECTED', 'ORDER_COSTS_CHANGED'))
         self.row = self.fixture.ledger.db.execute('SELECT * FROM robot_candidates').fetchone()
         self.operation = self.row['id']
-        current = json.loads(self.row['plan'])
-        # Reconstruct the actual archived fee-only policy from its original
-        # provider output and rules, without carrying V3 normalized evidence.
-        self.rules = Rules(**{key: D(value) if isinstance(value, str) and
-            key not in ('fee_source', 'fee_symbol') else value
-            for key, value in current['sizing_rules'].items()})
+        # Seed the already-existing legacy plan from its recorded provider
+        # output. Current entry rejection must not reprice historical intents.
         source = self.fixture.ledger.db.execute('SELECT output FROM api_requests WHERE operation=?',
             (self.operation,)).fetchone()[0]
         signal = setup(json.loads(source, parse_float=D), 'ETHUSDT', require_declared_rr=False)
-        self.plan = risk_check(signal, self.rules, current['risk_target_usdt'])
-        self.plan['sizing_rules'] = copy.deepcopy(current['sizing_rules'])
+        self.plan = risk_check(signal, self.rules, '5')
+        self.plan['sizing_rules'] = {key: str(value) if isinstance(value, D) else value
+            for key, value in asdict(self.rules).items()}
         stamp(self.fixture.ledger.db, self.plan, self.operation)
-        self.fixture.ledger.db.execute('UPDATE robot_candidates SET plan=? WHERE id=?',
+        self.fixture.ledger.db.execute("UPDATE robot_candidates SET plan=?,status='READY_FOR_EXECUTION',failure_code=NULL WHERE id=?",
             (json.dumps(self.plan), self.operation))
 
     def test_legacy_eth_verified_payload_is_byte_identical_to_old_command(self):
