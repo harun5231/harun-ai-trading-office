@@ -147,6 +147,37 @@ class DataFileUploadTests(unittest.TestCase):
         f.file_tiles=True;d.close()
         self.assertEqual(f._turns()[0]['attachments'],names)  # Native receipt after ask.
 
+    def test_assistant_arriving_between_snapshots_is_resampled_without_another_send(self):
+        f,d,payload=self.setup();f._upload(f.composer,payload,[])
+        names=list(f.uploaded_names)
+        f.rows=[{'role':'user','text':'actual prompt'}]
+        original=d.reader.original_turns;calls=[]
+        def arriving():
+            result=original();calls.append(len(result))
+            if len(calls)==1:
+                f.rows.append({'role':'assistant','text':'actual answer','complete':True})
+            return result
+        d.reader.original_turns=arriving
+        self.assertEqual(f._answer('actual prompt',names),'actual answer')
+        self.assertEqual(calls,[1,2])
+        self.assertEqual(f.uploaded_names,names)
+        self.assertEqual(f.sent,0)
+
+    def test_resampling_never_confirms_missing_csv_witnesses(self):
+        f,d,payload=self.setup();f._upload(f.composer,payload,[])
+        names=list(f.uploaded_names);f.file_tiles=False
+        f.rows=[{'role':'user','text':'actual prompt'}]
+        original=d.reader.original_turns;calls=[]
+        def arriving():
+            result=original();calls.append(len(result))
+            if len(calls)==1:
+                f.rows.append({'role':'assistant','text':'actual answer','complete':True})
+            return result
+        d.reader.original_turns=arriving
+        self.assertIsNone(f._answer('actual prompt',names))
+        self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+        self.assertEqual(f.sent,0)
+
     def test_csv_upload_cannot_silently_replace_the_native_images(self):
         f,d,payload=self.setup();f.keep_images=False
         with self.assertRaises(NotSubmitted): f._upload(f.composer,payload,[])
