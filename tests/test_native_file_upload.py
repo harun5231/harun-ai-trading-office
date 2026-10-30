@@ -27,6 +27,19 @@ class Image:
                 'height':100 if self.f.images_loaded else 0}
 
 
+class SubmittedImage:
+    def __init__(self, fixture, index):self.f,self.index=fixture,index
+    def is_visible(self):return self.f.submitted_images[self.index].get('visible',True)
+    def get_attribute(self,name):
+        assert name=='alt';return self.f.submitted_images[self.index]['alt']
+    def evaluate(self,_):
+        return {key:self.f.submitted_images[self.index][key] for key in ('complete','width','height')}
+    def scroll_into_view_if_needed(self,**_):
+        self.f.scrolls.append(self.index)
+        if self.f.decode_on_scroll:
+            self.f.submitted_images[self.index].update(complete=True,width=1024,height=640)
+
+
 class Label:
     def __init__(self, fixture, action): self.f, self.action = fixture, action
     def is_visible(self): return True
@@ -41,7 +54,10 @@ class Area:
     def locator(self, selector):
         if selector == 'button:has(svg.lucide-plus)': return Items([Label(self.f, 'plus')])
         if selector == 'xpath=..': return self
-        if selector == 'img': return Items([Image(self.f), Image(self.f)] if self.f.keep_images else [])
+        if selector == 'img':
+            if self.user and self.f.submitted_images is not None:
+                return Items([SubmittedImage(self.f,i) for i in range(len(self.f.submitted_images))])
+            return Items([Image(self.f), Image(self.f)] if self.f.keep_images else [])
         raise AssertionError(selector)
     def get_attribute(self, name):
         assert name=='role'
@@ -62,6 +78,7 @@ class Fixture:
         self.show_file_tiles=True; self.files_busy=False; self.images_loaded=True
         self.input_text=''; self.send_allowed=True; self.send_present=True
         self.sent=0; self.files=None; self.listeners={}; self.rows=[]
+        self.submitted_images=None;self.scrolls=[];self.decode_on_scroll=True;self.status_value='CONNECTED'
         self.timeout=30; self.page=self
         self._dom_contract=SimpleNamespace(area='area',send='send')
         self.composer=SimpleNamespace(locator=lambda _:Area(self),input_value=lambda:self.input_text)
@@ -75,7 +92,13 @@ class Fixture:
         result=copy.deepcopy(self.rows)
         for row in result:
             if row['role']=='user':
-                row['attachments']=(list(self.uploaded_names) if self.uploaded_names==['15m.png','1h.png'] else ['UNCONFIRMED'])
+                valid=self.uploaded_names==['15m.png','1h.png']
+                if self.submitted_images is not None:
+                    valid=valid and len(self.submitted_images)==2 and all(
+                        image['complete'] is True and image['width']>0 and image['height']>0
+                        and image['alt']==self.uploaded_names[i] and image.get('visible',True)
+                        for i,image in enumerate(self.submitted_images))
+                row['attachments']=list(self.uploaded_names) if valid else ['UNCONFIRMED']
         return result
     def native_answer(self, prompt, attachment_names=()):
         rows=self._turns()
@@ -83,6 +106,7 @@ class Fixture:
                 or rows[0]['attachments']!=list(attachment_names)
                 or rows[1].get('complete')is not True): return None
         return rows[1]['text']
+    def status(self):return self.status_value
     def clock(self): return self.current
     def _until(self, seconds): return self.current+seconds
     def _timeout(self, _): return 5000
@@ -259,3 +283,95 @@ class DataFileUploadTests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class SubmittedImageLoadingTests(unittest.TestCase):
+    setup = DataFileUploadTests.setup
+
+    def pending(self):
+        f,d,payload=self.setup();f._upload(f.composer,payload,[])
+        names=list(f.uploaded_names)
+        f.rows=[{'role':'user','text':'actual prompt'},
+            {'role':'assistant','text':'genuine Neurobro HOLD','complete':True,'id':'native-reply'}]
+        f.submitted_images=[{'alt':name,'complete':False,'width':0,'height':0}for name in names[:2]]
+        return f,d,names
+
+    def test_exact_pending_images_scroll_then_native_parser_proves_real_decode(self):
+        f,d,names=self.pending()
+        f.uploaded_names=names[:2]
+        self.assertEqual(d.reader.original_turns()[0]['attachments'],['UNCONFIRMED'])
+        f.uploaded_names=names
+        self.assertEqual(f.scrolls,[])
+        self.assertEqual(f._answer('actual prompt',names),'genuine Neurobro HOLD')
+        self.assertEqual(f.scrolls,[0,1])
+        self.assertEqual(f._turns()[0]['attachments'],names)
+        self.assertTrue(all(row['complete'] and row['width']==1024 and row['height']==640
+            for row in f.submitted_images))
+        self.assertEqual(f.sent,0)
+        f._turns();self.assertEqual(f.scrolls,[0,1])
+
+    def test_foreign_duplicate_failed_or_wrong_count_images_do_not_scroll_or_attest(self):
+        for state in ('foreign','duplicate','failed','missing','extra','hidden'):
+            with self.subTest(state=state):
+                f,d,names=self.pending()
+                if state=='foreign':f.submitted_images[0]['alt']='foreign.png'
+                elif state=='duplicate':f.submitted_images[1]['alt']=names[0]
+                elif state=='failed':f.submitted_images[0]['complete']=True
+                elif state=='missing':f.submitted_images.pop()
+                elif state=='extra':f.submitted_images.append(copy.deepcopy(f.submitted_images[0]))
+                else:f.submitted_images[0]['visible']=False
+                self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+                self.assertEqual(f.scrolls,[]);self.assertEqual(f.sent,0)
+
+    def test_missing_file_witness_or_inactive_or_expired_gate_cannot_scroll(self):
+        for state in ('files','closed','unavailable','deadline'):
+            with self.subTest(state=state):
+                f,d,names=self.pending()
+                if state=='files':f.file_tiles=False
+                elif state=='closed':d.close()
+                elif state=='unavailable':f.status_value='UNAVAILABLE'
+                else:f._until=lambda _:f.current
+                self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+                self.assertEqual(f.scrolls,[]);self.assertEqual(f.sent,0)
+                if state=='closed':self.assertIsNone(d.reader.load_gate)
+
+    def test_current_dispatch_and_manual_session_gate_remains_authority(self):
+        f,d,names=self.pending()
+        def manual():raise NotSubmitted('MANUAL_ACTIVE')
+        d.gate=manual
+        with self.assertRaisesRegex(NotSubmitted,'MANUAL_ACTIVE'):f._turns()
+        self.assertEqual(f.scrolls,[]);self.assertEqual(f.sent,0)
+
+    def test_unresolved_lazy_image_is_scrolled_once_and_stays_unconfirmed(self):
+        f,d,names=self.pending();f.decode_on_scroll=False
+        self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+        self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+        self.assertEqual(f.scrolls,[0,1]);self.assertEqual(f.sent,0)
+        d.close()
+        def stale():raise AssertionError('closed delivery gate called')
+        d.gate=stale
+        self.assertEqual(f._turns()[0]['attachments'],['UNCONFIRMED'])
+        self.assertEqual(f.scrolls,[0,1])
+
+    def test_scrolling_current_packet_preserves_daily_room_prefix(self):
+        from agent.native_daily_room import DailyRoom,identities
+        import tempfile
+        f=Fixture();f._fresh_conversation=lambda:f.composer
+        old=[{'role':'user','text':'Earlier screening'},
+            {'role':'assistant','text':'Earlier coin choice','complete':True,'id':'earlier-native'}]
+        f.rows=copy.deepcopy(old)
+        native=SimpleNamespace(NotSubmitted=NotSubmitted,MESSAGE='messages',USER_BODY='native-user-body')
+        with tempfile.TemporaryDirectory()as directory:
+            room=DailyRoom(f,native,directory)
+            room.offset=2;room.prefix=identities(old)
+            delivery=NativeDataFileDelivery(f,native,Mock(),wall_clock=lambda:NOW).install()
+            payload={'context':native_context_200(),'operation':'native-analysis','request_sha256':'a'*64}
+            f._upload(f.composer,payload,[]);names=list(f.uploaded_names)
+            f.rows.extend([{'role':'user','text':'current chart analysis'},
+                {'role':'assistant','text':'HOLD','complete':True,'id':'current-native'}])
+            f.submitted_images=[{'alt':name,'complete':False,'width':0,'height':0}for name in names[:2]]
+            result=f._turns()
+            self.assertEqual(len(result),2);self.assertEqual(result[0]['attachments'],names)
+            self.assertEqual(f.rows[:2],old);self.assertEqual(room.prefix,identities(old))
+            self.assertEqual(f.scrolls,[0,1]);self.assertEqual(f.sent,0)
+            delivery.close()
