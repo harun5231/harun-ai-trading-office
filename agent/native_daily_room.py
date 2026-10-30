@@ -91,11 +91,18 @@ class DailyRoomHistory:
         need(len(navigation) == 1 and navigation[0].is_enabled())
         navigation[0].click(timeout=room.bridge._timeout(5000))
 
-    def select(self, row):
+    def select(self, row, *, occurrence=0):
         room = self.room
-        need(room.bridge.status() == 'CONNECTED' and row in self.rows())
+        need(room.bridge.status() == 'CONNECTED')
+        # Loading a conversation adds message/tool buttons before the sidebar.
+        # Re-resolve its observed title/label instead of reusing a stale global
+        # button index. Duplicate titles retain their history occurrence.
+        matches = [item for item in self.rows()
+            if (item['text'], item['label']) == (row['text'], row['label'])]
+        need(type(occurrence) is int and 0 <= occurrence < len(matches))
+        selected = matches[occurrence]
         room.composer()  # No owner draft is discarded by a history selection.
-        target = room.bridge.page.locator('button').nth(row['index'])
+        target = room.bridge.page.locator('button').nth(selected['index'])
         need(target.is_visible() and target.is_enabled()
             and ' '.join(target.inner_text().split()) == row['text'])
         target.click(timeout=room.bridge._timeout(5000))
@@ -238,14 +245,28 @@ class DailyRoom:
             self.history.open_sidebar()
             choices = self.history.rows()
         hints = binding.get('history_titles', [])
-        choices.sort(key=lambda row: row['text'] not in hints)
+        occurrences, ordered = {}, []
         for row in choices:
+            key = row['text'], row['label']
+            occurrence = occurrences.get(key, 0)
+            occurrences[key] = occurrence + 1
+            ordered.append((row, occurrence))
+        ordered.sort(key=lambda item: item[0]['text'] not in hints)
+        for row, occurrence in ordered:
             before = identities(self.full_turns())
-            self.history.select(row)
+            self.history.select(row, occurrence=occurrence)
             until = self.bridge._until(5)
             previous, stable = None, 0
             while self.bridge.clock() < until:
-                need(self.bridge.status() == 'CONNECTED')
+                status = self.bridge.status()
+                if status == 'UNAVAILABLE':
+                    # Native detection can be unavailable while this selected
+                    # history room renders. Wait within its existing budget;
+                    # never resubmit, create a room or interact with a challenge.
+                    previous, stable = None, 0
+                    self.bridge.page.wait_for_timeout(50)
+                    continue
+                need(status == 'CONNECTED')
                 rows = self.full_turns()
                 if self.matches(rows, anchors, binding, state):
                     return rows

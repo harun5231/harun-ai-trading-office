@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from agent.native_daily_room import DailyRoom, DailyRoomUnavailable, JOURNAL_NAME
+from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_file_upload import NativeFileTurnReader
 from tests.test_native_browser_hook import request, client, OutcomeUnknown, NotSubmitted
@@ -90,7 +90,9 @@ class History:
  def __init__(self, bridge):self.bridge=bridge;self.rooms=[];self.selected=[]
  def rows(self):return [dict(index=i,text=title,label='Hari ini')for i,(title,_)in enumerate(self.rooms)]
  def open_sidebar(self):pass
- def select(self,row):self.selected.append(row['text']);self.bridge.messages=copy.deepcopy(self.rooms[row['index']][1])
+ def select(self,row,*,occurrence=0):
+  matches=[item for item in self.rooms if item[0]==row['text']]
+  self.selected.append(row['text']);self.bridge.messages=copy.deepcopy(matches[occurrence][1])
 
 
 class DailyRoomTests(unittest.TestCase):
@@ -252,3 +254,62 @@ class DailyRoomTests(unittest.TestCase):
   bridge._dom_contract=None
   self.assertEqual(bridge._visible('send'),[bridge.button])
   self.assertEqual(bridge._visible('composer'),[bridge.composer])
+
+ def test_history_switch_waits_for_transient_detection_then_reads_owned_rows(self):
+  bridge,room,_,_=self.setup()
+  bridge.operation_deadline=80
+  owned=rows();room.history.rooms=[('Owned',owned)]
+  selected=room.history.select
+  states=[]
+  def switch(row,**kwargs):
+   selected(row,**kwargs);states.extend(['UNAVAILABLE','UNAVAILABLE','CONNECTED'])
+  room.history.select=switch
+  bridge.status=lambda:states.pop(0)if states else 'CONNECTED'
+  restored=room.restore(identities(owned),{},'BOUND')
+  self.assertEqual(restored,owned)
+  self.assertAlmostEqual(bridge.current,0.1)
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_persistently_unavailable_switch_stops_at_existing_operation_deadline(self):
+  bridge,room,_,_=self.setup();bridge.operation_deadline=0.1
+  owned=rows();room.history.rooms=[('Owned',owned)]
+  selected=room.history.select
+  def switch(row,**kwargs):
+   selected(row,**kwargs);bridge.status=lambda:'UNAVAILABLE'
+  room.history.select=switch
+  with self.assertRaises(DailyRoomUnavailable):room.restore(identities(owned),{},'BOUND')
+  self.assertAlmostEqual(bridge.current,0.1)
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_security_or_login_during_history_switch_stops_without_wait_or_interaction(self):
+  for state in ('CHALLENGE_REQUIRED','LOGIN_REQUIRED'):
+   with self.subTest(state=state):
+    bridge,room,_,_=self.setup();bridge.operation_deadline=80
+    owned=rows();room.history.rooms=[('Owned',owned)]
+    selected=room.history.select
+    def switch(row,**kwargs):
+     selected(row,**kwargs);bridge.status=lambda:state
+    room.history.select=switch
+    with self.assertRaises(DailyRoomUnavailable):room.restore(identities(owned),{},'BOUND')
+    self.assertEqual(bridge.current,0)
+    self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_history_selection_resolves_current_button_index_and_duplicate_occurrence(self):
+  bridge,room,_,_=self.setup()
+  targets=[]
+  class Target:
+   def __init__(self,index):self.index=index
+   def is_visible(self):return True
+   def is_enabled(self):return True
+   def inner_text(self):return 'Same title'
+   def click(self,**kwargs):targets.append(self.index)
+  class Buttons:
+   def nth(self,index):return Target(index)
+  history=DailyRoomHistory(room)
+  history.rows=lambda:[{'index':17,'text':'Same title','label':'Hari ini'},
+   {'index':23,'text':'Same title','label':'Hari ini'}]
+  # The old snapshot had indexes 3/4; loaded message controls changed them.
+  bridge.page.locator=lambda _:Buttons()
+  history.select({'index':4,'text':'Same title','label':'Hari ini'},occurrence=1)
+  self.assertEqual(targets,[23])
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
