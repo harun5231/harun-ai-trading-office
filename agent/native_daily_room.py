@@ -12,6 +12,7 @@ import copy
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import sqlite3
 import stat
@@ -227,14 +228,26 @@ class DailyRoom:
 
     @staticmethod
     def matches(rows, anchors, binding, state):
-        if anchors:
-            return len(rows) >= len(anchors) and identities(rows[:len(anchors)]) == anchors
+        if anchors and len(rows) >= len(anchors) and identities(rows[:len(anchors)]) == anchors:
+            return True
         if not rows:
-            return state == 'PREPARED'
-        first = rows[0]
-        return (first.get('role') == 'user' and type(first.get('text')) is str
-            and hashlib.sha256(first['text'].replace('\r\n', '\n').strip().encode()).hexdigest()
-                == binding.get('first_prompt_sha256'))
+            return not anchors and state == 'PREPARED'
+        # Reload can prepend older history or replace temporary message IDs.
+        # The exact authored prompt and its one marker VALUE identify the room;
+        # later assistant text/IDs are not a durable conversation identifier.
+        # This fallback does not relax verify_prefix within an active request.
+        marker = binding.get('marker')
+        for row in rows:
+            text = row.get('text')
+            if row.get('role') != 'user' or type(text) is not str:
+                continue
+            text = text.replace('\r\n', '\n').strip()
+            if hashlib.sha256(text.encode()).hexdigest() != binding.get('first_prompt_sha256'):
+                continue
+            values = set(re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])', text))
+            if type(marker) is str and values == {marker}:
+                return True
+        return False
 
     def restore(self, anchors, binding, state):
         # A root SPA URL identifies no chat. Reopen ordinary observed history
