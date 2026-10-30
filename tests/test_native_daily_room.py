@@ -6,10 +6,12 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import shutil
+import subprocess
 import unittest
 from unittest.mock import Mock
 
-from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities
+from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, HISTORY_DIAGNOSTIC_JS
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_file_upload import NativeFileTurnReader
 from tests.test_native_browser_hook import request as base_request, client, OutcomeUnknown, NotSubmitted
@@ -417,3 +419,29 @@ class DailyRoomTests(unittest.TestCase):
    # Even a matching full text hash cannot substitute another marker value.
    wrong=dict(binding,first_prompt_sha256=hashlib.sha256(text.encode()).hexdigest())
    self.assertFalse(DailyRoom.matches(rows()+[{'role':'user','text':text}],anchors,wrong,'BOUND'))
+
+
+class PassiveHistoryNetworkDiagnosticTests(unittest.TestCase):
+ @unittest.skipUnless(shutil.which('node'), 'Node is needed to execute the fixed browser diagnostic')
+ def test_observes_page_requests_without_exporting_ids_queries_or_other_resources(self):
+  entries=[dict(name='https://app.neurobro.ai/api/chats/ROOM_SECRET?token=TOKEN_SECRET#FRAGMENT_SECRET',
+   initiatorType='fetch',startTime=10.4,duration=2.8,responseStatus=403),
+   dict(name='https://auth.privy.io/api/session',initiatorType='xmlhttprequest',startTime=15,duration=4,responseStatus=200),
+   dict(name='https://app.neurobro.ai/private.js?secret=SCRIPT_SECRET',initiatorType='script',startTime=1,duration=2,responseStatus=200)]
+  script=('const location=new URL("https://app.neurobro.ai/");'
+   'const performance={now:()=>500,getEntriesByType:()=>'+json.dumps(entries)+'};'
+   'const root={querySelectorAll:()=>[]};'
+   'const observe='+HISTORY_DIAGNOSTIC_JS+';'
+   'process.stdout.write(JSON.stringify(observe(root,"messages")));')
+  result=subprocess.run(['node','-e',script],check=True,capture_output=True,text=True)
+  value=json.loads(result.stdout)['network'];self.assertTrue(value['available'])
+  self.assertEqual(value['request_count'],2)
+  self.assertEqual(value['resources'][0],dict(origin='SAME_ORIGIN',path='/api/chats/:redacted',
+   initiator='fetch',start_ms=10,duration_ms=3,response_status=403))
+  self.assertEqual(value['resources'][1]['origin'],'PRIVY')
+  for secret in ('ROOM_SECRET','TOKEN_SECRET','FRAGMENT_SECRET','SCRIPT_SECRET','?token='):
+   self.assertNotIn(secret,result.stdout)
+  # A busy document remains bounded; resource metadata is not a response body.
+  script=script.replace(json.dumps(entries),json.dumps(entries[:1]*80))
+  value=json.loads(subprocess.run(['node','-e',script],check=True,capture_output=True,text=True).stdout)['network']
+  self.assertEqual(value['request_count'],80);self.assertEqual(len(value['resources']),60)
