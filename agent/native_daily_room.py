@@ -80,7 +80,28 @@ HISTORY_DIAGNOSTIC_JS = r"""(root, messageSelector) => {
   analytics:e.getAttribute('data-analytics-id'),expanded:e.getAttribute('aria-expanded'),
   parent:{tag:e.parentElement?.tagName,role:e.parentElement?.getAttribute('role'),
    slot:e.parentElement?.getAttribute('data-slot')}});
+ // Resource Timing observes requests already issued by the page. It never
+ // fetches an application endpoint or reads bodies, headers or auth state.
+ // Keep only fixed route words: IDs, queries and unknown path segments stay
+ // outside this private diagnostic as well as outside the public report.
+ const routeWords=new Set(('api v1 v2 v3 chat chats conversation conversations history thread threads auth session sessions verify config message messages me user users folder folders saved prompt prompts completion completions list bootstrap turnstile trpc health init initialize initialization refresh token get balance workspace rpc').split(' '));
+ const route=name=>{const u=new URL(name,location.origin);
+  const host=u.origin===location.origin?'SAME_ORIGIN':
+   /(?:^|\.)neurobro\.ai$/.test(u.hostname)?'NEUROBRO':
+   /(?:^|\.)privy\.(?:io|ai)$/.test(u.hostname)?'PRIVY':'OTHER';
+  return {origin:host,path:u.pathname.split('/').slice(0,9).map(part=>
+   !part?'':routeWords.has(part.toLowerCase())?part.toLowerCase():':redacted').join('/')};};
+ let network={available:false,resources:[]};
+ try{
+  const entries=performance.getEntriesByType('resource').filter(e=>
+   e.initiatorType==='fetch'||e.initiatorType==='xmlhttprequest');
+  network={available:true,observed_elapsed_ms:Math.round(performance.now()),
+   request_count:entries.length,resources:entries.slice(-60).map(e=>({...route(e.name),
+    initiator:e.initiatorType,start_ms:Math.round(e.startTime),duration_ms:Math.round(e.duration),
+    response_status:Number.isInteger(e.responseStatus)?e.responseStatus:null}))};
+ }catch(_){/* Observation failure cannot change the original refusal. */}
  return {
+  network,
   buttons:Array.from(root.querySelectorAll('button')).filter(shell).slice(0,100)
    .map(e=>({...shape(e),text:norm(e.innerText),disabled:e.disabled})),
   headings:Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"],[data-slot="sidebar-group-label"]'))
