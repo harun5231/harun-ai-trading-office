@@ -13,6 +13,7 @@ import time
 from urllib.parse import urlsplit
 
 from .native_data_files import deliver_market_data_files
+from .native_chart_prompt import screening_payload
 
 
 FILE_WITNESS = r'''(root, args) => {
@@ -39,7 +40,8 @@ FILE_WITNESS = r'''(root, args) => {
 
 
 def enabled(native, payload):
-    return (type(payload) is dict and payload.get('context') is not None
+    return (type(payload) is dict and not screening_payload(payload)
+        and payload.get('context') is not None
         and getattr(getattr(native, 'user_prompt', None), '__harun_data_files_v1__', False) is True)
 
 

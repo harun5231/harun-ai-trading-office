@@ -55,6 +55,27 @@ class NativeChartPromptTests(unittest.TestCase):
         _, hook = self.hook(); payload = self.payload(); payload['context'] = None
         self.assertEqual(hook(payload), formatter(payload))
 
+    def test_replacement_screening_preserves_native_context_byte_for_byte(self):
+        _, hook = self.hook()
+        payload = self.payload()
+        payload.update(prompt='pilihkan 2 coin pengganti yang bagus',
+            output_schema={'required': ['symbols']}, context={
+                'requested_count': 2, 'excluded_symbols': ['HYPEUSDT', 'TRXUSDT'],
+                'replacement_instruction': 'Choose different coins.'})
+        before = copy.deepcopy(payload)
+        self.assertEqual(hook(payload), formatter(payload))
+        self.assertEqual(payload, before)
+        self.assertIn('HYPEUSDT', hook(payload))
+
+    def test_non_screening_context_still_requires_actual_market_data(self):
+        _, hook = self.hook()
+        for schema in ({'required': ['symbols', 'side']}, {'required': 'symbols'}, {}):
+            payload = self.payload()
+            payload.update(output_schema=schema, context={
+                'requested_count': 2, 'excluded_symbols': ['HYPEUSDT', 'TRXUSDT']})
+            with self.assertRaises(NativeContextUnavailable):
+                hook(payload)
+
     def test_actual_native_insertion_preserving_encoder_emits_full_canonical_projection(self):
         def native_encode(value):
             if isinstance(value, dict):
