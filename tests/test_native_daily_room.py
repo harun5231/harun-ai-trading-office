@@ -12,7 +12,15 @@ from unittest.mock import Mock
 from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_file_upload import NativeFileTurnReader
-from tests.test_native_browser_hook import request, client, OutcomeUnknown, NotSubmitted
+from tests.test_native_browser_hook import request as base_request, client, OutcomeUnknown, NotSubmitted
+
+
+def request():
+ value=base_request();value['marker']='HARUN_'+'a'*32;return value
+
+
+def rendered(payload):
+ return payload['prompt']+'\nMarker '+payload['marker']+'\nReturn '+payload['marker']
 
 
 class Composer:
@@ -60,12 +68,12 @@ class Bridge:
   self.operation_deadline=deadline;self._operation_contract=self._dom_contract
   sent=False
   try:
-   composer=self._fresh_conversation();composer.fill(payload['prompt'])
+   composer=self._fresh_conversation();prompt=rendered(payload);composer.fill(prompt)
    if self._turns():raise NotSubmitted('UNAVAILABLE')
    if gate()is not True:raise NotSubmitted('ROBOT_OFF')
    sent=True;self._visible(self._dom_contract.send)[0].click()
    while self.current<deadline:
-    text=self._answer(payload['prompt'])
+    text=self._answer(prompt)
     if text is not None:return {'output':{'symbols':['BTCUSDT']},'assistant_text':text,
      'response_id':'native:'+hashlib.sha256((self.page.url+'\n'+payload['marker']+'\n'+text).encode()).hexdigest(),'chart_evidence':[]}
     self.wait(250)
@@ -82,7 +90,7 @@ def rows():
 
 
 def native():
- return SimpleNamespace(user_prompt=lambda p:p['prompt'],RAIL_INPUT_GROUP=object(),MESSAGE='messages',OutcomeUnknown=OutcomeUnknown,NotSubmitted=NotSubmitted,
+ return SimpleNamespace(user_prompt=rendered,RAIL_INPUT_GROUP=object(),MESSAGE='messages',OutcomeUnknown=OutcomeUnknown,NotSubmitted=NotSubmitted,
   MAX_ANSWER=65536,image_artifacts=Mock(return_value=[]),exact_json=Mock(return_value={'symbols':['BTCUSDT']}))
 
 
@@ -203,7 +211,7 @@ class DailyRoomTests(unittest.TestCase):
   # running operation's final checkpoint. Native click really creates the rows.
   with room.store.open()as db:
    room._connection=db;room.day='2026-10-30';room._payload=request();room._prepared=False
-   bridge._fresh_conversation();bridge.composer.fill(request()['prompt'])
+   bridge._fresh_conversation();bridge.composer.fill(rendered(request()))
    bridge._visible('send')[0].click()
    stored=db.execute('SELECT state,anchors FROM daily_rooms').fetchone()
    self.assertEqual(stored,('SENT','[]'))
@@ -230,6 +238,7 @@ class DailyRoomTests(unittest.TestCase):
   bridge,room,hook,_=self.setup(Bridge(rows()))
   hook.ask(request(),lambda:True,deadline=80);owned=copy.deepcopy(bridge.messages)
   foreign=copy.deepcopy(owned);foreign[-1]['id']='foreign-assistant'
+  foreign[-2]['text']=foreign[-2]['text'].replace(request()['marker'],'HARUN_'+'b'*32)
   restarted,restored,hook2,_=self.setup()
   restored.history.rooms=[('Same title',foreign),('Same title',owned)]
   hook2.ask(request(),lambda:True,deadline=80)
@@ -242,7 +251,7 @@ class DailyRoomTests(unittest.TestCase):
   with room.store.open()as db:
    db.execute('INSERT INTO daily_rooms VALUES(?,?,?,?,?,?,?)',
     ('2026-10-30','1'*32,'CLAIMED',None,'[]',json.dumps({
-     'first_prompt_sha256':hashlib.sha256(request()['prompt'].encode()).hexdigest(),
+     'first_prompt_sha256':hashlib.sha256(rendered(request()).encode()).hexdigest(),
      'marker':request()['marker'],'history_titles':[]}),self.now))
   restarted,restored,hook2,_=self.setup()
   hook2.ask(request(),lambda:True,deadline=80)
@@ -313,3 +322,41 @@ class DailyRoomTests(unittest.TestCase):
   history.select({'index':4,'text':'Same title','label':'Hari ini'},occurrence=1)
   self.assertEqual(targets,[23])
   self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def owned_prompt_fixture(self):
+  prompt=rendered(request())
+  own=[{'role':'user','text':prompt,'attachments':[]},
+   {'role':'assistant','text':'Original response','complete':True,'id':'temporary-id'}]
+  binding={'first_prompt_sha256':hashlib.sha256(prompt.encode()).hexdigest(),
+   'marker':request()['marker']}
+  return own,binding
+
+ def test_room_identity_accepts_full_owned_prompt_after_prepended_history_and_reloaded_id(self):
+  own,binding=self.owned_prompt_fixture();anchors=identities(own)
+  current=rows()+copy.deepcopy(own)
+  current[-1].update(id='server-id',text='Current rendered response')
+  self.assertNotEqual(identities(current[:2]),anchors)
+  self.assertTrue(DailyRoom.matches(current,anchors,binding,'BOUND'))
+  self.assertEqual(current[-2]['text'].count(binding['marker']),2)
+  # The same restoration still freezes all current rows for the next request.
+  bridge,room,_,_=self.setup(Bridge(current))
+  room.offset=len(current);room.prefix=identities(current)
+  bridge.messages[-1]['text']='Changed ENTRY 999 after request admission'
+  with self.assertRaises(DailyRoomUnavailable):room.turns()
+
+ def test_room_identity_rejects_modified_prompt_substring_and_assistant_quote(self):
+  own,binding=self.owned_prompt_fixture();anchors=identities(own)
+  for row in ({'role':'user','text':'Extra prefix '+own[0]['text']},
+   {'role':'user','text':own[0]['text'].replace('EXACT','Changed ENTRY 999')},
+   {'role':'assistant','text':own[0]['text'],'complete':True,'id':'quoted'}):
+   with self.subTest(row=row):
+    self.assertFalse(DailyRoom.matches(rows()+[row],anchors,binding,'BOUND'))
+
+ def test_room_identity_requires_the_bound_harun_marker_value(self):
+  own,binding=self.owned_prompt_fixture();anchors=identities(own)
+  for text in (own[0]['text'].replace(binding['marker'],'HARUN_'+'b'*32),
+   own[0]['text']+' HARUN_'+'b'*32,
+   own[0]['text'].replace(binding['marker'],binding['marker']+'x')):
+   # Even a matching full text hash cannot substitute another marker value.
+   wrong=dict(binding,first_prompt_sha256=hashlib.sha256(text.encode()).hexdigest())
+   self.assertFalse(DailyRoom.matches(rows()+[{'role':'user','text':text}],anchors,wrong,'BOUND'))
