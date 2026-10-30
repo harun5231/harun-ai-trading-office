@@ -237,34 +237,71 @@ class DelegatedDOMBridge:
             # Native attachment verification accepts names for one upload at a
             # time. Reconstruct each owned user turn with its own exact names;
             # never let the latest upload invalidate or disguise earlier turns.
-            rows = turns_with_names([])
-            pending_offset = len(state['prefix']) if allow_pending and state['prefix'] is not None else None
-            unfinished = pending_offset is not None and (len(rows) < pending_offset + 2
-                or rows[pending_offset+1].get('complete') is not True)
-            for index, names in enumerate(state['turn_names']):
-                offset = index * 2
-                # The just-sent user turn/images and streaming answer can appear
-                # incrementally. Wait for completion before attesting this pair;
-                # the previously completed prefix remains strict at every poll.
-                if unfinished and offset == pending_offset:
-                    continue
-                projected = turns_with_names(names)
-                if len(projected) != len(rows) and not (unfinished
-                        and pending_offset <= len(projected) <= pending_offset + 2
-                        and pending_offset <= len(rows) <= pending_offset + 2):
-                    unknown()
-                if offset >= len(rows):
-                    continue
-                for other in range(1, len(rows), 2):
-                    if unfinished and other == pending_offset + 1:
-                        continue
-                    if projected[other] != rows[other]:
+            retries = 0
+            while True:
+                rows = turns_with_names([])
+                prefix = state['prefix']
+                if prefix is not None:
+                    # A transient attachment projection cannot hide a changed
+                    # message, role, completion flag or native message ID.
+                    if len(rows) < len(prefix) or any(
+                            {key: value for key, value in row.items() if key != 'attachments'}
+                            != {key: value for key, value in expected.items() if key != 'attachments'}
+                            for row, expected in zip(rows, prefix)):
                         unknown()
-                row = projected[offset]
-                if sorted(row.get('attachments', [])) != sorted(names):
-                    unknown()
-                rows[offset] = row
-            return rows
+                pending_offset = len(prefix) if allow_pending and prefix is not None else None
+                unfinished = pending_offset is not None and (len(rows) < pending_offset + 2
+                    or rows[pending_offset+1].get('complete') is not True)
+                missing = None
+                for index, names in enumerate(state['turn_names']):
+                    offset = index * 2
+                    # The just-sent user turn/images and streaming answer can
+                    # appear incrementally. The completed prefix stays strict.
+                    if unfinished and offset == pending_offset:
+                        continue
+                    projected = turns_with_names(names)
+                    if len(projected) != len(rows) and not (unfinished
+                            and pending_offset <= len(projected) <= pending_offset + 2
+                            and pending_offset <= len(rows) <= pending_offset + 2):
+                        unknown()
+                    if offset >= len(rows):
+                        continue
+                    for other in range(1, len(rows), 2):
+                        if unfinished and other == pending_offset + 1:
+                            continue
+                        if projected[other] != rows[other]:
+                            unknown()
+                    row = projected[offset]
+                    if prefix is not None and offset < len(prefix) and (
+                            {key: value for key, value in row.items() if key != 'attachments'}
+                            != {key: value for key, value in prefix[offset].items() if key != 'attachments'}):
+                        unknown()
+                    attachments = row.get('attachments', [])
+                    if type(attachments) is not list:
+                        unknown()
+                    if sorted(attachments) != sorted(names):
+                        # React can briefly remove an existing file tile while
+                        # the next answer appears. Missing witnesses are pending,
+                        # never accepted or replaced with cached attachments.
+                        if not names or attachments not in ([], ['UNCONFIRMED']):
+                            unknown()
+                        missing = {'scope': 'PENDING_ATTACHMENT_READ_NOT_DELIVERY_PROOF',
+                            'offset': offset, 'expected_names': list(names),
+                            'observed_names': list(attachments), 'resamples': retries,
+                            'prefix_message_fields_verified': prefix is not None}
+                        self.bridge.native_attachment_projection = missing
+                        if delivery is not None and delivery.observations:
+                            delivery.observations[-1]['turn_projection'] = missing
+                        break
+                    rows[offset] = row
+                if missing is None:
+                    if retries:
+                        gate()
+                        self.bridge.native_attachment_projection.update(recovered=True, resamples=retries)
+                    return rows
+                gate()  # Current dispatch, URL and original deadline still own this read.
+                retries += 1
+                self.bridge.page.wait_for_timeout(25)
 
         def prepare_fresh_followup(question, market, prefix):
             # Question-only analysis is no longer admitted. A pre-200 release
