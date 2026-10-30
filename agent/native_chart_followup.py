@@ -448,4 +448,4 @@ def install_actor_bridge(bridge, *, actor, archive_root, expected_playwright_ver
     callback = ActorCharts(actor, charts, archive_root=archive_root,
                            expected_playwright_version=expected_playwright_version)
     return install_native_bridge(bridge, fresh_charts=callback,
-        followup_receipt=ReceiptStore(archive_root))
+        followup_receipt=ReceiptStore(archive_root), archive_root=archive_root)

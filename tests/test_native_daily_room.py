@@ -1,0 +1,248 @@
+"""Daily room reuse around the actual native ask/receipt protocol."""
+import copy
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+from types import SimpleNamespace
+import tempfile
+import unittest
+from unittest.mock import Mock
+
+from agent.native_daily_room import DailyRoom, DailyRoomUnavailable, JOURNAL_NAME
+from agent.native_browser_hook import DelegatedDOMBridge
+from agent.native_file_upload import NativeFileTurnReader
+from tests.test_native_browser_hook import request, client, OutcomeUnknown, NotSubmitted
+
+
+class Composer:
+ def __init__(self):self.value=''
+ def input_value(self):return self.value
+ def fill(self,value,**kw):self.value=value
+
+
+class Button:
+ def __init__(self,bridge):self.bridge=bridge
+ def is_enabled(self):return True
+ def click(self,**kw):
+  b=self.bridge;b.clicks+=1
+  b.messages.extend([{'role':'user','text':b.composer.value,'attachments':[], 'id':'user-'+str(b.serial)},
+   {'role':'assistant','text':'FINAL_NATIVE_REPLY BTCUSDT','complete':True,'id':'assistant-'+str(b.serial)}])
+  b.composer.value='';b.serial+=1
+
+
+class Bridge:
+ def __init__(self,rows=()):
+  self.messages=copy.deepcopy(list(rows));self.timeout=90;self.operation_deadline=None
+  self.current=0;self.clock=lambda:self.current
+  self._dom_contract=SimpleNamespace(composer='composer',send='send');self._operation_contract=None
+  self.page=SimpleNamespace(url='https://app.neurobro.ai/',wait_for_timeout=self.wait)
+  self.composer=Composer();self.button=Button(self);self.uploaded_names=[]
+  self.serial=10;self.clicks=0;self.fresh_calls=0
+ def wait(self,milliseconds):self.current+=milliseconds/1000
+ def status(self):return 'CONNECTED'
+ def _timeout(self,milliseconds):return milliseconds
+ def _until(self,seconds):return min(self.current+seconds,self.operation_deadline)
+ def _visible(self,selector):
+  if selector=='messages':return self.messages[:]
+  return [self.composer]if selector=='composer'else[self.button]
+ def _turns(self):return copy.deepcopy(self._visible('messages'))
+ def _fresh_conversation(self):self.fresh_calls+=1;self.messages=[];return self.composer
+ def _preview_scope(self,*args):return SimpleNamespace(locator=lambda _:SimpleNamespace(count=lambda:0))
+ def _upload(self,*args):return []
+ def _answer(self,prompt,attachment_names=()):
+  rows=self._turns()
+  if (len(rows)!=2 or rows[0].get('role')!='user' or rows[0]['text'].strip()!=prompt.strip()
+   or sorted(rows[0]['attachments'])!=sorted(attachment_names)
+   or rows[1].get('role')!='assistant'or rows[1].get('complete')is not True):return None
+  return rows[1]['text']
+ def ask(self,payload,gate,*,chart_images=(),chart_evidence=(),deadline=None,receipt_callback=None):
+  self.operation_deadline=deadline;self._operation_contract=self._dom_contract
+  sent=False
+  try:
+   composer=self._fresh_conversation();composer.fill(payload['prompt'])
+   if self._turns():raise NotSubmitted('UNAVAILABLE')
+   if gate()is not True:raise NotSubmitted('ROBOT_OFF')
+   sent=True;self._visible(self._dom_contract.send)[0].click()
+   while self.current<deadline:
+    text=self._answer(payload['prompt'])
+    if text is not None:return {'output':{'symbols':['BTCUSDT']},'assistant_text':text,
+     'response_id':'native:'+hashlib.sha256((self.page.url+'\n'+payload['marker']+'\n'+text).encode()).hexdigest(),'chart_evidence':[]}
+    self.wait(250)
+   raise OutcomeUnknown()
+  except Exception:
+   if sent:raise OutcomeUnknown()from None
+   raise
+  finally:self._operation_contract=None
+
+
+def rows():
+ return [{'role':'user','text':'Earlier screening','attachments':[],'id':'earlier-user'},
+  {'role':'assistant','text':'BTCUSDT selected','complete':True,'id':'earlier-assistant'}]
+
+
+def native():
+ return SimpleNamespace(user_prompt=lambda p:p['prompt'],RAIL_INPUT_GROUP=object(),MESSAGE='messages',OutcomeUnknown=OutcomeUnknown,NotSubmitted=NotSubmitted,
+  MAX_ANSWER=65536,image_artifacts=Mock(return_value=[]),exact_json=Mock(return_value={'symbols':['BTCUSDT']}))
+
+
+class History:
+ def __init__(self, bridge):self.bridge=bridge;self.rooms=[];self.selected=[]
+ def rows(self):return [dict(index=i,text=title,label='Hari ini')for i,(title,_)in enumerate(self.rooms)]
+ def open_sidebar(self):pass
+ def select(self,row):self.selected.append(row['text']);self.bridge.messages=copy.deepcopy(self.rooms[row['index']][1])
+
+
+class DailyRoomTests(unittest.TestCase):
+ def setUp(self):
+  self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+  self.now=datetime(2026,10,30,16,59,tzinfo=timezone.utc).timestamp()
+ def setup(self,bridge=None):
+  bridge=bridge or Bridge();module=native()
+  room=DailyRoom(bridge,module,self.directory.name,wall_clock=lambda:self.now,history=History(bridge))
+  reasoner=client('SCREENING')
+  hook=DelegatedDOMBridge(bridge,reasoner,native=module,monotonic=bridge.clock,
+   wall_clock=lambda:self.now,daily_room=room)
+  return bridge,room,hook,reasoner
+ def test_screening_replacement_and_analysis_reuse_existing_room_and_mini_identity(self):
+  bridge,room,hook,reasoner=self.setup(Bridge(rows()))
+  for i in range(8):
+   value=request();value['operation']='2026-10-30:screening:'+str(i)
+   result=hook.ask(value,lambda:True,deadline=bridge.current+80)
+   self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY BTCUSDT')
+   self.assertEqual(len(bridge._turns()),2)
+  self.assertEqual(bridge.fresh_calls,0)
+  self.assertEqual(len(bridge.messages),18)
+  calls=[item.args[0]for item in reasoner.request.call_args_list]
+  self.assertEqual({item['conversation_id']for item in calls},{room.conversation_id})
+  self.assertEqual(room.evidence()['operation_offset'],16)
+  self.assertEqual(bridge.messages[:2],rows())
+ def test_restart_reopens_persistent_identity_without_new_chat(self):
+  bridge,room,hook,reasoner=self.setup()
+  hook.ask(request(),lambda:True,deadline=80)
+  saved=copy.deepcopy(bridge.messages);identity=room.conversation_id
+  restarted,restored,hook2,reasoner2=self.setup(Bridge(saved))
+  value=request();value['operation']='2026-10-30:analysis:2'
+  hook2.ask(value,lambda:True,deadline=80)
+  self.assertEqual(restored.conversation_id,identity)
+  self.assertEqual(restarted.fresh_calls,0)
+  self.assertEqual(restored.evidence()['mode'],'REUSED')
+  self.assertEqual(restored.evidence()['operation_offset'],2)
+ def test_wib_rollover_creates_once_and_next_request_reuses_it(self):
+  bridge,room,hook,_=self.setup(Bridge(rows()))
+  hook.ask(request(),lambda:True,deadline=80);old=room.conversation_id
+  self.now+=120
+  hook.ask(request(),lambda:True,deadline=bridge.current+80);new=room.conversation_id
+  hook.ask(request(),lambda:True,deadline=bridge.current+80)
+  self.assertNotEqual(new,old)
+  self.assertIn('2026-10-31',new)
+  self.assertEqual(bridge.fresh_calls,1)
+  self.assertEqual(len(bridge.messages),4)
+ def test_foreign_current_room_is_rejected_without_new_chat_or_send(self):
+  bridge,room,hook,_=self.setup()
+  hook.ask(request(),lambda:True,deadline=80)
+  foreign=rows();foreign[0]['id']='foreign-id'
+  restarted,_,hook2,_=self.setup(Bridge(foreign))
+  with self.assertRaises(DailyRoomUnavailable):hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restarted.clicks,0);self.assertEqual(restarted.fresh_calls,0)
+ def test_draft_and_unfinished_answer_are_preserved_before_send(self):
+  for mutate in ('draft','streaming'):
+   with self.subTest(mutate=mutate):
+    bridge=Bridge(rows())
+    if mutate=='draft':bridge.composer.value='Owner unfinished text'
+    else:bridge.messages[-1]['complete']=False
+    # Separate journal: the room has not yet been adopted.
+    with tempfile.TemporaryDirectory()as root:
+     module=native();room=DailyRoom(bridge,module,root,wall_clock=lambda:self.now,history=History(bridge))
+     with self.assertRaises(DailyRoomUnavailable),room.operation(request()):bridge._fresh_conversation()
+    self.assertEqual(bridge.fresh_calls,0);self.assertEqual(bridge.clicks,0)
+ def test_real_file_reader_nodes_and_rows_share_request_offset(self):
+  bridge,room,hook,_=self.setup(Bridge(rows()))
+  hook.ask(request(),lambda:True,deadline=80)
+  first=copy.deepcopy(bridge.messages)
+  with room.operation(request()):
+   bridge._fresh_conversation()
+   names=('chart15.png','chart1h.png','data15.csv','data1h.csv')
+   bridge.messages.extend([{'role':'user','id':'data-user','text':'Current coin chart','attachments':list(names[:2])},
+    {'role':'assistant','id':'data-answer','text':'HOLD','complete':True}])
+   reader=NativeFileTurnReader(bridge,native())
+   reader.turn_files[names]=(names[:2],names[2:],lambda node,names,user:node['id']=='data-user')
+   bridge.uploaded_names=list(names)
+   projected=reader.read()
+   self.assertEqual(len(projected),2)
+   self.assertEqual(projected[0]['attachments'],list(names))
+   self.assertEqual(bridge._visible('messages')[0]['id'],'data-user')
+  self.assertEqual(bridge.messages[:len(first)],first)
+ def test_failed_send_keeps_room_identity_and_does_not_reopen_or_erase_history(self):
+  bridge,room,hook,_=self.setup(Bridge(rows()))
+  with self.assertRaises(NotSubmitted):hook.ask(request(),lambda:False,deadline=80)
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.messages,rows())
+  self.assertEqual(bridge.fresh_calls,0)
+  bridge.composer.value=''
+  hook.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(bridge.fresh_calls,0)
+
+ def test_blank_home_restart_restores_owned_history_before_next_send(self):
+  bridge,room,hook,_=self.setup(Bridge(rows()))
+  hook.ask(request(),lambda:True,deadline=80)
+  identity=room.conversation_id;owned=copy.deepcopy(bridge.messages)
+  restarted,restored,hook2,_=self.setup()
+  restored.history.rooms=[('Other room',rows()),('Owned daily room',owned)]
+  hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restored.conversation_id,identity)
+  self.assertEqual(restarted.fresh_calls,0)
+  self.assertEqual(restored.history.selected,['Other room','Owned daily room'])
+  self.assertEqual(restarted.messages[:len(owned)],owned)
+  self.assertEqual(restarted.clicks,1)
+
+ def test_crash_after_first_send_before_anchor_checkpoint_restores_by_exact_prompt(self):
+  bridge,room,hook,_=self.setup()
+  # Emulate process death by retaining the durable pre-click witness but not
+  # running operation's final checkpoint. Native click really creates the rows.
+  with room.store.open()as db:
+   room._connection=db;room.day='2026-10-30';room._payload=request();room._prepared=False
+   bridge._fresh_conversation();bridge.composer.fill(request()['prompt'])
+   bridge._visible('send')[0].click()
+   stored=db.execute('SELECT state,anchors FROM daily_rooms').fetchone()
+   self.assertEqual(stored,('SENT','[]'))
+   room._connection=None
+  owned=copy.deepcopy(bridge.messages);identity=room.conversation_id
+  restarted,restored,hook2,_=self.setup()
+  restored.history.rooms=[('Owned after interrupted send',owned)]
+  hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restored.conversation_id,identity)
+  self.assertEqual(restarted.fresh_calls,0)
+  self.assertEqual(len(restarted.messages),4)
+  self.assertEqual(restarted.messages[:2],owned)
+
+ def test_uncertain_first_send_with_no_history_never_uses_blank_as_new_room(self):
+  bridge,room,_,_=self.setup()
+  with room.store.open()as db:
+   room._connection=db;room.day='2026-10-30';room._payload=request();room._prepared=False
+   bridge._fresh_conversation();room.before_send();room._connection=None
+  restarted,_,hook2,_=self.setup()
+  with self.assertRaises(DailyRoomUnavailable):hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restarted.clicks,0);self.assertEqual(restarted.fresh_calls,0)
+
+ def test_foreign_same_title_history_requires_native_anchor_not_title(self):
+  bridge,room,hook,_=self.setup(Bridge(rows()))
+  hook.ask(request(),lambda:True,deadline=80);owned=copy.deepcopy(bridge.messages)
+  foreign=copy.deepcopy(owned);foreign[-1]['id']='foreign-assistant'
+  restarted,restored,hook2,_=self.setup()
+  restored.history.rooms=[('Same title',foreign),('Same title',owned)]
+  hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restored.history.selected,['Same title','Same title'])
+  self.assertEqual(restarted.messages[:len(owned)],owned)
+  self.assertEqual(restarted.clicks,1)
+
+ def test_interrupted_selection_without_send_resumes_same_claim_on_empty_home(self):
+  bridge,room,_,_=self.setup()
+  with room.store.open()as db:
+   db.execute('INSERT INTO daily_rooms VALUES(?,?,?,?,?,?,?)',
+    ('2026-10-30','1'*32,'CLAIMED',None,'[]',json.dumps({
+     'first_prompt_sha256':hashlib.sha256(request()['prompt'].encode()).hexdigest(),
+     'marker':request()['marker'],'history_titles':[]}),self.now))
+  restarted,restored,hook2,_=self.setup()
+  hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(restored.room_id,'1'*32)
+  self.assertEqual(restarted.fresh_calls,0);self.assertEqual(restarted.clicks,1)
