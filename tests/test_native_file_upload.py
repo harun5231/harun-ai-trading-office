@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
 
-from agent.native_file_upload import NativeDataFileDelivery
+from agent.native_file_upload import NativeDataFileDelivery, enabled
 from agent.native_data_files import deliver_market_data_files
 from tests.test_agent_closed_candles_200 import NOW, native_context_200
 
@@ -118,6 +118,19 @@ class DataFileUploadTests(unittest.TestCase):
         delivery=NativeDataFileDelivery(f,native,self.gate,wall_clock=lambda:NOW).install()
         payload={'context':native_context_200(),'operation':'native-analysis','request_sha256':'a'*64}
         return f,delivery,payload
+
+    def test_screening_context_does_not_enable_market_data_upload(self):
+        def formatter(payload): return str(payload)
+        formatter.__harun_data_files_v1__ = True
+        native = SimpleNamespace(user_prompt=formatter)
+        replacement = {'output_schema': {'required': ['symbols']}, 'context': {
+            'requested_count': 2, 'excluded_symbols': ['HYPEUSDT', 'TRXUSDT']}}
+        self.assertFalse(enabled(native, replacement))
+        self.assertFalse(enabled(native, {**replacement, 'context': None}))
+        self.assertTrue(enabled(native, {'output_schema': {'required': ['symbol', 'side']},
+            'context': native_context_200()}))
+        self.assertFalse(enabled(SimpleNamespace(user_prompt=lambda _: ''),
+            {'context': native_context_200()}))
 
     def test_menu_upload_preserves_two_native_png_receipts_and_uploads_exact_csv_bytes(self):
         f,d,payload=self.setup();before=copy.deepcopy(payload)

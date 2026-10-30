@@ -26,6 +26,14 @@ def _canonical(value):
                       ensure_ascii=True, allow_nan=False).encode('ascii')
 
 
+def screening_payload(payload):
+    """Recognize the native coin-selection schema, including replacements."""
+    if type(payload) is not dict:
+        return False
+    schema = payload.get('output_schema')
+    return type(schema) is dict and schema.get('required') == ['symbols']
+
+
 def install(native_namespace, *, expected_prompt, context_key, wall_clock=time.time):
     """Wrap a source-pinned formatter; never infer a private payload field name.
 
@@ -42,9 +50,10 @@ def install(native_namespace, *, expected_prompt, context_key, wall_clock=time.t
     def user_prompt(payload):
         if type(payload) is not dict or context_key not in payload:
             raise ValueError('NATIVE_200_PROMPT_PAYLOAD_UNVERIFIED')
-        # Screening has no selected symbol or chart context. Preserve that
-        # existing path byte for byte; the native schema/gate still admits it.
-        if payload[context_key] is None:
+        # Replacement screening carries exclusions, without selected-coin
+        # candles. The native formatter retains that context byte for byte;
+        # its existing schema/gate still owns admission.
+        if payload[context_key] is None or screening_payload(payload):
             return expected_prompt(payload)
         before = _canonical(payload)
         if len(before) > MAX_NATIVE_CONTEXT:
