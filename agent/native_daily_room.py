@@ -199,7 +199,8 @@ class DailyRoom:
 
     def visible(self, selector):
         nodes = self.original_visible(selector)
-        if selector == self.bridge._dom_contract.send:
+        send = getattr(getattr(self.bridge, '_dom_contract', None), 'send', None)
+        if send is not None and selector == send:
             return [DailySend(self, locator) for locator in nodes]
         if selector == self.native.MESSAGE:
             # FileTurnReader takes a second native-node snapshot. Its unchanged

@@ -246,3 +246,9 @@ class DailyRoomTests(unittest.TestCase):
   hook2.ask(request(),lambda:True,deadline=80)
   self.assertEqual(restored.room_id,'1'*32)
   self.assertEqual(restarted.fresh_calls,0);self.assertEqual(restarted.clicks,1)
+
+ def test_initial_contract_detection_passes_native_visibility_through(self):
+  bridge,room,_,_=self.setup()
+  bridge._dom_contract=None
+  self.assertEqual(bridge._visible('send'),[bridge.button])
+  self.assertEqual(bridge._visible('composer'),[bridge.composer])
