@@ -51,6 +51,8 @@ class NativeFileTurnReader:
         self.bridge, self.native = bridge, native
         self.original_turns = bridge._turns
         self.turn_files = {}
+        self.load_gate = None
+        self.load_attempts = set()
 
     def attachment_names(self, names):
         # Native DOM.ask still derives this argument from its two PNGs. Match
@@ -61,6 +63,53 @@ class NativeFileTurnReader:
         if len(matches) > 1:
             raise self.native.NotSubmitted('UNAVAILABLE')
         return list(matches[0]) if matches else list(names)
+
+    def _load_pending_images(self, turn, png_names, all_names, witness, *, until):
+        # Submitted thumbnails can be lazy-loaded offscreen even though their
+        # exact file tiles are ready. Only an active delivery may reveal them.
+        # Native _turns still owns all positive image/decode evidence.
+        if (not callable(self.load_gate) or self.bridge.clock() >= until
+                or len(png_names) != 2 or len(set(png_names)) != 2
+                or not witness(turn, all_names, user=True)):
+            return False
+        images = turn.locator('img')
+        if images.count() != 2:
+            return False
+        pending = []
+        for index, name in enumerate(png_names):
+            image = images.nth(index)
+            if not image.is_visible() or image.get_attribute('alt') != name:
+                return False
+            state = image.evaluate('(image) => ({complete:image.complete, '
+                'width:image.naturalWidth,height:image.naturalHeight})')
+            if (type(state) is not dict or type(state.get('width')) is not int
+                    or type(state.get('height')) is not int):
+                return False
+            if state.get('complete') is True and state['width'] > 0 and state['height'] > 0:
+                continue
+            if state.get('complete') is not False or state['width'] != 0 or state['height'] != 0:
+                return False  # A failed decoded image is not a pending load.
+            if (all_names, index) not in self.load_attempts:
+                pending.append(index)
+        acted = False
+        for index in pending:
+            self.load_gate()  # Current native dispatch/manual-session authority.
+            if (self.bridge.clock() >= until or self.bridge.status() != 'CONNECTED'
+                    or images.count() != 2 or not witness(turn, all_names, user=True)):
+                break
+            image = images.nth(index)
+            if not image.is_visible() or image.get_attribute('alt') != png_names[index]:
+                break
+            current = image.evaluate('(image) => ({complete:image.complete, '
+                'width:image.naturalWidth,height:image.naturalHeight})')
+            if (type(current) is not dict or current.get('complete') is not False
+                    or type(current.get('width')) is not int or type(current.get('height')) is not int
+                    or current.get('width') != 0 or current.get('height') != 0):
+                continue
+            self.load_attempts.add((all_names, index))
+            image.scroll_into_view_if_needed(timeout=self.bridge._timeout(5000))
+            acted = True
+        return acted
 
     def read(self):
         all_names = tuple(self.bridge.uploaded_names)
@@ -81,7 +130,13 @@ class NativeFileTurnReader:
                 self.bridge.uploaded_names = list(all_names)
             turns = self.bridge._visible(self.native.MESSAGE)
             if len(turns) == len(rows):
-                break
+                scrolled = False
+                for turn, row in zip(turns, rows):
+                    if row.get('role') == 'user' and row.get('attachments') != list(png_names):
+                        scrolled = self._load_pending_images(turn, png_names, all_names,
+                            witness, until=until) or scrolled
+                if not scrolled:
+                    break
             if self.bridge.clock() >= until:
                 raise self.native.NotSubmitted('UNAVAILABLE')
             self.bridge.page.wait_for_timeout(self.bridge._timeout(25))
@@ -313,8 +368,15 @@ class NativeDataFileDelivery:
         except Exception:
             pass
 
+    def _load_gate(self):
+        return self.gate()
+
     def install(self):
         self._need(not self.installed)
+        self.previous_load_gate = self.reader.load_gate
+        self.previous_load_attempts = self.reader.load_attempts
+        self.reader.load_gate = self._load_gate
+        self.reader.load_attempts = set()
         self.reader.turn_files.clear()
         self.bridge._upload, self.bridge._turns = self._upload, self.reader.read
         self.bridge._answer = self._answer
@@ -327,6 +389,8 @@ class NativeDataFileDelivery:
 
     def close(self):
         if self.installed:
+            self.reader.load_gate = self.previous_load_gate
+            self.reader.load_attempts = self.previous_load_attempts
             self.bridge._upload = self.original_upload
             self.bridge._answer = self.original_answer
             for event, callback in (('response', self._observe_error_response),
