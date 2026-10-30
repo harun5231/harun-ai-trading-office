@@ -136,7 +136,8 @@ class DelegatedDOMBridge:
     """Use native DOM completion/provenance code for the actual final answer."""
     def __init__(self, bridge, client, *, native=None, converter=None,
                  monotonic=time.monotonic, wall_clock=time.time,
-                 fresh_charts=None, followup_receipt=None):
+                 fresh_charts=None, followup_receipt=None, daily_room=None):
+        self.daily_room = daily_room
         self.native = native or importlib.import_module(type(bridge).__module__)
         self.bridge, self.client = bridge, client
         self.clock, self.wall_clock = monotonic, wall_clock
@@ -162,6 +163,17 @@ class DelegatedDOMBridge:
         return getattr(self.bridge, name)
 
     def ask(self, payload, dispatch_check, *, chart_images=(), chart_evidence=(),
+            deadline=None, receipt_callback=None):
+        if self.daily_room is not None:
+            with self.daily_room.operation(payload):
+                return self._ask(payload, dispatch_check, chart_images=chart_images,
+                    chart_evidence=chart_evidence, deadline=deadline,
+                    receipt_callback=receipt_callback)
+        return self._ask(payload, dispatch_check, chart_images=chart_images,
+            chart_evidence=chart_evidence, deadline=deadline,
+            receipt_callback=receipt_callback)
+
+    def _ask(self, payload, dispatch_check, *, chart_images=(), chart_evidence=(),
             deadline=None, receipt_callback=None):
         # Explicit native probe/evidence callbacks retain their existing path.
         # Normal BrowserActor._research has no callback and owns this transaction.
@@ -432,7 +444,8 @@ class DelegatedDOMBridge:
                 'phase': phase, 'transcript_sha256': _digest(observed_turns)},
                 sort_keys=True, separators=(',', ':')).encode()).hexdigest()
             request = {'schema_version': 1, 'request_id': identity,
-                'conversation_id': operation, 'phase': phase, 'reply': answer,
+                'conversation_id': (self.daily_room.conversation_id if self.daily_room is not None
+                    else operation), 'phase': phase, 'reply': answer,
                 'reply_sha256': reply_sha, 'market_context': market,
                 'gate': {'robot_on': True, 'native_dispatch_verified': True},
                 'deadline_epoch': self.wall_clock() + min(90.0, until - self.clock())}
@@ -595,7 +608,7 @@ class DelegatedDOMBridge:
                 delivery.close()
 
 
-def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None):
+def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None, archive_root=None):
     """An unconfigured additive hook preserves the existing production bridge."""
     if (fresh_charts is not None and not callable(fresh_charts)
             or followup_receipt is not None and not callable(followup_receipt)):
@@ -614,5 +627,11 @@ def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None):
             raise ValueError('NATIVE_FOLLOWUP_CONFIGURATION_UNVERIFIED')
         return bridge
     from .dialogue_client import DialogueClient
+    daily_room = None
+    if archive_root is not None:
+        from .native_daily_room import DailyRoom
+        native = importlib.import_module(type(bridge).__module__)
+        daily_room = DailyRoom(bridge, native, archive_root)
     return DelegatedDOMBridge(bridge, DialogueClient(path, token),
-        fresh_charts=fresh_charts, followup_receipt=followup_receipt)
+        fresh_charts=fresh_charts, followup_receipt=followup_receipt,
+        daily_room=daily_room)
