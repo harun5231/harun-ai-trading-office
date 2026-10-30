@@ -69,6 +69,26 @@ HISTORY_ROWS_JS = r"""root => {
  return out;
 }"""
 
+# Passive failure evidence only. Exclude message descendants and input values;
+# the private record describes the actual history controls that were rendered.
+HISTORY_DIAGNOSTIC_JS = r"""(root, messageSelector) => {
+ const visible=e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();
+  return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>0&&r.height>0;};
+ const shell=e=>visible(e)&&!e.closest(messageSelector);
+ const norm=s=>String(s||'').replace(/\s+/g,' ').trim().slice(0,160);
+ const shape=e=>({tag:e.tagName,role:e.getAttribute('role'),slot:e.getAttribute('data-slot'),
+  analytics:e.getAttribute('data-analytics-id'),expanded:e.getAttribute('aria-expanded'),
+  parent:{tag:e.parentElement?.tagName,role:e.parentElement?.getAttribute('role'),
+   slot:e.parentElement?.getAttribute('data-slot')}});
+ return {
+  buttons:Array.from(root.querySelectorAll('button')).filter(shell).slice(0,100)
+   .map(e=>({...shape(e),text:norm(e.innerText),disabled:e.disabled})),
+  headings:Array.from(root.querySelectorAll('h1,h2,h3,[role="heading"],[data-slot="sidebar-group-label"]'))
+   .filter(shell).slice(0,60).map(e=>({...shape(e),text:norm(e.innerText)})),
+  widgets:Array.from(root.querySelectorAll('[role],[data-slot]')).filter(shell).slice(0,100).map(shape)
+ };
+}"""
+
 
 class DailyRoomHistory:
     def __init__(self, room):
@@ -86,10 +106,13 @@ class DailyRoomHistory:
 
     def open_sidebar(self):
         room = self.room
+        need(room.bridge.status() == 'CONNECTED')
         selector = getattr(room.native, 'CURRENT_CHAT_NAV', None)
         need(type(selector) is str and selector)
         navigation = room.original_visible(selector)
         need(len(navigation) == 1 and navigation[0].is_enabled())
+        if navigation[0].get_attribute('aria-expanded') == 'true':
+            return  # An already open sidebar may still be loading its rows.
         navigation[0].click(timeout=room.bridge._timeout(5000))
 
     def select(self, row, *, occurrence=0):
@@ -256,7 +279,18 @@ class DailyRoom:
         choices = self.history.rows()
         if not choices:
             self.history.open_sidebar()
-            choices = self.history.rows()
+            # Opening the rail schedules React rendering. Its first empty DOM
+            # snapshot does not establish that the owned room is absent.
+            history_until = self.bridge._until(5)
+            while self.bridge.clock() < history_until:
+                status = self.bridge.status()
+                need(status in ('CONNECTED', 'UNAVAILABLE'))
+                if status == 'CONNECTED':
+                    choices = self.history.rows()
+                    if choices:
+                        break
+                self.bridge.page.wait_for_timeout(min(50,
+                    max(1, int((history_until-self.bridge.clock())*1000))))
         hints = binding.get('history_titles', [])
         occurrences, ordered = {}, []
         for row in choices:
@@ -289,7 +323,60 @@ class DailyRoom:
                 if observed != before and stable >= 3 and rows and rows[-1].get('complete') is True:
                     break  # Loaded another historical room; inspect no reply there.
                 self.bridge.page.wait_for_timeout(50)
+        self.retain_restore_failure(choices)
         raise DailyRoomUnavailable('NEUROBRO_DAILY_ROOM_NOT_FOUND')
+
+    def retain_restore_failure(self, choices):
+        """Keep the failed history observation before any browser recovery."""
+        directory = descriptor = None
+        temporary = '.on-daily-room-restore-' + uuid.uuid4().hex + '.tmp'
+        try:
+            rows = self.full_turns()
+            composer = self.original_visible(self.bridge._dom_contract.composer)
+            drafts = [item.input_value() for item in composer]
+            controls = self.bridge.page.locator('html').evaluate(
+                HISTORY_DIAGNOSTIC_JS, self.native.MESSAGE,
+                timeout=self.bridge._timeout(2500))
+            record = {'schema_version': 1, 'reason': 'NEUROBRO_DAILY_ROOM_NOT_FOUND',
+                'at': self.wall_clock(), 'day': self.day, 'room_id': self.room_id,
+                'history_choice_count': len(choices), 'history_choices': choices[:100],
+                'controls': controls, 'page_url_sha256': hashlib.sha256(
+                    self.bridge.page.url.encode()).hexdigest(),
+                'composer': [{'characters': len(value), 'empty': not value,
+                    'sha256': hashlib.sha256(value.encode()).hexdigest()} for value in drafts],
+                'native_rows': [{'role': row.get('role'), 'complete': row.get('complete'),
+                    'text_characters': len(row.get('text', '')),
+                    'text_sha256': hashlib.sha256(row.get('text', '').encode()).hexdigest()}
+                    for row in rows[:100]], 'diagnostic_browser_inputs_performed': False}
+            raw = canonical(record).encode()
+            need(len(raw) <= 131072)
+            from .native_chart_followup import _directory
+            directory = _directory(self.store.root)
+            name = 'on-daily-room-restore.json'
+            try:
+                prior = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                need(stat.S_ISREG(prior.st_mode) and prior.st_uid == os.geteuid()
+                    and prior.st_nlink == 1 and stat.S_IMODE(prior.st_mode) == 0o600)
+            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600, dir_fd=directory)
+            with os.fdopen(descriptor, 'wb') as output:
+                descriptor = None
+                output.write(raw); output.flush(); os.fsync(output.fileno())
+            os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+        except Exception:
+            pass  # Evidence collection must not change the original refusal.
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            if directory is not None:
+                try:
+                    os.unlink(temporary, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+                os.close(directory)
 
     def fresh(self):
         need(self._connection is not None and not self._prepared)

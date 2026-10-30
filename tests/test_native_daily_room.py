@@ -205,6 +205,63 @@ class DailyRoomTests(unittest.TestCase):
   self.assertEqual(restarted.messages[:len(owned)],owned)
   self.assertEqual(restarted.clicks,1)
 
+ def test_blank_restart_waits_for_sidebar_rows_after_open_before_same_room_send(self):
+  bridge,room,hook,_=self.setup()
+  hook.ask(request(),lambda:True,deadline=80)
+  owned=copy.deepcopy(bridge.messages);identity=room.conversation_id
+  restarted,restored,hook2,_=self.setup()
+  restored.history.rooms=[('Owned daily room',owned)]
+  original_rows=restored.history.rows
+  opened=[]
+  restored.history.open_sidebar=lambda:opened.append(restarted.current)
+  restored.history.rows=lambda:original_rows()if opened and restarted.current>=0.15 else[]
+  hook2.ask(request(),lambda:True,deadline=80)
+  self.assertEqual(len(opened),1)
+  self.assertGreaterEqual(restarted.current,0.15)
+  self.assertEqual(restored.conversation_id,identity)
+  self.assertEqual(restored.history.selected,['Owned daily room'])
+  self.assertEqual(restarted.messages[:len(owned)],owned)
+  self.assertEqual(restarted.fresh_calls,0)
+  self.assertEqual(restarted.clicks,1)
+
+ def test_sidebar_wait_stops_on_security_challenge_before_room_selection(self):
+  bridge,room,_,_=self.setup();bridge.operation_deadline=80
+  room.history.rows=lambda:[]
+  room.history.open_sidebar=Mock()
+  bridge.status=lambda:'CONNECTED'if bridge.current<0.1 else'CHALLENGE_REQUIRED'
+  with self.assertRaises(DailyRoomUnavailable):room.restore([],{},'SENT')
+  self.assertAlmostEqual(bridge.current,0.1)
+  room.history.open_sidebar.assert_called_once()
+  self.assertEqual(room.history.selected,[])
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_open_sidebar_does_not_toggle_already_expanded_navigation(self):
+  for expanded in ('true','false'):
+   with self.subTest(expanded=expanded):
+    bridge,room,_,_=self.setup()
+    navigation=Mock();navigation.is_enabled.return_value=True
+    navigation.get_attribute.return_value=expanded
+    room.native.CURRENT_CHAT_NAV='navigation'
+    room.original_visible=lambda _:[navigation]
+    DailyRoomHistory(room).open_sidebar()
+    self.assertEqual(navigation.click.call_count,0 if expanded=='true'else 1)
+
+ def test_not_found_retains_private_passive_history_diagnostic(self):
+  bridge,room,_,_=self.setup();bridge.operation_deadline=80
+  bridge.page.locator=lambda _:SimpleNamespace(evaluate=lambda *args,**kw:{'buttons':[],
+   'headings':[{'tag':'H3','text':'Hari ini'}],'widgets':[]})
+  with self.assertRaisesRegex(DailyRoomUnavailable,'NEUROBRO_DAILY_ROOM_NOT_FOUND'):
+   room.restore([],{},'SENT')
+  path=Path(self.directory.name)/'on-daily-room-restore.json'
+  self.assertEqual(path.stat().st_mode&0o777,0o600)
+  value=json.loads(path.read_text())
+  self.assertEqual(value['history_choice_count'],0)
+  self.assertEqual(value['controls']['headings'][0]['text'],'Hari ini')
+  self.assertTrue(value['composer'][0]['empty'])
+  self.assertEqual(value['native_rows'],[])
+  self.assertFalse(value['diagnostic_browser_inputs_performed'])
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
  def test_crash_after_first_send_before_anchor_checkpoint_restores_by_exact_prompt(self):
   bridge,room,hook,_=self.setup()
   # Emulate process death by retaining the durable pre-click witness but not
