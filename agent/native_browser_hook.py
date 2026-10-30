@@ -212,7 +212,8 @@ class DelegatedDOMBridge:
         state = {'phase': 'INITIAL', 'previous': None, 'stable': 0, 'prefix': None,
                  'question': None, 'url': None, 'reviewed': False,
                  'fresh': None, 'fresh_names': [], 'bound_charts': None,
-                 'followup_intents': [], 'initial_url': None, 'turn_names': []}
+                 'followup_intents': [], 'initial_url': None, 'turn_names': [],
+                 'accepted_reply_sha256': None}
         payload_digest = _digest(payload)
         file_mode = data_file_mode(self.native, payload)
         delivery = None
@@ -489,7 +490,7 @@ class DelegatedDOMBridge:
                     'Jika keputusanmu HOLD, tetap HOLD dengan level order null. '
                     'Sertakan marker persis dari permintaan awal: ' + payload['marker'])
             if required_question is None and (not response['needs_followup'] or complete):
-                state['phase'] = 'ACCEPT'
+                state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha)
                 return
             if required_question is not None:
                 # Required format/price clarification keeps the actual Mini
@@ -559,10 +560,16 @@ class DelegatedDOMBridge:
             answer = (final_answer() if state['prefix'] is not None
                       else original_answer(prompt, attachment_names))
             if state['phase'] == 'ACCEPT':
+                gate()
+                if answer is not None and hashlib.sha256(answer.encode()).hexdigest() != state['accepted_reply_sha256']:
+                    unknown()
                 return answer
-            state['stable'] = state['stable'] + 1 if answer and answer == state['previous'] else 0
             state['previous'] = answer
-            if answer is None or state['stable'] < 3:
+            # The native reader already requires the actual completion footer,
+            # and review binds the live transcript before and after Mini. The
+            # unchanged native ask loop owns its three stable final polls; do
+            # not repeat those full daily-history reads before calling Mini.
+            if answer is None:
                 return None
             if state['initial_url'] is None:
                 state['initial_url'] = self.bridge.page.url
