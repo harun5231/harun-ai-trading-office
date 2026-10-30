@@ -346,6 +346,60 @@ class NativeHookTests(unittest.TestCase):
   self.assertTrue(result['response_id'].endswith(hashlib.sha256((bridge.page.url+'\n'+request()['marker']+'\n'+bridge.final).encode()).hexdigest()))
 
 
+class NativeFinalStabilityTests(unittest.TestCase):
+ setup_hook=NativeHookTests.setup_hook
+ def test_native_final_stability_remains_under_unchanged_tight_budget(self):
+  bridge=Bridge();native_answer=bridge._answer;reads=[]
+  def heavy_native_read(*args,**kwargs):
+   bridge.current+=1;reads.append(bridge.current)
+   return native_answer(*args,**kwargs)
+  bridge._answer=heavy_native_read
+  module=native();module.exact_json.return_value={'symbols':['BTCUSDT']}
+  reasoner=client('SCREENING');model=reasoner.request.side_effect;at_model=[]
+  def observed(value):at_model.append(len(reads));return model(value)
+  reasoner.request.side_effect=observed
+  hook=self.setup_hook(bridge=bridge,module=module,reasoner=reasoner)
+  result=hook.ask(request(),self.gate,deadline=6)
+  self.assertEqual(result['assistant_text'],bridge.initial)
+  self.assertEqual(at_model,[1])
+  self.assertEqual(len(reads),4)  # First answer plus native stable>=3 polls.
+  self.assertLess(bridge.current,6)
+  self.assertEqual(bridge.clicks,1)
+
+ def test_changed_live_answer_after_mini_is_rejected_before_native_final_receipt(self):
+  bridge=Bridge();native_answer=bridge._answer;reads=[]
+  def changing(*args,**kwargs):
+   reads.append(True)
+   if len(reads)==2:bridge.messages[-1]['text']='Changed native setup BTCUSDT'
+   return native_answer(*args,**kwargs)
+  bridge._answer=changing
+  module=native();module.exact_json.return_value={'symbols':['BTCUSDT']}
+  hook=self.setup_hook(bridge=bridge,module=module,reasoner=client('SCREENING'))
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=80)
+  self.assertEqual(self.reasoner.request.call_count,1)
+  self.assertEqual(bridge.clicks,1)
+
+ def test_streaming_footer_never_triggers_mini_or_final_receipt(self):
+  bridge=Bridge();bridge.after_click=lambda b:b.messages[-1].update(complete=False)
+  hook=self.setup_hook(bridge=bridge,reasoner=client('SCREENING'))
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=2)
+  self.reasoner.request.assert_not_called()
+  self.assertEqual(bridge.clicks,1)
+
+ def test_off_during_native_final_stability_is_rechecked_after_mini(self):
+  bridge=Bridge();native_answer=bridge._answer;reads=[]
+  def stop(*args,**kwargs):
+   reads.append(True)
+   if len(reads)==2:self.enabled=False
+   return native_answer(*args,**kwargs)
+  bridge._answer=stop
+  module=native();module.exact_json.return_value={'symbols':['BTCUSDT']}
+  hook=self.setup_hook(bridge=bridge,module=module,reasoner=client('SCREENING'))
+  with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=80)
+  self.assertEqual(self.reasoner.request.call_count,1)
+  self.assertEqual(bridge.clicks,1)
+
+
 class NativeActorPatchTests(unittest.TestCase):
  def setUp(self):
   path=Path(__file__).resolve().parents[1]/'scripts/patch_native_browser_hook.py'
