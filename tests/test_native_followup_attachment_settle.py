@@ -64,7 +64,7 @@ class BatchBridge:
     def transcript(self):
         # Exercise the exact production nested functions with the actual
         # NativeFileTurnReader, rather than a copy of the projection algorithm.
-        syntax = ast.parse(textwrap.dedent(inspect.getsource(DelegatedDOMBridge.ask)))
+        syntax = ast.parse(textwrap.dedent(inspect.getsource(DelegatedDOMBridge._ask)))
         functions = [n for n in syntax.body[0].body if isinstance(n, ast.FunctionDef)
             and n.name in ('gate', 'turns_with_names', 'transcript')]
         prefix = copy.deepcopy(self.native_turns()[:2]); prefix[0]['attachments'] = list(self.batches[0])
