@@ -274,6 +274,16 @@ class DailyRoom:
     def matches(rows, anchors, binding, state):
         if anchors and len(rows) >= len(anchors) and identities(rows[:len(anchors)]) == anchors:
             return True
+        # A reloaded history page may contain only its already anchored tail.
+        # Admit that exact suffix, including message IDs and completion, only
+        # after a complete user/assistant pair. Active-request prefix checks
+        # remain unchanged and cannot accept a changing or unknown tail.
+        if (2 <= len(rows) < len(anchors)
+                and rows[-2].get('role') == 'user'
+                and rows[-1].get('role') == 'assistant'
+                and rows[-1].get('complete') is True
+                and identities(rows) == anchors[-len(rows):]):
+            return True
         if not rows:
             return not anchors and state == 'PREPARED'
         # Reload can prepend older history or replace temporary message IDs.

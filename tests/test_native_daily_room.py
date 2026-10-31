@@ -403,6 +403,96 @@ class DailyRoomTests(unittest.TestCase):
   bridge.messages[-1]['text']='Changed ENTRY 999 after request admission'
   with self.assertRaises(DailyRoomUnavailable):room.turns()
 
+ def anchored_history_fixture(self):
+  own,binding=self.owned_prompt_fixture()
+  for index in range(3):
+   own.extend([{'role':'user','text':'Later owned request '+str(index),'id':'owned-user-'+str(index)},
+    {'role':'assistant','text':'Later owned answer '+str(index),'complete':True,'id':'owned-answer-'+str(index)}])
+  return own,binding
+
+ def test_room_identity_accepts_only_the_complete_known_history_suffix(self):
+  own,binding=self.anchored_history_fixture();anchors=identities(own)
+  for count in (2,3,4,6):
+   with self.subTest(count=count):
+    current=copy.deepcopy(own[-count:])
+    self.assertNotEqual(identities(current),anchors[:count])
+    self.assertFalse(any(binding['marker']in row['text']for row in current))
+    self.assertTrue(DailyRoom.matches(current,anchors,binding,'BOUND'))
+
+ def test_restore_known_30_message_window_of_94_saved_anchors(self):
+  # Synthetic IDs exercise the observed 94/30 shape, not VPS ID-overlap proof.
+  own,binding=self.owned_prompt_fixture()
+  for index in range(46):
+   own.extend([{'role':'user','text':'Anchored request '+str(index),'id':'saved-user-'+str(index)},
+    {'role':'assistant','text':'Anchored answer '+str(index),'complete':True,'id':'saved-answer-'+str(index)}])
+  anchors=identities(own);current=copy.deepcopy(own[-30:])
+  self.assertEqual(len(anchors),94);self.assertEqual(len(current),30)
+  self.assertNotEqual(identities(current),anchors[:len(current)])
+  self.assertFalse(any(binding['marker']in row['text']for row in current))
+  bridge,room,_,_=self.setup(Bridge())
+  bridge.operation_deadline=80
+  room.history.rooms=[('Existing daily room',current)]
+  self.assertEqual(room.restore(anchors,binding,'BOUND'),current)
+  self.assertEqual(room.history.selected,['Existing daily room'])
+  self.assertEqual(bridge.fresh_calls,0);self.assertEqual(bridge.clicks,0)
+
+ def test_known_history_suffix_rejects_changed_identity_or_completion(self):
+  own,binding=self.anchored_history_fixture();anchors=identities(own)
+  mutations=({'id':'foreign-answer'},{'text':'Different setup'},
+   {'role':'user'},{'complete':False},{'complete':None})
+  for change in mutations:
+   with self.subTest(change=change):
+    current=copy.deepcopy(own[-4:]);current[-1].update(change)
+    self.assertFalse(DailyRoom.matches(current,anchors,binding,'BOUND'))
+  for index in range(4):
+   for field in ('id','text'):
+    with self.subTest(index=index,field=field):
+     current=copy.deepcopy(own[-4:]);current[index][field]='changed-known-row'
+     self.assertFalse(DailyRoom.matches(current,anchors,binding,'BOUND'))
+  current=copy.deepcopy(own[-4:]);current[-2]['role']='assistant'
+  self.assertFalse(DailyRoom.matches(current,anchors,binding,'BOUND'))
+
+ def test_known_history_suffix_rejects_foreign_middle_or_unknown_appended_rows(self):
+  own,binding=self.anchored_history_fixture();anchors=identities(own)
+  cases=[rows(),copy.deepcopy(own[2:6]),copy.deepcopy(own[-2:])+rows()]
+  for current in cases:
+   with self.subTest(current=current):
+    self.assertFalse(DailyRoom.matches(current,anchors,binding,'BOUND'))
+
+ def test_known_history_suffix_requires_a_complete_pair_even_if_hashes_match(self):
+  own,binding=self.anchored_history_fixture()
+  self.assertFalse(DailyRoom.matches(own[-1:],identities(own),binding,'BOUND'))
+  self.assertFalse(DailyRoom.matches([],identities(own),binding,'BOUND'))
+  for change in ({'complete':False},{'role':'user'}):
+   changed=copy.deepcopy(own);changed[-1].update(change)
+   self.assertFalse(DailyRoom.matches(changed[-2:],identities(changed),binding,'BOUND'))
+  changed=copy.deepcopy(own);changed[-2]['role']='assistant'
+  self.assertFalse(DailyRoom.matches(changed[-2:],identities(changed),binding,'BOUND'))
+
+ def test_known_history_suffix_keeps_active_request_prefix_strict(self):
+  own,binding=self.anchored_history_fixture();current=copy.deepcopy(own[-4:])
+  self.assertTrue(DailyRoom.matches(current,identities(own),binding,'BOUND'))
+  bridge,room,_,_=self.setup(Bridge(current));room.offset=len(current);room.prefix=identities(current)
+  bridge.messages[-1]['id']='changed-after-admission'
+  with self.assertRaises(DailyRoomUnavailable):room.turns()
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_restart_with_only_known_history_tail_preserves_daily_identity(self):
+  bridge,room,hook,_=self.setup()
+  for index in range(1,4):
+   payload=request();payload['operation']='2026-10-31:owned:'+str(index)
+   payload['marker']='HARUN_'+format(index,'032x')
+   hook.ask(payload,lambda:True,deadline=bridge.current+80)
+  identity=room.conversation_id;tail=copy.deepcopy(bridge.messages[-4:])
+  restarted,restored,hook2,_=self.setup(Bridge(tail))
+  payload=request();payload['operation']='2026-10-31:owned:4';payload['marker']='HARUN_'+format(4,'032x')
+  hook2.ask(payload,lambda:True,deadline=restarted.current+80)
+  self.assertEqual(restored.conversation_id,identity)
+  self.assertEqual(restarted.messages[:len(tail)],tail)
+  self.assertEqual(restarted.fresh_calls,0);self.assertEqual(restored.history.selected,[])
+  self.assertEqual(restored.evidence()['operation_offset'],len(tail))
+  self.assertEqual(restarted.clicks,1)
+
  def test_room_identity_rejects_modified_prompt_substring_and_assistant_quote(self):
   own,binding=self.owned_prompt_fixture();anchors=identities(own)
   for row in ({'role':'user','text':'Extra prefix '+own[0]['text']},
