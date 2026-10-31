@@ -213,6 +213,22 @@ class LLMTests(unittest.TestCase):
                 self.assertIn("no digit characters",payload["instructions"])
                 self.assertIn("without proposing or repeating their values",payload["instructions"])
 
+    def test_complete_current_hold_ends_analysis_without_coercing_ambiguous_mentions(self):
+        from agent.dialogue_service import validate_decision
+        reply='$ONDO: HOLD saat ini. Skenario masa depan menunggu konfirmasi.\n```json\n{"symbol":"ONDOUSDT","side":"HOLD","limit_entry":null,"take_profit":null,"stop_loss":null,"risk_reward":null}\n```\nPertanyaan lanjutan: cek 15M atau 1H?'
+        raw={"action":"HOLD","symbols":["ONDOUSDT"],"question":""}
+        answer=self.model(raw).plan([],reply,phase="ANALYSIS",jakarta_day="2026-10-19")
+        self.assertEqual((answer.action,answer.question),("HOLD",""))
+        self.assertIs(validate_decision(raw,{"phase":"ANALYSIS","reply":reply}),raw)
+        self.assertIn("unambiguous complete current HOLD",self.calls[-1]["instructions"])
+        self.assertIn("suggested follow-up questions and conditional future scenarios do not override",self.calls[-1]["instructions"])
+        self.assertTrue(self.calls[-1]["input"][-1]["content"].endswith(reply))
+        ambiguous='$ONDO previously HOLD; the current decision is incomplete.'
+        result=self.model({"action":"CLARIFY","symbols":[],"question":"Mohon lengkapi keputusan saat ini?"}).plan(
+            [],ambiguous,phase="ANALYSIS",jakarta_day="2026-10-19")
+        self.assertEqual(result.action,"CLARIFY")
+        self.assertEqual(result.question,"Mohon lengkapi keputusan saat ini?")
+
     def test_unvalidated_raw_output_is_retained_before_field_rejection(self):
         raw={"action":"CLARIFY","symbols":[],"question":"ENTRY: 100 tepat?","entry":100}
         with self.assertRaisesRegex(AgentError,"MODEL_RESPONSE_INVALID"):

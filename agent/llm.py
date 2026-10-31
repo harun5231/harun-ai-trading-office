@@ -38,6 +38,7 @@ The allowed symbols can include comparisons or dollar amounts; return only
 Neurobro's recommendation(s), not comparisons or dollar amounts.
 SCREENING selects screening symbols, not a complete setup.
 COMPLETE is only for a complete ANALYSIS setup; TAHAN/BATALKAN only for pending review.
+For ANALYSIS, an unambiguous complete current HOLD ends this coin's discussion: return HOLD with question ""; suggested follow-up questions and conditional future scenarios do not override that current decision or request clarification.
 Continue clarifying incomplete replies without a fixed round limit. Stop
 discussing as soon as Neurobro supplies a complete setup.
 Return only the required JSON. Never place credentials or hidden reasoning in it.
