@@ -111,6 +111,42 @@ HISTORY_DIAGNOSTIC_JS = r"""(root, messageSelector) => {
 }"""
 
 
+# Observe ordinary message DOM and its nearest actual scrollable ancestor.
+# The action re-resolves and verifies the same observed container/row IDs. It
+# scrolls existing history only; no application state, endpoint or Send control.
+HISTORY_OLDER_UI_JS = r"""(messages, request) => {
+ const visible=e=>{const s=getComputedStyle(e),r=e.getBoundingClientRect();
+  return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity)!==0&&r.width>0&&r.height>0;};
+ const rows=messages.filter(visible);
+ const empty={available:false,message_count:rows.length};
+ if(!rows.length)return empty;
+ let target=null,depth=0;
+ for(let p=rows[0].parentElement;p;p=p.parentElement,depth++){
+  const s=getComputedStyle(p);
+  if(visible(p)&&/^(?:auto|scroll|overlay)$/.test(s.overflowY)
+    &&p.clientHeight>0&&p.scrollHeight>p.clientHeight+1
+    &&rows.every(e=>p.contains(e))){target=p;break;}
+ }
+ if(!target)return empty;
+ const rect=target.getBoundingClientRect();
+ const observed={available:true,message_count:rows.length,depth,tag:target.tagName,
+  role:target.getAttribute('role'),slot:target.getAttribute('data-slot'),
+  overflow_y:getComputedStyle(target).overflowY,scroll_top:target.scrollTop,
+  client_height:target.clientHeight,scroll_height:target.scrollHeight,
+  rectangle:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},
+  first_message_id:rows[0].getAttribute('data-message-id'),
+  last_message_id:rows[rows.length-1].getAttribute('data-message-id')};
+ if(request.action==='observe')return observed;
+ const previous=request.observed;
+ const keys=['message_count','depth','tag','role','slot','overflow_y',
+  'client_height','scroll_height','first_message_id','last_message_id'];
+ if(request.action!=='show_oldest'||!previous||!keys.every(k=>observed[k]===previous[k]))
+  return {...observed,scrolled:false};
+ rows[0].scrollIntoView({block:'start',behavior:'instant'});
+ return {...observed,scrolled:true};
+}"""
+
+
 class DailyRoomHistory:
     def __init__(self, room):
         self.room = room
@@ -220,6 +256,7 @@ class DailyRoom:
         self._prepared = False
         self._binding = {}
         self._payload = None
+        self._history_windows = []
         self.history = history if history is not None else DailyRoomHistory(self)
         need(type(getattr(native, 'MESSAGE', None)) is str)
         # Install once, before NativeFileTurnReader captures these methods.
@@ -304,6 +341,7 @@ class DailyRoom:
         return False
 
     def restore(self, anchors, binding, state):
+        self._history_windows = []
         # A root SPA URL identifies no chat. Reopen ordinary observed history
         # entries, and admit only the room whose actual native messages match.
         self.composer()
@@ -335,6 +373,7 @@ class DailyRoom:
             self.history.select(row, occurrence=occurrence)
             until = self.bridge._until(5)
             previous, stable = None, 0
+            older_attempted = False
             while self.bridge.clock() < until:
                 status = self.bridge.status()
                 if status == 'UNAVAILABLE':
@@ -348,6 +387,20 @@ class DailyRoom:
                 rows = self.full_turns()
                 if self.matches(rows, anchors, binding, state):
                     return rows
+                # A saved title is only a navigation hint. Load its older UI
+                # history, then require the exact unchanged identity contract.
+                unique_hint = (row['text'] in hints and sum(
+                    (choice['text'], choice['label']) == (row['text'], row['label'])
+                    for choice in choices) == 1)
+                if (not older_attempted and unique_hint and state == 'BOUND'
+                        and 2 <= len(rows) < len(anchors)
+                        and rows[-2].get('role') == 'user'
+                        and rows[-1].get('role') == 'assistant'
+                        and rows[-1].get('complete') is True):
+                    older_attempted = True
+                    restored = self.restore_older(rows, anchors, binding, state)
+                    if restored is not None:
+                        return restored
                 observed = identities(rows)
                 stable = stable + 1 if observed == previous else 0
                 previous = observed
@@ -356,6 +409,71 @@ class DailyRoom:
                 self.bridge.page.wait_for_timeout(50)
         self.retain_restore_failure(choices)
         raise DailyRoomUnavailable('NEUROBRO_DAILY_ROOM_NOT_FOUND')
+
+    def retain_history_window(self, rows, anchors, binding, container):
+        """Persist actual identities before any older-history scroll."""
+        actual = identities(rows)
+        record = {'at': self.wall_clock(), 'native_row_count': len(rows),
+            'stored_anchor_count': len(anchors),
+            'anchors_sha256': hashlib.sha256(canonical(anchors).encode()).hexdigest(),
+            'native_identities_sha256': hashlib.sha256(canonical(actual).encode()).hexdigest(),
+            'original_prompt_hash_present': any(row.get('role') == 'user'
+                and type(row.get('text')) is str
+                and hashlib.sha256(row['text'].replace('\r\n', '\n').strip().encode()).hexdigest()
+                    == binding.get('first_prompt_sha256') for row in rows),
+            'native_rows': [{'identity_sha256': digest,
+                'matching_anchor_indices': [i for i, anchor in enumerate(anchors) if anchor == digest],
+                'expected_tail_index': len(anchors) - len(rows) + index,
+                'expected_tail_match': (0 <= len(anchors) - len(rows) + index < len(anchors)
+                    and digest == anchors[len(anchors) - len(rows) + index]),
+                'role': row.get('role'), 'id': row.get('id'), 'complete': row.get('complete'),
+                'text_characters': len(row.get('text', '')),
+                'text_sha256': hashlib.sha256(row.get('text', '').encode()).hexdigest()}
+                for index, (row, digest) in enumerate(zip(rows, actual))],
+            'scroll_container': container}
+        self._history_windows.append(record)
+        # This diagnostic is required before the UI action so the original
+        # mismatch survives a subsequent failure or browser recovery.
+        from .native_turn_batch import _write
+        _write(self.store.root, 'on-daily-room-window.json', {
+            'schema_version': 1, 'day': self.day, 'room_id': self.room_id,
+            'windows': self._history_windows}, replace=True)
+
+    def restore_older(self, rows, anchors, binding, state):
+        """Load older messages in the observed room, without changing matches."""
+        until = self.bridge._until(20)
+        while self.bridge.clock() < until:
+            need(self.bridge.status() == 'CONNECTED')
+            self.composer()  # Preserve an owner draft or unsent attachments.
+            messages = self.bridge.page.locator(self.native.MESSAGE)
+            container = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
+            need(type(container) is dict)
+            self.retain_history_window(rows, anchors, binding, container)
+            if (container.get('available') is not True
+                    or container.get('message_count') != len(rows)):
+                return None  # No unambiguous actual message scroll container.
+            need(self.bridge.status() == 'CONNECTED')
+            action = messages.evaluate_all(HISTORY_OLDER_UI_JS,
+                {'action': 'show_oldest', 'observed': container})
+            if type(action) is not dict or action.get('scrolled') is not True:
+                return None  # The observed container changed before input.
+            previous_count = len(rows)
+            advancement_until = min(until, self.bridge._until(5))
+            while self.bridge.clock() < advancement_until:
+                status = self.bridge.status()
+                need(status in ('CONNECTED', 'UNAVAILABLE'))
+                if status == 'CONNECTED':
+                    current = self.full_turns()
+                    if self.matches(current, anchors, binding, state):
+                        return current
+                    if (len(current) > previous_count and current[-1].get('role') == 'assistant'
+                            and current[-1].get('complete') is True):
+                        rows = current
+                        break
+                self.bridge.page.wait_for_timeout(50)
+            else:
+                return None  # Loading did not advance; never keep scrolling.
+        return None
 
     def retain_restore_failure(self, choices):
         """Keep the failed history observation before any browser recovery."""
@@ -371,6 +489,7 @@ class DailyRoom:
             record = {'schema_version': 1, 'reason': 'NEUROBRO_DAILY_ROOM_NOT_FOUND',
                 'at': self.wall_clock(), 'day': self.day, 'room_id': self.room_id,
                 'history_choice_count': len(choices), 'history_choices': choices[:100],
+                'history_windows': self._history_windows,
                 'controls': controls, 'page_url_sha256': hashlib.sha256(
                     self.bridge.page.url.encode()).hexdigest(),
                 'composer': [{'characters': len(value), 'empty': not value,
