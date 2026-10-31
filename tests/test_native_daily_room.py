@@ -11,7 +11,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock
 
-from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, HISTORY_DIAGNOSTIC_JS
+from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, HISTORY_DIAGNOSTIC_JS, HISTORY_OLDER_UI_JS
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_file_upload import NativeFileTurnReader
 from tests.test_native_browser_hook import request as base_request, client, OutcomeUnknown, NotSubmitted
@@ -509,6 +509,120 @@ class DailyRoomTests(unittest.TestCase):
    # Even a matching full text hash cannot substitute another marker value.
    wrong=dict(binding,first_prompt_sha256=hashlib.sha256(text.encode()).hexdigest())
    self.assertFalse(DailyRoom.matches(rows()+[{'role':'user','text':text}],anchors,wrong,'BOUND'))
+
+ def reloaded_94_fixture(self):
+  own,binding=self.owned_prompt_fixture()
+  for index in range(46):
+   own.extend([{'role':'user','text':'Persisted request '+str(index),'attachments':[]},
+    {'role':'assistant','text':'Persisted answer '+str(index),'complete':True,'id':'temporary-'+str(index)}])
+  current=copy.deepcopy(own)
+  for index,row in enumerate(current):
+   if row['role']=='assistant':row['id']='server-'+str(index)
+  binding['history_titles']=['Existing daily room']
+  return own,current,binding
+
+ def older_ui(self,bridge,room,loads,*,available=True,count_adjustment=0):
+  actions=[]
+  def evaluate_all(script,request):
+   self.assertEqual(script,HISTORY_OLDER_UI_JS)
+   container={'available':available,'message_count':len(bridge.messages)+count_adjustment,
+    'depth':2,'tag':'DIV','role':None,'slot':None,'overflow_y':'auto','show_oldest':400,
+    'client_height':500,'scroll_height':4000,'rectangle':{'x':0,'y':0,'width':900,'height':500},
+    'first_message_id':'actual-first','last_message_id':'actual-last'}
+   if request['action']=='observe':return container
+   self.assertEqual(request['observed'],container)
+   retained=json.loads((Path(self.directory.name)/'on-daily-room-window.json').read_text())
+   self.assertEqual(retained['windows'][-1]['scroll_container'],container)
+   self.assertEqual(retained['windows'][-1]['native_row_count'],len(bridge.messages))
+   actions.append('show_oldest')
+   if loads:bridge.messages=copy.deepcopy(loads.pop(0))
+   return dict(container,scrolled=True)
+  bridge.page.locator=lambda selector:SimpleNamespace(evaluate_all=evaluate_all,
+   evaluate=lambda *args,**kwargs:{'buttons':[],'headings':[],'widgets':[]})
+  return actions
+
+ def test_restore_loads_original_bound_prompt_after_reload_replaced_ids(self):
+  own,current,binding=self.reloaded_94_fixture();anchors=identities(own)
+  bridge,room,_,_=self.setup();bridge.operation_deadline=80
+  room.history.rooms=[('Existing daily room',current[-30:])]
+  actions=self.older_ui(bridge,room,[current[-60:],current])
+  self.assertFalse(room.matches(current[-30:],anchors,binding,'BOUND'))
+  restored=room.restore(anchors,binding,'BOUND')
+  self.assertEqual(restored,current);self.assertEqual(actions,['show_oldest','show_oldest'])
+  self.assertTrue(room.matches(restored,anchors,binding,'BOUND'))
+  self.assertNotEqual(identities(restored),anchors)
+  diagnostic=json.loads((Path(self.directory.name)/'on-daily-room-window.json').read_text())
+  first=diagnostic['windows'][0]
+  self.assertEqual((first['native_row_count'],first['stored_anchor_count']),(30,94))
+  self.assertFalse(first['original_prompt_hash_present'])
+  self.assertEqual(first['native_rows'][0]['matching_anchor_indices'],[64])
+  self.assertTrue(first['native_rows'][0]['expected_tail_match'])
+  self.assertEqual(first['native_rows'][1]['matching_anchor_indices'],[])
+  self.assertFalse(first['native_rows'][1]['expected_tail_match'])
+  self.assertEqual(first['native_rows'][1]['id'],'server-65')
+  self.assertNotIn('Persisted request',(Path(self.directory.name)/'on-daily-room-window.json').read_text())
+  self.assertEqual((Path(self.directory.name)/'on-daily-room-window.json').stat().st_mode&0o777,0o600)
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+  self.assertFalse(room.store.path.exists())
+  # Admitting the original prompt does not relax the active request prefix.
+  room.offset=len(restored);room.prefix=identities(restored)
+  bridge.messages[-1]['text']='Changed after restoration'
+  with self.assertRaises(DailyRoomUnavailable):room.turns()
+
+ def test_older_history_cannot_substitute_foreign_prompt_or_marker(self):
+  own,current,binding=self.reloaded_94_fixture();anchors=identities(own)
+  current[0]['text']=current[0]['text'].replace(binding['marker'],'HARUN_'+'b'*32)
+  bridge,room,_,_=self.setup();bridge.operation_deadline=80
+  room.history.rooms=[('Existing daily room',current[-30:])]
+  actions=self.older_ui(bridge,room,[current])
+  with self.assertRaisesRegex(DailyRoomUnavailable,'NEUROBRO_DAILY_ROOM_NOT_FOUND'):
+   room.restore(anchors,binding,'BOUND')
+  self.assertEqual(actions,['show_oldest','show_oldest'])
+  self.assertFalse(room.matches(bridge.messages,anchors,binding,'BOUND'))
+  self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_older_history_stops_without_advancement_or_unambiguous_container(self):
+  own,current,binding=self.reloaded_94_fixture();anchors=identities(own)
+  for available,adjustment in ((True,0),(False,0),(True,1)):
+   with self.subTest(available=available,adjustment=adjustment):
+    bridge,room,_,_=self.setup(Bridge(current[-30:]));bridge.operation_deadline=80
+    actions=self.older_ui(bridge,room,[],available=available,count_adjustment=adjustment)
+    self.assertIsNone(room.restore_older(bridge.messages,anchors,binding,'BOUND'))
+    self.assertEqual(len(actions),1 if available and not adjustment else 0)
+    self.assertLessEqual(bridge.current,5.05)
+    self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_older_history_aborts_challenge_and_respects_existing_deadline(self):
+  own,current,binding=self.reloaded_94_fixture();anchors=identities(own)
+  bridge,room,_,_=self.setup(Bridge(current[-30:]));bridge.operation_deadline=80
+  actions=self.older_ui(bridge,room,[])
+  bridge.status=lambda:'CHALLENGE_REQUIRED'if actions else'CONNECTED'
+  with self.assertRaises(DailyRoomUnavailable):room.restore_older(bridge.messages,anchors,binding,'BOUND')
+  self.assertEqual(actions,['show_oldest']);self.assertEqual(bridge.current,0)
+  bridge,room,_,_=self.setup(Bridge(current[-30:]));bridge.operation_deadline=0.1
+  actions=self.older_ui(bridge,room,[])
+  self.assertIsNone(room.restore_older(bridge.messages,anchors,binding,'BOUND'))
+  self.assertAlmostEqual(bridge.current,0.1);self.assertEqual(actions,['show_oldest'])
+
+ def test_older_history_does_not_scroll_duplicate_or_unbound_history_title(self):
+  own,current,binding=self.reloaded_94_fixture();anchors=identities(own)
+  for titles in (['Different room'],['Existing daily room','Existing daily room']):
+   with self.subTest(titles=titles):
+    bridge,room,_,_=self.setup();bridge.operation_deadline=80
+    room.history.rooms=[(title,current[-30:])for title in titles]
+    room.restore_older=Mock(side_effect=AssertionError('AMBIGUOUS_HISTORY_MUST_NOT_SCROLL'))
+    with self.assertRaises(DailyRoomUnavailable):room.restore(anchors,binding,'BOUND')
+    room.restore_older.assert_not_called()
+    self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ def test_older_history_retention_handles_more_rows_than_saved_anchors(self):
+  own,current,binding=self.reloaded_94_fixture()
+  bridge,room,_,_=self.setup(Bridge(current))
+  room.retain_history_window(current,identities(own[-30:]),binding,{'available':False})
+  value=json.loads((Path(self.directory.name)/'on-daily-room-window.json').read_text())
+  self.assertEqual(len(value['windows'][0]['native_rows']),94)
+  self.assertFalse(value['windows'][0]['native_rows'][0]['expected_tail_match'])
+
 
 
 class PassiveHistoryNetworkDiagnosticTests(unittest.TestCase):
