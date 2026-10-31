@@ -1,6 +1,7 @@
 import json
 import copy
 import os
+import re
 from pathlib import Path
 import tempfile
 import time
@@ -195,6 +196,39 @@ class LLMTests(unittest.TestCase):
                     validate_decision(normalized, {"phase": "SCREENING", "reply": "$ZEC"})
             else:
                 self.assertIs(validate_decision(normalized, {"phase": "SCREENING", "reply": "$ZEC"}), normalized)
+
+    def test_strict_generation_schema_excludes_numeric_clarifications_in_every_phase(self):
+        for phase in ("SCREENING", "ANALYSIS", "PENDING_REVIEW"):
+            with self.subTest(phase=phase):
+                self.model({"action":"CLARIFY","symbols":[],"question":"Mohon lengkapi keputusan pada timeframe entri?"}).plan(
+                    [], "$ZEC belum lengkap", phase=phase, jakarta_day="2026-10-19")
+                payload=self.calls[-1];format=payload["text"]["format"]
+                self.assertTrue(format["strict"])
+                question=format["schema"]["properties"]["question"]
+                self.assertEqual(question,{"type":"string","maxLength":400,"pattern":"^[^0-9]*$"})
+                for text in ("Apakah candle 15M cukup?","Tolong cek 1H dan RR 1:2?","ENTRY: 100?","Apakah TP 0.0439 valid?"):
+                    self.assertIsNone(re.fullmatch(question["pattern"],text))
+                for text in ("","Mohon lengkapi level dari chart?","Konfirmasi timeframe entri dan rasio risiko imbalan yang disyaratkan?"):
+                    self.assertIsNotNone(re.fullmatch(question["pattern"],text))
+                self.assertIn("no digit characters",payload["instructions"])
+                self.assertIn("without proposing or repeating their values",payload["instructions"])
+
+    def test_unvalidated_raw_output_is_retained_before_field_rejection(self):
+        raw={"action":"CLARIFY","symbols":[],"question":"ENTRY: 100 tepat?","entry":100}
+        with self.assertRaisesRegex(AgentError,"MODEL_RESPONSE_INVALID"):
+            self.model(raw).plan([],"$ZEC belum lengkap",phase="SCREENING",jakarta_day="2026-10-19")
+        records=[json.loads(row[0])for row in self.memory.db.execute("SELECT value FROM metadata WHERE key LIKE 'dialogue-model-raw:%'")]
+        self.assertEqual(len(records),1)
+        self.assertEqual(records[0]["raw_decision"],raw)
+        self.assertEqual(json.loads(records[0]["raw_output_text"]),raw)
+        self.assertEqual(records[0]["authority"],"UNVALIDATED_MODEL_OUTPUT")
+        self.assertTrue(records[0]["json_decoded"])
+
+    def test_raw_evidence_failure_does_not_replace_the_original_model_rejection(self):
+        with patch.object(self.memory,"put",side_effect=OSError("private evidence unavailable")):
+            with self.assertRaisesRegex(AgentError,"MODEL_RESPONSE_INVALID"):
+                self.model({"action":"FORGED","symbols":[],"question":""}).plan(
+                    [],"$ZEC",phase="SCREENING",jakarta_day="2026-10-19")
 
     def test_unused_question_normalization_cannot_hide_invalid_raw_fields(self):
         base = {"action": "SCREENING", "symbols": ["ZECUSDT"], "question": "unused"}
