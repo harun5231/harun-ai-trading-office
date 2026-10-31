@@ -136,8 +136,10 @@ class DelegatedDOMBridge:
     """Use native DOM completion/provenance code for the actual final answer."""
     def __init__(self, bridge, client, *, native=None, converter=None,
                  monotonic=time.monotonic, wall_clock=time.time,
-                 fresh_charts=None, followup_receipt=None, daily_room=None):
+                 fresh_charts=None, followup_receipt=None, daily_room=None,
+                 native_turn_batch=None):
         self.daily_room = daily_room
+        self.native_turn_batch = native_turn_batch
         self.native = native or importlib.import_module(type(bridge).__module__)
         self.bridge, self.client = bridge, client
         self.clock, self.wall_clock = monotonic, wall_clock
@@ -164,6 +166,8 @@ class DelegatedDOMBridge:
 
     def ask(self, payload, dispatch_check, *, chart_images=(), chart_evidence=(),
             deadline=None, receipt_callback=None):
+        if self.native_turn_batch is not None:
+            self.native_turn_batch.begin(payload)
         if self.daily_room is not None:
             with self.daily_room.operation(payload):
                 return self._ask(payload, dispatch_check, chart_images=chart_images,
@@ -608,7 +612,19 @@ class DelegatedDOMBridge:
                     result = {**result, 'chart_evidence': copy.deepcopy(state['bound_charts'])}
                 except Exception:
                     unknown()
+            if self.native_turn_batch is not None:
+                self.native_turn_batch.evidence('COMPLETE')
             return result
+        except BaseException as error:
+            try:
+                from .native_turn_batch import retain_return_failure
+                root = self.daily_room.store.path.parent if self.daily_room is not None else None
+                retain_return_failure(root, payload, state, self.clock(), until, error)
+                if self.native_turn_batch is not None:
+                    self.native_turn_batch.evidence('FAILURE')
+            except BaseException:
+                pass
+            raise
         finally:
             self.bridge._answer = original_answer
             if delivery is not None:
@@ -635,10 +651,13 @@ def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None, a
         return bridge
     from .dialogue_client import DialogueClient
     daily_room = None
+    native_turn_batch = None
     if archive_root is not None:
         from .native_daily_room import DailyRoom
+        from .native_turn_batch import install_native_turn_batch
         native = importlib.import_module(type(bridge).__module__)
+        native_turn_batch = install_native_turn_batch(bridge, native, archive_root)
         daily_room = DailyRoom(bridge, native, archive_root)
     return DelegatedDOMBridge(bridge, DialogueClient(path, token),
         fresh_charts=fresh_charts, followup_receipt=followup_receipt,
-        daily_room=daily_room)
+        daily_room=daily_room, native_turn_batch=native_turn_batch)
