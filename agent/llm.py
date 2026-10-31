@@ -26,6 +26,13 @@ trade, invent a symbol, price, setup, or calculate an order. Only extract symbol
 explicitly named by Neurobro and choose a dialogue action. HOLD means request a
 replacement coin. For pending LIMIT review, only Neurobro may decide TAHAN or
 BATALKAN. Ask a short relevant clarification when a response is incomplete.
+For CLARIFY, write one short line with no digit characters. Never put numeric
+prices, levels, percentages, timeframes, risk/reward ratios, or numbered lists in
+question. Refer to the entry timeframe, higher timeframe, and required risk/reward
+in words; refer to missing levels without proposing or repeating their values.
+Do not write price/order label assignments such as ENTRY:, TP:, SL:, PRICE:,
+HARGA:, TARGET:, BUY:, SELL:, LONG:, or SHORT:, or the same labels followed by =.
+Only Neurobro may supply or change levels. For every other action question is "".
 Use only symbols attributed to the current reply, not earlier conversation.
 The allowed symbols can include comparisons or dollar amounts; return only
 Neurobro's recommendation(s), not comparisons or dollar amounts.
@@ -40,7 +47,7 @@ SCHEMA = {
     "properties": {
         "action": {"type": "string", "enum": ["SCREENING", "CLARIFY", "HOLD", "TAHAN", "BATALKAN", "COMPLETE"]},
         "symbols": {"type": "array", "maxItems": 2, "items": {"type": "string", "pattern": "^[A-Z0-9]{2,20}USDT$"}},
-        "question": {"type": "string", "maxLength": 400},
+        "question": {"type": "string", "maxLength": 400, "pattern": "^[^0-9]*$"},
     }, "required": ["action", "symbols", "question"],
 }
 
@@ -235,6 +242,22 @@ class OpenAIDialogue:
                 "observed_at": self._completed_at, "model": self.model,
                 "transport": "OPENAI_HTTPS_RESPONSES"}
 
+    def _retain_raw_decision(self, text, value, *, decoded, phase, reply, encoded, response_id):
+        # This is private diagnostic evidence, never an accepted decision or
+        # replay receipt. Keep it before validation can turn the operation UNKNOWN.
+        try:
+            evidence = {"schema_version": 1, "authority": "UNVALIDATED_MODEL_OUTPUT",
+                "phase": phase, "native_reply_sha256": hashlib.sha256(reply.encode()).hexdigest(),
+                "model_input_sha256": hashlib.sha256(encoded).hexdigest(),
+                "raw_output_text": text, "raw_decision": value, "json_decoded": decoded,
+                "model_response_id": response_id if isinstance(response_id, str) else None}
+            identity = hashlib.sha256(json.dumps(evidence, sort_keys=True,
+                separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+            evidence["observed_at"] = time.time()
+            self.memory.put("dialogue-model-raw:" + identity, evidence)
+        except Exception:
+            pass  # Evidence failure cannot replace a model/validation outcome.
+
     def _request(self, payload):
         try:
             api_key = read_api_key(self.key_file)
@@ -336,10 +359,15 @@ class OpenAIDialogue:
                         texts.append(part.get("text", ""))
                     elif part.get("type") == "refusal":
                         raise AgentError("MODEL_RESPONSE_REFUSED")
+        raw_text = "".join(texts)
         try:
-            value = json.loads("".join(texts))
+            value = json.loads(raw_text)
         except (ValueError, TypeError):
+            self._retain_raw_decision(raw_text, None, decoded=False, phase=phase,
+                reply=reply, encoded=encoded, response_id=result.get("id"))
             raise AgentError("MODEL_RESPONSE_INVALID") from None
+        self._retain_raw_decision(raw_text, value, decoded=True, phase=phase,
+            reply=reply, encoded=encoded, response_id=result.get("id"))
         if (not isinstance(value, dict) or set(value) != {"action", "symbols", "question"} or
                 value["action"] not in schema["properties"]["action"]["enum"] or
                 not isinstance(value["symbols"], list) or len(value["symbols"]) > 2 or

@@ -310,6 +310,36 @@ class DialogueServiceTests(unittest.TestCase):
             with self.subTest(output=output),self.assertRaises(d.DialogueError):
                 self.engine.process(request(index=index))
 
+    def test_numeric_clarification_is_not_rewritten_and_is_retained_before_unknown(self):
+        value=request(phase='ANALYSIS',reply='BTCUSDT belum lengkap')
+        original={'action':'CLARIFY','symbols':[],'question':'Apakah konfirmasi candle 15M sudah cukup?'}
+        self.output=copy.deepcopy(original)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
+            self.engine.process(value)
+        self.assertEqual(self.output,original)
+        self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+        self.assertEqual(self.memory.history(value['conversation_id']),[])
+        self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
+        records=[json.loads(row[0])for row in self.memory.db.execute("SELECT value FROM metadata WHERE key LIKE 'dialogue-model-raw:%'")]
+        self.assertEqual(len(records),1)
+        retained=records[0]
+        self.assertEqual(retained['raw_decision'],original)
+        self.assertEqual(retained['native_reply_sha256'],value['reply_sha256'])
+        self.assertEqual(retained['phase'],'ANALYSIS')
+        self.assertEqual(retained['authority'],'UNVALIDATED_MODEL_OUTPUT')
+        self.assertNotIn(self.key.read_text(),json.dumps(retained))
+        self.assertEqual((self.base/'agent.sqlite3').stat().st_mode&0o777,0o600)
+
+    def test_unicode_digits_and_price_assignments_still_fail_the_unchanged_validator(self):
+        for question in ('ENTRY: 100?','TP=sesuai chart?','PRICE: disetujui?',
+                         'Apakah candle １５M cukup?','Konfirmasi nilai ١?'):
+            with self.subTest(question=question),self.assertRaisesRegex(d.DialogueError,'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
+                d.validate_decision({'action':'CLARIFY','symbols':[],'question':question},
+                    {'phase':'ANALYSIS','reply':'BTCUSDT belum lengkap'})
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+            d.validate_decision({'action':'CLARIFY','symbols':[],'question':'Apakah ETHUSDT lebih baik?'},
+                {'phase':'ANALYSIS','reply':'BTCUSDT belum lengkap'})
+
     def test_explicit_cashtags_in_current_reply_authorize_canonical_screening_symbols(self):
         self.output={'action':'SCREENING','symbols':['ZECUSDT','HYPEUSDT'],'question':''}
         value=self.engine.process(request(reply='Prioritas **$ZEC**, dibandingkan ($HYPE).'))
