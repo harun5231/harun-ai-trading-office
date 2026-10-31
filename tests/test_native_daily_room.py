@@ -590,7 +590,41 @@ class DailyRoomTests(unittest.TestCase):
     self.assertIsNone(room.restore_older(bridge.messages,anchors,binding,'BOUND'))
     self.assertEqual(len(actions),1 if available and not adjustment else 0)
     self.assertLessEqual(bridge.current,5.05)
+    if actions:
+     retained=json.loads((Path(self.directory.name)/'on-daily-room-window.json').read_text())
+     self.assertEqual(retained['windows'][-1]['scroll_container']['phase'],'NO_ADVANCEMENT')
+     self.assertTrue(retained['windows'][-1]['scroll_container']['action_result']['scrolled'])
     self.assertEqual(bridge.clicks,0);self.assertEqual(bridge.fresh_calls,0)
+
+ @unittest.skipUnless(shutil.which('chromium'), 'Chromium is needed for the UI round-trip regression')
+ def test_scroll_revalidates_null_attributes_through_real_locator_argument(self):
+  from playwright.sync_api import sync_playwright
+  with sync_playwright()as playwright:
+   browser=playwright.chromium.launch(executable_path=shutil.which('chromium'),headless=True,
+    args=['--no-sandbox'])
+   try:
+    page=browser.new_page()
+    page.set_content('<style>#panel{height:100px;width:300px;overflow-y:auto}'
+     '.message{height:200px}</style><div id="panel"><div style="padding-top:40px">'
+     '<div class="message" data-message-id="user">Original prompt</div>'
+     '<div class="message" data-message-id="assistant">Original response</div></div></div>')
+    panel=page.locator('#panel');panel.evaluate('(e)=>e.scrollTop=e.scrollHeight')
+    messages=page.locator('[data-message-id]')
+    before=messages.evaluate_all(HISTORY_OLDER_UI_JS,{'action':'observe'})
+    self.assertIsNone(before['role']);self.assertIsNone(before['slot'])
+    self.assertGreater(before['scroll_top'],0)
+    broken=HISTORY_OLDER_UI_JS.replace('(observed[k]??null)===(previous[k]??null)',
+     'observed[k]===previous[k]')
+    self.assertFalse(messages.evaluate_all(broken,
+     {'action':'show_oldest','observed':before})['scrolled'])
+    action=messages.evaluate_all(HISTORY_OLDER_UI_JS,{'action':'show_oldest','observed':before})
+    self.assertTrue(action['scrolled']);self.assertEqual(action['after_scroll_top'],0)
+    self.assertEqual(panel.evaluate('(e)=>e.scrollTop'),0)
+    messages.first.evaluate('(e)=>e.setAttribute("data-message-id","changed-user")')
+    refused=messages.evaluate_all(HISTORY_OLDER_UI_JS,{'action':'show_oldest','observed':before})
+    self.assertFalse(refused['scrolled'])
+   finally:
+    browser.close()
 
  def test_older_history_aborts_challenge_and_respects_existing_deadline(self):
   own,current,binding=self.reloaded_94_fixture();anchors=identities(own)

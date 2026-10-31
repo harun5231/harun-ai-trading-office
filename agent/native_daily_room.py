@@ -140,10 +140,10 @@ HISTORY_OLDER_UI_JS = r"""(messages, request) => {
  const previous=request.observed;
  const keys=['message_count','depth','tag','role','slot','overflow_y',
   'client_height','scroll_height','first_message_id','last_message_id'];
- if(request.action!=='show_oldest'||!previous||!keys.every(k=>observed[k]===previous[k]))
-  return {...observed,scrolled:false};
- rows[0].scrollIntoView({block:'start',behavior:'instant'});
- return {...observed,scrolled:true};
+ if(request.action!=='show_oldest'||!previous||!keys.every(k=>(observed[k]??null)===(previous[k]??null)))
+  return {...observed,scrolled:false,after_scroll_top:target.scrollTop};
+ target.scrollTo({top:0,behavior:'instant'});
+ return {...observed,scrolled:true,after_scroll_top:target.scrollTop};
 }"""
 
 
@@ -455,6 +455,9 @@ class DailyRoom:
             need(self.bridge.status() == 'CONNECTED')
             action = messages.evaluate_all(HISTORY_OLDER_UI_JS,
                 {'action': 'show_oldest', 'observed': container})
+            after = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
+            self.retain_history_window(self.full_turns(), anchors, binding,
+                {**after, 'phase': 'AFTER_SCROLL', 'action_result': action})
             if type(action) is not dict or action.get('scrolled') is not True:
                 return None  # The observed container changed before input.
             previous_count = len(rows)
@@ -472,6 +475,9 @@ class DailyRoom:
                         break
                 self.bridge.page.wait_for_timeout(50)
             else:
+                after = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
+                self.retain_history_window(self.full_turns(), anchors, binding,
+                    {**after, 'phase': 'NO_ADVANCEMENT', 'action_result': action})
                 return None  # Loading did not advance; never keep scrolling.
         return None
 
