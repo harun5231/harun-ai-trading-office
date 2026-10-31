@@ -1,6 +1,7 @@
 """One ON/OFF research pipeline ending at the Binance order gateway."""
 from dataclasses import asdict
 import fcntl
+import hashlib
 import json
 import math
 import re
@@ -17,7 +18,8 @@ from .prompts import ANALYSIS,REPLACEMENT_SCREENING
 from .analysis import analysis_context
 from .diagnostics import validation_code
 from .robot_provenance import VERSION,stamp,verify
-from .research_provider import source_evidence
+from .research_provider import (source_evidence,parse_assistant_text,response_output_text,
+    BROWSER_PROVIDER,BROWSER_CONTRACT)
 from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads,gateway_mutations
 
 class Coordinator:
@@ -84,6 +86,84 @@ class Coordinator:
             try:self.research_job(job)
             except Exception:return True
         return False
+    def recover_invalid_screening(self,today,account):
+        # A received, hash-bound reply naming an unavailable Futures symbol is
+        # a rejected answer, not an uncertain send. Never accept its valid
+        # subset or repeat that operation; ask Neurobro for replacements.
+        jobs=list(self.db.execute('''SELECT j.* FROM robot_jobs j JOIN api_requests a
+            ON a.operation=j.operation WHERE j.kind='SCREENING' AND j.state='NEEDS_REVIEW'
+            AND a.state='NEEDS_REVIEW' AND a.failure_code IN ('INVALID_OUTPUT_SCHEMA','INVALID_SCREENING_SYMBOL')
+            AND j.cycle LIKE ?''',(today+':robot-v9:%',)))
+        if len(jobs)!=1:return None
+        job=jobs[0];operation=job['operation']
+        try:
+            cycle=self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(job['cycle'],)).fetchone()
+            api=self.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone()
+            request=self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?',(operation,)).fetchone()
+            receipt=self.db.execute('SELECT * FROM research_browser_responses WHERE operation=?',(operation,)).fetchone()
+            if not all((cycle,api,request,receipt)):return None
+            if (cycle['day']!=today or cycle['state']not in('ACTIVE','NEEDS_REVIEW')
+                    or not re.fullmatch(re.escape(today)+r':robot-v9:(?:0|[1-9]\d{0,11})',cycle['id'])
+                    or cycle['entry_epoch']!=int(cycle['id'].rsplit(':',1)[1])
+                    or job['symbol']is not None or job['risk_target']is not None
+                    or api['attempts']!=1 or api['idempotency']is not None or api['output']is not None):return None
+            data=json.loads(cycle['data']);index=data['screen']+1
+            if data['queue'] or type(data['screen'])is not int or data['screen']< -1:return None
+            count=int(operation.rsplit(':',1)[1])
+            if count not in(1,2)or operation!=cycle['id']+':screening:'+str(index)+':'+str(count):return None
+            original,schema=screening_contract(count)
+            expected_prompt=original if index==0 else REPLACEMENT_SCREENING.format(count=count)
+            body=json.loads(request['request_body'])
+            marker='HARUN_'+hashlib.sha256(operation.encode()).hexdigest()[:32]
+            request_hash=hashlib.sha256(request['request_body'].encode()).hexdigest()
+            if (request['provider']!=BROWSER_PROVIDER or request['contract_version']!=BROWSER_CONTRACT
+                    or request['request_sha256']!=request_hash or api['body_hash']!=request_hash
+                    or request['marker']!=marker or body.get('operation')!=operation
+                    or body.get('provider')!=BROWSER_PROVIDER or body.get('contract_version')!=BROWSER_CONTRACT
+                    or body.get('marker')!=marker or body.get('prompt')!=expected_prompt
+                    or body.get('output_schema')!=schema):return None
+            if index==0 and body.get('context')is not None:return None
+            if index>0 and (type(body.get('context'))is not dict or body['context'].get('requested_count')!=count):return None
+            text=receipt['assistant_text'];created=api['created'];received=receipt['received_at']
+            if (type(text)is not str or hashlib.sha256(text.encode()).hexdigest()!=receipt['assistant_sha256']
+                    or re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])',text)!=[marker]
+                    or not isinstance(receipt['response_id'],str)
+                    or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}',receipt['response_id'])
+                    or any(type(v)not in(int,float)or not math.isfinite(v)or v<=0 for v in(created,received))
+                    or not created<=received<=time.time() or json.loads(receipt['chart_evidence'])not in(None,[])):return None
+            value=parse_assistant_text(text)
+            if type(value)is not dict or set(value)!={'symbols'}:return None
+            symbols=value['symbols']
+            if (type(symbols)is not list or len(symbols)!=count
+                    or any(type(s)is not str or not re.fullmatch(r'[A-Z0-9]{2,18}USDT',s)for s in symbols)
+                    or len(set(symbols))!=count
+                    or hashlib.sha256(response_output_text(value).encode()).hexdigest()!=receipt['output_sha256']):return None
+            catalog=self.market.catalog();unavailable=[s for s in symbols if s not in catalog]
+            if not unavailable:return None
+        except ResearchReadPaused:raise
+        except Exception:return None
+        if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        self.db.execute('BEGIN IMMEDIATE')
+        try:
+            # Recheck the entire bound evidence and scheduling state under the
+            # write lock. Original request/response rows remain immutable.
+            for table,old,key in(('robot_cycles',cycle,'id'),('robot_jobs',job,'operation'),
+                    ('api_requests',api,'operation'),('research_browser_requests',request,'operation'),
+                    ('research_browser_responses',receipt,'operation')):
+                current=self.db.execute('SELECT * FROM '+table+' WHERE '+key+'=?',(old[key],)).fetchone()
+                if current is None or dict(current)!=dict(old):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
+            if not self.allowed(today):
+                self.db.execute('ROLLBACK');return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+            data['screen']=index
+            if index>0:data['replacements']+=1
+            data['seen']=list(dict.fromkeys(data['seen']+unavailable))
+            data['queue']=[];data['round_symbols']=[];data['replacement_due']=count
+            self.db.execute("UPDATE api_requests SET state='REJECTED_RESPONSE_VALIDATION',failure_code='INVALID_SCREENING_SYMBOL' WHERE operation=?",(operation,))
+            self.db.execute("UPDATE robot_jobs SET state='REQUEST_REJECTED' WHERE operation=?",(operation,))
+            self.save_cycle(cycle['id'],data,'ACTIVE')
+            self.db.execute('COMMIT')
+        except BaseException:self.db.execute('ROLLBACK');raise
+        return self.store.report('WAITING',account,wait_reason='SCREENING_INVALID_SYMBOL_REPLACEMENT_PENDING')
     def settle_previous_research(self,today,account):
         # A complete paid response may outlive a crash at midnight. Its old
         # scheduling/quota context never creates an order on the new day.
@@ -163,7 +243,8 @@ class Coordinator:
             AND j.cycle=? AND j.symbol=? AND j.kind='ANALYSIS' AND j.state='REQUEST_REJECTED' ''',
             (row['id'],row['cycle'],row['symbol'])).fetchone())
     def replacement_count(self,data,results):
-        return sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
+        hold=sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
+        return max(hold,data.get('replacement_due',0))
     def research_budget(self,data,results):
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
@@ -429,6 +510,8 @@ class Coordinator:
         if settled is not None:return settled
         available=self.execution_slots(account,today)
         if not available:return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        recovered=self.recover_invalid_screening(today,account)
+        if recovered is not None:return recovered
         # An interrupted paid request cannot be automatically replayed under a new ID.
         if self.unresolved_research():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
