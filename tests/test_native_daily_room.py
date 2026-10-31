@@ -419,6 +419,23 @@ class DailyRoomTests(unittest.TestCase):
     self.assertFalse(any(binding['marker']in row['text']for row in current))
     self.assertTrue(DailyRoom.matches(current,anchors,binding,'BOUND'))
 
+ def test_restore_known_30_message_window_of_94_saved_anchors(self):
+  # Synthetic IDs exercise the observed 94/30 shape, not VPS ID-overlap proof.
+  own,binding=self.owned_prompt_fixture()
+  for index in range(46):
+   own.extend([{'role':'user','text':'Anchored request '+str(index),'id':'saved-user-'+str(index)},
+    {'role':'assistant','text':'Anchored answer '+str(index),'complete':True,'id':'saved-answer-'+str(index)}])
+  anchors=identities(own);current=copy.deepcopy(own[-30:])
+  self.assertEqual(len(anchors),94);self.assertEqual(len(current),30)
+  self.assertNotEqual(identities(current),anchors[:len(current)])
+  self.assertFalse(any(binding['marker']in row['text']for row in current))
+  bridge,room,_,_=self.setup(Bridge())
+  bridge.operation_deadline=80
+  room.history.rooms=[('Existing daily room',current)]
+  self.assertEqual(room.restore(anchors,binding,'BOUND'),current)
+  self.assertEqual(room.history.selected,['Existing daily room'])
+  self.assertEqual(bridge.fresh_calls,0);self.assertEqual(bridge.clicks,0)
+
  def test_known_history_suffix_rejects_changed_identity_or_completion(self):
   own,binding=self.anchored_history_fixture();anchors=identities(own)
   mutations=({'id':'foreign-answer'},{'text':'Different setup'},
