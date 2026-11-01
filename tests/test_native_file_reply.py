@@ -53,7 +53,7 @@ def native():
     return SimpleNamespace(NotSubmitted=NotSubmitted,OutcomeUnknown=OutcomeUnknown,
         MESSAGE='messages',USER_BODY='native-user-body',MAX_ANSWER=65536,
         user_prompt=user_prompt,image_artifacts=lambda *_:[],
-        exact_json=lambda *_:{'symbol':'ZECUSDT','side':'HOLD'})
+        exact_json=lambda *_:{'symbol':'BTCUSDT','side':'HOLD'})
 
 
 def reasoner():
