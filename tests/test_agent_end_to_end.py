@@ -135,7 +135,7 @@ class AgentEndToEndTests(unittest.TestCase):
                                          {"action", "symbols", "question"})
                         phase = payload["input"][-1]["content"]
                         decision = ({"action": "BATALKAN", "symbols": [], "question": ""}
-                                    if phase.startswith("Phase: PENDING_REVIEW\n") else
+                                    if phase.startswith("Fase: PENDING_REVIEW\n") else
                                     {"action": "SCREENING", "symbols": ["BTCUSDT"], "question": ""})
                         return {"model": "gpt-5-mini", "status": "completed", "output": [
                             {"type": "message", "content": [{"type": "output_text", "text": json.dumps(decision)}]}]}
