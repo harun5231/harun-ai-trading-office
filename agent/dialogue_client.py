@@ -25,6 +25,15 @@ class DialogueClient:
         except (OSError,ValueError,UnicodeError,TypeError,RecursionError):
             raise DialogueError('DIALOGUE_UNAVAILABLE') from None
 
+    def compose(self, value):
+        """Same authenticated transport; drafting does not dispatch browser UI."""
+        need(type(value) is dict and value.get('phase', '').startswith('COMPOSE_'),
+             'DIALOGUE_REQUEST_INVALID')
+        result = self.request(value)
+        need(result['decision']['action'] == 'PROMPT' and result['needs_followup'] is False,
+             'DIALOGUE_MODEL_RESULT_INVALID')
+        return result
+
     def _request(self, value):
         value = validate_request(decode_json(canonical(value).encode()))
         need(os.geteuid() == self.caller_uid, 'DIALOGUE_AUTHENTICATION_FAILED')

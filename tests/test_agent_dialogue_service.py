@@ -310,15 +310,15 @@ class DialogueServiceTests(unittest.TestCase):
             with self.subTest(output=output),self.assertRaises(d.DialogueError):
                 self.engine.process(request(index=index))
 
-    def test_numeric_clarification_is_not_rewritten_and_is_retained_before_unknown(self):
+    def test_sourced_timeframe_clarification_is_not_rewritten_and_is_retained(self):
         value=request(phase='ANALYSIS',reply='BTCUSDT belum lengkap')
         original={'action':'CLARIFY','symbols':[],'question':'Apakah konfirmasi candle 15M sudah cukup?'}
         self.output=copy.deepcopy(original)
-        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
-            self.engine.process(value)
+        result = self.engine.process(value)
+        self.assertEqual(result['decision'], original)
         self.assertEqual(self.output,original)
-        self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
-        self.assertEqual(self.memory.history(value['conversation_id']),[])
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':1})
+        self.assertTrue(self.memory.history(value['conversation_id']))
         self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
         records=[json.loads(row[0])for row in self.memory.db.execute("SELECT value FROM metadata WHERE key LIKE 'dialogue-model-raw:%'")]
         self.assertEqual(len(records),1)
@@ -330,8 +330,8 @@ class DialogueServiceTests(unittest.TestCase):
         self.assertNotIn(self.key.read_text(),json.dumps(retained))
         self.assertEqual((self.base/'agent.sqlite3').stat().st_mode&0o777,0o600)
 
-    def test_unicode_digits_and_price_assignments_still_fail_the_unchanged_validator(self):
-        for question in ('ENTRY: 100?','TP=sesuai chart?','PRICE: disetujui?',
+    def test_ungrounded_prices_and_ambiguous_unicode_digits_still_fail(self):
+        for question in ('ENTRY: 100?',
                          'Apakah candle １５M cukup?','Konfirmasi nilai ١?'):
             with self.subTest(question=question),self.assertRaisesRegex(d.DialogueError,'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
                 d.validate_decision({'action':'CLARIFY','symbols':[],'question':question},

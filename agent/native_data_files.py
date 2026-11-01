@@ -9,6 +9,7 @@ import csv
 import hashlib
 import io
 import json
+import re
 
 from .llm import validated_market_context
 from .native_market_context import convert_native_market_context
@@ -74,9 +75,9 @@ def deliver_market_data_files(native_context, *, now=None):
 def render_short_prompt(payload, formatted_original, files, *, now=None):
     """Replace only the native formatter's large inline public-context section.
 
-    The source-pinned original formatter remains responsible for the owner
-    prompt, output schema and marker reminder. Its exact suffix is preserved.
-    Internal payload and data provenance are never rewritten.
+    The source-pinned formatter still establishes payload framing and its one
+    operation marker. The wire schema stays internal; only a compact readable
+    final-summary request is sent to WEB. Payload/data provenance is unchanged.
     """
     _need(type(payload) is dict and type(payload.get('prompt')) is str
           and type(formatted_original) is str and type(files) is list)
@@ -90,11 +91,58 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
     _need(type(payload.get('marker')) is str and payload['marker']
           and suffix.count(payload['marker']) == 1)
     symbol = expected[0]['symbol']
+    projected = convert_native_market_context(payload['context'], now=now)
     instructions = (
-        f'Untuk {symbol}, gunakan dua file CSV terlampir: masing-masing 200 candle '
-        'tertutup 15M dan 1H, bersama dua gambar chart Binance Futures USDT Perpetual. '
-        'Waktu pada CSV adalah Unix millisecond UTC; candle berjalan tidak disertakan.\n'
-        f"15M: {expected[0]['name']}\n1H: {expected[1]['name']}")
-    rendered = payload['prompt'] + '\n\n' + instructions + SCHEMA_SEPARATOR + suffix
+        f"Bahan Binance Futures USDT Perpetual untuk {symbol}, diambil {projected['observed_at_utc']}. "
+        'Dua CSV terlampir masing-masing berisi 200 candle tertutup 15M dan 1H dengan OHLCV asli. '
+        'Waktu CSV adalah Unix millisecond UTC; candle berjalan dipisahkan dari 200 candle itu.\n'
+        f"15M: {expected[0]['name']}\n1H: {expected[1]['name']}\n"
+        f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
+        'Periksa juga dua gambar chart terlampir: simbol, timeframe, rentang waktu, dan harga harus terbaca. '
+        'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '
+        'Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; '
+        'itu bukan keputusan HOLD berdasarkan pasar.')
+    rendered = payload['prompt'] + '\n\n' + instructions + '\n\n' + compact_summary(payload)
     _need(len(rendered.encode('utf-8')) <= MAX_PROMPT_BYTES)
     return rendered
+
+
+def compact_summary(payload):
+    """Keep the wire schema internal while asking for a readable final answer."""
+    marker = payload.get('marker')
+    _need(type(marker) is str and marker and '\n' not in marker)
+    required = payload.get('output_schema', {}).get('required', [])
+    if set(required) == {'symbols'}:
+        summary = 'Akhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.'
+    elif set(required) == {'symbol', 'order_ref', 'decision'}:
+        summary = ('Akhiri dengan COIN dan keputusan TAHAN atau BATALKAN untuk order yang sedang dibahas, '
+                   'beserta alasan. Jangan menafsirkan perubahan harga sebagai izin membuat order baru.')
+    else:
+        summary = ('Jika keputusan sudah jelas, akhiri dengan ringkasan COIN, LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
+                   'Jika HOLD adalah penilaian pasar, jelaskan alasannya; jangan mengarang level yang belum ditetapkan. '
+                   'Quantity dihitung Risk Manager, jadi tidak perlu menentukan ukuran posisi.')
+    return summary + '\nAcuan percakapan: ' + marker
+
+
+def render_screening_prompt(payload, formatted_original):
+    """Present capacity/exclusions naturally, without repeating an output schema."""
+    _need(type(payload) is dict and type(payload.get('prompt')) is str
+          and type(formatted_original) is str and payload.get('output_schema', {}).get('required') == ['symbols'])
+    prefix = payload['prompt'] + CONTEXT_SEPARATOR
+    _need(formatted_original.startswith(prefix) and formatted_original[len(prefix):].count(SCHEMA_SEPARATOR) == 1)
+    _, suffix = formatted_original[len(prefix):].split(SCHEMA_SEPARATOR, 1)
+    _need(type(payload.get('marker')) is str and suffix.count(payload['marker']) == 1)
+    context = payload.get('context')
+    details = ''
+    if context is not None:
+        _need(type(context) is dict and set(context) <= {
+            'requested_count', 'excluded_symbols', 'replacement_instruction'})
+        count, excluded = context.get('requested_count'), context.get('excluded_symbols')
+        _need(type(count) is int and count in (1, 2) and type(excluded) is list
+              and all(type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,24}USDT', symbol) for symbol in excluded))
+        details = f'\n\nKapasitas saat ini {count} coin. '
+        if excluded:
+            details += 'Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: ' + ', '.join(excluded) + '.'
+    result = payload['prompt'] + details + '\n\n' + compact_summary(payload)
+    _need(len(result.encode('utf-8')) <= MAX_PROMPT_BYTES)
+    return result

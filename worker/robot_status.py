@@ -37,6 +37,31 @@ def collect(root='/data',token_path='/run/office/read_token',opener=urlopen):
             'realized_pnl_today_usdt','commission_today_usdt','funding_today_usdt','trades_today','complete')),
         'position_history':selected(office.get('position_history'),('status','checked_at','kind','complete'))}
     result['execution_gateway']=selected(office.get('robot',{}).get('execution_gateway'),('status','connected','failure_code'))
+    result['robot']['protection_observations']={}
+    protections=office.get('robot',{}).get('protection_observations',{})
+    if isinstance(protections,dict):
+        for key,row in protections.items():
+            if (isinstance(key,str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}',key)
+                    and isinstance(row,dict) and row.get('client_order_id')==key
+                    and row.get('source')=='BINANCE_FUTURES'
+                    and row.get('state') in ('POSITION_PROTECTED','PROTECTION_INCOMPLETE')):
+                result['robot']['protection_observations'][key]=selected(row,('source','state','symbol',
+                    'client_order_id','order_id','filled_quantity','sl_confirmed','tp_confirmed',
+                    'sl_order_id','tp_order_id','observed_at','first_fill_at','fill_detected_at',
+                    'sl_submitted_at','tp_submitted_at','sl_confirmed_at','tp_confirmed_at','accepted_at'))
+    result['robot']['risk_estimates']={}
+    estimates=office.get('robot',{}).get('risk_estimates',{})
+    if isinstance(estimates,dict):
+        for key,row in estimates.items():
+            if (isinstance(key,str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}',key)
+                    and isinstance(row,dict) and row.get('client_order_id')==key
+                    and row.get('kind')=='MONITORING_ESTIMATE_ONLY' and row.get('source')=='RISK_MANAGER'):
+                projected=selected(row,('kind','source','status','symbol','client_order_id','intent_id',
+                    'intent_state','observed_at','estimated_total_risk','original_risk_target_usdt',
+                    'estimated_budget_difference_usdt','failure_code','order_parameters_changed','quantity_basis'))
+                projected['components']=selected(row.get('components'),('gross_risk','entry_fee_usdt',
+                    'sl_exit_fee_usdt','sl_book_impact_usdt','sl_liquidity_uncertainty_usdt'))
+                result['robot']['risk_estimates'][key]=projected
     history=office.get('position_history',{}).get('items',[])
     result['position_history']['items_count']=len(history) if isinstance(history,list) else None
     exposure=office.get('robot',{}).get('manual_exposure',[])

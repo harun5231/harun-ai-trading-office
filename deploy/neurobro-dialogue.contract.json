@@ -22,9 +22,12 @@
   "phases": [
     "SCREENING",
     "ANALYSIS",
-    "PENDING_REVIEW"
+    "PENDING_REVIEW",
+    "COMPOSE_SCREENING",
+    "COMPOSE_ANALYSIS",
+    "COMPOSE_PENDING_REVIEW"
   ],
-  "non_screening_facts": "BINANCE_FUTURES_PUBLIC_USDT_PERPETUAL_1H_AND_15M",
+  "non_screening_facts": "BINANCE_FUTURES_PUBLIC_USDT_PERPETUAL_1H_AND_15M_WITH_AUTHENTICATED_WORKFLOW_FACTS",
   "replacement_hold_limit": null,
   "clarifications_per_conversation_phase": null,
   "history_turn_limit": 12,
@@ -35,5 +38,16 @@
   "deployment_authorized": false,
   "status_interface": "AUTHENTICATED_UDS_GET_V1_STATUS",
   "office_status_binding": "EXACT_SOURCE_ADDITIVE_NATIVE_STATUS",
-  "native_pending_review_interface": "AUTHENTICATED_OWNED_PENDING_REVIEW_V1"
+  "native_pending_review_interface": "AUTHENTICATED_OWNED_PENDING_REVIEW_V1",
+  "prompt_authoring": "GPT_5_MINI_NATURAL_INDONESIAN",
+  "sourced_price_discussion": true,
+  "source_facts_producers": [
+    "RISK_MANAGER",
+    "OWNED_PENDING_ORDER"
+  ],
+  "technical_schema_in_web_chat": "COMPACT_FINAL_SUMMARY_WITH_INTERNAL_BINDING",
+  "completed_composition_replay": "EXACT_SAME_TASK_AND_SOURCE_FACTS_ONLY",
+  "prompt_render_receipt": "PRIVATE_OPERATION_AND_PAYLOAD_HASH_BOUND",
+  "native_conversation_rpc_budget_seconds": 900,
+  "material_freshness_at_send_seconds": 180
 }

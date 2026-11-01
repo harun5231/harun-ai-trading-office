@@ -16,6 +16,7 @@
   let online = false, refreshRequested = false, message = 'Hubungkan worker untuk membaca akun dan status robot.';
   let calendarMonth = null, selectedDay = null;
   let loginBusy = false, loginMessage = '', loginAccess = null, loginExpiryTimer = null;
+  let researchOwnerNotice = null;
 
   function element(tag, text, className) {
     const node = document.createElement(tag);
@@ -80,8 +81,44 @@
       return { status: 'UNAVAILABLE', label: 'Status perlu diperbarui', login: true };
     }
     const labels = { CONNECTED: 'Terhubung', LOGIN_REQUIRED: 'Login diperlukan', LOGIN_IN_PROGRESS: 'Akses login sedang aktif',
-      UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi login diperlukan', BUSY: 'Analisis sedang berjalan' };
+      UNAVAILABLE: 'Browser belum tersedia', CHALLENGE_REQUIRED: 'Verifikasi manusia diperlukan', BUSY: 'Analisis sedang berjalan' };
     return { status: research.status, label: labels[research.status], login: ['CONNECTED', 'LOGIN_REQUIRED', 'UNAVAILABLE', 'CHALLENGE_REQUIRED'].includes(research.status) };
+  }
+  function researchOwnerAction() {
+    if (!online) return researchOwnerNotice;
+    const research = snapshot?.research;
+    if (!research || research.provider !== 'NEUROBRO_WEB') return null;
+    const at = timestamp(research.checked_at), previous = timestamp(researchOwnerNotice?.checkedAt);
+    const labels = { LOGIN_REQUIRED: 'MENUNGGU LOGIN NEUROBRO', CHALLENGE_REQUIRED: 'MENUNGGU VERIFIKASI MANUSIA' };
+    if (at !== null && at <= Date.now() + 5000 && (previous === null || at >= previous)) {
+      if (Object.hasOwn(labels, research.status)) {
+        researchOwnerNotice = { label: labels[research.status], checkedAt: research.checked_at };
+      } else if (['CONNECTED', 'BUSY'].includes(research.status) && Date.now() - at < RESEARCH_FRESH_MS) {
+        researchOwnerNotice = null;
+      }
+    }
+    return researchOwnerNotice;
+  }
+  function protectionObservations(robot) {
+    const supplied = robot?.protection_observations;
+    if (!supplied || typeof supplied !== 'object' || Array.isArray(supplied)) return [];
+    return Object.values(supplied).filter(row => row && row.source === 'BINANCE_FUTURES' &&
+      ['POSITION_PROTECTED', 'PROTECTION_INCOMPLETE'].includes(row.state) &&
+      typeof row.symbol === 'string' && /^[A-Z0-9]{2,18}USDT$/.test(row.symbol) &&
+      typeof row.sl_confirmed === 'boolean' && typeof row.tp_confirmed === 'boolean' &&
+      timestamp(row.observed_at) !== null);
+  }
+  function protectionLabel(row) {
+    const orderId = value => typeof value === 'string' && /^[1-9]\d*$/.test(value);
+    const sl = row.sl_confirmed && orderId(row.sl_order_id) && row.sl_order_id !== row.order_id;
+    const tp = row.tp_confirmed && orderId(row.tp_order_id) && row.tp_order_id !== row.order_id &&
+      (!sl || row.tp_order_id !== row.sl_order_id);
+    if (row.state === 'POSITION_PROTECTED' && sl && tp && row.sl_order_id !== row.tp_order_id) {
+      return fresh(row.observed_at) ? 'POSISI TERLINDUNGI: SL DAN TP TERKONFIRMASI' :
+        'PROTEKSI TERAKHIR TERKONFIRMASI (PERLU PEMBARUAN)';
+    }
+    return 'PROTEKSI BELUM LENGKAP: '+(sl ? 'SL TERPASANG' : 'SL BELUM TERKONFIRMASI')+
+      ', '+(tp ? 'TP TERPASANG' : 'TP BELUM TERKONFIRMASI');
   }
   function agentState() {
     const agent = snapshot?.agent;
@@ -191,18 +228,53 @@
       catch (error) { message = error.message; paint(); }
     };
     riskActions.append(riskSave); riskControls.append(riskLabel, riskActions,
-      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry, fee exit, dan cadangan slippage exit 0,5%. Gap atau slippage yang melampaui cadangan serta funding dapat membuat kerugian aktual melebihi batas. Perubahan risiko berlaku hanya untuk analisis baru; setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
+      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry, fee exit, dan cadangan slippage yang tercatat pada setup. Estimasi dapat berbeda dari biaya aktual. Perubahan risiko berlaku hanya untuk analisis baru; setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
     main.append(riskControls);
-    const status = element('p', robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
+    const ownerAction = researchOwnerAction();
+    const protections = protectionObservations(robot);
+    const incomplete = protections.find(row => protectionLabel(row).startsWith('PROTEKSI BELUM LENGKAP'));
+    const status = element('p', ownerAction ? 'BOT STATUS: '+ownerAction.label+' · Diperiksa '+date(ownerAction.checkedAt) : incomplete ? 'BOT STATUS: '+protectionLabel(incomplete) : robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
     status.id = 'robotStatus'; status.setAttribute('role', 'status'); main.append(status);
+    if (ownerAction) {
+      main.append(notice('LOGIN NEURO → BUKA BROWSER LOGIN → selesaikan tindakan yang diminta → SELESAI LOGIN. Status ON/OFF tetap sesuai pilihan Anda; setelah chat siap, robot yang masih ON melanjutkan otomatis.', 'warning'));
+      const login = element('button', 'LOGIN NEURO'); login.id = 'robotNeurobroAction';
+      login.onclick = () => { view = 'neurobro'; panel.scrollTop = 0; paint(); }; main.append(login);
+    }
     const metrics = element('div', undefined, 'dashboard-metrics');
     field(metrics, 'Risk per SL', number(robot?.risk_target_usdt)+' USDT');
     field(metrics, 'Posisi / kapasitas', number(account?.active_positions, 0)+' / 2');
     field(metrics, 'Slot tersedia', number(robot?.available_slots, 0));
     field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0)+' / 2');
     main.append(metrics, gatewayNote(robot));
+    for (const observation of protections) {
+      const row = element('article', undefined, 'dashboard-row');
+      row.append(element('strong', observation.symbol+' · '+protectionLabel(observation)),
+        element('p', 'Diperiksa '+date(observation.observed_at)+' · SL '+(observation.sl_order_id || 'belum terkonfirmasi')+
+          ' · TP '+(observation.tp_order_id || 'belum terkonfirmasi')));
+      main.append(row);
+    }
+    const riskEstimates = robot?.risk_estimates;
+    if (riskEstimates && typeof riskEstimates === 'object' && !Array.isArray(riskEstimates)) {
+      for (const estimate of Object.values(riskEstimates)) {
+        if (!estimate || estimate.kind !== 'MONITORING_ESTIMATE_ONLY' || estimate.source !== 'RISK_MANAGER' ||
+            !/^[A-Z0-9]{2,18}USDT$/.test(estimate.symbol || '') || timestamp(estimate.observed_at) === null) continue;
+        if (estimate.status === 'AVAILABLE') {
+          const costs = estimate.components || {};
+          main.append(notice('ESTIMASI RISIKO '+estimate.symbol+': '+number(estimate.estimated_total_risk, 6)+
+            ' USDT · anggaran order '+number(estimate.original_risk_target_usdt, 6)+
+            ' · selisih estimasi '+number(estimate.estimated_budget_difference_usdt, 6)+' USDT. '+
+            'Kerugian harga '+number(costs.gross_risk, 6)+', fee entry '+number(costs.entry_fee_usdt, 6)+
+            ', fee exit SL '+number(costs.sl_exit_fee_usdt, 6)+', dampak book '+number(costs.sl_book_impact_usdt, 6)+
+            ', cadangan likuiditas '+number(costs.sl_liquidity_uncertainty_usdt, 6)+
+            ' USDT. Basis quantity order semula; parameter order tidak diubah. Diperiksa '+date(estimate.observed_at)+'.'));
+        } else if (estimate.status === 'UNAVAILABLE') {
+          main.append(notice('Estimasi risiko terbaru '+estimate.symbol+' belum tersedia: '+
+            (estimate.failure_code || 'RISK_ESTIMATE_UNAVAILABLE')+'. Parameter dan proteksi order tetap dipertahankan. Diperiksa '+date(estimate.observed_at)+'.'));
+        }
+      }
+    }
     main.append(notice('Maksimal 2 entry bot per hari WIB. Posisi bawaan dari hari sebelumnya dan posisi manual tetap memakai slot dari kapasitas 2 coin. Order entry yang belum terisi juga memakai slot.'));
-    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset, pengiriman order baru, dan rekonsiliasi robot. Pemasangan TP/SL serta pembatalan order oleh robot juga berhenti. Posisi serta order yang sudah ada tetap di Binance dan dapat terisi; OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
+    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset dan pengiriman entry baru. Pemantauan fill serta pemulihan proteksi untuk order dan posisi yang sudah ada tetap berjalan. OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
     if (robot?.last_decision) main.append(notice('Keputusan terakhir: '+robot.last_decision.symbol+' · '+robot.last_decision.status+(robot.last_decision.failure_code ? ' · '+robot.last_decision.failure_code : '')));
     content.append(main);
     const current = section('AKUN FUTURES'); source(current, account);
@@ -597,6 +669,7 @@
   function disconnect() {
     clearLoginAccess();
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
+    researchOwnerNotice = null;
     polling = false; saving = false; refreshRequested = false; online = false;
     riskDraft = null; resetRiskOnRefresh = null; calendarMonth = null; selectedDay = null;
     loginBusy = false; loginMessage = '';

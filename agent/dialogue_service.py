@@ -22,6 +22,7 @@ import struct
 import threading
 import time
 import uuid
+from decimal import Decimal, InvalidOperation
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
@@ -34,12 +35,19 @@ from .models import AgentError, AmbiguousOperation, NotSent
 # former 64 KiB request. The response and HTTP-header limits remain unchanged.
 MAX_BODY = 384 * 1024
 MAX_RESPONSE = 16384
-PHASES = frozenset({'SCREENING', 'ANALYSIS', 'PENDING_REVIEW'})
-ACTIONS = frozenset({'SCREENING', 'CLARIFY', 'HOLD', 'TAHAN', 'BATALKAN', 'COMPLETE'})
+BASE_PHASES = frozenset({'SCREENING', 'ANALYSIS', 'PENDING_REVIEW'})
+PHASES = BASE_PHASES | frozenset('COMPOSE_' + phase for phase in BASE_PHASES)
+ACTIONS = frozenset({'SCREENING', 'CLARIFY', 'HOLD', 'TAHAN', 'BATALKAN', 'COMPLETE', 'PROMPT'})
 SHA = re.compile(r'[a-f0-9]{64}', re.ASCII)
 IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}', re.ASCII)
 REQUEST_FIELDS = frozenset({'schema_version', 'request_id', 'conversation_id', 'phase',
     'reply', 'reply_sha256', 'market_context', 'gate', 'deadline_epoch'})
+FACT_KEYS = frozenset({'symbol', 'side', 'risk_usdt', 'quantity', 'filled_quantity',
+    'entry_price', 'stop_loss', 'take_profit', 'execution_tp', 'neurobro_tp',
+    'target_net_profit', 'estimated_loss', 'estimated_profit', 'notional', 'leverage',
+    'fee_entry_rate', 'fee_exit_rate', 'reserve_slippage', 'cost_components',
+    'accepted_at', 'age_seconds', 'order_ref', 'entry_client_order_id', 'entry_order_id',
+    'estimate_status', 'observed_at', 'last_review_at', 'next_review_at'})
 RESULT_FIELDS = frozenset({'schema_version', 'ok', 'request_id', 'conversation_id', 'phase',
     'reply_sha256', 'authority', 'trading_authority', 'decision', 'needs_followup', 'reason'})
 PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'DIALOGUE_JSON_INVALID',
@@ -49,7 +57,7 @@ PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'D
     'DIALOGUE_HTTP_INVALID', 'DIALOGUE_HTTP_TIMEOUT', 'DIALOGUE_OPERATION_UNKNOWN',
     'DIALOGUE_OPERATION_ID_MISMATCH', 'DIALOGUE_MODEL_UNAVAILABLE', 'DIALOGUE_MODEL_NOT_SENT',
     'DIALOGUE_MODEL_RESULT_INVALID', 'DIALOGUE_FOREIGN_SYMBOL', 'DIALOGUE_PRICE_PROPOSAL_REFUSED',
-    'DIALOGUE_RESPONSE_LIMIT', 'DIALOGUE_UNAVAILABLE'})
+    'DIALOGUE_SOURCE_FACTS_INVALID', 'DIALOGUE_RESPONSE_LIMIT', 'DIALOGUE_UNAVAILABLE'})
 
 
 class DialogueError(AgentError):
@@ -83,9 +91,78 @@ def text_safe(value, maximum, *, empty=False):
         and not any(ord(char) < 32 and char not in '\n\t' or 127 <= ord(char) < 160 for char in value))
 
 
+def _number_values(value):
+    """Canonical numbers present in the supplied source, not model proposals."""
+    if isinstance(value, dict):
+        return set().union(*(_number_values(child) for child in value.values())) if value else set()
+    if isinstance(value, (list, tuple)):
+        return set().union(*(_number_values(child) for child in value)) if value else set()
+    if type(value) not in (str, int, float, Decimal):
+        return set()
+    result = set()
+    for token in re.findall(r'(?<![A-Za-z0-9_])\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?', str(value), re.ASCII):
+        try:
+            parsed = Decimal(token.replace(',', '.'))
+        except InvalidOperation:
+            continue
+        if parsed.is_finite():
+            result.add(parsed)
+    return result
+
+
+def validate_question_sources(question, request):
+    """Allow natural discussion of known facts without inventing new levels.
+
+    This is source checking only. A question never becomes executable setup
+    data, and numeric attribution does not authorize a new trade or quantity.
+    """
+    known = _number_values(request.get('reply', ''))
+    known.update(_number_values(request.get('market_context')))
+    if 'source_facts' in request:
+        validate_source_facts(request['source_facts'])
+    known.update(_number_values(request.get('source_facts')))
+    # These are the owner's fixed timeframe/reward vocabulary, not price data.
+    without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', '', question)
+    need(_number_values(without_timeframes) <= known, 'DIALOGUE_PRICE_PROPOSAL_REFUSED')
+    # Unicode numeric lookalikes are not silently reinterpreted as price data.
+    need(not any(char.isdigit() and char not in '0123456789' for char in question),
+         'DIALOGUE_PRICE_PROPOSAL_REFUSED')
+
+
+def validate_source_facts(facts):
+    """Authenticated caller facts only; a model's text never enters this path."""
+    need(type(facts) is list and len(facts) <= 2, 'DIALOGUE_SOURCE_FACTS_INVALID')
+    for item in facts:
+        need(type(item) is dict and set(item) == {'producer', 'operation', 'values', 'sha256'}
+            and item['producer'] in {'RISK_MANAGER', 'OWNED_PENDING_ORDER'}
+            and type(item['operation']) is str and IDENTITY.fullmatch(item['operation'])
+            and type(item['values']) is dict and set(item['values']) <= FACT_KEYS
+            and type(item['sha256']) is str and SHA.fullmatch(item['sha256'])
+            and hashlib.sha256(canonical(item['values']).encode()).hexdigest() == item['sha256'],
+            'DIALOGUE_SOURCE_FACTS_INVALID')
+        count = [0]
+        def visit(value, depth=0):
+            count[0] += 1
+            need(depth <= 5 and count[0] <= 256, 'DIALOGUE_SOURCE_FACTS_INVALID')
+            if type(value) is dict:
+                need(all(type(key) is str and re.fullmatch(r'[a-z][a-z0-9_]{0,63}', key)
+                    for key in value), 'DIALOGUE_SOURCE_FACTS_INVALID')
+                for child in value.values(): visit(child, depth + 1)
+            elif type(value) is list:
+                for child in value: visit(child, depth + 1)
+            else:
+                need(value is None or type(value) in (bool, int)
+                    or type(value) is float and math.isfinite(value)
+                    or text_safe(value, 256, empty=True), 'DIALOGUE_SOURCE_FACTS_INVALID')
+        visit(item['values'])
+    need(len(canonical(facts).encode()) <= 8192, 'DIALOGUE_SOURCE_FACTS_INVALID')
+    return facts
+
+
 def validate_request(value, *, now=None):
     now = time.time() if now is None else now
-    need(type(value) is dict and set(value) == REQUEST_FIELDS
+    need(type(value) is dict and REQUEST_FIELDS <= set(value)
+         and set(value) <= REQUEST_FIELDS | {'source_facts'}
          and type(value['schema_version']) is int and value['schema_version'] == 1
          and type(value['request_id']) is str and SHA.fullmatch(value['request_id'])
          and type(value['conversation_id']) is str and IDENTITY.fullmatch(value['conversation_id'])
@@ -100,7 +177,9 @@ def validate_request(value, *, now=None):
     need(type(deadline) in (int, float) and math.isfinite(deadline)
          and deadline <= now + 90, 'DIALOGUE_DEADLINE_INVALID')
     need(deadline > now, 'DIALOGUE_DEADLINE_EXPIRED')
-    if value['phase'] == 'SCREENING':
+    if 'source_facts' in value:
+        validate_source_facts(value['source_facts'])
+    if value['phase'] in {'SCREENING', 'COMPOSE_SCREENING'}:
         need(value['market_context'] is None, 'DIALOGUE_MARKET_CONTEXT_INVALID')
     else:
         try:
@@ -121,7 +200,21 @@ def validate_decision(value, request):
     need(type(action) is str and action in ACTIONS and type(symbols) is list and len(symbols) <= 2
          and all(type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,20}USDT', symbol, re.ASCII)
                  for symbol in symbols) and len(symbols) == len(set(symbols))
-         and text_safe(question, 400, empty=True), 'DIALOGUE_MODEL_RESULT_INVALID')
+         and text_safe(question, 1600, empty=True), 'DIALOGUE_MODEL_RESULT_INVALID')
+    if request['phase'].startswith('COMPOSE_'):
+        need(action == 'PROMPT' and not symbols and bool(question.strip()),
+             'DIALOGUE_MODEL_RESULT_INVALID')
+        validate_question_sources(question, request)
+        mentioned = set(re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', question.upper()))
+        source_symbols = set(re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', request['reply'].upper()))
+        current = (request.get('market_context') or {}).get('symbol')
+        if current: source_symbols.add(current)
+        need(mentioned <= source_symbols, 'DIALOGUE_FOREIGN_SYMBOL')
+        need(not re.search(r'\b(?:tentukan|hitung|berapa|pilih|berikan)\b.{0,60}'
+            r'\b(?:quantity|ukuran posisi|jumlah kontrak|position size)\b', question, re.I),
+            'DIALOGUE_MODEL_RESULT_INVALID')
+        return value
+    need(action != 'PROMPT', 'DIALOGUE_MODEL_RESULT_INVALID')
     question_symbols = re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', question.upper())
     for symbol in [*symbols, *question_symbols]:
         base = re.escape(symbol[:-4])
@@ -131,18 +224,18 @@ def validate_decision(value, request):
         # not become USDT attribution merely because they begin with "$BASE".
         cashtag = re.search(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:'''+base+
                             r''')(?=\.?(?:$|[\s,;:!?()\[\]{}*'"`]))''', request['reply'])
-        need(full_pair is not None or cashtag is not None, 'DIALOGUE_FOREIGN_SYMBOL')
+        current = (request['phase'] != 'SCREENING'
+            and (request.get('market_context') or {}).get('symbol') == symbol)
+        need(full_pair is not None or cashtag is not None or current, 'DIALOGUE_FOREIGN_SYMBOL')
     if action == 'CLARIFY':
-        need(bool(question) and '\n' not in question and '\t' not in question,
-             'DIALOGUE_MODEL_RESULT_INVALID')
-        # Questions may request Neurobro's missing levels but may not propose a
-        # number, order, or numeric level. Chart/timeframe data is already supplied.
-        need(not any(char.isdigit() for char in question)
-             and not re.search(r'\b(?:ENTRY|TP|SL|PRICE|HARGA|TARGET|BUY|SELL|LONG|SHORT)\s*[:=]', question, re.I),
-             'DIALOGUE_PRICE_PROPOSAL_REFUSED')
+        need(bool(question.strip()), 'DIALOGUE_MODEL_RESULT_INVALID')
+        validate_question_sources(question, request)
     else:
         need(question == '', 'DIALOGUE_MODEL_RESULT_INVALID')
     phase = request['phase']
+    if phase != 'SCREENING' and (request.get('market_context') or {}).get('symbol'):
+        need(not symbols or set(symbols) == {request['market_context']['symbol']},
+             'DIALOGUE_FOREIGN_SYMBOL')
     need(action != 'SCREENING' or phase == 'SCREENING' and bool(symbols), 'DIALOGUE_MODEL_RESULT_INVALID')
     need(action not in {'TAHAN', 'BATALKAN'} or phase == 'PENDING_REVIEW', 'DIALOGUE_MODEL_RESULT_INVALID')
     if action in {'HOLD', 'TAHAN', 'BATALKAN'}:
@@ -313,8 +406,11 @@ class DialogueEngine:
                     return original_transport(payload)
                 self.model.transport = gated_transport
                 try:
-                    decision = self.model.plan(history, request['reply'], phase=request['phase'],
-                        jakarta_day=day, context=request['market_context'])
+                    arguments = dict(phase=request['phase'], jakarta_day=day,
+                        context=request['market_context'])
+                    if 'source_facts' in request:
+                        arguments['source_facts'] = request['source_facts']
+                    decision = self.model.plan(history, request['reply'], **arguments)
                 finally:
                     self.model.transport = original_transport
                 need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
@@ -335,7 +431,12 @@ class DialogueEngine:
                 self.memory.append(conversation, 'assistant', canonical(value), self.clock())
                 return result
             try:
-                result = self.memory.operation(operation_id, 'DELEGATED_MODEL_DIALOGUE', request, execute)
+                # A completed draft is a deterministic rendering receipt for
+                # this exact task/context. A new transport deadline must not
+                # buy another model call or change the already-authored text.
+                memo_request = ({key: value for key, value in request.items()
+                    if key != 'deadline_epoch'} if request['phase'].startswith('COMPOSE_') else request)
+                result = self.memory.operation(operation_id, 'DELEGATED_MODEL_DIALOGUE', memo_request, execute)
             except AmbiguousOperation:
                 raise DialogueError('DIALOGUE_OPERATION_UNKNOWN') from None
             except NotSent:

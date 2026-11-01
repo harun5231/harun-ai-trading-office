@@ -32,6 +32,14 @@ SETUP_SCHEMA={'type':'object','description':'LONG/SHORT require positive entry, 
  'risk_reward':{**NUM,'type':['number','null'],'description':'Declared gross reward divided by risk; LONG/SHORT require at least 2. HOLD requires null.'}},
  'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward'],'additionalProperties':False}
 
+# The legacy request schema is immutable for cached/in-flight paid requests.
+# V4 keeps the internal result fields, while the conversational adapter handles
+# the natural Indonesian summary and computes its declared ratio from levels.
+SETUP_SCHEMA_V4=copy.deepcopy(SETUP_SCHEMA)
+SETUP_SCHEMA_V4['description']='Keputusan akhir untuk coin ini: LONG/SHORT dengan ENTRY, rekomendasi TP dan SL yang jelas; HOLD pasar memakai level null. Quantity dan TP eksekusi bersih 2R dihitung Risk Manager.'
+SETUP_SCHEMA_V4['properties']['take_profit']['description']='Rekomendasi TP asli Neurobro disimpan terpisah. Risk Manager boleh menormalkan hanya TP eksekusi ke nominal keuntungan bersih dua kali risiko Office tanpa persetujuan ulang.'
+SETUP_SCHEMA_V4['properties']['risk_reward']['description']='Rasio harga rekomendasi Neurobro, dihitung dari level yang bersumber jelas. Dicatat untuk audit, bukan syarat penolakan sebelum normalisasi TP V4.'
+
 def api_key():
     try:
         file=os.environ.get('NEUROBRO_API_KEY_FILE')
@@ -92,7 +100,7 @@ def canonical_output(value,schema,catalog=None):
         if not isinstance(catalog,dict) or not catalog:raise Review('SCREENING_CATALOG_REQUIRED')
         symbols=selections(value,catalog,screening_count(schema))
         return json.dumps({'symbols':list(symbols)})
-    if schema==SETUP_SCHEMA:
+    if schema in (SETUP_SCHEMA,SETUP_SCHEMA_V4):
         signal=setup(value,value.get('symbol'),require_declared_rr=False,require_gross_rr=False)
         fields={'symbol':signal.symbol,'side':signal.side,**{k:setup_number(value[k]) if value[k] is not None else None for k in NUMERIC_FIELDS}}
         return '{'+','.join(json.dumps(k)+':'+(format(v,'f') if isinstance(v,D) else json.dumps(v)) for k,v in fields.items())+'}'

@@ -71,7 +71,7 @@ jobs:
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
-                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:00c1a2b1cf383e44522c8330dd00144dc45304bc72b0a738d78cb01045c8ae3d',
+                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:3f220762093e09cb336d4ecb329ea37f573aac0b3e7f38f24463f66cc1c9a723',
                   'deployment_authorized':False},output,sort_keys=True)
           PY
           cat dialogue-agent-image.json >> "$GITHUB_STEP_SUMMARY"

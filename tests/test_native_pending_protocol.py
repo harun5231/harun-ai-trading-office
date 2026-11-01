@@ -27,7 +27,7 @@ def utc(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
-def context(now=NOW):
+def context(now=NOW, count=20):
     server = int(now * 1000)
     result = {'source': 'Binance Futures', 'symbol': 'BTCUSDT',
         'fetched_at': now - 1, 'server_time': server - 1000,
@@ -37,8 +37,8 @@ def context(now=NOW):
     for timeframe, interval in (('1h', 3_600_000), ('15m', 900_000)):
         last = (server - 1000) // interval * interval
         candles = []
-        for index in range(20):
-            opened = last - (19 - index) * interval
+        for index in range(count):
+            opened = last - (count - 1 - index) * interval
             candles.append({'open_time': opened, 'close_time': opened + interval - 1,
                 'open': '100', 'high': '102', 'low': '99', 'close': '101', 'volume': '10'})
         result['timeframes'][timeframe] = {'symbol': 'BTCUSDT',
@@ -98,10 +98,12 @@ class NativePendingProtocolTests(unittest.TestCase):
     def test_request_namespace_is_bound_to_exact_intent_symbol_and_positive_sequence(self):
         with patch.object(protocol.time, 'time', return_value=NOW):
             self.assertTrue(protocol.is_pending_browser_request(payload()))
+            many_reviews = payload()
+            many_reviews['operation'] = 'pending-review-v1:' + INTENT[:32] + ':1000000000'
+            self.assertTrue(protocol.is_pending_browser_request(many_reviews))
             cases = [None, 'pending-review-v1:' + 'a' * 32 + ':1',
                 'pending-review-v1:' + INTENT[:32] + ':0',
                 'pending-review-v1:' + INTENT[:32] + ':01',
-                'pending-review-v1:' + INTENT[:32] + ':1000000000',
                 '2026-10-17:analysis-v9:BTCUSDT', OPERATION + '\n']
             for operation in cases:
                 value = payload();value['operation'] = operation
@@ -110,6 +112,25 @@ class NativePendingProtocolTests(unittest.TestCase):
             for changed in ({'symbol': 'ETHUSDT'}, {'intent_ref': 'A' * 64}, {'unknown': None}):
                 value = payload();value['context']['pending_review'].update(changed)
                 self.assertFalse(protocol.is_pending_browser_request(value))
+
+    def test_new_review_materials_require_200_closed_bars_without_rewriting_old_receipts(self):
+        current = context(count=201)
+        self.assertTrue(protocol.closed_review_materials(current))
+        legacy = copy.deepcopy(current)
+        for frame in legacy['timeframes'].values():
+            frame['candles'] = frame['candles'][-20:]
+        self.assertFalse(protocol.closed_review_materials(legacy))
+        self.assertTrue(protocol._context_valid(legacy, operation=OPERATION, now=NOW))
+
+    def test_phase_stays_pending_when_materials_age_but_dispatch_freshness_does_not(self):
+        value = payload()
+        with patch.object(protocol.time, 'time', return_value=NOW + 181):
+            self.assertFalse(protocol.is_pending_browser_request(value))
+            self.assertEqual(protocol.dialogue_phase_for_payload(value,
+                ['symbol', 'order_ref', 'decision']), 'PENDING_REVIEW')
+        value['context']['pending_review']['intent_ref'] = 'f' * 64
+        self.assertEqual(protocol.dialogue_phase_for_payload(value,
+            ['symbol', 'order_ref', 'decision']), 'ANALYSIS')
 
     def test_pending_metadata_requires_utc_existing_entry_and_closed_keys(self):
         with patch.object(protocol.time, 'time', return_value=NOW):
@@ -148,6 +169,22 @@ class NativePendingProtocolTests(unittest.TestCase):
             self.assertEqual(protocol.dialogue_phase_for_payload({}, ['symbol', 'side']), 'ANALYSIS')
             request['context']['pending_review']['symbol'] = 'ETHUSDT'
             self.assertEqual(protocol.dialogue_phase_for_payload(request, required), 'ANALYSIS')
+
+    def test_new_long_pending_reply_keeps_initial_context_but_requires_fresh_final_charts(self):
+        namespace = source_namespace()
+        protocol.install_source_protocol(namespace)
+        initial = context(NOW)
+        initial['material_contract'] = 'OWNER_MATERIALS_V4'
+        received = NOW + 600
+        self.assertEqual(namespace['validate_chart_evidence'](evidence(received), protocol.REVIEW_SCHEMA,
+            initial, NOW, received, 180), evidence(received))
+        for changed in (context(NOW), dict(initial, material_contract='unapproved-contract')):
+            with self.assertRaisesRegex(Review, 'INVALID_PENDING_REVIEW_CHART_EVIDENCE'):
+                namespace['validate_chart_evidence'](evidence(received), protocol.REVIEW_SCHEMA,
+                    changed, NOW, received, 180)
+        with self.assertRaisesRegex(Review, 'INVALID_PENDING_REVIEW_CHART_EVIDENCE'):
+            namespace['validate_chart_evidence'](evidence(NOW), protocol.REVIEW_SCHEMA,
+                initial, NOW, received, 180)
 
     def test_dom_original_unchanged_and_new_review_requires_two_native_chart_artifacts(self):
         original = Mock(return_value='LEGACY_NATIVE_RESULT')

@@ -50,6 +50,11 @@ class NativeProofStore:
     def entries(self, today):
         return self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts WHERE entry_day=?', (today,)).fetchone()[0]
 
+    def record_protection_observation(self, result):
+        # The real projection has its own transaction/merge tests. This harness
+        # keeps the native pending lifecycle independent of Office rendering.
+        self.last_protection_observation = result
+
 
 def native_build(plan, operation):
     if plan['proof'] != 'offline-native-proof:' + operation:
@@ -73,9 +78,9 @@ def canonical(value, schema, catalog=None):
 
 def native_methods():
     """Run exact verified native intent/receipt code, never import its app."""
-    path = Path('/tmp/harun-reconciled-production-source/worker/robot.py')
-    if not path.exists():
-        raise unittest.SkipTest('Sanitized authenticated native fixture unavailable')
+    # Exercise the versioned native candidate, never an unversioned stale
+    # workspace copy or the ordinary repository adapter. Do not import its app.
+    path = Path(__file__).resolve().parents[1] / 'vps_native/worker/robot.py'
     tree = ast.parse(path.read_bytes())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Coordinator')
     names = {'verified_intent', 'record_gateway_observation', 'mark_unknown'}
@@ -112,7 +117,8 @@ class Gateway:
         self._validate_intent(intent)
         self.calls.append('native_owned_entry_get')
         return {'status': self.status, 'executedQty': self.filled,
-                'clientOrderId': intent['client_order_id']}
+                'clientOrderId': intent['client_order_id'], 'orderId': '111',
+                'time': int(pending._utc_instant(self.case.accepted) * 1000)}
 
     def _cancel_entry_remainder(self, intent, entry):
         self._validate_intent(intent)
@@ -149,13 +155,20 @@ class Coordinator:
         self.case, self.db = case, case.db
         self.store = NativeProofStore(self.db, initialize=False)
         self.gateway = Gateway(case)
-        self.market = types.SimpleNamespace(fresh=self.market_fresh)
+        self.market = types.SimpleNamespace(fresh=self.market_fresh,
+            data=lambda symbol: native_context(time.time()), max_age=180)
         self.neuro = types.SimpleNamespace(ask=self.ask)
         self.ask_count = self.advance_count = 0
         self.decision = 'TAHAN'
         self.after_reply = None
+        self.before_dispatch = None
         self.raise_at_ask = None
         self.force_wrong_ref = False
+
+    def record_gateway_execution_costs(self, *args, **kwargs):
+        # Priority execution-cost sampling is tested separately; this fixture
+        # exercises the native pending transition and immutable order state.
+        pass
 
     def account_factory(self):
         return object()
@@ -171,7 +184,8 @@ class Coordinator:
         return self.store.settings()['robot_on']
 
     def allowed(self, today):
-        return self.gateway_allowed() and today == self.case.today
+        actual_day = datetime.fromtimestamp(time.time(), ZoneInfo('Asia/Jakarta')).date().isoformat()
+        return self.gateway_allowed() and today == actual_day
 
     def pause_reason(self):
         return 'ROBOT_OFF' if not self.gateway_allowed() else 'ROBOT_DAY_CHANGED'
@@ -192,8 +206,13 @@ class Coordinator:
         body, serialized, sha = native_request_body(operation, prompt, schema, context)
         self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
             (operation, None, sha, 'PENDING', time.time(), 1, None, None))
+        self.db.execute('INSERT INTO research_browser_requests VALUES(?,?,?)',
+            (operation, serialized, sha))
+        if self.before_dispatch:
+            self.before_dispatch()
+        dispatch_day = datetime.fromtimestamp(time.time(), ZoneInfo('Asia/Jakarta')).date().isoformat()
         assert pending.verify_pending_dispatch(self.db, operation, body['marker'], sha,
-                                               self.case.today, time.time()) is True
+                                               dispatch_day, time.time()) is True
         value = {'symbol': context['symbol'], 'order_ref': context['pending_review']['intent_ref'],
                  'decision': self.decision}
         if self.force_wrong_ref:
@@ -201,6 +220,12 @@ class Coordinator:
         validate(value)
         self.db.execute("UPDATE api_requests SET state='COMPLETE',output=? WHERE operation=?",
                         (canonical(value, schema), operation))
+        text = json.dumps(value)
+        captured = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
+        charts = [{'source': 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT', 'symbol': context['symbol'],
+            'timeframe': tf, 'captured_at': captured} for tf in ('1h', '15m')]
+        self.db.execute('INSERT INTO research_browser_responses VALUES(?,?,?,?,?,?)',
+            (operation, text, digest(text), time.time(), json.dumps(charts), 180))
         if self.after_reply:
             self.after_reply(self)
         return value
@@ -221,10 +246,13 @@ class PendingReviewTests(unittest.TestCase):
         CREATE TABLE robot_candidates(id TEXT PRIMARY KEY,cycle TEXT,symbol TEXT,status TEXT,plan TEXT,failure_code TEXT);
         CREATE TABLE robot_entry_receipts(id TEXT PRIMARY KEY,symbol TEXT,entry_day TEXT,confirmed_at TEXT);
         CREATE TABLE api_requests(operation TEXT PRIMARY KEY,idempotency TEXT,body_hash TEXT,state TEXT,created REAL,attempts INTEGER,output TEXT,failure_code TEXT);
+        CREATE TABLE research_browser_requests(operation TEXT PRIMARY KEY,request_body TEXT,request_sha256 TEXT);
+        CREATE TABLE research_browser_responses(operation TEXT PRIMARY KEY,assistant_text TEXT,assistant_sha256 TEXT,received_at REAL,chart_evidence TEXT,chart_max_age INTEGER);
         ''')
         self.now = time.time()
         self.today = datetime.now(ZoneInfo('Asia/Jakarta')).date().isoformat()
         self.created = datetime.fromtimestamp(self.now - pending.REVIEW_SECONDS - 1, timezone.utc).isoformat()
+        self.accepted = self.created
         self.fill_time = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
         self.operation = 'previous-day:analysis-v9:BTCUSDT'
         self.intent = {'intent_id': self.operation, 'client_order_id': 'hao-owned-fixture',
@@ -299,7 +327,9 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(body['context']['pending_review']['entry_created_at'], self.created)
         self.assertEqual(body['output_schema'], protocol.REVIEW_SCHEMA)
         self.assertEqual(body['context']['pending_review']['intent_ref'], digest(json.dumps(self.intent)))
-        self.assertIn('"price":"100"', body['prompt'])
+        self.assertIn('harga LIMIT 100', body['prompt'])
+        self.assertNotIn('Return only JSON', body['prompt'])
+        self.assertIn('Diterima Binance', body['prompt'])
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 0)
         self.run_tick()
         self.assertEqual(self.coordinator.ask_count, 1)
@@ -327,11 +357,100 @@ class PendingReviewTests(unittest.TestCase):
         self.coordinator.after_reply = fill
         result = self.run_tick()
         self.assertEqual(result['bot_status'], 'POSITION_PROTECTED')
-        self.assertEqual(self.coordinator.gateway.cancel_count, 1)
+        self.assertEqual(self.coordinator.gateway.cancel_count, 0)
         row = self.db.execute('SELECT * FROM order_intents').fetchone()
         self.assertEqual(row['state'], 'POSITION_PROTECTED')
         self.assertEqual(json.loads(row['result'])['filled_quantity'], '0.4')
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 1)
+        self.assertTrue(json.loads(self.claims()[0]['result'])['decision_not_applied_after_fill'])
+
+    def test_tahan_reconciles_a_fill_before_returning_from_discussion(self):
+        def fill(_):
+            self.coordinator.gateway.status = 'PARTIALLY_FILLED'
+            self.coordinator.gateway.filled = '0.4'
+        self.coordinator.after_reply = fill
+        result = self.run_tick()
+        self.assertEqual(result['bot_status'], 'POSITION_PROTECTED')
+        self.assertEqual(self.coordinator.gateway.cancel_count, 0)
+        self.assertEqual(self.claims()[0]['decision'], 'TAHAN')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 1)
+
+    def test_pending_review_carries_fresh_estimate_but_keeps_original_order_parameters(self):
+        estimate = {'status': 'AVAILABLE', 'original_risk_target_usdt': '5',
+            'estimated_total_risk': '5.85', 'estimated_budget_difference_usdt': '0.85',
+            'cost_evidence_sha256': 'c'*64, 'components': {'gross_risk': '5', 'entry_fee_usdt': '0.1',
+                'sl_exit_fee_usdt': '0.1', 'sl_book_impact_usdt': '0.15', 'sl_liquidity_uncertainty_usdt': '0.5'}}
+        original = self.db.execute('SELECT payload FROM order_intents').fetchone()[0]
+        with patch.object(pending, 'estimate_owned_order', return_value=estimate) as observer:
+            self.assertEqual(self.run_tick()['bot_status'], 'ENTRY_PENDING')
+        self.assertEqual(observer.call_count, 1)
+        body = json.loads(self.claims()[0]['request_body'])
+        order = body['context']['pending_order_context']
+        self.assertEqual(order['entry_price'], self.intent['entry']['price'])
+        self.assertEqual(order['quantity'], self.intent['entry']['quantity'])
+        self.assertEqual(order['stop_loss'], self.intent['protection']['stop_loss'])
+        self.assertEqual(order['take_profit'], self.intent['protection']['take_profit'])
+        self.assertEqual(order['estimated_loss'], '5.85')
+        self.assertEqual(order['cost_components']['evidence_sha256'], 'c'*64)
+        self.assertIn('selisih terhadap anggaran order 0.85 USDT', body['prompt'])
+        self.assertIn('bukan izin mengubah parameter order', body['prompt'])
+        self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0], original)
+
+    def test_first_review_uses_exchange_acceptance_not_local_claim_time(self):
+        self.accepted = datetime.fromtimestamp(self.now - 60, timezone.utc).isoformat()
+        self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        self.assertEqual(self.coordinator.ask_count, 0)
+        self.assertFalse((self.root / pending.JOURNAL_NAME).exists())
+        self.assertEqual(self.db.execute('SELECT created FROM order_intents').fetchone()[0], self.created)
+
+    def test_completed_tahan_after_crash_is_drained_without_duplicate_discussion(self):
+        def interrupted(_):
+            raise KeyboardInterrupt
+        self.coordinator.after_reply = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            self.run_tick()
+        self.assertEqual(self.claims()[0]['state'], 'REVIEWING')
+        reply_time = self.db.execute('SELECT received_at FROM research_browser_responses').fetchone()[0]
+        self.coordinator.after_reply = None
+        self.run_tick()
+        claim = self.claims()[0]
+        self.assertEqual((claim['state'], claim['decision']), ('COMPLETE', 'TAHAN'))
+        self.assertEqual(claim['next_due'], reply_time + pending.REVIEW_SECONDS)
+        self.assertEqual(self.coordinator.ask_count, 1)
+        self.assertEqual(self.coordinator.gateway.cancel_count, 0)
+
+    def test_repeated_tahan_uses_each_decision_time_across_wib_midnight(self):
+        # The clock belongs only to this synthetic backend; no production time,
+        # order timestamp or order parameter is modified.
+        clock = [pending._utc_instant(self.created) + pending.REVIEW_SECONDS + 1]
+        with patch.object(pending.time, 'time', side_effect=lambda: clock[0]):
+            for index in range(3):
+                self.today = datetime.fromtimestamp(clock[0], ZoneInfo('Asia/Jakarta')).date().isoformat()
+                self.assertEqual(self.run_tick()['bot_status'], 'ENTRY_PENDING')
+                claim = self.claims()[-1]
+                self.assertEqual(claim['next_due'], clock[0] + pending.REVIEW_SECONDS)
+                clock[0] = claim['next_due'] + 1
+        self.assertEqual(self.coordinator.ask_count, 3)
+        self.assertEqual(self.coordinator.gateway.cancel_count, 0)
+        self.assertEqual([claim['sequence'] for claim in self.claims()], [1, 2, 3])
+        row = self.db.execute('SELECT * FROM order_intents').fetchone()
+        self.assertEqual(row['created'], self.created)
+        self.assertEqual(json.loads(row['payload']), self.intent)
+
+    def test_pending_long_discussion_survives_midnight_with_fresh_final_materials_and_same_order(self):
+        clock = [pending._utc_instant('2026-11-01T16:59:00Z')]
+        self.today = '2026-11-01'
+        self.coordinator.before_dispatch = lambda: clock.__setitem__(0, clock[0] + 600)
+        original_payload = self.db.execute('SELECT payload FROM order_intents').fetchone()[0]
+        with patch.object(pending.time, 'time', side_effect=lambda: clock[0]):
+            self.assertEqual(self.run_tick()['bot_status'], 'ENTRY_PENDING')
+            self.assertFalse(self.coordinator.allowed(self.today))
+            claim = self.claims()[0]
+            self.assertEqual(claim['state'], 'COMPLETE')
+            self.assertEqual(claim['next_due'], clock[0] + pending.REVIEW_SECONDS)
+        self.assertEqual(self.coordinator.ask_count, 1)
+        self.assertEqual(self.coordinator.gateway.cancel_count, 0)
+        self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0], original_payload)
 
     def test_already_protected_partial_remainder_is_reviewed_then_reviewed_again_after_tahan(self):
         self.coordinator.gateway.status = 'PARTIALLY_FILLED'
@@ -396,6 +515,23 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(self.coordinator.gateway.cancel_count, 1)
         self.assertEqual(self.coordinator.advance_count, 0)
         self.assertEqual(self.coordinator.ask_count, 1)
+
+    def test_unknown_cancel_resolves_only_after_native_gateway_confirms_terminal_entry(self):
+        self.coordinator.decision = 'BATALKAN'
+        self.coordinator.gateway.cancel_error = True
+        self.assertEqual(self.run_tick()['bot_status'], 'NEEDS_REVIEW')
+        self.assertEqual(self.coordinator.gateway.cancel_count, 1)
+        # Simulate a delayed exchange acknowledgement visible to the existing
+        # native reconciliation. This is not a second cancellation request.
+        self.coordinator.gateway.cancel_error = False
+        self.coordinator.gateway.status = 'CANCELED'
+        self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        self.assertEqual(self.coordinator.gateway.cancel_count, 1)
+        self.assertEqual(self.coordinator.ask_count, 1)
+        claim = self.claims()[0]
+        self.assertEqual(claim['state'], 'COMPLETE')
+        self.assertEqual(json.loads(claim['result'])['resolution'], 'NATIVE_GATEWAY_RECONCILED')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 0)
 
     def test_unresolved_review_keeps_native_partial_fill_protection_monitoring(self):
         self.coordinator.raise_at_ask = ValueError('UNKNOWN_BROWSER_OUTCOME')
@@ -504,16 +640,18 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(captured, [True])
         self.assertEqual(self.coordinator.gateway.cancel_count, 0)
 
-    def test_actual_published_hook_artifact_sends_pending_phase_to_delegate(self):
-        from scripts.patch_native_pending_review import edits_for, SOURCE_PINS
+    def test_current_verified_hook_artifact_sends_pending_phase_to_delegate(self):
+        from scripts.patch_native_pending_review import (verify_current_pending_hook,
+                                                        CURRENT_HOOK_SOURCE_SHA256)
         from tests.test_native_browser_hook import Bridge, client, native
         raw = (Path(__file__).resolve().parents[1] / 'agent/native_browser_hook.py').read_bytes()
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), SOURCE_PINS['agent/native_browser_hook.py'])
-        start, end, replacement = edits_for('agent/native_browser_hook.py', raw, ast.parse(raw))[0]
-        derived = raw[:start] + replacement + raw[end:]
+        derived, receipt = verify_current_pending_hook(raw)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), CURRENT_HOOK_SOURCE_SHA256)
+        self.assertEqual(derived, raw)
+        self.assertFalse(receipt['source_changed'])
         module = types.ModuleType('agent._pending_hook_offline_fixture')
         module.__package__ = 'agent'
-        exec(compile(derived, '<derived-pending-hook>', 'exec'), module.__dict__)
+        exec(compile(derived, '<verified-current-pending-hook>', 'exec'), module.__dict__)
         intent_ref = digest(json.dumps(self.intent))
         operation = 'pending-review-v1:' + intent_ref[:32] + ':1'
         context = dict(native_context(time.time()), pending_review={
@@ -535,7 +673,7 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(result['assistant_text'], json.dumps(output))
         self.assertEqual(bridge.clicks, 1)
         self.assertEqual(bridge.messages[0]['text'], payload['prompt'])
-        self.assertEqual(hashlib.sha256(raw).hexdigest(), SOURCE_PINS['agent/native_browser_hook.py'])
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), CURRENT_HOOK_SOURCE_SHA256)
 
 
 if __name__ == '__main__':

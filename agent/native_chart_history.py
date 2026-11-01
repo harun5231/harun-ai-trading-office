@@ -185,3 +185,78 @@ def install_chart_history(namespace, *, legacy_source, release_cutoff_utc,
 
     setattr(source_evidence, _INSTALLED, policy)
     namespace['source_evidence'] = source_evidence
+
+
+def install_website_chart_history(namespace, *, legacy_source, release_cutoff_utc,
+                                  data_render_release_cutoff_utc,
+                                  source_evidence_sha256, validator_sha256):
+    """Read both earlier chart versions while admitting only current WEB input.
+
+    The old WEB cutoff is retained. The actual operator release time bounds
+    DATA_RENDER receipts created before this website-screenshot release. Only
+    historical source_evidence reads use these clones; the live validator,
+    journal, order parameters and original native functions are not rewritten.
+    """
+    from .binance_website_chart import SOURCE as website_source
+    marker = '_harun_website_chart_history'
+    _need(type(namespace) is dict and namespace.get('CHART_SOURCE') == website_source
+          and type(namespace.get('__name__')) is str and _MODULE.fullmatch(namespace['__name__'])
+          and type(namespace.get('MAX_CHART_BYTES')) is int and namespace['MAX_CHART_BYTES'] > 0
+          and type(legacy_source) is str and legacy_source not in (website_source, CURRENT_CHART_SOURCE)
+          and legacy_source.isascii() and 1 <= len(legacy_source) <= 128
+          and all(32 <= ord(char) <= 126 for char in legacy_source))
+    old_cutoff, render_cutoff = _cutoff(release_cutoff_utc), _cutoff(data_render_release_cutoff_utc)
+    _need(render_cutoff >= old_cutoff)
+    review = namespace.get('Review');_need(isinstance(review, type) and issubclass(review, Exception))
+    policy = (legacy_source, release_cutoff_utc, CURRENT_CHART_SOURCE,
+              data_render_release_cutoff_utc, source_evidence_sha256, validator_sha256)
+    current = namespace.get('source_evidence')
+    evidence = _native_function(current, namespace, 'source_evidence', ('db','operation'), source_evidence_sha256)
+    validator = _native_function(namespace.get('validate_chart_evidence'), namespace,
+        'validate_chart_evidence', ('value','schema','context','created','received_at','max_age'), validator_sha256)
+    _pending_validator(namespace.get('validate_chart_evidence'), validator, namespace, review)
+    api = importlib.import_module(namespace['__name__'].split('.')[0]+'.neuroapi')
+    _need(getattr(getattr(api, 'canonical_output', None), _PENDING_INSTALLED, False) is True)
+    installed = getattr(current, marker, None)
+    if installed is not None:
+        _need(installed == policy and type(current) is FunctionType
+              and current.__code__ is _nested_code(install_website_chart_history,'source_evidence')
+              and current.__globals__ is globals() and current.__wrapped__ is evidence)
+        return
+    _need(current is evidence)  # Never unwrap/drop an unrelated policy wrapper.
+
+    def historical_reader(source, cutoff):
+        private = dict(namespace);private['CHART_SOURCE'] = source
+        validation = FunctionType(validator.__code__, private, name=validator.__name__, argdefs=None, closure=None)
+        reader = FunctionType(evidence.__code__, private, name=evidence.__name__, argdefs=None, closure=None)
+        private['validate_chart_evidence'], private['source_evidence'] = validation, reader
+        install_source_protocol(private)
+        admitted = private['validate_chart_evidence']
+
+        @functools.wraps(admitted)
+        def bounded(value, schema, context, created, received_at, max_age):
+            if (type(created) not in (int,float) or not math.isfinite(created) or not 0 < created <= cutoff
+                    or type(value) is not list or len(value) != 2
+                    or any(type(row) is not dict or row.get('source') != source for row in value)):
+                raise review('NATIVE_LEGACY_CHART_HISTORY_UNVERIFIED')
+            return admitted(value, schema, context, created, received_at, max_age)
+        private['validate_chart_evidence'] = bounded
+        return reader
+
+    readers = (historical_reader(legacy_source, old_cutoff),
+               historical_reader(CURRENT_CHART_SOURCE, render_cutoff))
+
+    @functools.wraps(evidence)
+    def source_evidence(db, operation):
+        try:
+            return evidence(db, operation)
+        except review as current_error:
+            for reader in readers:
+                try:
+                    return reader(db, operation)
+                except review:
+                    pass
+            raise current_error from None
+
+    setattr(source_evidence, marker, policy)
+    namespace['source_evidence'] = source_evidence

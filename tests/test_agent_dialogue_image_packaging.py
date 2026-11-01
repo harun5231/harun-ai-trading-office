@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:00c1a2b1cf383e44522c8330dd00144dc45304bc72b0a738d78cb01045c8ae3d'
+BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:3f220762093e09cb336d4ecb329ea37f573aac0b3e7f38f24463f66cc1c9a723'
 
 
 def run_blocks(workflow):

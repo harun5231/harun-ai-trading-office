@@ -197,21 +197,19 @@ class LLMTests(unittest.TestCase):
             else:
                 self.assertIs(validate_decision(normalized, {"phase": "SCREENING", "reply": "$ZEC"}), normalized)
 
-    def test_strict_generation_schema_excludes_numeric_clarifications_in_every_phase(self):
+    def test_strict_generation_schema_allows_natural_sourced_numeric_clarifications(self):
         for phase in ("SCREENING", "ANALYSIS", "PENDING_REVIEW"):
             with self.subTest(phase=phase):
-                self.model({"action":"CLARIFY","symbols":[],"question":"Mohon lengkapi keputusan pada timeframe entri?"}).plan(
+                self.model({"action":"CLARIFY","symbols":[],"question":"Mohon perjelas konteks 15M dan 1H?"}).plan(
                     [], "$ZEC belum lengkap", phase=phase, jakarta_day="2026-10-19")
                 payload=self.calls[-1];format=payload["text"]["format"]
                 self.assertTrue(format["strict"])
                 question=format["schema"]["properties"]["question"]
-                self.assertEqual(question,{"type":"string","maxLength":400,"pattern":"^[^0-9]*$"})
-                for text in ("Apakah candle 15M cukup?","Tolong cek 1H dan RR 1:2?","ENTRY: 100?","Apakah TP 0.0439 valid?"):
-                    self.assertIsNone(re.fullmatch(question["pattern"],text))
-                for text in ("","Mohon lengkapi level dari chart?","Konfirmasi timeframe entri dan rasio risiko imbalan yang disyaratkan?"):
-                    self.assertIsNotNone(re.fullmatch(question["pattern"],text))
-                self.assertIn("no digit characters",payload["instructions"])
-                self.assertIn("without proposing or repeating their values",payload["instructions"])
+                self.assertEqual(question,{"type":"string","maxLength":1600})
+                self.assertNotIn("pattern",question)
+                self.assertIn("bahasa Indonesia",payload["instructions"])
+                self.assertIn("Angka harus berasal",payload["instructions"])
+                self.assertNotIn("no digit characters",payload["instructions"])
 
     def test_complete_current_hold_ends_analysis_without_coercing_ambiguous_mentions(self):
         from agent.dialogue_service import validate_decision
@@ -220,8 +218,8 @@ class LLMTests(unittest.TestCase):
         answer=self.model(raw).plan([],reply,phase="ANALYSIS",jakarta_day="2026-10-19")
         self.assertEqual((answer.action,answer.question),("HOLD",""))
         self.assertIs(validate_decision(raw,{"phase":"ANALYSIS","reply":reply}),raw)
-        self.assertIn("unambiguous complete current HOLD",self.calls[-1]["instructions"])
-        self.assertIn("suggested follow-up questions and conditional future scenarios do not override",self.calls[-1]["instructions"])
+        self.assertIn("HOLD pasar yang jelas",self.calls[-1]["instructions"])
+        self.assertIn("skenario lama",self.calls[-1]["instructions"])
         self.assertTrue(self.calls[-1]["input"][-1]["content"].endswith(reply))
         ambiguous='$ONDO previously HOLD; the current decision is incomplete.'
         result=self.model({"action":"CLARIFY","symbols":[],"question":"Mohon lengkapi keputusan saat ini?"}).plan(
@@ -249,7 +247,7 @@ class LLMTests(unittest.TestCase):
     def test_unused_question_normalization_cannot_hide_invalid_raw_fields(self):
         base = {"action": "SCREENING", "symbols": ["ZECUSDT"], "question": "unused"}
         changes = ({"question": None}, {"question": 77}, {"question": ["unused"]},
-            {"question": "x" * 401}, {"action": "COMPLETE"}, {"action": []},
+            {"question": "x" * 1601}, {"action": "COMPLETE"}, {"action": []},
             {"symbols": "ZECUSDT"}, {"symbols": ["HYPEUSDT"]},
             {"symbols": ["ZECUSDT", "ZECUSDT"]}, {"entry": "100"})
         for change in changes:

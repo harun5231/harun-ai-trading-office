@@ -31,15 +31,15 @@ class NativeChartPromptTests(unittest.TestCase):
         return namespace, install(namespace, expected_prompt=original,
                                   context_key='context', wall_clock=lambda: NOW)
 
-    def test_exact_400_delivered_as_files_with_owner_prompt_and_schema_unchanged(self):
+    def test_exact_400_delivered_as_files_with_readable_summary_and_internal_schema_unchanged(self):
         namespace, hook = self.hook()
         payload = self.payload(); before = copy.deepcopy(payload)
         files = deliver_market_data_files(payload['context'], now=NOW)
         result = hook(payload)
         self.assertEqual(payload, before)
         self.assertTrue(result.startswith(payload['prompt'] + '\n\n'))
-        self.assertTrue(result.endswith(formatter({**payload, 'context': None}).split(
-            '\n\nOUTPUT_JSON_SCHEMA:\n', 1)[1]))
+        self.assertTrue(result.endswith('Acuan percakapan: ' + payload['marker']))
+        self.assertNotIn('OUTPUT_JSON_SCHEMA', result)
         self.assertNotIn('CONTEXT_JSON:', result)
         self.assertNotIn('private_user_setting', result)
         self.assertNotIn('"candles"', result)
@@ -55,7 +55,7 @@ class NativeChartPromptTests(unittest.TestCase):
         _, hook = self.hook(); payload = self.payload(); payload['context'] = None
         self.assertEqual(hook(payload), formatter(payload))
 
-    def test_replacement_screening_preserves_native_context_byte_for_byte(self):
+    def test_replacement_screening_keeps_exclusions_and_internal_payload_without_json_block(self):
         _, hook = self.hook()
         payload = self.payload()
         payload.update(prompt='pilihkan 2 coin pengganti yang bagus',
@@ -63,7 +63,10 @@ class NativeChartPromptTests(unittest.TestCase):
                 'requested_count': 2, 'excluded_symbols': ['HYPEUSDT', 'TRXUSDT'],
                 'replacement_instruction': 'Choose different coins.'})
         before = copy.deepcopy(payload)
-        self.assertEqual(hook(payload), formatter(payload))
+        result=hook(payload)
+        self.assertNotIn('OUTPUT_JSON_SCHEMA', result)
+        self.assertIn('Kapasitas saat ini 2 coin', result)
+        self.assertIn('TRXUSDT', result)
         self.assertEqual(payload, before)
         self.assertIn('HYPEUSDT', hook(payload))
 
@@ -94,8 +97,8 @@ class NativeChartPromptTests(unittest.TestCase):
         self.assertEqual(payload, before)
         self.assertTrue(rendered.startswith(payload['prompt'] + '\n\n'))
         self.assertNotIn('CONTEXT_JSON:', rendered)
-        self.assertTrue(rendered.endswith(native_encode(payload['output_schema'])
-            + '\n\nWrite ' + payload['marker'] + ' exactly once on its own line.'))
+        self.assertTrue(rendered.endswith('Acuan percakapan: ' + payload['marker']))
+        self.assertNotIn('OUTPUT_JSON_SCHEMA', rendered)
         for file in deliver_market_data_files(payload['context'], now=NOW):
             self.assertIn(file['name'], rendered)
         self.assertLess(len(rendered), 4000)

@@ -1,5 +1,5 @@
 # Reuse the existing verified dependency/runtime image; never rebuild the worker.
-FROM ghcr.io/harun5231/harun-neurobro-agent@sha256:00c1a2b1cf383e44522c8330dd00144dc45304bc72b0a738d78cb01045c8ae3d
+FROM ghcr.io/harun5231/harun-neurobro-agent@sha256:3f220762093e09cb336d4ecb329ea37f573aac0b3e7f38f24463f66cc1c9a723
 ARG REVISION
 ARG CONTRACT_SHA
 LABEL org.opencontainers.image.source="https://github.com/harun5231/harun-ai-trading-office" \

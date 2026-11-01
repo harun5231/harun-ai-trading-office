@@ -207,6 +207,9 @@ def verify_capture(charts, result, context, payload, *, archive_root, now, gate)
     symbol and timeframe. RGB verification is repeated against the full public
     observation so a replaced sidecar or a PNG from another capture is refused.
     """
+    from .binance_website_chart import SOURCE as website_source
+    if getattr(charts, 'SOURCE', None) == website_source:
+        return verify_website_capture(charts, result, context, payload, archive_root=archive_root, now=now, gate=gate)
     need(callable(gate) and gate() is True and type(result) is dict
          and set(result) == {'paths', 'evidence'}
          and type(result['paths']) is list and len(result['paths']) == 2
@@ -283,8 +286,8 @@ def verify_capture(charts, result, context, payload, *, archive_root, now, gate)
 
 class ReceiptStore:
     """Exclusive intent/completion files; an incomplete intent is retained."""
-    def __init__(self, archive_root, *, monotonic=time.monotonic):
-        self.root, self.monotonic = Path(archive_root), monotonic
+    def __init__(self, archive_root, *, monotonic=time.monotonic, wall_clock=time.time):
+        self.root, self.monotonic, self.wall_clock = Path(archive_root), monotonic, wall_clock
 
     def __call__(self, *, stage, receipt, deadline):
         need(stage in ('INTENT', 'COMPLETE') and type(receipt) is dict
@@ -293,6 +296,8 @@ class ReceiptStore:
              and re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', receipt['operation'])
              and type(receipt.get('request_sha256')) is str
              and re.fullmatch(r'[a-f0-9]{64}', receipt['request_sha256']))
+        if 'material_send_check' in receipt:
+            validate_material_send_check(receipt, now=self.wall_clock(), check_freshness=stage == 'INTENT')
         key = sha({'operation': receipt['operation'], 'request_sha256': receipt['request_sha256']})
         # Keep the first-turn filename so historical unknown intents continue
         # blocking a replay. Later turns extend that exclusive intent chain;
@@ -367,9 +372,11 @@ class ActorCharts:
         need(type(expected_playwright_version) is str and version('playwright') == expected_playwright_version
              and callable(charts.capture) and callable(charts.close_resource)
              and callable(charts.png_pixels) and type(charts.MAX_PNG) is int
-             and getattr(charts, 'SOURCE', None) == 'BINANCE_FUTURES_200_CLOSED_DATA_RENDER'
+             and getattr(charts, 'SOURCE', None) in ('BINANCE_FUTURES_200_CLOSED_DATA_RENDER',
+                 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT')
              and callable(snapshot) and callable(monotonic) and callable(wall_clock))
         self.actor, self.charts, self.root = actor, charts, str(archive_root)
+        self.expected_source = charts.SOURCE
         self.snapshot, self.clock, self.wall_clock = snapshot, monotonic, wall_clock
         self.sdk = expected_playwright_version
 
@@ -377,7 +384,16 @@ class ActorCharts:
         need(type(payload) is dict and finite(deadline) and finite(self.clock())
              and self.clock() < deadline and callable(dispatch_check))
         original = canonical(payload)
-        initial = convert_native_market_context(payload['context'], now=self.wall_clock())
+        # The admitted original request is historical conversation input after
+        # a long discussion. Read only its immutable symbol/time reference;
+        # every value used as current market data is fetched/validated below.
+        original_context = payload.get('context')
+        need(type(original_context) is dict and original_context.get('source') == 'Binance Futures'
+             and type(original_context.get('symbol')) is str
+             and re.fullmatch(r'[A-Z0-9]{2,18}USDT', original_context['symbol'])
+             and finite(original_context.get('fetched_at'))
+             and 0 < original_context['fetched_at'] <= self.wall_clock())
+        reference = {'symbol': original_context['symbol'], 'observed_at': original_context['fetched_at']}
         final_deadline = min(deadline, self.clock()+MAX_SECONDS)
         work_deadline = final_deadline-CLEANUP_SECONDS
         def gate():
@@ -385,11 +401,14 @@ class ActorCharts:
                  and dispatch_check() is True)
             return True
         gate()
-        public = self.snapshot(initial['symbol'], deadline=min(work_deadline, self.clock()+31), gate=gate)
+        public = self.snapshot(reference['symbol'], deadline=min(work_deadline, self.clock()+31), gate=gate)
         gate()
         context = native_snapshot(public, now=self.wall_clock())
-        need(context['symbol'] == initial['symbol']
-             and context['fetched_at'] >= initial['observed_at'])
+        need(context['symbol'] == reference['symbol']
+             and context['fetched_at'] >= reference['observed_at'])
+        for key in ('pending_review', 'pending_order_context', 'material_contract'):
+            if key in original_context:
+                context[key] = copy.deepcopy(original_context[key])
         browser = isolated = None
         failed = False
         try:
@@ -407,6 +426,8 @@ class ActorCharts:
             gate()
             kwargs = {'ignoreHTTPSErrors': False, 'viewport': {'width': 1024, 'height': 640},
                       'deviceScaleFactor': 1, 'serviceWorkers': 'block'}
+            if self.expected_source == 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT':
+                kwargs.update(timezoneId='UTC', locale='en-US')
             method = browser._impl_obj.new_context
             need(inspect.iscoroutinefunction(method))
             inspect.signature(method).bind(**kwargs)
@@ -449,3 +470,158 @@ def install_actor_bridge(bridge, *, actor, archive_root, expected_playwright_ver
                            expected_playwright_version=expected_playwright_version)
     return install_native_bridge(bridge, fresh_charts=callback,
         followup_receipt=ReceiptStore(archive_root), archive_root=archive_root)
+
+
+def verify_website_capture(charts, result, context, payload, *, archive_root, now, gate):
+    """Verify real website receipts without accepting generated candle PNGs."""
+    from .binance_website_chart import SOURCE as website_source, CONTRACT, VIEWPORT, PERIODS, url_for
+    from .native_chart_capture import WEBSITE_SIDECAR, website_rgb
+    need(callable(gate) and gate() is True and finite(now)
+         and type(result) is dict and set(result) == {'paths', 'evidence'}
+         and type(result['paths']) is list and len(result['paths']) == 2
+         and type(result['evidence']) is list and len(result['evidence']) == 2)
+    projected = convert_native_market_context(context, now=now)
+    root = Path(archive_root);paths = [Path(path) for path in result['paths']]
+    need(all(path.is_absolute() and '..' not in path.parts for path in paths)
+         and paths[0] != paths[1] and paths[0].parent == paths[1].parent)
+    attempt = paths[0].parent;need(attempt != root and root in attempt.parents)
+    parent = _directory(root);directory = os.dup(parent)
+    try:
+        for component in attempt.relative_to(root).parts:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory);directory = child
+            info = os.fstat(directory)
+            need(info.st_uid == os.geteuid() and stat.S_IMODE(info.st_mode) == 0o700)
+        sidecar = json.loads(_private_file(directory, WEBSITE_SIDECAR, MAX_BYTES), object_pairs_hook=pairs)
+        need(sidecar.get('schema_version') == 2 and sidecar.get('source') == website_source
+             and sidecar.get('ui_contract') == CONTRACT and sidecar.get('marker') == payload['marker']
+             and sidecar.get('request_sha256') == payload['request_sha256']
+             and sidecar.get('native_context_canonical_sha256') == sha(context)
+             and sidecar.get('native_context_hash_encoding') == 'JSON_SORTED_COMPACT_ASCII_V1'
+             and sidecar.get('public_market_context') == projected
+             and sidecar.get('legacy_evidence') == result['evidence']
+             and sidecar.get('network_navigation_performed') is True
+             and sidecar.get('persistent_browser_context_used') is False
+             and type(sidecar.get('charts')) is dict and set(sidecar['charts']) == {'15m','1h'})
+        for tf, path, receipt in zip(('15m','1h'), paths, result['evidence']):
+            need(gate() is True and type(receipt) is dict and set(receipt) == {
+                'source','symbol','timeframe','captured_at','sha256','bytes'}
+                 and receipt['source'] == website_source and receipt['symbol'] == projected['symbol']
+                 and receipt['timeframe'] == tf)
+            captured = datetime.fromisoformat(receipt['captured_at'].replace('Z','+00:00'))
+            need(captured.utcoffset() == timezone.utc.utcoffset(captured)
+                 and projected['observed_at'] <= captured.timestamp() <= now
+                 and now-captured.timestamp() <= 180)
+            png = _private_file(directory, path.name, charts.MAX_PNG)
+            need(len(png) == receipt['bytes'] and hashlib.sha256(png).hexdigest() == receipt['sha256'])
+            row = sidecar['charts'][tf]
+            clip = row.get('capture_clip')
+            need(type(clip) is dict and set(clip) == {'x','y','width','height'}
+                 and clip['x'] == clip['y'] == 0
+                 and all(type(clip[key]) is int for key in clip)
+                 and 700 <= clip['width'] <= VIEWPORT['width']
+                 and 400 <= clip['height'] <= VIEWPORT['height'])
+            pixels = website_rgb({'png_pixels': charts.png_pixels}, png, charts.MAX_PNG,
+                                 dimensions=(clip['width'],clip['height']))
+            need(row.get('source') == website_source and row.get('ui_contract') == CONTRACT
+                 and row.get('page_url') == url_for(projected['symbol'])
+                 and row.get('symbol') == projected['symbol'] and row.get('market') == 'USDT_PERPETUAL'
+                 and row.get('timeframe') == tf and row.get('captured_at') == receipt['captured_at']
+                 and row.get('capture_observed_at') == captured.timestamp()
+                 and row.get('viewport') == VIEWPORT
+                 and row.get('observed_bar_interval_ms') == PERIODS[tf]
+                 and row.get('screenshot_png_sha256') == receipt['sha256']
+                 and row.get('screenshot_rgb_sha256') == hashlib.sha256(pixels).hexdigest()
+                 and row.get('exchange_website_screenshot') is True
+                 and row.get('browser_screenshot_of_data_render') is False)
+            visible = row.get('visible_range')
+            need(type(visible) is dict and visible.get('verification') == 'VISIBLE_CANDLE_HOVER_ENDPOINTS_UTC_V1')
+            first, last = visible.get('first_visible_open_time_ms'), visible.get('last_visible_open_time_ms')
+            interval = PERIODS[tf];closed = projected['candles'][tf]
+            need(type(first) is int and type(last) is int and first%interval == last%interval == 0
+                 and first <= closed[0]['open_time']-2*interval and last >= closed[-1]['open_time']
+                 and last <= projected.get('collection_finished_server_time_ms', projected['server_time_ms'])//interval*interval
+                 and visible.get('required_closed_count') == 200
+                 and visible.get('required_first_open_time_ms') == closed[0]['open_time']
+                 and visible.get('required_last_close_time_ms') == closed[-1]['close_time']
+                 and visible.get('running_candle_in_closed_count') is False
+                 and visible.get('covered_closed_count') ==
+                     (min(last,projected['server_time_ms']//interval*interval-interval)-first)//interval+1)
+        need(_identity(os.fstat(parent)) == _identity(os.stat(root,follow_symlinks=False))
+             and _identity(os.fstat(directory)) == _identity(os.stat(attempt,follow_symlinks=False))
+             and gate() is True)
+        return copy.deepcopy(result)
+    finally:
+        os.close(directory);os.close(parent)
+
+
+def material_dispatch_provenance(context, chart_evidence, *, now, allowed_sources=None):
+    """Check both screenshots and the exact public observation at dispatch time.
+
+    Returns facts for the existing durable intent/receipt; it does not send,
+    change an operation, refresh prices or write a journal by itself.
+    """
+    from .binance_website_chart import SOURCE as website_source
+    sources = {website_source} if allowed_sources is None else set(allowed_sources)
+    need(sources and finite(now) and type(chart_evidence) in (list, tuple)
+         and len(chart_evidence) == 2)
+    projected = convert_native_market_context(context, now=now)
+    need(all(type(row) is dict and row.get('timeframe') in ('15m','1h') for row in chart_evidence))
+    indexed = {row['timeframe']: row for row in chart_evidence}
+    need(len(indexed) == 2 and set(indexed) == {'15m','1h'})
+    captures = []
+    for timeframe in ('15m','1h'):
+        row = indexed[timeframe]
+        need(type(row) is dict and row.get('source') in sources
+             and row.get('symbol') == projected['symbol'] and row.get('timeframe') == timeframe
+             and type(row.get('sha256')) is str and re.fullmatch(r'[a-f0-9]{64}', row['sha256']))
+        captured = datetime.fromisoformat(row['captured_at'].replace('Z','+00:00'))
+        need(captured.tzinfo is not None and captured.utcoffset() == timezone.utc.utcoffset(captured)
+             and projected['observed_at'] <= captured.timestamp() <= now
+             and now-captured.timestamp() <= 180)
+        captures.append({'timeframe': timeframe,'captured_at': row['captured_at'],
+                         'sha256': row['sha256'], 'age_at_send_check_seconds': now-captured.timestamp()})
+    return {'symbol': projected['symbol'], 'data_observed_at': projected['observed_at'],
+        'data_observed_at_utc': projected['observed_at_utc'], 'send_checked_at': now,
+        'data_age_at_send_check_seconds': now-projected['observed_at'],
+        'closed_candles_per_timeframe': 200, 'closed_candles_total': 400,
+        'screenshots': captures, 'running_candles_separate': True}
+
+
+def validate_material_send_check(receipt, *, now, check_freshness):
+    """Bind optional new send-time facts; historical intents remain readable."""
+    facts = receipt.get('material_send_check')
+    need(type(facts) is dict and set(facts) == {'symbol','data_observed_at','data_observed_at_utc',
+        'send_checked_at','data_age_at_send_check_seconds','closed_candles_per_timeframe',
+        'closed_candles_total','screenshots','running_candles_separate'}
+         and facts['closed_candles_per_timeframe'] == 200 and facts['closed_candles_total'] == 400
+         and facts['running_candles_separate'] is True
+         and finite(facts['data_observed_at']) and finite(facts['send_checked_at'])
+         and facts['data_observed_at'] == receipt.get('observed_at')
+         and 0 <= facts['send_checked_at']-facts['data_observed_at'] <= 180
+         and facts['data_age_at_send_check_seconds'] == facts['send_checked_at']-facts['data_observed_at'])
+    if check_freshness:
+        need(finite(now) and 0 <= now-facts['send_checked_at'] <= 5)
+    observed = datetime.fromisoformat(facts['data_observed_at_utc'].replace('Z','+00:00'))
+    need(observed.utcoffset() == timezone.utc.utcoffset(observed)
+         and abs(observed.timestamp()-facts['data_observed_at']) <= .002)
+    evidence = receipt.get('followup_chart_evidence')
+    need(type(evidence) is list and len(evidence) == 2
+         and type(facts['screenshots']) is list and len(facts['screenshots']) == 2)
+    need(all(type(row) is dict and row.get('timeframe') in ('15m','1h') for row in facts['screenshots'])
+         and all(type(row) is dict and row.get('timeframe') in ('15m','1h') for row in evidence))
+    fact_map = {row['timeframe']: row for row in facts['screenshots']}
+    image_map = {row['timeframe']: row for row in evidence}
+    need(len(fact_map) == len(image_map) == 2 and set(fact_map) == set(image_map) == {'15m','1h'})
+    for tf in ('15m','1h'):
+        row, image = fact_map[tf], image_map[tf]
+        need(type(row) is dict and set(row) == {'timeframe','captured_at','sha256','age_at_send_check_seconds'}
+             and row['timeframe'] == image.get('timeframe') == tf
+             and image.get('symbol') == facts['symbol']
+             and row['captured_at'] == image.get('captured_at') and row['sha256'] == image.get('sha256'))
+        stamp = datetime.fromisoformat(row['captured_at'].replace('Z','+00:00'))
+        need(stamp.utcoffset() == timezone.utc.utcoffset(stamp)
+             and facts['data_observed_at'] <= stamp.timestamp() <= facts['send_checked_at']
+             and 0 <= facts['send_checked_at']-stamp.timestamp() <= 180
+             and row['age_at_send_check_seconds'] == facts['send_checked_at']-stamp.timestamp())
+    return facts

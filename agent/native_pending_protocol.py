@@ -24,7 +24,7 @@ import time
 
 SYMBOL_PATTERN = r'^[A-Z0-9]{2,18}USDT$'
 SHA_PATTERN = r'^[a-f0-9]{64}$'
-OPERATION_PATTERN = r'pending-review-v1:([a-f0-9]{32}):([1-9][0-9]{0,8})\Z'
+OPERATION_PATTERN = r'pending-review-v1:([a-f0-9]{32}):([1-9][0-9]*)\Z'
 REVIEW_SCHEMA = {
     'type': 'object',
     'properties': {
@@ -146,6 +146,21 @@ def _context_valid(context, *, operation=None, now=None, max_age=180, created=No
         return False
 
 
+def closed_review_materials(context):
+    """Current reviews need 200 closed bars; historical v1 receipts stay valid.
+
+    The native ABI keeps its running candle. Screenshot/CSV conversion selects
+    exactly the latest 200 closed rows and exposes the running row separately.
+    This checks available material, not whether an image actually shows it.
+    """
+    try:
+        server = context['server_time']
+        return all(sum(candle['close_time'] < server for candle in
+            context['timeframes'][timeframe]['candles']) >= 200 for timeframe in _INTERVALS)
+    except (KeyError, TypeError):
+        return False
+
+
 def is_pending_browser_request(value):
     """Recognize only the new exact review schema/namespace/native context."""
     return (type(value) is dict and is_pending_schema(value.get('output_schema'))
@@ -155,11 +170,31 @@ def is_pending_browser_request(value):
 
 
 def dialogue_phase_for_payload(payload, required):
-    """Keep the original phase selection for every legacy browser request."""
-    if (type(required) is list and len(required) == 3
-            and set(required) == {'symbol', 'order_ref', 'decision'}
-            and is_pending_browser_request(payload)):
-        return 'PENDING_REVIEW'
+    """Classify an admitted operation without resetting its original clock.
+
+    A long discussion becoming stale must not turn into an ANALYSIS phase.
+    Request admission and every send retain their independent freshness checks;
+    this structural binding alone cannot dispatch or cancel anything.
+    """
+    try:
+        if (type(required) is list and len(required) == 3
+                and set(required) == {'symbol', 'order_ref', 'decision'}
+                and type(payload) is dict and is_pending_schema(payload.get('output_schema'))):
+            operation = payload.get('operation')
+            match = re.fullmatch(OPERATION_PATTERN, operation, re.ASCII) if type(operation) is str else None
+            context = payload.get('context')
+            pending = context.get('pending_review') if type(context) is dict else None
+            if (match is not None and type(pending) is dict
+                    and set(pending) == {'intent_ref', 'symbol', 'entry_created_at'}
+                    and type(pending['intent_ref']) is str
+                    and re.fullmatch(SHA_PATTERN, pending['intent_ref'], re.ASCII)
+                    and match.group(1) == pending['intent_ref'][:32]
+                    and pending['symbol'] == context.get('symbol')
+                    and re.fullmatch(SYMBOL_PATTERN, pending['symbol'], re.ASCII)
+                    and _utc_instant(pending['entry_created_at']) > 0):
+                return 'PENDING_REVIEW'
+    except (KeyError, TypeError, ValueError):
+        pass
     return 'SCREENING' if type(required) is list and set(required) == {'symbols'} else 'ANALYSIS'
 
 
@@ -264,9 +299,14 @@ def install_source_protocol(namespace):
         if not is_pending_schema(schema):
             return original(value, schema, context, created, received_at, max_age)
         try:
+            # New conversations refresh chart material while keeping the exact
+            # original request/hash immutable. That initial context is a fact
+            # at creation; final chart freshness is still checked at receipt.
+            validation_at = (created if type(context) is dict
+                and context.get('material_contract') == 'OWNER_MATERIALS_V4' else received_at)
             if (not _positive_instant(created) or not _positive_instant(received_at)
                     or received_at < created or type(max_age) is not int or not 30 <= max_age <= 300
-                    or not _context_valid(context, now=received_at, max_age=max_age, created=created)
+                    or not _context_valid(context, now=validation_at, max_age=max_age, created=created)
                     or type(value) is not list or len(value) != 2):
                 raise ValueError
             timeframes, attachments, digests = set(), set(), set()

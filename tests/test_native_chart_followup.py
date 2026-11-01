@@ -387,6 +387,18 @@ class ActualActorChartsTests(unittest.TestCase):
             with self.assertRaises(TimeoutError): self.call()
         self.assertTrue(self.actor._chart_cleanup_failed); self.assertEqual(self.closed, [])
         self.assertFalse(self.persistent.pages[0].is_closed())
+    def test_old_original_is_only_reference_and_pending_material_contract_survives_refresh(self):
+        self.payload['context'] = native_context_200(NOW-602)
+        preserved = {'material_contract': 'OWNER_MATERIALS_V4',
+            'pending_review': {'symbol': 'BTCUSDT', 'intent_ref': 'c'*64, 'entry_created_at': NOW-18001},
+            'pending_order_context': {'symbol': 'BTCUSDT', 'limit_entry': '100', 'quantity': '0.1'}}
+        self.payload['context'].update(copy.deepcopy(preserved))
+        before = copy.deepcopy(self.payload)
+        result = self.call()
+        self.assertEqual(result['context']['fetched_at'], NOW)
+        for key, value in preserved.items():self.assertEqual(result['context'][key], value)
+        self.assertEqual(self.payload, before)
+        self.assertEqual(self.snapshot_calls, ['BTCUSDT'])
 
 
 if __name__ == '__main__': unittest.main()
