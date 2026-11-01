@@ -230,7 +230,7 @@ class Controller:
             ledger=self.open_ledger()
             with self.state_lock:
                 client=create_provider(ledger)
-                market=Market(int(os.getenv('OFFICE_CANDLE_LOOKBACK','100')),int(os.getenv('OFFICE_MARKET_MAX_AGE','180')))
+                market=Market(max(201,int(os.getenv('OFFICE_CANDLE_LOOKBACK','201'))),int(os.getenv('OFFICE_MARKET_MAX_AGE','180')))
                 coordinator=Coordinator(ledger,client,market,BinanceReadOnly,stopping=self.stopping,
                     new_setup_policy=DYNAMIC_RISK_MODEL)
             initialized=True

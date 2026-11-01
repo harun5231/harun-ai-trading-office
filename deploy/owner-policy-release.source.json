@@ -43,7 +43,7 @@
     "deploy/dialogue-agent.Dockerfile": "18098a47e4c7310f3fc4fd8fe9a572496df873922579dcfc89800e88363d9f48",
     "deploy/neurobro-dialogue.contract.json": "e761f33a1575ff404535d71dc512d959eb80aca17b34a028b78640ee74d114fd",
     "scripts/patch_native_pending_review.py": "95627179c9a980be730d62c1d9c74d30f16ef171de4350e7e6457e62662283b4",
-    "vps_native/worker/api_service.py": "ee92cfda73fd08420c9d6ce2e24728ee494e9c62f5f16d6406b55189e69b0ec5",
+    "vps_native/worker/api_service.py": "7f4e803b402cd96f0d4f24063f8420910bdf69b8c1444fcd0379f936a1018160",
     "vps_native/worker/neurobrowser.py": "eed3fe46e1573f312b9f0cc5a2209d19ecfc8f87547e2b9e87ce1b20eb520e23",
     "vps_native/worker/order_gateway.py": "250e9256dea975ef2d4bf344427cbf4b8913f2dc09e8e266b327687653d6a579",
     "vps_native/worker/research_provider.py": "20d490efd020dd407dc9c0dea517da3604064c9d4cfec11fd1be60139ac00c2d",

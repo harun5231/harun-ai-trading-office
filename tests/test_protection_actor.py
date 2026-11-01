@@ -8,6 +8,7 @@ import threading
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 from worker.protection_actor import ProtectionActor
 from worker.fill_priority import FillPriority,owned_intent_lock
@@ -100,7 +101,11 @@ class ProtectionActorTests(unittest.TestCase):
             Market=lambda *args:('market',args),Coordinator=coordinator,
             BinanceReadOnly='existing-reader',DYNAMIC_RISK_MODEL=policy))
         controller.open_ledger=lambda:ledger
-        controller.loop()
+        # The production factory must supply 200 CLOSED bars plus the running
+        # bar even when an inherited pre-200-candle environment says100.
+        with patch.dict('os.environ',{'OFFICE_CANDLE_LOOKBACK':'100'}):
+            controller.loop()
+        self.assertEqual(calls[0][0][2][1][0],201)
         self.assertEqual(calls[0][0][1],sentinel)
         self.assertEqual(calls[0][1]['new_setup_policy'],policy)
         self.assertEqual(closed,[True])
