@@ -60,7 +60,7 @@ class NativeDataFileTests(unittest.TestCase):
             with self.assertRaises(NativeContextUnavailable):
                 deliver_market_data_files(context, now=NOW)
 
-    def test_compact_prompt_keeps_exact_owner_text_schema_marker_and_payload(self):
+    def test_compact_prompt_keeps_owner_payload_and_marker_without_repeated_wire_schema(self):
         payload = {'prompt': 'Original owner prompt.\nRR 1:2.\n', 'context': self.context(),
             'output_schema': {'required': ['symbol', 'side', 'limit_entry', 'take_profit', 'stop_loss']},
             'marker': 'HARUN_1234567890abcdef1234567890abcdef'}
@@ -70,13 +70,15 @@ class NativeDataFileTests(unittest.TestCase):
         files = deliver_market_data_files(payload['context'], now=NOW)
         rendered = render_short_prompt(payload, original, files, now=NOW)
         self.assertTrue(rendered.startswith(payload['prompt'] + '\n\n'))
-        self.assertTrue(rendered.endswith(SCHEMA_SEPARATOR + suffix))
+        self.assertTrue(rendered.endswith('Acuan percakapan: ' + payload['marker']))
+        self.assertNotIn('OUTPUT_JSON_SCHEMA', rendered)
+        self.assertIn('Quantity dihitung Risk Manager', rendered)
         self.assertEqual(payload, before)
         self.assertNotIn('CONTEXT_JSON', rendered)
         self.assertNotIn('large public context', rendered)
         self.assertIn(files[0]['name'], rendered)
         self.assertIn(files[1]['name'], rendered)
-        self.assertLess(len(rendered), 1500)
+        self.assertLess(len(rendered), 2200)
         # The integration may ask the pinned native formatter to format null
         # context so the old large-context renderer never runs at all.
         null_formatted = payload['prompt'] + CONTEXT_SEPARATOR + 'null' + SCHEMA_SEPARATOR + suffix

@@ -33,7 +33,7 @@ def account_fee_rules(rules,symbol,client):
     except Review:raise
     except Exception:raise Review('FEE_EVIDENCE_UNAVAILABLE') from None
 
-def analysis_context(market,symbol,risk_target=RISK,account_client=None):
+def _legacy_analysis_context(market,symbol,risk_target=RISK,account_client=None):
     risk_target=validated_risk_target(risk_target)
     data=market.data(symbol)
     rules=account_fee_rules(market.rules(symbol),symbol,account_client) # Before any paid analysis call.
@@ -63,3 +63,43 @@ def analysis_context(market,symbol,risk_target=RISK,account_client=None):
         'fee_symbol':rules.fee_symbol,'fee_observed_at':rules.fee_observed_at,
         'excluded_costs':list(RESERVE_EXCLUDED_COSTS),
         'target_loss_at_sl_usdt':str(risk_target),'position_sizing_contract':SIZING_CONTRACT.replace('5 USDT',str(risk_target)+' USDT')}},rules
+
+
+def analysis_context(market,symbol,risk_target=RISK,account_client=None,*,policy=None,db=None):
+    """Select an explicit new-setup policy; never reinterpret an old plan."""
+    context,rules=_legacy_analysis_context(market,symbol,risk_target,account_client)
+    if policy is None:
+        return context,rules
+    from .core import DYNAMIC_RISK_MODEL,DYNAMIC_REWARD_RISK_POLICY
+    if policy!=DYNAMIC_RISK_MODEL:raise Review('INVALID_COST_MODEL')
+    from .dynamic_market import dynamic_rules
+    rules=dynamic_rules(market,symbol,rules,context,account_client,db=db)
+    target=validated_risk_target(risk_target)
+    context['risk_constraints']={
+        'quantity_unit':'base_asset','margin_mode_target':'CROSS','leverage_ceiling':75,
+        'risk_model':DYNAMIC_RISK_MODEL,'reward_risk_policy':DYNAMIC_REWARD_RISK_POLICY,
+        'maximum_loss_at_sl_usdt':str(target),'target_loss_at_sl_usdt':str(target),
+        'target_net_profit_at_tp_usdt':str(2*target),'risk_budget_scope':'PER_TRANSACTION',
+        'entry_and_sl_source':'NEUROBRO_WEB_UNCHANGED',
+        'quantity_and_execution_tp_authority':'OWNER_AUTHORIZED_RISK_MANAGER',
+        'original_neurobro_tp_preserved':True,'tp_requires_neurobro_reapproval':False,
+        'tp_tick_rounding':'NEAREST_NOMINAL_NET_USDT_TARGET',
+        'entry_fee_rate':str(rules.taker_fee_rate),'sl_exit_fee_rate':str(rules.taker_fee_rate),
+        'tp_exit_fee_rate':str(rules.taker_fee_rate),'fee_source':rules.fee_source,
+        'fee_symbol':rules.fee_symbol,'fee_observed_at':rules.fee_observed_at,
+        'position_sizing_contract':
+            'Risk Manager menghitung quantity per transaksi agar estimasi kerugian harga, '
+            'fee dan cadangan slippage tidak melebihi risiko Office. ENTRY dan SL tetap '
+            'dari Neurobro. Sesudah quantity sah diperoleh, hanya TP eksekusi '
+            'dinormalisasi ke target keuntungan bersih nominal dua kali risiko Office. '
+            'Leverage CROSS mengikuti maksimum akun/simbol/notional hingga 75x dan '
+            'tidak memperbesar quantity. Cadangan memakai spread, kedalaman, quantity, '
+            'volatilitas teramati dan riwayat fill; bukan jaminan hasil aktual.',
+        'take_profit_contract':
+            'Neurobro menentukan rekomendasi TP dan keputusan pasar. Risk Manager '
+            'menyimpan rekomendasi itu terpisah lalu menghitung TP eksekusi bersih 2R; '
+            'hasil pembulatan tick dan selisih nominal dicatat tanpa menggeser ENTRY/SL.'}
+    context['risk_manager_facts']={'symbol':symbol,'risk_usdt':str(target),
+        'target_net_profit':str(2*target),'fee_entry_rate':str(rules.taker_fee_rate),
+        'fee_exit_rate':str(rules.taker_fee_rate),'observed_at':rules.fee_observed_at}
+    return context,rules

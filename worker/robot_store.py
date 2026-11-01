@@ -1,5 +1,6 @@
 """Persistent research/order journal and read-only Binance office snapshots."""
 import json
+import re
 from datetime import datetime, timezone
 from .core import D, Review, day, now, validated_risk_target
 from .account_state import (empty_account, account_observation, newer_account,
@@ -11,7 +12,7 @@ from .pnl_calendar import unavailable as unavailable_calendar
 from . import carry_quota
 
 ACTIVE_ORDERS = ('READY_FOR_EXECUTION', 'EXECUTION_BLOCKED', 'SUBMITTING',
-                 'ENTRY_PENDING', 'POSITION_PROTECTED', 'NEEDS_REVIEW')
+                 'ENTRY_PENDING', 'POSITION_PROTECTED', 'PROTECTION_INCOMPLETE', 'NEEDS_REVIEW')
 
 
 def public(value):
@@ -99,7 +100,7 @@ class RobotStore:
         """One capacity rule for submission, screening, and read-only Office."""
         if not carry_quota.ready(self.db,today,symbols):
             return 0
-        active=list(self.db.execute("SELECT symbol,state,payload FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')"))
+        active=list(self.db.execute("SELECT symbol,state,payload FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE')"))
         carry=carry_quota.charged_symbols(self.db,today)
         pending=sum(row['state']=='ENTRY_PENDING' and not
             carry_quota.pending_remainder_is_charged(self.db,row,today,carry) for row in active)
@@ -124,6 +125,51 @@ class RobotStore:
     def event(self, state, agent, message):
         self.db.execute('INSERT INTO office_activity(at,state,agent,message) VALUES(?,?,?,?)',
                         (now(), state, agent, message))
+
+    def record_protection_observation(self, result):
+        """Project a validated native receipt inside its caller's transaction.
+
+        A JSON path updates only this client order. Concurrent account/status
+        reports and another open position retain their independent fields.
+        This method has no gateway, order mutation or commit of its own.
+        """
+        if not self.db.in_transaction:
+            raise Review('PROTECTION_OBSERVATION_TRANSACTION_REQUIRED')
+        if (not isinstance(result, dict) or result.get('source') != 'BINANCE_FUTURES'
+                or not isinstance(result.get('client_order_id'), str)
+                or re.fullmatch(r'[A-Za-z0-9_.:-]{1,80}', result['client_order_id']) is None
+                or account_timestamp(result.get('observed_at')) is None):
+            raise Review('INVALID_PROTECTION_OBSERVATION')
+        key = '$.protection_observations."' + result['client_order_id'] + '"'
+        observed = account_timestamp(result['observed_at'])
+        old = self.db.execute('SELECT json_extract(data,?) FROM robot_status WHERE id=1', (key,)).fetchone()
+        if old and old[0]:
+            prior = json.loads(old[0])
+            previous = account_timestamp(prior.get('observed_at'))
+            if previous is not None and previous > observed:
+                return
+        state = result.get('state')
+        if state == 'CLOSED':
+            self.db.execute('UPDATE robot_status SET data=json_remove(data,?) WHERE id=1', (key,))
+            return
+        if state not in ('POSITION_PROTECTED', 'PROTECTION_INCOMPLETE'):
+            return
+        try:
+            valid_fill = (isinstance(result.get('filled_quantity'), str)
+                and D(result['filled_quantity']).is_finite() and D(result['filled_quantity']) > 0)
+        except Exception:
+            valid_fill = False
+        if (type(result.get('sl_confirmed')) is not bool or type(result.get('tp_confirmed')) is not bool
+                or not valid_fill):
+            raise Review('INVALID_PROTECTION_OBSERVATION')
+        fields = ('source', 'state', 'symbol', 'client_order_id', 'order_id', 'filled_quantity',
+            'sl_confirmed', 'tp_confirmed', 'sl_order_id', 'tp_order_id', 'observed_at',
+            'first_fill_at', 'fill_detected_at', 'sl_submitted_at', 'tp_submitted_at',
+            'sl_confirmed_at', 'tp_confirmed_at', 'accepted_at')
+        value = {field: result[field] for field in fields if field in result}
+        self.db.execute('''INSERT OR REPLACE INTO robot_status
+            SELECT 1,json_set(COALESCE((SELECT data FROM robot_status WHERE id=1),?),?,json(?))''',
+            (json.dumps(empty_account()), key, json.dumps(value)))
 
     def snapshot(self):
         today=day()

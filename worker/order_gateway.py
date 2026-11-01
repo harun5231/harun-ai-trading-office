@@ -65,6 +65,21 @@ def build_intent(plan, operation):
             observed_at=plan['fee_observed_at'],taker_rate=plan['entry_fee_rate']),
         excluded_costs=plan['excluded_costs'],
         evidence_sha256=plan['provenance']['payload_sha256'])
+    from .core import DYNAMIC_RISK_MODEL
+    if plan.get('risk_model') == DYNAMIC_RISK_MODEL:
+        from .core import deserialize_sizing_rules, validate_normalized_plan
+        from copy import deepcopy
+        rules = deserialize_sizing_rules(plan)
+        validate_normalized_plan(plan, rules, check_fresh=False)
+        intent['excluded_costs'] = deepcopy(plan['excluded_costs'])
+        intent.update(risk_model=DYNAMIC_RISK_MODEL,
+            reward_risk_policy=plan['reward_risk_policy'], tp_tick_size=format(number(rules.tick), 'f'),
+            normalized_plan=deepcopy(plan), neurobro_tp=plan['neurobro_tp'],
+            target_net_reward_usdt=plan['target_net_reward_usdt'],
+            net_reward_target_difference_usdt=plan['net_reward_target_difference_usdt'],
+            leverage_evidence=deepcopy(plan['leverage_evidence']),
+            cost_evidence=deepcopy(plan['cost_evidence']))
+        return intent
     if 'reward_risk_policy' in plan or 'risk_model' in plan:
         from .core import Rules, validate_reward_risk_policy
         from dataclasses import fields

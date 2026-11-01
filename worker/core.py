@@ -1,5 +1,5 @@
 """Fail-closed USDⓈ-M order-intent risk checks and a durable audit connection."""
-from dataclasses import dataclass
+from dataclasses import dataclass, fields as dataclass_fields
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, getcontext, DefaultContext, Context, ROUND_HALF_EVEN
 from zoneinfo import ZoneInfo
@@ -22,6 +22,8 @@ NORMALIZED_REWARD_RISK_POLICY = 'NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE'
 NORMALIZED_SIZING_METHOD = 'MAX_LOT_ENTRY_SL_TAKER_FEES_SLIPPAGE_V3'
 EXIT_SLIPPAGE_RATE = D('0.005')
 NORMALIZATION_VERSION = 'TP_NET_RR_NORMALIZATION_V1'
+DYNAMIC_RISK_MODEL = 'DYNAMIC_NET_2R_V4'
+DYNAMIC_REWARD_RISK_POLICY = 'NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4'
 RESERVE_EXCLUDED_COSTS = ['FUNDING','GAPS_BEYOND_RESERVE','FEE_CHANGES_AFTER_OBSERVATION']
 class Review(Exception): pass
 
@@ -70,6 +72,36 @@ class Rules:
     fee_observed_at: float | None = None
     fee_symbol: str | None = None
     fee_source: str | None = None
+
+
+@dataclass(frozen=True)
+class DynamicRules(Rules):
+    # Explicit opt-in evidence for new setups. Legacy Rules and persisted V3
+    # plans retain their original field set and validation arithmetic.
+    dynamic_cost_evidence: dict | None = None
+    leverage_brackets: dict | None = None
+
+
+
+def deserialize_sizing_rules(plan):
+    """Read a plan's frozen rule schema without upgrading historical plans."""
+    import copy
+    try:
+        cls = DynamicRules if plan.get('risk_model') == DYNAMIC_RISK_MODEL else Rules
+        values = plan['sizing_rules']
+        if type(values) is not dict or set(values) != {f.name for f in dataclass_fields(cls)}:
+            raise Review('INVALID_RULES_SCHEMA')
+        decimal_fields = {'step','minimum','maximum','tick','min_notional','min_price','max_price',
+            'multiplier_up','multiplier_down','mark_price','taker_fee_rate'}
+        return cls(**{key:(D(value) if key in decimal_fields and isinstance(value,str)
+            else copy.deepcopy(value)) for key,value in values.items()})
+    except Review:
+        raise
+    except Exception:
+        raise Review('INVALID_RULES_SCHEMA') from None
+
+
+rules_from_plan = deserialize_sizing_rules
 
 
 def validated_risk_target(value):
@@ -125,6 +157,9 @@ def validated_fee_rate(rules,symbol=None,*,check_fresh=True):
 
 def maximum_risk_quantity(entry,sl,rules,risk_target=RISK,*,check_fresh=True,risk_model=None,side=None):
     """Largest legal lot within the explicitly selected planned SL cost model."""
+    if risk_model == DYNAMIC_RISK_MODEL:
+        from .dynamic_risk import maximum_quantity
+        return maximum_quantity(entry,sl,side,rules,risk_target,check_fresh=check_fresh)
     target=Fraction(validated_risk_target(risk_target))
     entry,sl=(Fraction(number(value)) for value in (entry,sl))
     for value in (rules.step,rules.minimum,rules.maximum):number(value)
@@ -152,6 +187,9 @@ def risk_costs(entry,tp,sl,quantity,rules,*,symbol=None,check_fresh=True,risk_mo
     The absent-marker archival model retains its original fee-only arithmetic.
     Neither model treats a planned trigger as proof of an actual exit fill.
     """
+    if risk_model == DYNAMIC_RISK_MODEL:
+        from .dynamic_risk import costs
+        return costs(entry,tp,sl,quantity,rules,side,symbol=symbol,check_fresh=check_fresh)
     if risk_model is not None:
         _require_risk_model(risk_model)
         return _reserve_risk_costs(entry,tp,sl,quantity,rules,side,symbol=symbol,check_fresh=check_fresh)
@@ -255,7 +293,7 @@ def _tp_normalization(signal,tp,rules):
         exit_slippage_rate=format(EXIT_SLIPPAGE_RATE,'f'),taker_fee_rate=format(rules.taker_fee_rate,'f'))
 
 
-def _validate_normalized_signal(signal,rules,*,check_fresh=True):
+def _validate_normalized_signal(signal,rules,*,check_fresh=True,require_original_rr=True):
     if type(rules.observed_at) not in (int,float) or not math.isfinite(rules.observed_at) or rules.observed_at<0:
         raise Review('INVALID_RULES')
     if check_fresh and not 0<=time.time()-rules.observed_at<=300:raise Review('NEEDS_REVIEW: filter pasar kedaluwarsa')
@@ -267,7 +305,7 @@ def _validate_normalized_signal(signal,rules,*,check_fresh=True):
     for value in (signal.entry,signal.tp,signal.sl):number(value)
     if not (signal.sl<signal.entry<signal.tp if signal.side=='LONG' else signal.tp<signal.entry<signal.sl):raise Review('INVALID_ENTRY_TP_SL')
     distance=abs(Fraction(signal.entry)-Fraction(signal.sl))
-    if abs(Fraction(signal.tp)-Fraction(signal.entry))<2*distance:raise Review('RISK_REWARD_BELOW_2')
+    if require_original_rr and abs(Fraction(signal.tp)-Fraction(signal.entry))<2*distance:raise Review('RISK_REWARD_BELOW_2')
     # The original model TP is retained for audit; only entry/SL execute directly.
     for price in (signal.entry,signal.sl):
         if not rules.min_price<=price<=rules.max_price or (Fraction(price)/Fraction(rules.tick)).denominator!=1:
@@ -296,6 +334,9 @@ def _normalized_plan(signal,rules,risk_target,*,check_fresh=True):
 
 def validate_normalized_plan(plan,rules,*,check_fresh=False):
     """Recompute a versioned execution plan from preserved original model levels."""
+    if plan.get('risk_model') == DYNAMIC_RISK_MODEL:
+        from .dynamic_risk import validate
+        return validate(plan,rules,check_fresh=check_fresh)
     try:
         _require_risk_model(plan['risk_model'])
         if plan['reward_risk_policy']!=NORMALIZED_REWARD_RISK_POLICY:raise Review('INVALID_RISK_REWARD')
@@ -343,6 +384,10 @@ def validate_reward_risk_policy(plan,rules):
     return True
 
 def risk_check(signal, rules, risk_target=RISK,*,reward_risk_policy=None,risk_model=None):
+    if risk_model == DYNAMIC_RISK_MODEL:
+        if reward_risk_policy not in (None,DYNAMIC_REWARD_RISK_POLICY):raise Review('INVALID_RISK_REWARD')
+        from .dynamic_risk import plan
+        return plan(signal,rules,risk_target)
     if risk_model is not None:
         _require_risk_model(risk_model)
         if reward_risk_policy not in (None,NORMALIZED_REWARD_RISK_POLICY):raise Review('INVALID_RISK_REWARD')

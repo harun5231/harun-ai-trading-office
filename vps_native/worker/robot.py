@@ -9,24 +9,29 @@ import time
 from pathlib import Path
 from datetime import datetime,timezone
 from zoneinfo import ZoneInfo
-from .core import D,Review,day,now,risk_check,preflight,RISK_MODEL,NORMALIZED_REWARD_RISK_POLICY,validated_risk_target
+from .core import D,Review,day,now,risk_check,preflight,RISK_MODEL,NORMALIZED_REWARD_RISK_POLICY,DYNAMIC_RISK_MODEL,DYNAMIC_REWARD_RISK_POLICY,validated_risk_target
 from .account_state import (account_state,screening_contract,MANUAL_ONLY_SYMBOLS,MAX_REPLACEMENTS)
 from .robot_store import RobotStore
 from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_intent,require_implementation
-from .neuroapi import SETUP_SCHEMA,ResearchPaused,selections,setup
+from .neuroapi import SETUP_SCHEMA,SETUP_SCHEMA_V4,ResearchPaused,selections,setup
 from .prompts import ANALYSIS,REPLACEMENT_SCREENING
 from .analysis import analysis_context
+from .new_setup_policy import request_policy,refresh_unsubmitted,serialize_rules
+from .owner_source_protocol import completed_decision_fresh
+from .fill_priority import owned_intent_lock
 from .diagnostics import validation_code
 from .robot_provenance import VERSION,stamp,verify
 from .research_provider import (source_evidence,parse_assistant_text,response_output_text,
     BROWSER_PROVIDER,BROWSER_CONTRACT)
-from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads,gateway_mutations
+from .research_guard import research_reads,ResearchReadPaused,gateway_transaction_reads,gateway_mutations,EntryNotSubmitted
 
 class Coordinator:
-    def __init__(self,ledger,neuro,market,account_factory,stopping=None,gateway=None):
+    def __init__(self,ledger,neuro,market,account_factory,stopping=None,gateway=None,new_setup_policy=None):
         self.ledger=ledger;self.db=ledger.db;self.store=RobotStore(self.db)
         self.neuro=neuro;self.market=market;self.account_factory=account_factory;self.stopping=stopping
         self.gateway=gateway if gateway is not None else OrderGateway()
+        if new_setup_policy not in (None,DYNAMIC_RISK_MODEL):raise Review('INVALID_COST_MODEL')
+        self.new_setup_policy=new_setup_policy
     def tick(self):
         # Processes share the cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
@@ -222,10 +227,16 @@ class Coordinator:
         except Exception:raise Review('STALE_MARKET_CONTEXT') from None
     def completed_value(self,cached,validate):
         row,job=cached
-        created=row['created']
-        if type(created) not in (int,float) or not 0<=time.time()-created<=self.market.max_age:
-            raise Review('STALE_MARKET_CONTEXT')
-        if job['kind']=='ANALYSIS':self.original_context_fresh(row,job)
+        if job['kind']=='ANALYSIS' and request_policy(self.db,job['operation'])==DYNAMIC_RISK_MODEL:
+            # New discussions can refresh their materials in the same room.
+            # Native raw-response evidence and the final website pair, rather
+            # than the initial request age, remain the decision authority.
+            completed_decision_fresh(self.db,job['operation'],self.market,job['symbol'])
+        else:
+            created=row['created']
+            if type(created) not in (int,float) or not 0<=time.time()-created<=self.market.max_age:
+                raise Review('STALE_MARKET_CONTEXT')
+            if job['kind']=='ANALYSIS':self.original_context_fresh(row,job)
         value=json.loads(row['output'],parse_float=D)
         validate(value)
         return value
@@ -246,7 +257,7 @@ class Coordinator:
         hold=sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
         return max(hold,data.get('replacement_due',0))
     def research_budget(self,data,results):
-        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
+        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED') for r in results)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
         return data['target']-ready-technical
     def unfinished_cycle(self,row):
@@ -282,14 +293,20 @@ class Coordinator:
     def exposed_symbols(self,account):
         # A confirmed adapter observation can precede the next account GET.
         # Reserve both its slot and symbol until that intent is closed/rejected.
-        active=self.db.execute("SELECT symbol FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED')")
+        active=self.db.execute("SELECT symbol FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE')")
         return set(account['running_symbols'])|set(account.get('open_entry_symbols') or ())|{row['symbol'] for row in active}
+    def reconcile_owned(self,intent):
+        """Use the installed gateway's owned-exit path without enabling entries."""
+        require_implementation(self.gateway,'reconcile')
+        protect=getattr(self.gateway,'reconcile_protection',None)
+        return protect(intent) if callable(protect) else self.gateway.reconcile(intent)
     def advance_execution(self,account,today):
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         row=self.db.execute("SELECT * FROM order_intents WHERE state IN ('SUBMITTING','NEEDS_REVIEW') ORDER BY rowid LIMIT 1").fetchone()
         if row:
             # An uncertain submission is never sent again. While ON, existing
-            # owned exchange evidence may resolve it using GET-only reconciliation.
+            # owned exchange evidence resolves it without entry/configuration writes.
+            # The gateway may restore proven frozen exits through its separate scope.
             reason=row['failure_code'] or 'ORDER_OUTCOME_UNKNOWN'
             try:
                 require_implementation(self.gateway,'reconcile')
@@ -297,13 +314,13 @@ class Coordinator:
             except Exception:return self.store.report('NEEDS_REVIEW',account,reason)
             if not self.gateway_allowed():return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             try:
-                with gateway_transaction_reads(),gateway_mutations(lambda:False):
-                    result=self.gateway.reconcile(intent)
+                with owned_intent_lock(self.db,intent['client_order_id']),gateway_transaction_reads(),gateway_mutations(lambda:False):
+                    result=self.reconcile_owned(intent)
+                    if not isinstance(result,dict) or result.get('state') not in ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED'):
+                        return self.store.report('NEEDS_REVIEW',account,reason)
+                    return self.record_gateway_observation(row['id'],row['candidate_id'],result,account,preserve_unknown=True)
             except Exception:return self.store.report('NEEDS_REVIEW',account,reason)
-            if not isinstance(result,dict) or result.get('state') not in ('ENTRY_PENDING','POSITION_PROTECTED','CLOSED'):
-                return self.store.report('NEEDS_REVIEW',account,reason)
-            return self.record_gateway_observation(row['id'],row['candidate_id'],result,account,preserve_unknown=True)
-        rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED') ORDER BY rowid LIMIT 2"))
+        rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE') ORDER BY rowid LIMIT 2"))
         for row in rows:
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             try:require_implementation(self.gateway,'reconcile')
@@ -313,17 +330,24 @@ class Coordinator:
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
             try:
                 # A started adapter transaction may need reads to finish protection.
-                with gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
-                    result=self.gateway.reconcile(intent)
+                with owned_intent_lock(self.db,intent['client_order_id']),gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
+                    result=self.reconcile_owned(intent)
+                    observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
             except Exception as error:return self.mark_unknown(row['id'],row['candidate_id'],account,reason=self.gateway_failure_code(error))
-            observed=self.record_gateway_observation(row['id'],row['candidate_id'],result,account)
             if observed['bot_status']=='NEEDS_REVIEW':return observed
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         row=self.db.execute("SELECT * FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED') ORDER BY rowid LIMIT 1").fetchone()
         if not row:return None
-        try:plan=self.store.verified_plan(row);intent=build_intent(plan,row['id'])
-        except Exception:
+        try:
+            plan=self.store.verified_plan(row)
+            plan,prepared_rules=refresh_unsubmitted(self,row,plan,build_intent=build_intent)
+            intent=build_intent(plan,row['id'])
+        except Exception as error:
+            if str(error)=='ACCEPTED_OR_UNCERTAIN_INTENT_IMMUTABLE':
+                # An intervening accepted/uncertain lifecycle belongs to
+                # reconciliation. Never reject or rewrite that saved order.
+                return self.store.report('WAITING',account,wait_reason='ORDER_STATE_CHANGED')
             self.db.execute("UPDATE robot_candidates SET status='REJECTED',failure_code='ORDER_EVIDENCE_UNVERIFIED' WHERE id=?",(row['id'],))
             return self.store.report('REJECTED',account,'ORDER_EVIDENCE_UNVERIFIED')
         self.db.execute('INSERT OR IGNORE INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
@@ -345,8 +369,13 @@ class Coordinator:
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         try:
             target=plan['risk_target_usdt']
-            context,rules=analysis_context(self.market,row['symbol'],target,self.account_factory())
-            self.market.fresh(context,row['symbol']);preflight(plan,rules,target)
+            if plan.get('risk_model')==DYNAMIC_RISK_MODEL:
+                rules=prepared_rules
+                if rules is None:raise Review('SLIPPAGE_EVIDENCE_UNAVAILABLE')
+            else:
+                context,rules=analysis_context(self.market,row['symbol'],target,self.account_factory())
+                self.market.fresh(context,row['symbol'])
+            preflight(plan,rules,target)
         except ResearchReadPaused:raise
         except Exception:return self.reject_intent(row,account,'ORDER_PREFLIGHT_REJECTED')
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
@@ -376,14 +405,18 @@ class Coordinator:
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         try:
             # GET proofs can drain; every later SDK mutation checks current ON.
-            with gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
+            with owned_intent_lock(self.db,intent['client_order_id']),gateway_transaction_reads(),gateway_mutations(self.gateway_allowed):
                 result=self.gateway.submit(intent)
+                return self.record_gateway_observation(row['id'],row['id'],result,account)
+        except EntryNotSubmitted:
+            # The gateway's final frozen-evidence guard ran before entry POST.
+            # Existing/uncertain orders always use reconciliation instead.
+            return self.reject_intent(row,account,'ORDER_UNSENT_STALE_EVIDENCE')
         except GatewayUnavailable:
             # A transport that might have sent a request must report an unknown
             # outcome, never claim this pre-send NOT_CONNECTED exception.
             return self.mark_unknown(row['id'],row['id'],account)
         except Exception as error:return self.mark_unknown(row['id'],row['id'],account,reason=self.gateway_failure_code(error))
-        return self.record_gateway_observation(row['id'],row['id'],result,account)
     def reject_intent(self,row,account,reason):
         self.db.execute("UPDATE order_intents SET state='REJECTED',failure_code=?,updated=? WHERE id=?",(reason,now(),row['id']))
         self.db.execute("UPDATE robot_candidates SET status='REJECTED',failure_code=? WHERE id=?",(reason,row['id']))
@@ -413,6 +446,18 @@ class Coordinator:
             if text.startswith('BINANCE_ORDER_') and text[14:] in known:
                 return text+('_'+phase if text[14:] in {'OUTCOME_UNKNOWN','REQUEST_FAILED','PROOF_INVALID'} else '')
         return 'ORDER_UNKNOWN_'+phase
+    def record_gateway_execution_costs(self):
+        """Persist proven exit facts after lifecycle commit; never delay a fill for I/O."""
+        getter=getattr(self.gateway,'confirmed_execution_observations',None)
+        if not callable(getter):return
+        try:
+            from .dynamic_market import record_execution
+            samples=getter()
+            for sample in samples:record_execution(self.db,**sample)
+            if samples:self.gateway.execution_observation_status='CONFIRMED_EXIT_COSTS_RECORDED'
+        except Exception:
+            # Cost-history availability is independent from protection status.
+            self.gateway.execution_observation_status='CONFIRMED_EXIT_COST_DETAILS_UNAVAILABLE'
     def record_gateway_observation(self,intent_id,candidate_id,result,account,*,preserve_unknown=False):
         row=self.db.execute('SELECT * FROM order_intents WHERE id=?',(intent_id,)).fetchone()
         try:
@@ -420,7 +465,7 @@ class Coordinator:
             if row['candidate_id']!=candidate_id:raise ValueError
             if not isinstance(result,dict) or result.get('source')!='BINANCE_FUTURES':raise ValueError
             state=result['state']
-            if state not in ('ENTRY_PENDING','POSITION_PROTECTED','CLOSED','REJECTED'):raise ValueError
+            if state not in ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED','REJECTED'):raise ValueError
             if result['symbol']!=intent['symbol'] or result['client_order_id']!=intent['client_order_id']:raise ValueError
             if not isinstance(result['order_id'],str) or not re.fullmatch(r'[1-9][0-9]{0,29}',result['order_id']):raise ValueError
             quantity=result['filled_quantity']
@@ -434,6 +479,16 @@ class Coordinator:
                 for key in ('sl_order_id','tp_order_id'):
                     if not isinstance(result.get(key),str) or not re.fullmatch(r'[1-9][0-9]{0,29}',result[key]):raise ValueError
                 if len({result['order_id'],result['sl_order_id'],result['tp_order_id']})!=3:raise ValueError
+            if state=='PROTECTION_INCOMPLETE':
+                if not filled or any(type(result.get(k))is not bool for k in ('sl_confirmed','tp_confirmed')):raise ValueError
+                if result['sl_confirmed'] and result['tp_confirmed']:raise ValueError
+                ids={result['order_id']}
+                for flag,key in (('sl_confirmed','sl_order_id'),('tp_confirmed','tp_order_id')):
+                    value=result.get(key)
+                    if result[flag] and value is None:raise ValueError
+                    if value is not None:
+                        if type(value)is not str or not re.fullmatch(r'[1-9][0-9]{0,29}',value)or value in ids:raise ValueError
+                        ids.add(value)
             if state=='ENTRY_PENDING' and filled>0:raise ValueError
             if state=='REJECTED' and filled>0:raise ValueError
             if state=='CLOSED' and not filled:raise ValueError
@@ -447,16 +502,35 @@ class Coordinator:
                 if not isinstance(exit_id,str) or not re.fullmatch(r'[1-9][0-9]{0,29}',exit_id) or exit_id==result['order_id']:raise ValueError
             previous=json.loads(row['result']) if row['result'] else None
             if previous:
-                transitions={'ENTRY_PENDING':('ENTRY_PENDING','POSITION_PROTECTED','CLOSED','REJECTED'),
-                    'POSITION_PROTECTED':('POSITION_PROTECTED','CLOSED'),'CLOSED':('CLOSED',),'REJECTED':('REJECTED',)}
+                transitions={'ENTRY_PENDING':('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED','REJECTED'),
+                    'POSITION_PROTECTED':('POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED'),
+                    'PROTECTION_INCOMPLETE':('PROTECTION_INCOMPLETE','POSITION_PROTECTED','CLOSED'),
+                    'CLOSED':('CLOSED',),'REJECTED':('REJECTED',)}
                 if state not in transitions[previous['state']] or result['order_id']!=previous['order_id']:raise ValueError
                 if filled<D(previous['filled_quantity']) or at<datetime.fromisoformat(previous['observed_at']):raise ValueError
                 if D(previous['filled_quantity']) and entry_at!=datetime.fromisoformat(previous['first_fill_at']):raise ValueError
+            for kind in ('sl','tp'):
+                code=result.get(kind+'_failure_code')
+                if code is not None and (type(code)is not str or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,119}',code)):raise ValueError
+                exchange=result.get(kind+'_exchange_code')
+                if exchange is not None and (type(exchange)is not int or abs(exchange)>1000000):raise ValueError
+            metrics=('accepted_at','fill_detected_at','sl_submitted_at','tp_submitted_at','sl_confirmed_at','tp_confirmed_at')
+            parsed={}
+            for key in metrics:
+                if key not in result:continue
+                stamp_time=datetime.fromisoformat(result[key])
+                if stamp_time.tzinfo is None or stamp_time>at:raise ValueError
+                parsed[key]=stamp_time
+            for kind in ('sl','tp'):
+                sent=parsed.get(kind+'_submitted_at');ack=parsed.get(kind+'_confirmed_at')
+                if sent is not None and ack is not None and ack<sent:raise ValueError
             # Cache only the explicit verified-observation fields, never raw
             # Binance envelopes, URLs, headers, credentials, or adapter prose.
             allowed=('source','state','symbol','client_order_id','order_id','filled_quantity',
                      'observed_at','first_fill_at','sl_confirmed','tp_confirmed','sl_order_id','tp_order_id',
-                     'exit_order_id','closed_at')
+                     'exit_order_id','closed_at','accepted_at','fill_detected_at',
+                     'sl_submitted_at','tp_submitted_at','sl_confirmed_at','tp_confirmed_at',
+                     'sl_failure_code','tp_failure_code','sl_exchange_code','tp_exchange_code')
             recorded={key:result[key] for key in allowed if key in result}
             entry_day=entry_at.astimezone(ZoneInfo('Asia/Bangkok')).date().isoformat() if filled else None
             receipt=self.db.execute('SELECT * FROM robot_entry_receipts WHERE id=?',(intent['client_order_id'],)).fetchone()
@@ -473,8 +547,11 @@ class Coordinator:
             if filled:
                 self.db.execute('INSERT OR IGNORE INTO robot_entry_receipts VALUES(?,?,?,?)',
                     (intent['client_order_id'],intent['symbol'],entry_day,result['first_fill_at']))
+                self.store.record_protection_observation(recorded)
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
+        self.record_gateway_execution_costs()
+        if account is None:return self.store.report(state)
         account=dict(account,bot_entries_today=self.store.entries(day()))
         account['available_slots']=self.execution_slots(account,day())
         return self.store.report(state,account)
@@ -540,7 +617,7 @@ class Coordinator:
             if old['state']=='NEEDS_REVIEW':return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
             if old['state']=='COMPLETE' and self.unfinished_cycle(old):self.save_cycle(cycle,data)
         results=self.store.results(cycle)
-        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','CLOSED') for r in results)
+        ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED') for r in results)
         unsent=self.db.execute("SELECT symbol FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')")
         ready_unexposed=sum(r['symbol'] not in self.exposed_symbols(account) for r in unsent)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
@@ -563,7 +640,7 @@ class Coordinator:
                 return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_SYMBOL_EXPOSED')
             return self.analyze(cycle,data,symbol,account,today)
         initial=data['screen']==-1
-        # HOLD and local fee/RR rejections share the same three replacement rounds.
+        # HOLD and replaceable local rejections request other unseen coins while capacity remains.
         # Only the latest round triggers screening; other failures consume budget.
         replaceable=self.replacement_count(data,results)
         if not initial and not replaceable:
@@ -648,6 +725,7 @@ class Coordinator:
         try:cached=self.completed_research(operation,cycle,'ANALYSIS',symbol)
         except Exception:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
         target=cached[1]['risk_target'] if cached else self.store.settings()['risk_target_usdt']
+        policy=request_policy(self.db,operation) if cached else self.new_setup_policy
         # Symbol catalog/rules/context are read before the paid call, never guessed.
         try:
             catalog=self.market.catalog()
@@ -656,7 +734,7 @@ class Coordinator:
         if symbol not in catalog:
             return self.reject_queued_symbol(cycle,data,symbol,account,'INVALID_SCREENING_SYMBOL')
         try:
-            context,rules=analysis_context(self.market,symbol,target,self.account_factory())
+            context,rules=analysis_context(self.market,symbol,target,self.account_factory(),policy=policy,db=self.db)
         except ResearchReadPaused:raise
         except Exception:
             return self.store.report('REJECTED',account,'MARKET_DATA_UNAVAILABLE')
@@ -669,28 +747,32 @@ class Coordinator:
         try:
             validate=lambda v:setup(v,symbol,require_declared_rr=False,require_gross_rr=False)
             value=(self.completed_value(cached,validate) if cached else
-                self.neuro.ask(operation,ANALYSIS,SETUP_SCHEMA,validate,context,
+                self.neuro.ask(operation,ANALYSIS,SETUP_SCHEMA_V4 if policy else SETUP_SCHEMA,validate,context,
                     continue_if=lambda:self.allowed(today)))
-            signal=setup(value,symbol)
+            if policy==DYNAMIC_RISK_MODEL:
+                # Even HOLD must be a current, hash-bound market decision;
+                # unreadable/stale attachments are technical failures.
+                completed_decision_fresh(self.db,operation,self.market,symbol)
+            signal=setup(value,symbol,require_declared_rr=policy!=DYNAMIC_RISK_MODEL,require_gross_rr=policy!=DYNAMIC_RISK_MODEL)
             if signal.side=='HOLD':state='HOLD'
             else:
                 self.store.report('VALIDATING',account)
-                self.market.fresh(context,symbol)
+                if policy!=DYNAMIC_RISK_MODEL:self.market.fresh(context,symbol)
                 # A received response must be journaled even after OFF. Finish
                 # local validation with the rules already read; start no GET.
                 if self.allowed(today):
-                    try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory())
+                    try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory(),policy=policy,db=self.db)
                     except ResearchReadPaused:pass
                     else:rules=refreshed
-                plan=risk_check(signal,rules,target,risk_model=RISK_MODEL,
-                    reward_risk_policy=NORMALIZED_REWARD_RISK_POLICY);plan['risk_target_usdt']=target
+                plan=risk_check(signal,rules,target,risk_model=policy or RISK_MODEL,
+                    reward_risk_policy=DYNAMIC_REWARD_RISK_POLICY if policy else NORMALIZED_REWARD_RISK_POLICY);plan['risk_target_usdt']=target
                 # The WEB reply owns final prices. A fresh fee/tick change must
                 # not silently replace a TP already confirmed in that dialogue.
-                if D(plan['tp'])!=signal.tp:raise Review('ORDER_COSTS_CHANGED')
+                if policy!=DYNAMIC_RISK_MODEL and D(plan['tp'])!=signal.tp:raise Review('ORDER_COSTS_CHANGED')
                 # New Binance TP/SL use the requested Last Price trigger.
                 # Historical plans remain immutable and retain their own trigger.
                 plan['protection_working_type']='CONTRACT_PRICE'
-                plan['sizing_rules']={k:str(v) if isinstance(v,D) else v for k,v in asdict(rules).items()}
+                plan['sizing_rules']=serialize_rules(rules)
                 preflight(plan,rules,target);stamp(self.db,plan,operation);verify(self.db,plan,operation)
                 state='READY_FOR_EXECUTION'
         except ResearchPaused as error:

@@ -400,5 +400,48 @@ source_evidence = factory('closed-over-value')
         with self.assertRaises(ValueError):self.install(source_evidence_sha256=pin)
 
 
-if __name__ == '__main__':
-    unittest.main()
+
+
+class WebsiteChartHistoryTests(unittest.TestCase):
+    setUp = NativeChartHistoryTests.setUp
+    rows = NativeChartHistoryTests.rows
+    record = NativeChartHistoryTests.record
+    freeze_db = NativeChartHistoryTests.freeze_db
+    manifest = NativeChartHistoryTests.manifest
+    def website_install(self):
+        from agent.binance_website_chart import SOURCE as website_source
+        self.ns['CHART_SOURCE'] = website_source
+        history.install_website_chart_history(self.ns, legacy_source=OLD,
+            release_cutoff_utc=utc(NOW), data_render_release_cutoff_utc=utc(NOW+100), **self.pins)
+        return website_source
+
+    def test_two_legacy_sources_read_without_writes_and_live_input_stays_website(self):
+        website = 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT'
+        self.record('old-web',source=OLD,created=NOW-1)
+        self.record('old-render',source=NEW,created=NOW+50)
+        self.record('new-web',source=website,created=NOW+150)
+        before=self.manifest();self.freeze_db();self.website_install()
+        for operation in ('old-web','old-render','new-web'):
+            self.assertEqual(self.ns['source_evidence'](self.db,operation)['source_type'],'fixture-browser-receipt')
+        self.assertEqual(self.manifest(),before);self.assertEqual(self.denied,[])
+        self.assertEqual(self.ns['CHART_SOURCE'],website)
+        for source in (OLD,NEW):
+            with self.assertRaises(Review):self.ns['validate_chart_evidence'](
+                self.rows(source,NOW+150),neuroapi.SETUP_SCHEMA,context(NOW+150),NOW+150,NOW+151,180)
+
+    def test_each_legacy_cutoff_remains_independent_and_reinstallation_is_idempotent(self):
+        self.record('late-old-web',source=OLD,created=NOW+1)
+        self.record('late-old-render',source=NEW,created=NOW+101)
+        self.website_install();installed=self.ns['source_evidence'];self.website_install()
+        self.assertIs(self.ns['source_evidence'],installed)
+        for operation in ('late-old-web','late-old-render'):
+            with self.assertRaises(Review):self.ns['source_evidence'](self.db,operation)
+
+    def test_mixed_old_source_pair_is_not_admitted_by_either_historical_reader(self):
+        self.record('mixed-old-sources',charts=[self.rows(OLD)[0],self.rows(NEW)[1]])
+        before=self.manifest();self.freeze_db();self.website_install()
+        with self.assertRaises(Review):self.ns['source_evidence'](self.db,'mixed-old-sources')
+        self.assertEqual(self.manifest(),before);self.assertEqual(self.denied,[])
+
+
+if __name__ == '__main__':unittest.main()

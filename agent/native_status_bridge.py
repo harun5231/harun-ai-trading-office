@@ -27,6 +27,13 @@ RELEASE_BINDING = '/app-config/dialogue-status.json'
 IMAGE = re.compile(r'ghcr\.io/harun5231/harun-neurobro-agent@sha256:[a-f0-9]{64}', re.ASCII)
 SHA = re.compile(r'[a-f0-9]{64}', re.ASCII)
 COMMIT = re.compile(r'[a-f0-9]{40}', re.ASCII)
+OWNER_ACTIONS = {
+    'LOGIN_REQUIRED': ('LOGIN', 'MENUNGGU LOGIN NEUROBRO'),
+    'CHALLENGE_REQUIRED': ('VERIFY', 'MENUNGGU VERIFIKASI MANUSIA'),
+}
+OWNER_INSTRUCTIONS = ('LOGIN NEURO → BUKA BROWSER LOGIN → selesaikan tindakan yang '
+    'diminta → SELESAI LOGIN. Pilihan ROBOT ON/OFF tetap milik pemilik; setelah '
+    'browser siap, robot yang masih ON melanjutkan checkpoint otomatis.')
 REASONS = frozenset({'NATIVE_CALLER_GATED','RUNTIME_CONFIG_UNVERIFIED',
     'MODEL_KEY_MISSING','MODEL_KEY_INVALID','DIALOGUE_TRANSPORT_UNAVAILABLE'})
 HEALTH_FIELDS = frozenset({'service','runtime_implemented','mode','model','model_key_state',
@@ -71,6 +78,44 @@ def _identity(info):
 
 def _stamp(value):
     return datetime.fromtimestamp(value,timezone.utc).isoformat().replace('+00:00','Z')
+
+
+def neurobro_owner_action(research, *, previous=None, now=None):
+    """Present explicit browser auth facts; an unavailable transport is not login.
+
+    Keep the last observed request visible through manual handover or a stale
+    transport. Only a newer, fresh, actually ready chat observation clears it.
+    No native status, robot setting, order or monitoring state is rewritten.
+    """
+    current = time.time() if now is None else now
+    prior = None
+    if (type(previous) is dict and previous.get('action') in {'LOGIN', 'VERIFY'}
+            and previous.get('requires_owner') is True):
+        prior = dict(previous)
+    if type(research) is not dict or research.get('provider') != 'NEUROBRO_WEB':
+        return prior
+    try:
+        checked = datetime.fromisoformat(research['checked_at'].replace('Z', '+00:00'))
+        observed = checked.timestamp()
+        if checked.tzinfo is None or not _number(current) or observed > current + 5:
+            return prior
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return prior
+    if prior is not None:
+        try:
+            last = datetime.fromisoformat(prior['checked_at'].replace('Z', '+00:00')).timestamp()
+            if observed < last:
+                return prior
+        except (KeyError, TypeError, ValueError, AttributeError):
+            prior = None
+    selected = OWNER_ACTIONS.get(research.get('status'))
+    if selected is not None:
+        action, label = selected
+        return {'action': action, 'label': label, 'checked_at': research['checked_at'],
+            'requires_owner': True, 'instructions': OWNER_INSTRUCTIONS}
+    if research.get('status') in {'CONNECTED', 'BUSY'} and 0 <= current - observed < 120:
+        return None
+    return prior
 
 
 def _release(value):
@@ -427,14 +472,17 @@ def install_office_status(namespace, *, control=None):
         return
     control=control or importlib.import_module('worker.neurobrowser_control')
     original=namespace['office_snapshot']
+    owner_action = None
     def office_snapshot(controller,result):
+        nonlocal owner_action
         value=original(controller,result)
         try:
             observed=control.native_agent_status()
             agent=_office_agent(observed)
         except Exception:
             agent=unavailable()
-        return {**value,'agent':agent}
+        owner_action = neurobro_owner_action(value.get('research'), previous=owner_action)
+        return {**value,'agent':agent,'research_owner_action':owner_action}
     namespace['office_snapshot']=office_snapshot
     namespace['_native_office_agent_status_installed']=True
 

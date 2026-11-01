@@ -1,9 +1,9 @@
-"""Five deadline-bound Playwright RPCs for the reviewed 200-candle capture page.
+"""Deadline-bound chart RPCs against the reviewed installed Playwright SDK.
 
-This is not a browser launcher or a general JavaScript executor. Compatibility
-is checked against the explicitly reviewed installed SDK version and its actual
-private method signatures before use. A timed-out new_page may finish remotely
-without a handle; the owning native actor must still close its isolated context.
+The legacy five-method adapter remains available for historical render tests.
+The website adapter admits only fixed public Binance navigation, observed chart
+UI actions and screenshots. Neither exposes a general JavaScript executor,
+account controls or arbitrary network endpoints.
 """
 from __future__ import annotations
 
@@ -116,4 +116,77 @@ def make_rpc(*, expected_playwright_version, monotonic=time.monotonic):
 
     rpc.sdk_evidence = {'playwright_version': actual_version,
         'method_parameter_names': shapes, 'scope': 'ISOLATED_200_CANDLE_DATA_RENDER_ONLY'}
+    return rpc
+
+
+def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
+    """Bound the observed public Binance UI actions, without a general executor.
+
+    Reuses the installed SDK and caller-owned isolated context. Its action set
+    has no typing, financial endpoint, account login, storage or order control.
+    """
+    from .binance_website_chart import (OBSERVE, SELECT, DISMISS_TOUR,
+        VIEWPORT as website_viewport, url_for)
+    _need(type(expected_playwright_version) is str
+          and version('playwright') == expected_playwright_version)
+    from playwright.sync_api import BrowserContext, Page
+    from playwright._impl._browser_context import BrowserContext as ImplContext
+    from playwright._impl._page import Page as ImplPage
+    from playwright.sync_api._generated import mapping
+    methods = {'new_page', 'set_viewport_size', 'goto', 'observe', 'select_timeframe',
+               'dismiss_tour', 'hover', 'zoom_out', 'screenshot'}
+
+    def rpc(resource, method, deadline, *args, **kwargs):
+        now = monotonic()
+        _need(type(now) in (int, float) and math.isfinite(now)
+              and type(deadline) in (int, float) and math.isfinite(deadline) and deadline > now
+              and method in methods and not kwargs)
+        kind, impl_kind = (BrowserContext, ImplContext) if method == 'new_page' else (Page, ImplPage)
+        _need(type(resource) is kind and type(resource._impl_obj) is impl_kind)
+        remaining = min(10.0, deadline-now)
+        impl = resource._impl_obj
+
+        async def action():
+            if method == 'new_page':
+                _need(not args)
+                return await impl.new_page()
+            if method == 'set_viewport_size':
+                _need(not args)
+                return await impl.set_viewport_size(viewportSize=dict(website_viewport))
+            if method == 'goto':
+                _need(len(args) == 1 and type(args[0]) is str
+                      and re.fullmatch(r'[A-Z0-9]{2,24}USDT', args[0]) is not None)
+                response = await impl.goto(url_for(args[0]), timeout=max(1, int(remaining*1000)),
+                                           waitUntil='domcontentloaded')
+                _need(response is not None and response.status == 200)
+                return {'status': response.status, 'url': impl.url}
+            _need(re.fullmatch(r'https://www\.binance\.com/en/futures/[A-Z0-9]{2,24}USDT', impl.url) is not None)
+            if method in ('observe', 'dismiss_tour'):
+                _need(not args)
+                return await impl.eval_on_selector_all('html', OBSERVE if method == 'observe' else DISMISS_TOUR)
+            if method == 'select_timeframe':
+                _need(len(args) == 1 and args[0] in ('15m', '1h'))
+                return await impl.eval_on_selector_all('html', SELECT, args[0])
+            if method in ('hover', 'zoom_out'):
+                _need(len(args) == 2 and all(type(v) in (int, float) and math.isfinite(v) for v in args)
+                      and 0 <= args[0] < website_viewport['width']
+                      and 0 <= args[1] < website_viewport['height'])
+                await impl.mouse.move(args[0], args[1])
+                if method == 'zoom_out':
+                    await impl.mouse.wheel(0, 400)
+                await impl.eval_on_selector_all('html',
+                    'async roots => { await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); return true; }')
+                return None
+            _need(method == 'screenshot' and len(args) == 1 and type(args[0]) is dict)
+            observed = await impl.eval_on_selector_all('html', OBSERVE)
+            _need(args[0] == observed.get('capture_clip'))
+            return await impl.screenshot(type='png', timeout=max(1, int(remaining*1000)),
+                                         fullPage=False, clip=args[0], animations='disabled', scale='css')
+
+        result = resource._sync(asyncio.wait_for(action(), timeout=remaining))
+        _need(now <= monotonic() < deadline)
+        return mapping.from_maybe_impl(result)
+
+    rpc.sdk_evidence = {'playwright_version': expected_playwright_version,
+                        'scope': 'OBSERVED_BINANCE_FUTURES_PUBLIC_UI_ONLY'}
     return rpc

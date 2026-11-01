@@ -12,7 +12,7 @@ class Market:
         if not 20<=lookback<=500 or not 30<=max_age<=300:raise Review('INVALID_MARKET_CONFIG')
         self.lookback=lookback;self.max_age=max_age;self.transport=transport;self.clock=clock
     def get(self,path,params=''):
-        if path not in ('exchangeInfo','klines','premiumIndex','time'):raise Review('MARKET_ENDPOINT_DENIED')
+        if path not in ('exchangeInfo','klines','premiumIndex','time','depth'):raise Review('MARKET_ENDPOINT_DENIED')
         check_research_read()
         try:
             code,_,data=self.transport('GET',BASE+'/fapi/v1/'+path+('?' + params if params else ''),timeout=15)
@@ -31,6 +31,27 @@ class Market:
             return rows
         except ResearchReadPaused:raise
         except Exception:raise Review('BINANCE_CONTRACT_RULES_FAILED') from None
+    def depth(self,symbol):
+        from re import fullmatch
+        if not fullmatch(r'[A-Z0-9]{2,18}USDT',symbol):raise Review('INVALID_SYMBOL')
+        raw=self.get('depth','symbol='+symbol+'&limit=1000')
+        try:
+            if type(raw)is not dict or type(raw.get('lastUpdateId'))is not int:raise ValueError
+            levels={}
+            for side in ('bids','asks'):
+                rows=raw[side]
+                if type(rows)is not list or not rows:raise ValueError
+                values=[]
+                for row in rows:
+                    if type(row)is not list or len(row)!=2 or any(type(v)is not str for v in row):raise ValueError
+                    values.append((number(row[0]),number(row[1])))
+                prices=[v[0]for v in values]
+                if len(set(prices))!=len(prices)or prices!=sorted(prices,reverse=side=='bids'):raise ValueError
+                levels[side]=[list(row)for row in rows]
+            if number(levels['bids'][0][0])>=number(levels['asks'][0][0]):raise ValueError
+            return dict(source='BINANCE_FUTURES_PUBLIC_DEPTH',symbol=symbol,
+                observed_at=self.clock(),last_update_id=raw['lastUpdateId'],**levels)
+        except (KeyError,TypeError,ValueError):raise Review('INVALID_ORDER_BOOK') from None
     def mark(self,symbol):
         from re import fullmatch
         if not fullmatch(r'[A-Z0-9]{2,18}USDT',symbol):raise Review('INVALID_SYMBOL')

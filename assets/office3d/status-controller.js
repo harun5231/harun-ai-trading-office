@@ -3,7 +3,7 @@ const ROLES = ['market', 'neuro', 'risk', 'trading', 'position', 'reviewer', 're
 const PHASE_FRESH_MS = 120000, ACCOUNT_FRESH_MS = 45000;
 const PHASES = new Set(['OFF', 'IDLE', 'WAITING', 'SCREENING', 'ANALYZING', 'VALIDATING', 'HOLD',
   'REJECTED', 'EXECUTION_BLOCKED', 'EXECUTING', 'NEEDS_REVIEW', 'READY_FOR_EXECUTION',
-  'ENTRY_PENDING', 'POSITION_PROTECTED', 'CLOSED', 'INSUFFICIENT_ACTIONABLE_SETUPS', 'OFFLINE']);
+  'ENTRY_PENDING', 'POSITION_PROTECTED', 'PROTECTION_INCOMPLETE', 'CLOSED', 'INSUFFICIENT_ACTIONABLE_SETUPS', 'OFFLINE']);
 const EMPLOYEE_STATES = new Set(['WORKING', 'IDLE', 'WAITING', 'BLOCKED', 'OFFLINE']);
 const IDLE_SPEECH = {
   market: 'Menunggu screening.', neuro: 'Menunggu analisis.', risk: 'Menunggu validasi risiko.',

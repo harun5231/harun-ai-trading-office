@@ -7,6 +7,14 @@ from .core import Review
 
 _continue_research = ContextVar('office_continue_research', default=None)
 _continue_gateway_mutation = ContextVar('office_continue_gateway_mutation', default=None)
+_owned_protection_authority = ContextVar('office_owned_protection_authority', default=None)
+
+
+class EntryNotSubmitted(Review):
+    """A final local guard rejected a new intent before its first entry POST.
+
+    Accepted/uncertain entries never use this exception or this admission path.
+    """
 
 
 class ResearchReadPaused(Review):
@@ -57,6 +65,34 @@ def gateway_mutations_allowed():
         return continue_if() is True
     except Exception:
         return False
+
+
+def gateway_protection_allowed(method, path, parameters):
+    """Separate exit-only authority; an OFF research switch cannot remove SL/TP.
+
+    The gateway supplies the frozen-intent, owned-fill and endpoint validator.
+    This never changes the entry/configuration predicate above.
+    """
+    authorize = _owned_protection_authority.get()
+    if authorize is None or method not in ('POST', 'DELETE'):
+        return False
+    try:
+        return authorize(method, path, parameters) is True
+    except Exception:
+        return False
+
+
+@contextmanager
+def gateway_protection_mutations(authorize):
+    if not callable(authorize):
+        raise TypeError('owned protection authority must be callable')
+    previous = _owned_protection_authority.get()
+    scoped = authorize if previous is None else lambda m,p,v: previous(m,p,v) is True and authorize(m,p,v) is True
+    token = _owned_protection_authority.set(scoped)
+    try:
+        yield
+    finally:
+        _owned_protection_authority.reset(token)
 
 
 @contextmanager

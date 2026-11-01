@@ -1,7 +1,7 @@
 """Project authenticated native market facts into the existing browser prompt.
 
 The caller pins the original module and installs this hook during image build.
-The original prompt, output schema, operation marker and formatter are retained.
+The internal prompt/schema/operation identity are retained; WEB receives natural text.
 The WEB message names two CSV attachments containing exactly 200 CLOSED
 candles per timeframe. Internal native context and risk provenance stay intact.
 There is no browser, model, account, risk, order or network operation here.
@@ -14,7 +14,7 @@ from types import ModuleType
 import time
 
 from .native_market_context import convert_native_market_context
-from .native_data_files import prepare_data_files, render_short_prompt
+from .native_data_files import prepare_data_files, render_short_prompt, render_screening_prompt
 
 
 MAX_NATIVE_CONTEXT = 2 * 1024 * 1024
@@ -53,7 +53,9 @@ def install(native_namespace, *, expected_prompt, context_key, wall_clock=time.t
         # Replacement screening carries exclusions, without selected-coin
         # candles. The native formatter retains that context byte for byte;
         # its existing schema/gate still owns admission.
-        if payload[context_key] is None or screening_payload(payload):
+        if screening_payload(payload):
+            return render_screening_prompt(payload, expected_prompt(payload))
+        if payload[context_key] is None:
             return expected_prompt(payload)
         before = _canonical(payload)
         if len(before) > MAX_NATIVE_CONTEXT:

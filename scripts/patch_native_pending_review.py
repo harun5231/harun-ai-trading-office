@@ -20,6 +20,9 @@ SOURCE_PINS = {
     'browser_runtime/dom.py': 'b5d9591e426b77d0ecc1e74ad09926ab53e181b9083869af49a00cf5303beba0',
     'agent/native_browser_hook.py': '6d398a62cc87b182e84c532511178d42592b89c608c6a525b763dac6dd2878dd',
 }
+# This is the reviewed successor's existing pending route. It is verified as
+# already installed, never passed through the historical six-file migration.
+CURRENT_HOOK_SOURCE_SHA256 = '62030618cb17e66cd7689387b030b4eafa4ab7bf5b22e99f08e7c72b714f3fe9'
 MAX_SOURCE = 262144
 PROTOCOL = b"__import__('agent.native_pending_protocol', fromlist=('%s',)).%s"
 
@@ -76,6 +79,39 @@ def module_functions(tree, expected):
     observed = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
     need(all(observed.count(name) == 1 for name in expected),
          'NATIVE_PENDING_MODULE_UNVERIFIED')
+
+
+def verify_current_pending_hook(raw):
+    """Admit the frozen current artifact without changing any source bytes.
+
+    The original SOURCE_PINS describe a past release and remain immutable.
+    Checking this successor separately prevents accidentally applying that old
+    migration again merely to exercise the current pending discussion route.
+    """
+    need(type(raw) is bytes and 0 < len(raw) <= MAX_SOURCE,
+         'NATIVE_PENDING_SOURCE_SIZE_UNVERIFIED')
+    observed = hashlib.sha256(raw).hexdigest()
+    need(observed == CURRENT_HOOK_SOURCE_SHA256,
+         'NATIVE_PENDING_CURRENT_HOOK_PIN_MISMATCH')
+    tree = syntax(raw)
+    phase = one([node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == '_phase'])
+    need(len(phase.body) == 2 and isinstance(phase.body[0], ast.ImportFrom)
+        and phase.body[0].level == 1 and phase.body[0].module == 'native_pending_protocol'
+        and [(item.name, item.asname) for item in phase.body[0].names]
+            == [('dialogue_phase_for_payload', None)]
+        and isinstance(phase.body[1], ast.Return)
+        and same(phase.body[1].value, 'dialogue_phase_for_payload(payload, required)'),
+        'NATIVE_PENDING_CURRENT_PHASE_UNVERIFIED')
+    ask = matching_method(tree, 'DelegatedDOMBridge', '_ask')
+    review = one([node for node in ask.body
+        if isinstance(node, ast.FunctionDef) and node.name == 'review'])
+    one([node for node in ast.walk(review) if isinstance(node, ast.Assign)
+        and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == 'phase' and same(node.value, '_phase(payload, required)')])
+    return raw, {'schema_version': 1, 'source_sha256': observed,
+        'verified_sha256': observed, 'source_changed': False,
+        'production_deployment_performed': False}
 
 
 def edits_for(path, raw, tree):
