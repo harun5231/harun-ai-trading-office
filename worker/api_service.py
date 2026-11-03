@@ -245,7 +245,8 @@ def handler(controller,read_token,control_token,origin):
                 validate_settings(value)
                 return self.reply(200,controller.robot(value))
             except Exception:return self.reply(400,{'error':'ROBOT_CONTROL_REJECTED'})
-    return Handler
+    from .monthly_billing import extend_handler
+    return extend_handler(Handler,controller,origin)
 
 def main():
     os.umask(0o077)

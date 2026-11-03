@@ -351,7 +351,8 @@ def handler(controller,read_token,control_token,origin):
             self.connection.settimeout(5)
             return json.loads(self.rfile.read(int(length)),object_pairs_hook=unique,
                 parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-    return Handler
+    from .monthly_billing import extend_handler
+    return extend_handler(Handler,controller,origin)
 
 def main():
     os.umask(0o077)
