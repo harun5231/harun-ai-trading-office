@@ -185,6 +185,187 @@ class DurableEvaluationTests(unittest.TestCase):
             self.assertEqual(ledger.read_bytes(), b'financial sentinel must remain byte-identical')
             journal.unlink()
 
+    def test_reusable_snapshot_api_is_filename_scoped_and_rejects_path_traversal(self):
+        module = self.module()
+        storage = getattr(module, 'snapshot_storage', None)
+        self.assertIsNotNone(storage, 'secure snapshot storage must be reusable outside trade evaluation')
+        assert storage is not None
+        ledger = self.path / 'ledger.sqlite3'
+        ledger.write_bytes(b'financial history')
+        with storage.snapshot_database(self.path, 'billing-evidence.sqlite3', write=True) as db:
+            db.execute('CREATE TABLE evidence(value TEXT)')
+            db.execute("INSERT INTO evidence VALUES ('durable')")
+        with storage.snapshot_database(self.path, 'billing-evidence.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT value FROM evidence').fetchone(), ('durable',))
+        image = self.path / 'billing-evidence.sqlite3'
+        before = image.read_bytes()
+        with self.assertRaises(sqlite3.OperationalError):
+            with storage.snapshot_database(self.path, image.name) as db:
+                db.execute("INSERT INTO evidence VALUES ('read must not write')")
+        with self.assertRaisesRegex(ValueError, 'SNAPSHOT_TRANSACTION_UNCOMMITTED'):
+            with storage.snapshot_database(self.path, image.name, write=True) as db:
+                db.execute('BEGIN')
+                db.execute("INSERT INTO evidence VALUES ('uncommitted')")
+        with self.assertRaisesRegex(RuntimeError, 'abort context'):
+            with storage.snapshot_database(self.path, image.name, write=True) as db:
+                db.execute("INSERT INTO evidence VALUES ('abort')")
+                raise RuntimeError('abort context')
+        self.assertEqual(image.read_bytes(), before)
+        with storage.snapshot_database(self.path, 'never-created.sqlite3') as db:
+            self.assertIsNone(db)
+        self.assertFalse((self.path / 'never-created.sqlite3').exists())
+        for invalid in ('', '.', '..', '../ledger.sqlite3', '/ledger.sqlite3', 'sub/file', 'bad\x00name'):
+            with self.subTest(filename=repr(invalid)), self.assertRaises(ValueError):
+                with storage.snapshot_database(self.path, invalid, write=True):
+                    self.fail('unsafe filename accepted')
+        self.assertEqual(ledger.read_bytes(), b'financial history')
+
+    def test_shm_hardlink_never_changes_valid_financial_database(self):
+        import os
+        module = self.module()
+        for operation in ('observe_calendar', 'read_status'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory(dir=self.path) as tmp:
+                directory = Path(tmp)
+                module.observe_calendar(directory, dict(positions=[position()], complete=True))
+                ledger = directory / 'ledger.sqlite3'
+                with sqlite3.connect(ledger) as db:
+                    db.execute('CREATE TABLE financial_history(value TEXT)')
+                    db.execute("INSERT INTO financial_history VALUES ('must survive')")
+                db.close()
+                before = ledger.read_bytes()
+                self.assertEqual(len(before), 8192)
+                sidecar = directory / (module.FILENAME + '-shm')
+                os.link(ledger, sidecar)
+                try:
+                    if operation == 'observe_calendar':
+                        module.observe_calendar(directory, dict(positions=[position('new')]))
+                    else:
+                        module.read_status(directory)
+                except (OSError, ValueError, sqlite3.DatabaseError):
+                    pass  # Refusal is safe; changing financial bytes is not.
+                self.assertEqual(ledger.read_bytes(), before)
+                with sqlite3.connect(ledger) as db:
+                    self.assertEqual(db.execute('SELECT value FROM financial_history').fetchone(), ('must survive',))
+                db.close()
+
+    def test_all_sqlite_aliases_preserve_financial_history_for_ingestion_and_status(self):
+        import os
+        module = self.module()
+        for suffix in ('', '-wal', '-shm', '-journal', '-mj-sentinel'):
+            for link in ('symlink', 'hardlink'):
+                for operation in ('observe_calendar', 'read_status'):
+                    with self.subTest(suffix=suffix, link=link, operation=operation):
+                        with tempfile.TemporaryDirectory(dir=self.path) as tmp:
+                            directory = Path(tmp)
+                            module.observe_calendar(directory, dict(positions=[position()]))
+                            ledger = directory / 'ledger.sqlite3'
+                            with sqlite3.connect(ledger) as db:
+                                db.execute('CREATE TABLE financial_history(value TEXT)')
+                                db.execute("INSERT INTO financial_history VALUES ('preserved')")
+                            db.close()
+                            before = ledger.read_bytes()
+                            alias = directory / (module.FILENAME + suffix)
+                            if alias.exists():
+                                alias.unlink()
+                            if link == 'symlink':
+                                alias.symlink_to(ledger)
+                            else:
+                                os.link(ledger, alias)
+                            try:
+                                if operation == 'observe_calendar':
+                                    module.observe_calendar(directory, dict(positions=[position('new')]))
+                                else:
+                                    module.read_status(directory)
+                            except (OSError, ValueError, sqlite3.DatabaseError):
+                                pass
+                            self.assertEqual(ledger.read_bytes(), before)
+                            with sqlite3.connect(ledger) as db:
+                                self.assertEqual(db.execute('PRAGMA integrity_check').fetchone(), ('ok',))
+                                self.assertEqual(db.execute('SELECT value FROM financial_history').fetchone(), ('preserved',))
+                            db.close()
+
+    def test_main_path_swap_after_validation_never_reopens_financial_alias(self):
+        import os
+        from unittest.mock import patch
+        module = self.module()
+        for link in ('symlink', 'hardlink'):
+            for operation in ('observe_calendar', 'read_status'):
+                with self.subTest(link=link, operation=operation):
+                    with tempfile.TemporaryDirectory(dir=self.path) as tmp:
+                        directory = Path(tmp)
+                        first = module.observe_calendar(directory, dict(positions=[position()]))
+                        ledger = directory / 'ledger.sqlite3'
+                        ledger.write_bytes(b'financial history')
+                        before = ledger.read_bytes()
+                        connect = sqlite3.connect
+                        def swap(*args, **kwargs):
+                            journal = directory / module.FILENAME
+                            journal.unlink()
+                            if link == 'symlink':
+                                journal.symlink_to(ledger)
+                            else:
+                                os.link(ledger, journal)
+                            return connect(*args, **kwargs)
+                        with patch.object(module.snapshot_storage.sqlite3, 'connect', side_effect=swap):
+                            if operation == 'observe_calendar':
+                                result = module.observe_calendar(directory, dict(positions=[position('new')]))
+                                self.assertEqual(result['processed_trade_ids'], ['a', 'new'])
+                            else:
+                                self.assertEqual(module.read_status(directory), first)
+                        self.assertEqual(ledger.read_bytes(), before)
+
+    def test_directory_swap_keeps_reads_and_publication_on_pinned_inode(self):
+        import os
+        from unittest.mock import patch
+        module = self.module()
+        for operation in ('observe_calendar', 'read_status'):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory(dir=self.path) as tmp:
+                root = Path(tmp)
+                directory, moved, victim = (root / name for name in ('actor', 'moved', 'financial'))
+                directory.mkdir(mode=0o700)
+                victim.mkdir(mode=0o700)
+                ledger = victim / module.FILENAME
+                ledger.write_bytes(b'financial directory sentinel')
+                before = ledger.read_bytes()
+                first = module.observe_calendar(directory, dict(positions=[position()]))
+                connect = sqlite3.connect
+                def swap(*args, **kwargs):
+                    directory.rename(moved)
+                    directory.symlink_to(victim, target_is_directory=True)
+                    return connect(*args, **kwargs)
+                with patch.object(module.snapshot_storage.sqlite3, 'connect', side_effect=swap):
+                    if operation == 'observe_calendar':
+                        result = module.observe_calendar(directory, dict(positions=[position('new')]))
+                        self.assertEqual(result['processed_trade_ids'], ['a', 'new'])
+                    else:
+                        self.assertEqual(module.read_status(directory), first)
+                self.assertEqual(ledger.read_bytes(), before)
+                self.assertEqual(set(victim.iterdir()), {ledger})
+                self.assertEqual(module.read_status(moved)['processed_trade_ids'],
+                                 ['a', 'new'] if operation == 'observe_calendar' else ['a'])
+                with self.assertRaises(OSError):
+                    module.read_status(directory)
+
+    def test_snapshot_temp_alias_collision_cannot_overwrite_financial_file(self):
+        import os
+        from unittest.mock import patch
+        module = self.module()
+        first = module.observe_calendar(self.path, dict(positions=[position()]))
+        ledger = self.path / 'ledger.sqlite3'
+        ledger.write_bytes(b'financial history')
+        for link in ('symlink', 'hardlink'):
+            alias = self.path / '.sqlite-snapshot-collision'
+            if link == 'symlink':
+                alias.symlink_to(ledger)
+            else:
+                os.link(ledger, alias)
+            with patch.object(module.snapshot_storage.secrets, 'token_hex', return_value='collision'):
+                with self.assertRaises(FileExistsError):
+                    module.observe_calendar(self.path, dict(positions=[position('new')]))
+            self.assertEqual(ledger.read_bytes(), b'financial history')
+            self.assertEqual(module.read_status(self.path), first)
+            alias.unlink()
+
     def test_process_crash_rolls_back_trade_and_job_then_replay_recovers_once(self):
         import subprocess
         import sys
@@ -215,6 +396,130 @@ m.observe_calendar(Path(sys.argv[1]), {'positions': [{'id': 'new', 'status': 'CL
             self.assertEqual(db.execute('PRAGMA integrity_check').fetchone()[0], 'ok')
         finally:
             db.close()
+
+    def test_publication_fsyncs_image_before_replace_and_directory_before_success(self):
+        import os
+        import stat
+        from unittest.mock import patch
+        module = self.module()
+        events = []
+        fsync, replace = os.fsync, os.replace
+        def sync(fd):
+            events.append('directory' if stat.S_ISDIR(os.fstat(fd).st_mode) else 'image')
+            return fsync(fd)
+        def publish(*args, **kwargs):
+            events.append('replace')
+            return replace(*args, **kwargs)
+        with patch.object(module.snapshot_storage.os, 'fsync', side_effect=sync), patch.object(module.snapshot_storage.os, 'replace', side_effect=publish):
+            module.observe_calendar(self.path, dict(positions=[position()]))
+        self.assertEqual(events, ['image', 'replace', 'directory'])
+        first = module.read_status(self.path)
+        for fail_at in ('image', 'directory'):
+            def fail_sync(fd):
+                kind = 'directory' if stat.S_ISDIR(os.fstat(fd).st_mode) else 'image'
+                if kind == fail_at:
+                    raise OSError('injected persistence failure')
+                return fsync(fd)
+            with patch.object(module.snapshot_storage.os, 'fsync', side_effect=fail_sync):
+                with self.assertRaises(OSError):
+                    module.observe_calendar(self.path, dict(positions=[position('new')]))
+            if fail_at == 'image':
+                self.assertEqual(module.read_status(self.path), first)
+            recovered = module.observe_calendar(self.path, dict(positions=[position('new')]))
+            self.assertEqual(recovered['processed_trade_ids'], ['a', 'new'])
+            self.assertEqual(module.observe_calendar(self.path, dict(positions=[position('new')])), recovered)
+
+    def test_crash_during_atomic_publication_recovers_old_or_new_complete_snapshot(self):
+        import subprocess
+        import sys
+        module = self.module()
+        for stage in ('before_replace', 'after_replace'):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory(dir=self.path) as tmp:
+                directory = Path(tmp)
+                module.observe_calendar(directory, dict(positions=[position()], complete=True))
+                code = '''
+import os, sys
+from pathlib import Path
+from worker import trade_evaluation as m
+replace = m.snapshot_storage.os.replace
+def crash(*args, **kwargs):
+    if sys.argv[2] == 'after_replace': replace(*args, **kwargs)
+    os._exit(74)
+m.snapshot_storage.os.replace = crash
+m.observe_calendar(Path(sys.argv[1]), {'positions': [
+    {'id': 'new', 'status': 'CLOSED', 'closed_at': '2026-11-02T00:00:00Z',
+     'complete': True, 'pnl_usdt': '-2'}], 'complete': True})
+'''
+                result = subprocess.run([sys.executable, '-c', code, str(directory), stage],
+                                        capture_output=True, timeout=10)
+                self.assertEqual(result.returncode, 74, result.stderr)
+                expected = ['a', 'new'] if stage == 'after_replace' else ['a']
+                self.assertEqual(module.read_status(directory)['processed_trade_ids'], expected)
+                replay = dict(positions=[position('new', closed='2026-11-02T00:00:00Z')], complete=True)
+                recovered = module.observe_calendar(directory, replay)
+                self.assertEqual(recovered['processed_trade_ids'], ['a', 'new'])
+                self.assertEqual(module.observe_calendar(directory, replay), recovered)
+
+    def test_process_writers_and_status_readers_share_one_lock_without_lost_trades(self):
+        import subprocess
+        import sys
+        from concurrent.futures import ThreadPoolExecutor
+        module = self.module()
+        module.observe_calendar(self.path, dict(positions=[position()]))
+        code = '''
+import sys
+from pathlib import Path
+from worker import trade_evaluation as m
+row = {'id': sys.argv[2], 'status': 'CLOSED', 'closed_at': '2026-11-02T00:00:00Z',
+       'complete': True, 'pnl_usdt': '-2'}
+for _ in range(4):
+    m.observe_calendar(Path(sys.argv[1]), {'positions': [row], 'complete': True})
+    assert row['id'] in m.read_status(Path(sys.argv[1]))['processed_trade_ids']
+'''
+        def run(identity):
+            return subprocess.run([sys.executable, '-c', code, str(self.path), identity],
+                                  capture_output=True, timeout=15)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            results = list(pool.map(run, ['b', 'c', 'd', 'e']))
+        for result in results:
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(module.read_status(self.path)['processed_trade_ids'], ['a', 'b', 'c', 'd', 'e'])
+        with sqlite3.connect(self.path / module.FILENAME) as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM evaluation_events WHERE kind='trade'").fetchone(), (5,))
+        db.close()
+
+    def test_busy_journal_fails_with_bounded_wait_so_account_actor_can_retry(self):
+        import fcntl
+        import os
+        import subprocess
+        import sys
+        module = self.module()
+        module.observe_calendar(self.path, dict(positions=[position()]))
+        code = '''
+import sys
+from pathlib import Path
+from worker import trade_evaluation as m
+m.LOCK_TIMEOUT_SECONDS = 0.03
+try:
+    if sys.argv[2] == 'write': m.observe_calendar(Path(sys.argv[1]), {'positions': []})
+    else: m.read_status(Path(sys.argv[1]))
+except TimeoutError as error:
+    assert str(error) == 'SNAPSHOT_LOCK_TIMEOUT'
+else:
+    raise AssertionError('busy journal was not refused')
+'''
+        fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            for operation in ('write', 'read'):
+                try:
+                    result = subprocess.run([sys.executable, '-c', code, str(self.path), operation],
+                                            capture_output=True, timeout=1)
+                except subprocess.TimeoutExpired:
+                    self.fail('journal lock blocked the account actor instead of timing out')
+                self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            os.close(fd)
 
     def test_concurrent_replay_serializes_without_duplicate_events(self):
         from concurrent.futures import ThreadPoolExecutor

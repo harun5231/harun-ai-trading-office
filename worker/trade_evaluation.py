@@ -7,12 +7,12 @@ available here. Jobs explicitly remain blocked, not 'evaluated'.
 """
 import hashlib
 import json
-import os
-import sqlite3
-import stat
 from decimal import Decimal, InvalidOperation
 
+from . import secure_sqlite_snapshot as snapshot_storage
+
 FILENAME = 'trade_evaluation.sqlite3'
+LOCK_TIMEOUT_SECONDS = 5
 
 
 def _json(value):
@@ -47,45 +47,25 @@ def _snapshot(db):
                 jobs=list(_latest(db, 'job').values()))
 
 
-def _private_path(directory, write=False):
-    # The actor supplies its existing private state directory, never a caller's
-    # path. Refuse aliases so this journal cannot become the financial ledger.
-    path = directory / FILENAME
-    flags = os.O_NOFOLLOW | os.O_NONBLOCK | (os.O_RDWR | os.O_CREAT if write else os.O_RDONLY)
-    fd = os.open(path, flags, 0o600)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
-            raise ValueError('EVALUATION_FILE_INVALID')
-        if write:
-            os.fchmod(fd, 0o600)
-    finally:
-        os.close(fd)
-    return path
-
-
 def read_status(directory):
-    """Read only; status requests never initialize or mutate any database."""
-    path = directory / FILENAME
-    if not path.exists():
-        return dict(status='NOT_OBSERVED', processed_trade_ids=[], consecutive_losses=0,
-                    streak_complete=False, streak_scope='OBSERVED_CLOSED_POSITIONS',
-                    history_missing_reasons=['HISTORY_NOT_OBSERVED'], jobs=[])
-    db = sqlite3.connect(_private_path(directory).as_uri() + '?mode=ro', uri=True, timeout=5)
-    try:
-        db.execute('PRAGMA query_only=ON')
-        db.execute('BEGIN')
+    """Read only: no filesystem SQLite connection, recovery or sidecar writes."""
+    with snapshot_storage.snapshot_database(directory, FILENAME, lock_timeout=LOCK_TIMEOUT_SECONDS) as db:
+        if db is None:
+            return dict(status='NOT_OBSERVED', processed_trade_ids=[], consecutive_losses=0,
+                        streak_complete=False, streak_scope='OBSERVED_CLOSED_POSITIONS',
+                        history_missing_reasons=['HISTORY_NOT_OBSERVED'], jobs=[])
         return _snapshot(db)
-    finally:
-        db.close()
 
 
 def observe_calendar(directory, calendar):
     """Ingest existing reconstructed *net* PNL, preserving the exact source row."""
-    db = sqlite3.connect(_private_path(directory, write=True), timeout=5, isolation_level=None)
+    with snapshot_storage.snapshot_database(directory, FILENAME, write=True,
+                                           lock_timeout=LOCK_TIMEOUT_SECONDS) as db:
+        return _observe(db, calendar)
+
+
+def _observe(db, calendar):
     try:
-        db.execute('PRAGMA journal_mode=WAL')
-        db.execute('PRAGMA synchronous=FULL')
         db.executescript('''
             CREATE TABLE IF NOT EXISTS evaluation_events(
                 seq INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL,
@@ -155,5 +135,3 @@ def observe_calendar(directory, calendar):
         if db.in_transaction:
             db.execute('ROLLBACK')
         raise
-    finally:
-        db.close()
