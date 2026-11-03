@@ -846,6 +846,109 @@ class OrderGateway(_MissingOrderImplementation):
         if remaining and liq and not (liq < sl if intent['side'] == 'LONG' else liq > sl):
             raise Review('BINANCE_ORDER_LIQUIDATION_BEFORE_SL')
 
+    def _external_reduce_only_closure(self, intent, entry, entry_trades, algos, result):
+        """A separate receipt attribution, never an owned ALGO exit or mutation.
+
+        Deliberately narrow: fully filled entry, no live/triggered native exits,
+        complete history containing only that entry followed by full external
+        reduce-only closes, and a fresh flat exchange position. Ambiguity stays
+        reviewable; existing foreign-exposure verification remains unchanged.
+        """
+        from fractions import Fraction
+        from copy import deepcopy
+        if entry['status'] != 'FILLED' or any(a['algoStatus'] not in ('CANCELED', 'EXPIRED', 'REJECTED')
+                or a.get('actualOrderId') not in ('', '0', 0, None) for a in algos):
+            raise Review('BINANCE_ORDER_FOREIGN_EXPOSURE')
+        now, start = self._get_server_time(), entry['time']
+        if not 0 <= now-start < 90*24*60*60*1000:
+            raise Review('BINANCE_ORDER_HISTORY_INCOMPLETE')
+        history = []
+        for _ in range(14):
+            end = min(now, start+7*24*60*60*1000-1)
+            page = self._list(self._request('GET', '/fapi/v1/userTrades',
+                {'symbol': intent['symbol'], 'startTime': start, 'endTime': end, 'limit': 1000}))
+            if len(page) >= 1000:
+                raise Review('BINANCE_ORDER_HISTORY_INCOMPLETE')
+            if any(type(r.get('time')) is not int or not start <= r['time'] <= end for r in page):
+                raise Review('BINANCE_ORDER_FILL_PROOF_INVALID')
+            history.extend(page)
+            if end == now:
+                break
+            start = end+1
+        else:
+            raise Review('BINANCE_ORDER_HISTORY_INCOMPLETE')
+        # Compare actual receipt economics too, not merely trade IDs. Keep raw
+        # signed fee/PnL strings; no price-derived synthetic PnL or SL/TP label.
+        fields = ('id', 'orderId', 'symbol', 'side', 'positionSide', 'qty', 'price',
+                  'time', 'commission', 'commissionAsset', 'realizedPnl')
+        def receipt(row):
+            if row.get('symbol') != intent['symbol'] or row.get('positionSide') != 'BOTH':
+                raise Review('BINANCE_ORDER_FILL_PROOF_INVALID')
+            self._id(row.get('id')); self._id(row.get('orderId'))
+            self._decimal(row.get('qty'), positive=True)
+            self._decimal(row.get('price'), positive=True)
+            self._decimal(row.get('commission')); self._decimal(row.get('realizedPnl'))
+            if not isinstance(row.get('commissionAsset'), str) or not row['commissionAsset']:
+                raise Review('BINANCE_ORDER_FILL_PROOF_INVALID')
+            return {k: row[k] for k in fields}
+        own = {self._id(r['id']): receipt(r) for r in entry_trades}
+        seen, external = set(), {}
+        for row in history:
+            checked = receipt(row)
+            tid, oid = self._id(row['id']), self._id(row['orderId'])
+            if tid in seen:
+                raise Review('BINANCE_ORDER_HISTORY_INCOMPLETE')
+            seen.add(tid)
+            if tid in own:
+                if checked != own[tid]:
+                    raise Review('BINANCE_ORDER_FILL_PROOF_INVALID')
+            else:
+                if (oid == self._id(entry['orderId']) or row.get('side') != intent['protection']['exit_side']
+                        or row['time'] <= max(r['time'] for r in entry_trades)):
+                    raise Review('BINANCE_ORDER_FOREIGN_EXPOSURE')
+                external.setdefault(oid, []).append(row)
+        if not external or not set(own) <= seen:
+            raise Review('BINANCE_ORDER_HISTORY_INCOMPLETE')
+        exits, orders = [], []
+        for oid, rows in external.items():
+            order = self._request('GET', '/fapi/v1/order', {'symbol': intent['symbol'], 'orderId': oid})
+            if (not isinstance(order, dict) or self._id(order.get('orderId')) != oid
+                    or any(order.get(k) != v for k, v in dict(symbol=intent['symbol'],
+                        side=intent['protection']['exit_side'], positionSide='BOTH',
+                        reduceOnly=True, closePosition=False, status='FILLED').items())
+                    or order.get('reduceOnly') is not True or order.get('closePosition') is not False
+                    or order.get('type') not in ('MARKET', 'LIMIT')
+                    or not isinstance(order.get('clientOrderId'), str) or not 1 <= len(order['clientOrderId']) <= 36
+                    or order['clientOrderId'].startswith('hao-')
+                    or type(order.get('time')) is not int or order['time'] <= max(r['time'] for r in entry_trades)):
+                raise Review('BINANCE_ORDER_EXIT_PROOF_INVALID')
+            quantity = self._decimal(order.get('executedQty'), positive=True)
+            if quantity != self._decimal(order.get('origQty'), positive=True):
+                raise Review('BINANCE_ORDER_EXIT_PROOF_INVALID')
+            proven = self._trades(intent['symbol'], oid, quantity, intent['protection']['exit_side'], order['time'])
+            if sorted((receipt(r) for r in proven), key=lambda r: int(r['id'])) != sorted(
+                    (receipt(r) for r in rows), key=lambda r: int(r['id'])):
+                raise Review('BINANCE_ORDER_FILL_PROOF_INVALID')
+            exits.extend(proven)
+            orders.append({k: order[k] for k in ('orderId', 'clientOrderId', 'symbol', 'side',
+                'positionSide', 'reduceOnly', 'closePosition', 'status', 'type', 'origQty', 'executedQty', 'time')})
+        if sum((Fraction(self._decimal(r['qty'])) for r in exits), Fraction(0)) != Fraction(self._decimal(entry['executedQty'])):
+            raise Review('BINANCE_ORDER_FOREIGN_EXPOSURE')
+        # Same unmodified guard, now with explicitly proven external receipts;
+        # validates exhaustive history again and requires current position zero.
+        self._ownership(intent, entry_trades, exits, Fraction(0))
+        self._inventory(intent, entry, algos)
+        last = max(exits, key=lambda r: (r['time'], int(r['id'])))
+        result.update(state='CLOSED', closure_source='EXTERNAL_REDUCE_ONLY',
+            first_fill_at=datetime.fromtimestamp(min(r['time'] for r in entry_trades)/1000, timezone.utc).isoformat(),
+            exit_order_id=self._id(last['orderId']),
+            closed_at=datetime.fromtimestamp(last['time']/1000, timezone.utc).isoformat(),
+            observed_at=datetime.now(timezone.utc).isoformat(),
+            closure_receipt=dict(entry_trades=[receipt(r) for r in entry_trades],
+                exit_trades=[receipt(r) for r in exits], exit_orders=orders))
+        self._exit_cost_samples = []  # No ALGO/slippage-reference attribution.
+        return deepcopy(result)
+
     def _ensure_algo(self, intent, kind, quantity):
         client = self._algo_id(intent, kind, quantity)
         try:
@@ -1146,7 +1249,12 @@ class OrderGateway(_MissingOrderImplementation):
                 raise self._Resample('BINANCE_ORDER_FILL_RESAMPLE')
             entry = after
         remaining = Fraction(filled)-exited
-        self._ownership(intent, trades, exit_trades, remaining)
+        try:
+            self._ownership(intent, trades, exit_trades, remaining)
+        except Review as error:
+            if str(error) != 'BINANCE_ORDER_FOREIGN_EXPOSURE' or exited or active_exits:
+                raise
+            return self._external_reduce_only_closure(intent, entry, trades, algos, result)
         for actual in active_exits:
             self._cancel_exit_remainder(intent, actual)
         result['first_fill_at'] = datetime.fromtimestamp(first_ms/1000, timezone.utc).isoformat()

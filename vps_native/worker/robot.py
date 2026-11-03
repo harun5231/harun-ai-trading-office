@@ -501,6 +501,76 @@ class Coordinator:
                 if closed.tzinfo is None or not entry_at<=closed<=at:raise ValueError
                 if not isinstance(exit_id,str) or not re.fullmatch(r'[1-9][0-9]{0,29}',exit_id) or exit_id==result['order_id']:raise ValueError
             previous=json.loads(row['result']) if row['result'] else None
+            if 'closure_source' in result or 'closure_receipt' in result:
+                if (state!='CLOSED' or result.get('closure_source')!='EXTERNAL_REDUCE_ONLY'
+                    or result.get('sl_confirmed') is not False or result.get('tp_confirmed') is not False
+                    or any(result.get(k) is not None for k in ('sl_order_id','tp_order_id'))):raise ValueError
+                proof=result['closure_receipt']
+                if type(proof)is not dict or set(proof)!={'entry_trades','exit_trades','exit_orders'}:raise ValueError
+                if any(type(proof[k])is not list or not 0<len(proof[k])<1000 for k in proof):raise ValueError
+                if sum(len(proof[k]) for k in ('entry_trades','exit_trades'))>=1000:raise ValueError
+                fields={'id','orderId','symbol','side','positionSide','qty','price','time','commission','commissionAsset','realizedPnl'}
+                ids=set();totals={};first=[];last=[]
+                for kind,side in (('entry_trades',intent['entry']['side']),('exit_trades',intent['protection']['exit_side'])):
+                    for trade in proof[kind]:
+                        if type(trade)is not dict or set(trade)!=fields:raise ValueError
+                        if trade['symbol']!=intent['symbol'] or trade['side']!=side or trade['positionSide']!='BOTH':raise ValueError
+                        for key in ('id','orderId'):
+                            if type(trade[key])not in (str,int) or not re.fullmatch(r'[1-9][0-9]{0,29}',str(trade[key])):raise ValueError
+                        if str(trade['id'])in ids:raise ValueError
+                        ids.add(str(trade['id']))
+                        for key in ('qty','price','commission','realizedPnl'):
+                            value=trade[key]
+                            if type(value)is not str or len(value)>64 or not re.fullmatch(r'-?[0-9]+(?:\.[0-9]+)?',value):raise ValueError
+                            if key in ('qty','price') and D(value)<=0:raise ValueError
+                        if type(trade['commissionAsset'])is not str or not re.fullmatch(r'[A-Z0-9]{1,20}',trade['commissionAsset']):raise ValueError
+                        if type(trade['time'])is not int:raise ValueError
+                        stamp=datetime.fromtimestamp(trade['time']/1000,timezone.utc)
+                        if not entry_at<=stamp<=closed:raise ValueError
+                        oid=str(trade['orderId'])
+                        if kind=='entry_trades':
+                            if oid!=result['order_id']:raise ValueError
+                            first.append(stamp)
+                        else:
+                            if oid==result['order_id']:raise ValueError
+                            last.append((stamp,int(trade['id']),oid))
+                        totals[oid]=totals.get(oid,D('0'))+D(trade['qty'])
+                if min(first)!=entry_at or max(first)>=min(t[0] for t in last):raise ValueError
+                if max(last)[0]!=closed or max(last)[2]!=result['exit_order_id']:raise ValueError
+                if totals.pop(result['order_id'])!=filled or sum(totals.values(),D('0'))!=filled:raise ValueError
+                orders=set()
+                order_fields={'orderId','clientOrderId','symbol','side','positionSide','reduceOnly','closePosition','status','type','origQty','executedQty','time'}
+                for order in proof['exit_orders']:
+                    if type(order)is not dict or set(order)!=order_fields:raise ValueError
+                    oid=str(order['orderId'])
+                    if oid in orders or oid not in totals:raise ValueError
+                    orders.add(oid)
+                    if (order['symbol']!=intent['symbol'] or order['side']!=intent['protection']['exit_side']
+                        or order['positionSide']!='BOTH' or order['reduceOnly'] is not True or order['closePosition'] is not False
+                        or order['status']!='FILLED' or order['type']not in ('MARKET','LIMIT')
+                        or type(order['clientOrderId'])is not str or not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,36}',order['clientOrderId'])
+                        or order['clientOrderId'].startswith('hao-')):raise ValueError
+                    if any(type(order[k])is not str or not re.fullmatch(r'[0-9]+(?:\.[0-9]+)?',order[k]) for k in ('origQty','executedQty')):raise ValueError
+                    if D(order['origQty'])!=totals[oid] or D(order['executedQty'])!=totals[oid]:raise ValueError
+                    times=[t['time'] for t in proof['exit_trades'] if str(t['orderId'])==oid]
+                    if type(order['time'])is not int or not max(t['time'] for t in proof['entry_trades'])<order['time']<=min(times):raise ValueError
+                if orders!=set(totals):raise ValueError
+                # Exchange receipts cannot resolve two local claimants. Keep
+                # unresolved/overlapping owners reviewable rather than assigning
+                # a single external close to more than one financial intent.
+                def verify_external_owners():
+                    for other in self.db.execute('SELECT * FROM order_intents WHERE symbol=? AND id!=?',(intent['symbol'],intent_id)):
+                        if other['state']=='REJECTED':continue
+                        if other['state']!='CLOSED' or not other['result']:raise ValueError
+                        prior=json.loads(other['result'])
+                        if prior['order_id']==result['order_id'] or prior['client_order_id']==intent['client_order_id']:raise ValueError
+                        claimed={prior['exit_order_id']}|{str(t['orderId']) for t in prior.get('closure_receipt',{}).get('exit_trades',[])}
+                        if orders & claimed:raise ValueError
+                        a=datetime.fromisoformat(prior['first_fill_at']);b=datetime.fromisoformat(prior['closed_at'])
+                        if a<=closed and entry_at<=b:raise ValueError
+                verify_external_owners()
+            if previous and previous['state']=='CLOSED' and ('closure_source'in previous or 'closure_source'in result):
+                if any(previous.get(k)!=result.get(k) for k in ('closure_source','closure_receipt','closed_at','exit_order_id','filled_quantity')):raise ValueError
             if previous:
                 transitions={'ENTRY_PENDING':('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED','REJECTED'),
                     'POSITION_PROTECTED':('POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED'),
@@ -530,7 +600,8 @@ class Coordinator:
                      'observed_at','first_fill_at','sl_confirmed','tp_confirmed','sl_order_id','tp_order_id',
                      'exit_order_id','closed_at','accepted_at','fill_detected_at',
                      'sl_submitted_at','tp_submitted_at','sl_confirmed_at','tp_confirmed_at',
-                     'sl_failure_code','tp_failure_code','sl_exchange_code','tp_exchange_code')
+                     'sl_failure_code','tp_failure_code','sl_exchange_code','tp_exchange_code',
+                     'closure_source','closure_receipt')
             recorded={key:result[key] for key in allowed if key in result}
             entry_day=entry_at.astimezone(ZoneInfo('Asia/Bangkok')).date().isoformat() if filled else None
             receipt=self.db.execute('SELECT * FROM robot_entry_receipts WHERE id=?',(intent['client_order_id'],)).fetchone()
@@ -541,6 +612,8 @@ class Coordinator:
             return self.mark_unknown(intent_id,candidate_id,account)
         self.db.execute('BEGIN IMMEDIATE')
         try:
+            if result.get('closure_source')=='EXTERNAL_REDUCE_ONLY':
+                verify_external_owners()  # Repeat under the financial write lock.
             self.db.execute('UPDATE order_intents SET state=?,result=?,failure_code=NULL,updated=? WHERE id=?',
                 (state,json.dumps(recorded),now(),intent_id))
             self.db.execute('UPDATE robot_candidates SET status=?,failure_code=NULL WHERE id=?',(state,candidate_id))
