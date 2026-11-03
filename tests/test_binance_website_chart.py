@@ -146,8 +146,9 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
             if method=='hover':self.hover_x=args[0];return None
             if method=='screenshot':return self.png
             return None
+        self.capture_now = NOW+1
         self.capture=install_website_capture(self.namespace,expected_source=SOURCE,expected_capture=original,
-            images_key='paths',phase_map={p:p for p in PHASES},rpc=rpc,monotonic=lambda:10,wall_clock=lambda:NOW+1)
+            images_key='paths',phase_map={p:p for p in PHASES},rpc=rpc,monotonic=lambda:10,wall_clock=lambda:self.capture_now)
 
     def tearDown(self):self.directory.cleanup()
 
@@ -168,6 +169,17 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
         with self.assertRaises(FollowupUnavailable):
             verify_website_capture(SimpleNamespace(**self.namespace),output,self.native_context,
                 {'marker':'HARUN_TEST','request_sha256':'a'*64},archive_root=self.root,now=NOW+2,gate=lambda:True)
+
+    def test_submicrosecond_clock_uses_one_canonical_receipt_instant(self):
+        self.capture_now = NOW+1.1234567
+        output=self.capture(self.context,self.native_context,'HARUN_TEST','a'*64,archive_root=self.root)
+        manifest=json.loads((Path(output['paths'][0]).parent/WEBSITE_SIDECAR).read_text())
+        from datetime import datetime
+        for receipt in output['evidence']:
+            self.assertEqual(manifest['charts'][receipt['timeframe']]['capture_observed_at'],
+                             datetime.fromisoformat(receipt['captured_at']).timestamp())
+        self.assertEqual(verify_website_capture(SimpleNamespace(**self.namespace),output,self.native_context,
+            {'marker':'HARUN_TEST','request_sha256':'a'*64},archive_root=self.root,now=NOW+2,gate=lambda:True),output)
 
     def test_existing_context_page_is_never_closed_or_reused(self):
         owner=SimpleNamespace();self.context.pages.append(owner)

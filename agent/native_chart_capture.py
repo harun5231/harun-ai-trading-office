@@ -519,7 +519,9 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
                 # contract, timeframe and chart must remain present throughout.
                 _need(before['url'] == after['url'] and before['timeframes'] == after['timeframes']
                       and before['capture_clip'] == after['capture_clip'])
-                stamp = dt.datetime.fromtimestamp(captured, dt.timezone.utc).isoformat()
+                captured_instant = dt.datetime.fromtimestamp(captured, dt.timezone.utc)
+                stamp = captured_instant.isoformat()
+                captured = captured_instant.timestamp()
                 pictures.append((timeframe, png, stamp))
                 manifests[timeframe] = {'source': website_source, 'ui_contract': CONTRACT,
                     'page_url': after['url'], 'document_title_before': before['title'],

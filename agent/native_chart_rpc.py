@@ -119,6 +119,53 @@ def make_rpc(*, expected_playwright_version, monotonic=time.monotonic):
     return rpc
 
 
+async def navigate_website(impl, expected_url, *, timeout_ms):
+    """Observe normal navigation through an automatic HTTP 202 interstitial.
+
+    No challenge interaction, token injection or alternate source is performed.
+    Only an actual matching main-frame document response with HTTP 200 counts;
+    a challenge that does not naturally finish remains a technical failure.
+    The caller's existing action deadline also bounds this entire operation.
+    """
+    final = asyncio.get_running_loop().create_future()
+    body_finished = asyncio.get_running_loop().create_future()
+    end = time.monotonic() + timeout_ms / 1000
+
+    def observed(response):
+        request = response.request
+        if (not final.done() and response.status == 200
+                and response.url == expected_url and request.is_navigation_request()
+                and request.frame is impl.main_frame):
+            final.set_result(response)
+
+    def finished(request):
+        if (final.done() and not final.cancelled() and not body_finished.done()
+                and final.result().request is request):
+            body_finished.set_result(True)
+
+    impl.on('response', observed)
+    impl.on('requestfinished', finished)
+    try:
+        response = await impl.goto(expected_url, timeout=timeout_ms,
+                                   waitUntil='domcontentloaded')
+        _need(response is not None and response.status in (200, 202))
+        observed(response)
+        accepted = await asyncio.wait_for(final, timeout=max(0.001, end-time.monotonic()))
+        # Response headers precede the new document's commit. Wait for its body
+        # and DOM, otherwise the first chart observation races the navigation.
+        await asyncio.wait_for(body_finished, timeout=max(0.001, end-time.monotonic()))
+        await impl.wait_for_load_state('domcontentloaded',
+                                       timeout=max(1, int((end-time.monotonic())*1000)))
+        _need(accepted.status == 200 and impl.url == expected_url)
+        return {'status': accepted.status, 'url': impl.url}
+    finally:
+        impl.remove_listener('response', observed)
+        impl.remove_listener('requestfinished', finished)
+        for future in (final, body_finished):
+            if not future.done():
+                future.cancel()
+
+
 def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
     """Bound the observed public Binance UI actions, without a general executor.
 
@@ -156,10 +203,8 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
             if method == 'goto':
                 _need(len(args) == 1 and type(args[0]) is str
                       and re.fullmatch(r'[A-Z0-9]{2,24}USDT', args[0]) is not None)
-                response = await impl.goto(url_for(args[0]), timeout=max(1, int(remaining*1000)),
-                                           waitUntil='domcontentloaded')
-                _need(response is not None and response.status == 200)
-                return {'status': response.status, 'url': impl.url}
+                return await navigate_website(impl, url_for(args[0]),
+                                              timeout_ms=max(1, int(remaining*1000)))
             _need(re.fullmatch(r'https://www\.binance\.com/en/futures/[A-Z0-9]{2,24}USDT', impl.url) is not None)
             if method in ('observe', 'dismiss_tour'):
                 _need(not args)
