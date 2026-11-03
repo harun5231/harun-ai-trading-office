@@ -27,11 +27,11 @@
     "agent/dialogue_service.py": "417a7e0d3fce0b14611b68898e10daa6ffdafd8461033da336b490b6257bbeb6",
     "agent/llm.py": "d4a428f649fdc7cd2181500fc83c0f6062a1842e99fffe748f2573f2afed1b3b",
     "agent/native_browser_hook.py": "62030618cb17e66cd7689387b030b4eafa4ab7bf5b22e99f08e7c72b714f3fe9",
-    "agent/native_chart_capture.py": "15bba14e1cc634ad8f6a5ba220a18da3a9fac93ce951ffaa4a6168a640361a88",
+    "agent/native_chart_capture.py": "6d3508172d59d79068ec4f67e138be9aadd88c86fe3398fa16968aa5d2f48fb6",
     "agent/native_chart_followup.py": "ce54f5e2e16325eb4f7a191a22ccc278bb3194141177311e7d187d4fe934c368",
     "agent/native_chart_history.py": "d844d04e6d81c4ba852e418cb3344803995b1f24f7992d378f23d053b6bc77f0",
     "agent/native_chart_prompt.py": "7aec453149711defc2c24b4ae2e1a9cdfff0795568070f1b2ea7b41221c7a423",
-    "agent/native_chart_rpc.py": "de42fa35a806f9ddc325b00947ed5b64d238a93d5a2e6c05309ee4a21068fa6a",
+    "agent/native_chart_rpc.py": "82029721097a595dd77dfe913d83bf387ba0f2d639ac4f3d137040238ec31cb8",
     "agent/native_data_files.py": "862549cbb8457335bac031d27d5befe2956074801792ed311d9331c28ed7a4f6",
     "agent/native_pending_protocol.py": "817b2b5b293ef324e45dc43c7279f7598ee1e856ba5df66c61545e78ad504d2f",
     "agent/native_pending_review.py": "e0257f4de1f393044ec533204657aafcf868078506afaaba86241507fc588ab9",
@@ -73,6 +73,16 @@
     "skipped": 5,
     "failures": 0,
     "proof": "ISOLATED_FAKE_TRANSPORT_AND_CAPTURED_FROZEN_ORDER_FIXTURES"
+  },
+  "incremental_verification": {
+    "targeted_tests_run": 42,
+    "targeted_tests_failures": 0,
+    "scope": "Website navigation, native website capture and pending review midnight regression",
+    "public_website_capture": "VERIFIED_IN_ISOLATED_VPS_STAGED_IMAGE_WITH_REVIEWED_SOURCE_MOUNTS",
+    "closed_candles_per_timeframe": 200,
+    "native_png_archive_and_admission": true,
+    "neurobro_delivery_proven": false,
+    "financial_calls": 0
   },
   "runtime_proof_limitations": [
     "New source has not been installed on VPS",

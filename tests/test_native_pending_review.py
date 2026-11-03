@@ -439,6 +439,14 @@ class PendingReviewTests(unittest.TestCase):
 
     def test_pending_long_discussion_survives_midnight_with_fresh_final_materials_and_same_order(self):
         clock = [pending._utc_instant('2026-11-01T16:59:00Z')]
+        # Keep the accepted-order fixture on the scenario clock, not the wall
+        # clock on the machine running this regression days or months later.
+        self.now = clock[0]
+        self.created = datetime.fromtimestamp(self.now - pending.REVIEW_SECONDS - 1, timezone.utc).isoformat()
+        self.accepted = self.created
+        self.fill_time = datetime.fromtimestamp(self.now - 1, timezone.utc).isoformat()
+        self.db.execute('UPDATE order_intents SET created=?,updated=? WHERE id=?',
+                        (self.created, self.created, self.operation))
         self.today = '2026-11-01'
         self.coordinator.before_dispatch = lambda: clock.__setitem__(0, clock[0] + 600)
         original_payload = self.db.execute('SELECT payload FROM order_intents').fetchone()[0]
