@@ -65,6 +65,13 @@ def robot_snapshot(controller,result):
 def office_snapshot(controller,result):
     result['robot']=robot_snapshot(controller,result['robot'])
     result['research']=session_status()
+    try:
+        from .trade_evaluation import read_status
+        result['trade_evaluation']=read_status(controller.directory)
+        if getattr(controller,'evaluation_failure',None):
+            result['trade_evaluation'].update(status='UNAVAILABLE',failure_code='POST_TRADE_EVALUATION_UNAVAILABLE')
+    except Exception:
+        result['trade_evaluation']=dict(status='UNAVAILABLE',failure_code='POST_TRADE_EVALUATION_UNAVAILABLE')
     with controller.lock:
         account_failure=controller.account_failure;worker_failure=controller.worker_failure
     if account_failure:
@@ -211,6 +218,16 @@ class Controller:
                         store.report_office_failure(reason if reason in ACCOUNT_FAILURE_CODES else 'BINANCE_ACCOUNT_UNAVAILABLE')
                     else:
                         store.report_office(observation)
+                        # Durable, read-only evidence analysis shares this account
+                        # actor, including ROBOT OFF. It has no order/provider seam
+                        # and its failure must not interrupt protection or reports.
+                        if history:
+                            try:
+                                from .trade_evaluation import observe_calendar
+                                observe_calendar(self.directory,observation['pnl_calendar'])
+                                self.evaluation_failure=None
+                            except Exception:
+                                self.evaluation_failure='POST_TRADE_EVALUATION_UNAVAILABLE'
                         # Observation only, after account/fill recovery. The
                         # independent priority actor never waits for these GETs.
                         if history or recovered:
