@@ -1,5 +1,17 @@
 /* Dashboard overlays sit above the read-only 3D office. */
 .info-panel{overflow-x:hidden}
+/* Single monthly-billing panel; inherit the existing Office palette. */
+.billing-panel label{display:block;margin:12px 0;color:#c9dce0;font-size:12px;line-height:1.5}
+.billing-panel input,.billing-panel select{display:block;width:100%;min-height:44px;margin-top:5px;padding:10px;background:#122934;border:1px solid var(--line);border-radius:8px;color:#fff;font:16px system-ui,sans-serif;box-sizing:border-box}
+.billing-panel input[type=checkbox]{display:inline-block;width:22px;min-height:22px;vertical-align:middle;margin:0 8px}
+.billing-panel fieldset{min-width:0;margin:18px 0;padding:12px;border:1px solid var(--line);border-radius:12px;overflow-wrap:anywhere}
+.billing-panel legend{font-size:13px;padding:0 7px}
+.billing-panel button,.billing-panel a{display:inline-block;min-height:44px;padding:11px 13px;margin:6px 6px 6px 0;border-radius:8px;border:1px solid var(--line);background:#365e68;color:#eff6ff;font:12px/1.6 system-ui,sans-serif;box-sizing:border-box;overflow-wrap:anywhere}
+.billing-panel button:disabled,.billing-panel input:disabled,.billing-panel select:disabled{opacity:.5}
+.billing-panel p,.billing-panel summary{font-size:12px;line-height:1.6;overflow-wrap:anywhere}
+.billing-panel pre{font-size:11px;white-space:pre-wrap;overflow-wrap:anywhere}
+.billing-panel :focus-visible{outline:2px solid #a0e0bd;outline-offset:2px}
+
 .dashboard-section{padding:14px;border:1px solid var(--line);background:#25464b45;border-radius:12px;margin:14px 0;overflow-wrap:anywhere}
 .dashboard-section h4{font-size:11px;letter-spacing:.08em;color:#c1e6e4;margin:0 0 12px}
 .dashboard-actions{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}

@@ -42,7 +42,7 @@ const walk=node=>[node,...node.children.flatMap(walk)];
 const root=new Node('body');
 const make=(tag,id='',className='')=>{const node=new Node(tag);node.id=id;node.className=className;return node;};
 const panel=make('div','infoPanel'),content=make('div','panelContent'),title=make('h3','panelTitle'),drawer=make('div','menuDrawer'),toggle=make('button','menuToggle'),close=make('button','panelClose');panel.hidden=true;drawer.hidden=true;panel.append(title,close,content);root.append(panel,drawer,toggle);
-for(const view of ['robot','calendar','neurobro']){const button=make('button',view==='robot'?'robotMenu':view==='neurobro'?'neurobroMenu':'','menu-item');button.dataset.view=view;button.textContent=view;if(view==='neurobro')button.append(make('small','neurobroMenuStatus'));drawer.append(button);}
+for(const view of ['robot','calendar','neurobro','billing']){const button=make('button',view==='robot'?'robotMenu':view==='neurobro'?'neurobroMenu':'','menu-item');button.dataset.view=view;button.textContent=view;if(view==='neurobro')button.append(make('small','neurobroMenuStatus'));drawer.append(button);}
 const brand=make('div','','brand'),brandSmall=new Node('small');brand.append(brandSmall);root.append(brand);
 const stats=make('div','','stats');for(let i=0;i<4;i++){const stat=make('div','','stat');stat.append(new Node('span'),new Node('b'));stats.append(stat);}root.append(stats);
 const listeners={},snapshots=[],intervals=new Map(),timeouts=new Map(),calls=[];let intervalId=0,timeoutId=0;
@@ -69,7 +69,7 @@ const statValues=()=>stats.children.map(stat=>stat.children[1].textContent);
 class DashboardContract(unittest.TestCase):
     def test_robot_calendar_and_neurobro_menus_and_one_dashboard_entry(self):
         parser = MenuParser(); parser.feed((ROOT / 'index.html').read_text())
-        self.assertEqual(parser.views, ['robot', 'calendar', 'neurobro'])
+        self.assertEqual(parser.views, ['robot', 'calendar', 'neurobro', 'billing'])
         scripts = [urlsplit(src).path for src in parser.scripts]
         self.assertEqual(scripts.count('assets/dashboard.js'), 1)
         self.assertIn('assets/office3d/renderer.js', scripts)
@@ -89,6 +89,60 @@ class DashboardContract(unittest.TestCase):
         script = HARNESS + '\n(async()=>{\n' + assertions + '\n})().catch(error=>{console.error(error);process.exitCode=1;});'
         result = subprocess.run(['node', '-e', script], cwd=ROOT, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_monthly_billing_unknowns_edit_payment_links_and_verified_save(self):
+        self.run_dom(r"""
+open('billing');assert.match(title.textContent,/TAGIHAN BULANAN/);assert.match(content.textContent,/Belum tersedia/);
+let stored={version:0,recorded_at:null,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
+responseOverride=(url,options)=>{if(url.endsWith('/billing/month')){const payload=JSON.parse(options.body);stored.document=payload.document;stored.version++;return response(stored);}if(url.includes('/billing/month?'))return response(stored);if(url.includes('/billing/history?'))return response({revisions:[stored]});};
+await connect();open('billing');await flush();assert.match(content.textContent,/Saldo OpenAI.*Belum tersedia/);assert.equal(document.getElementById('billingFx').value,'');
+document.getElementById('billingAdd').click();
+const edit=(id,value)=>{const node=document.getElementById(id);node.value=value;node.oninput?.();node.onchange?.();};
+edit('billName0','Synthetic VPS <img src=x>');edit('billActual0','160000');edit('billEstimate0','170000');edit('billDue0','2026-10-15');edit('billPaid0','false');edit('billEvidence0','Synthetic invoice');edit('billUrl0','https://console.hetzner.cloud/billing');edit('billingFx','16000');edit('billingFxSource','Synthetic FX quote');
+const coverage=document.getElementById('billingCoverage');coverage.checked=true;coverage.onchange();
+document.getElementById('billingSave').click();await flush();assert.equal(stored.version,1);assert.match(content.textContent,/Tersimpan.*dibaca ulang/);assert.equal(stored.document.bills[0].actual_idr,'160000');
+const payment=walk(content).find(node=>node.tagName==='A'&&node.href==='https://console.hetzner.cloud/billing');assert.ok(payment);assert.equal(payment.rel,'noopener noreferrer');assert.match(payment.textContent,/pemilik/);assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
+assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length>=2,true);
+document.getElementById('billingHistory').click();await flush();assert.match(content.textContent,/Revisi 1/);
+for(const fn of listeners.pagehide??[])fn();open('billing');assert.doesNotMatch(content.textContent,/Synthetic VPS/);
+""")
+
+    def test_billing_input_focus_and_late_save_cannot_cross_connection_generation(self):
+        self.run_dom(r"""
+const stored={version:1,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
+let finishPost=null;
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?new Promise(resolve=>{finishPost=resolve;}):null;
+await connect();open('billing');await flush();
+const field=document.getElementById('billingFx');field.value='123';field.oninput();field.focus();
+for(const fn of intervals.values())fn();await flush();assert.equal(document.activeElement,document.getElementById('billingFx'));assert.equal(field.value,'123');
+document.getElementById('billingSave').click();await flush();assert.ok(finishPost);
+const reads=calls.filter(call=>call.url.includes('/billing/month?')).length;
+for(const fn of listeners.pagehide??[])fn();finishPost(response({...stored,version:2}));await flush();
+assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length,reads);open('billing');assert.doesNotMatch(content.textContent,/Tersimpan/);
+""")
+
+    def test_prepaid_usage_switch_removes_fake_due_date_and_payment_state(self):
+        self.run_dom(r"""
+const stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):null;
+await connect();open('billing');await flush();assert.match(panel.className,/billing-panel/);document.getElementById('billingAdd').click();
+const kind=document.getElementById('billKind0');kind.focus();kind.value='prepaid_usage';kind.onchange();
+assert.equal(document.getElementById('billDue0'),null);assert.equal(document.getElementById('billPaid0'),null);assert.ok(document.getElementById('billEstimate0'));
+""")
+
+    def test_prepaid_inputs_cashflow_and_portal_allowlist(self):
+        self.run_dom(r"""
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{prepaid_topup_estimate_idr:'68000'}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:1,document:JSON.parse(options.body).document},response(stored)):null;
+await connect();open('billing');await flush();document.getElementById('billingAdd').click();
+const edit=(id,value)=>{const field=document.getElementById(id);assert.ok(field,id);field.value=value;field.oninput?.();field.onchange?.();};
+edit('billKind0','prepaid_usage');edit('billName0','OpenAI');edit('billActual0','32000');edit('billEvidence0','Owner official usage export from month start');
+edit('billUsageThrough0','2026-10-06');edit('billCredit0','24000');edit('billCreditEvidence0','Owner official credit snapshot');
+edit('billingPaymentActual','0');edit('billingPaymentEstimate','2000');edit('billingWithdrawalActual','0');edit('billingWithdrawalEstimate','1');edit('billingWithdrawalPercent','1');
+edit('billUrl0','https://evil.test/pay');open('billing');assert.equal(walk(content).some(node=>node.tagName==='A'&&node.href==='https://evil.test/pay'),false);
+edit('billUrl0','https://platform.openai.com/settings/organization/billing/overview');
+document.getElementById('billingSave').click();await flush();assert.equal(stored.document.bills[0].usage.available_credit_idr,'24000');assert.equal(stored.document.bills[0].usage.through_date,'2026-10-06');assert.equal(stored.document.cashflow.withdrawal_fee_percent,'1');assert.match(content.textContent,/68.000/);assert.match(content.textContent,/pemilik/);
+""")
 
     def test_account_connection_switch_and_read_only_sections(self):
         self.run_dom(r"""
