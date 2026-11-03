@@ -3,7 +3,9 @@
 snapshot_database(directory, filename, *, write=False, lock_timeout=5) yields a
 private in-memory SQLite connection, or None for a missing read-only snapshot.
 A successful writer context publishes after explicit transactions are committed;
-exceptions publish nothing. No connection escapes the context. Readers cannot
+exceptions inside the context publish nothing. Publication errors after atomic
+replacement may leave the complete new image visible; retry idempotently.
+No connection escapes the context. Readers cannot
 mutate the image. All names in a directory share one cross-process directory lock.
 
 The actor must supply a dedicated snapshot basename, never a financial database
