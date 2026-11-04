@@ -1,5 +1,6 @@
 """Validate executable packaging; actual image smoke runs only inside Docker CI."""
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,8 @@ import unittest
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
-BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:3f220762093e09cb336d4ecb329ea37f573aac0b3e7f38f24463f66cc1c9a723'
+PARENT_EVIDENCE=ROOT/'tests/fixtures/dialogue_agent_retained_b844.json'
+BASE=json.loads(PARENT_EVIDENCE.read_bytes())['image']
 
 
 def run_blocks(workflow):
@@ -29,6 +31,17 @@ class DialoguePackagingTests(unittest.TestCase):
     def setUp(self):
         self.docker=(ROOT/'deploy/dialogue-agent.Dockerfile').read_text()
         self.workflow=(ROOT/'.github/workflows/dialogue-agent-image.yml').read_text()
+
+    def test_parent_is_the_verified_b844_publication_not_its_distinct_config_id(self):
+        raw=PARENT_EVIDENCE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+            '4499e7554d92c7ab8a037f8541bb4e581aa52b2879819f0720f508d0d6d725d2')
+        value=json.loads(raw)
+        self.assertEqual(value['source_commit'],'b844b60663adc27629d6921d77c7b255544fc1fb')
+        self.assertEqual(value['image_id'],
+            'sha256:7afbe0902a718590cefc5ea3fa58278246e3d51b4c4dff095e883025e6eb0953')
+        self.assertNotEqual(value['image'].rsplit('@',1)[1],value['image_id'])
+        self.assertEqual((value['uid'],value['native_caller_uid']),(10002,10001))
 
     def test_derived_image_pins_existing_base_and_uses_only_new_delegated_entrypoint(self):
         self.assertEqual(re.findall(r'^FROM (.+)$',self.docker,re.M),[BASE])
