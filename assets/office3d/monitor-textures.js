@@ -11,7 +11,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   const titles = {
     market: 'MARKET INTELLIGENCE', neuro: 'NEURO // ANALYSIS', risk: 'RISK CONTROL',
     trading: 'FUTURES // EXECUTION DESK', position: 'POSITION MONITOR',
-    reviewer: 'PIPELINE STATUS', report: 'OFFICE REPORTS', boss: 'HARUN // COMMAND CENTER'
+    reviewer: 'PIPELINE STATUS', report: 'OFFICE REPORTS', boss: 'TRADING OFFICE'
   };
   const screens = new Map();
   let disposed = false, lastUpdate = -Infinity, updates = 0, firstUpdate = true, lastTelemetry = '';
@@ -78,7 +78,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     line(ctx, 0, 30, 512, 30, palette.border);
     ctx.fillStyle = '#081923'; ctx.fillRect(0, 234, 512, 22);
     text(ctx, 'READ ONLY · OFFICE GRAPHICS', 12, 248, palette.muted, 9);
-    text(ctx, 'HARUN', 442, 248, palette.cyan, 9);
+    text(ctx, 'OFFICE', 442, 248, palette.cyan, 9);
   }
   function candles(ctx, t, variant) {
     box(ctx, 12, 42, 327, 154); text(ctx, variant ? 'OFFICE GRAPHICS / FLOW' : 'OFFICE GRAPHICS / SIGNAL PATTERN', 23, 58, palette.muted, 9);

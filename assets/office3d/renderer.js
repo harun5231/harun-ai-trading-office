@@ -23,7 +23,7 @@ renderer.toneMappingExposure = 1.03;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.domElement.className = 'office-webgl';
-renderer.domElement.setAttribute('aria-label', 'Kantor trading 3D: delapan avatar chibi dan workstation divisi');
+renderer.domElement.setAttribute('aria-label', 'Trading Office 3D: pemilik dan enam staf maskot di workstation kantor');
 host.append(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(39, innerWidth / innerHeight, .1, 220);
@@ -54,13 +54,24 @@ const office = createOfficeScene(THREE, { scene, monitors, mobile });
 const status = createStatusController();
 const navigation = new NavigationMesh({ bounds: office.bounds, colliders: office.colliders, cellSize: .32, radius: .46 });
 const stations = Array.isArray(office.stations) ? office.stations : Object.values(office.stations);
-const actors = stations.map((station, index) => {
+// One visible colleague handles execution and position monitoring. Both backend
+// roles and both workstations remain intact; this is a read-only display alias.
+const displayStatus = {
+  getRole(role) {
+    const primary = status.getRole(role);
+    if (role !== 'trading') return { ...primary, displayRole: role };
+    const monitoring = status.getRole('position');
+    return monitoring.active && !primary.active ? { ...monitoring, displayRole: 'position' }
+      : { ...primary, displayRole: role };
+  },
+};
+const actors = stations.filter(station => station.role !== 'position').map((station, index) => {
   const avatar = createAvatar({ id: station.role, role: station.role, name: station.name, accent: station.accent, index });
   scene.add(avatar.root);
   return { id: station.role, role: station.role, station, avatar };
 });
 const animation = new OfficeAnimationController({ actors, navigation,
-  loungeSlots: office.loungeSlots, socialSlots: office.socialSlots, status, reducedMotion });
+  loungeSlots: office.loungeSlots, socialSlots: office.socialSlots, status: displayStatus, reducedMotion });
 const avatarBatch = createAvatarBatch(THREE, { scene, actors });
 
 const speechLayer = document.createElement('div');
@@ -100,16 +111,34 @@ function frameOffice() {
 frameOffice();
 
 const projectedHead = new THREE.Vector3();
+let labelDiagnostics = { visible: 0, hiddenForSpace: 0, overlaps: 0 };
+function activityLabel(actor, role) {
+  if (actor.mode === 'SOCIAL') return 'Diskusi tim';
+  if (actor.mode === 'RESTING') return 'Istirahat sebentar';
+  if (['WALKING', 'DOCKING'].includes(actor.mode)) return 'Pindah meja';
+  if (['STANDING_UP', 'SITTING_DOWN'].includes(actor.mode)) return 'Bersiap';
+  if (!role.known) return 'Menunggu worker';
+  if (role.active) return ({ market: 'Analisa market', neuro: 'Cek chart', risk: 'Review risiko',
+    trading: 'Proses order', position: 'Pantau posisi', reviewer: 'Review transaksi',
+    report: 'Mengetik laporan', boss: 'Pantau kantor' })[role.displayRole] || 'Bekerja';
+  if (role.speech.startsWith('Robot OFF')) return 'Robot OFF';
+  if (role.speech.startsWith('HOLD')) return 'Tunggu coin berikut';
+  if (role.speech.includes('belum terhubung')) return 'Menunggu koneksi';
+  return 'Menunggu tugas';
+}
 function projectSpeech(dt) {
   const viewport = renderer.domElement.getBoundingClientRect();
+  const candidates = [];
   for (const actor of actors) {
-    const role = status.getRole(actor.role);
-    const text = actor.mode === 'SOCIAL' ? 'Diskusi tim…'
-      : actor.mode === 'RESTING' ? 'Istirahat sebentar…' : role.speech;
-    if (actor.bubble.textContent !== text) actor.bubble.textContent = text;
+    const role = displayStatus.getRole(actor.role);
+    const text = activityLabel(actor, role);
+    if (actor.bubble.textContent !== text) {
+      actor.bubble.textContent = text;
+      actor.labelWidth = null;
+    }
     actor.bubble.dataset.active = String(role.active && actor.mode === 'AT_DESK');
     actor.avatar.headAnchor.getWorldPosition(projectedHead);
-    projectedHead.y += .13;
+    projectedHead.y += .09;
     projectedHead.project(camera);
     const visible = projectedHead.z >= -1 && projectedHead.z <= 1 &&
       Math.abs(projectedHead.x) < 1.08 && Math.abs(projectedHead.y) < 1.08;
@@ -123,8 +152,37 @@ function projectSpeech(dt) {
       actor.screen.x += (next.x - actor.screen.x) * blend;
       actor.screen.y += (next.y - actor.screen.y) * blend;
     }
-    actor.bubble.style.transform = `translate(${actor.screen.x.toFixed(2)}px,${actor.screen.y.toFixed(2)}px) translate(-50%,-100%)`;
+    actor.labelWidth ??= actor.bubble.offsetWidth;
+    actor.labelHeight ??= actor.bubble.offsetHeight;
+    candidates.push({ actor, x: actor.screen.x, y: actor.screen.y,
+      width: actor.labelWidth, height: actor.labelHeight });
   }
+  // Greedy rows near each projected head avoid the old pile of large bubbles.
+  // Stable back-to-front ordering keeps labels from swapping while a rig types.
+  candidates.sort((a, b) => a.y - b.y || a.actor.id.localeCompare(b.actor.id));
+  const occupied = [];
+  let hiddenForSpace = 0;
+  for (const item of candidates) {
+    const { actor, width, height } = item;
+    let placed = null;
+    for (let row = 0; row < 4 && !placed; row++) {
+      for (const shift of [0, -width * .55, width * .55]) {
+        const x = Math.min(viewport.width - width / 2 - 5, Math.max(width / 2 + 5, item.x + shift));
+        const bottom = item.y - row * (height + 4);
+        const box = { left: x - width / 2, right: x + width / 2, top: bottom - height, bottom };
+        if (box.top < 8 || occupied.some(other => box.left < other.right + 4 &&
+          box.right + 4 > other.left && box.top < other.bottom + 3 && box.bottom + 3 > other.top)) continue;
+        placed = { x, bottom, box }; break;
+      }
+    }
+    actor.bubble.hidden = !placed;
+    if (!placed) { hiddenForSpace++; continue; }
+    occupied.push(placed.box);
+    actor.bubble.style.transform = `translate(${placed.x.toFixed(2)}px,${placed.bottom.toFixed(2)}px) translate(-50%,-100%)`;
+  }
+  const overlaps = occupied.reduce((count, box, index) => count + occupied.slice(index + 1).filter(other =>
+    box.left < other.right && box.right > other.left && box.top < other.bottom && box.bottom > other.top).length, 0);
+  labelDiagnostics = { visible: occupied.length, hiddenForSpace, overlaps };
 }
 
 let disposed = false, raf = 0, previous = performance.now(), lastPaint = previous, elapsed = 0;
@@ -151,6 +209,7 @@ function resume() {
 function resize() {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  for (const actor of actors) { actor.labelWidth = null; actor.labelHeight = null; }
   // Framing affects the canvas camera only, never the dashboard layout.
   frameOffice();
 }
@@ -204,7 +263,8 @@ window.officeDiagnostics = () => {
       return [position.x, position.y, position.z, actor.sit].every(Number.isFinite);
     }), collisionViolations: violations, navigation: navigation.getDiagnostics(),
     monitorTextures: monitors.diagnostics(), office: { ...office.diagnostics }, status: status.diagnostics(),
-    avatarBatch: avatarBatch.diagnostics(),
+    avatarBatch: avatarBatch.diagnostics(), labels: { ...labelDiagnostics },
+    visualRoleAliases: { trading: ['trading', 'position'] },
     pathsRejected: motion.pathsRejected, blockedFrames: motion.blockedFrames,
     renderer: { mobile, reducedMotion, pixelRatio: renderer.getPixelRatio() } };
 };
