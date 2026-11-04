@@ -43,7 +43,9 @@ def compact_protocol(rendered, payload):
     else:
         summary = ('Setelah pembahasannya jelas, ringkas COIN, ARAH: LONG/SHORT/HOLD, '
             'ENTRY, TP, dan SL. Gunakan satu harga per level untuk setup aktif; '
-            'HOLD tidak perlu level order. Quantity dihitung Risk Manager.')
+            'HOLD tidak perlu level order. Jika setup valid, berikan rekomendasi ukuran posisi hanya sebagai bahan diskusi. '
+            'Quantity eksekusi tetap dihitung Risk Manager berdasarkan risiko Office, termasuk fee dan estimasi slippage; '
+            'rekomendasi ukuran posisi tidak menjadi instruksi order.')
     if not isinstance(marker, str) or not marker:
         raise ValueError('NATIVE_COMPOSE_MARKER_UNVERIFIED')
     rendered += '\n\n' + summary

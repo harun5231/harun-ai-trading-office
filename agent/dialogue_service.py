@@ -129,6 +129,47 @@ def validate_question_sources(question, request):
          'DIALOGUE_PRICE_PROPOSAL_REFUSED')
 
 
+POSITION_SIZE = r'(?:quantity|ukuran posisi|jumlah kontrak|position size)'
+
+
+def validate_position_size_discussion(question, phase):
+    """Neurobro sizing advice stays prose, never executable quantity.
+
+    Existing order quantities may still be discussed in pending review. A new
+    recommendation is allowed only in analysis, explicitly advisory and with
+    Risk Manager retaining the final calculation. The numeric-source check is
+    independent and must still run for every question.
+    """
+    if not re.search(r'\b' + POSITION_SIZE + r'\b', question, re.I):
+        return
+    for directive in re.finditer(r'\b(?:gunakan|pakai|ikuti|terapkan|eksekusi|samakan|ganti|ubah|abaikan|lewati)\b', question, re.I):
+        prefix = question[max(0, directive.start() - 24):directive.start()]
+        if directive.group().lower() == 'eksekusi' and re.search(POSITION_SIZE + r'(?:\s+untuk)?\s*$', prefix, re.I):
+            continue  # 'quantity eksekusi' names a quantity, not an imperative.
+        if re.search(r'\b(?:jangan|tidak|bukan|dilarang)\s*$', prefix, re.I):
+            continue
+        tail = re.split(r'[.!?;\n]', question[directive.end():])[0]
+        target = re.match(r'\s+(?:(?:hasil|nilai|rekomendasi|saran|perhitungan)\s+)?(?:'
+            + POSITION_SIZE + r'|Risk Manager)\b', tail, re.I)
+        replacement = (re.match(r'\s+(?:rekomendasi|saran|perhitungan)\s+Neurobro\b', tail, re.I)
+            and re.search(POSITION_SIZE, tail, re.I))
+        need(not target and not replacement, 'DIALOGUE_MODEL_RESULT_INVALID')
+    requested = re.search(r'\b(?:tentukan|hitung|berapa|pilih|berikan|rekomendasikan|sarankan|saran|rekomendasi)\b'
+        r'[^.!?;\n]{0,120}\b' + POSITION_SIZE + r'\b', question, re.I)
+    requested = requested or re.search(r'\b' + POSITION_SIZE + r'\b[^.!?;\n]{0,80}'
+        r'\b(?:berapa|rekomendasi|sarankan)\b', question, re.I)
+    if not requested:
+        return
+    advisory = (re.search(r'\b(?:rekomendasi|saran|advisory|pertimbangan)\b', question, re.I)
+        and re.search(r'\b(?:saja|sebatas|hanya|bahan diskusi|catatan diskusi)\b', question, re.I))
+    rm_authority = (re.search(r'\b' + POSITION_SIZE + r'\b[^.!?;\n]{0,100}'
+        r'\b(?:tetap|akhir)\b[^.!?;\n]{0,100}\bRisk Manager\b', question, re.I)
+        or re.search(r'\bRisk Manager\b[^.!?;\n]{0,60}\b(?:tetap|akhir)\b'
+            r'[^.!?;\n]{0,100}\b' + POSITION_SIZE + r'\b', question, re.I))
+    need(phase in {'ANALYSIS', 'COMPOSE_ANALYSIS'} and advisory and rm_authority,
+         'DIALOGUE_MODEL_RESULT_INVALID')
+
+
 def validate_source_facts(facts):
     """Authenticated caller facts only; a model's text never enters this path."""
     need(type(facts) is list and len(facts) <= 2, 'DIALOGUE_SOURCE_FACTS_INVALID')
@@ -210,9 +251,7 @@ def validate_decision(value, request):
         current = (request.get('market_context') or {}).get('symbol')
         if current: source_symbols.add(current)
         need(mentioned <= source_symbols, 'DIALOGUE_FOREIGN_SYMBOL')
-        need(not re.search(r'\b(?:tentukan|hitung|berapa|pilih|berikan)\b.{0,60}'
-            r'\b(?:quantity|ukuran posisi|jumlah kontrak|position size)\b', question, re.I),
-            'DIALOGUE_MODEL_RESULT_INVALID')
+        validate_position_size_discussion(question, request['phase'])
         return value
     need(action != 'PROMPT', 'DIALOGUE_MODEL_RESULT_INVALID')
     if request['phase'] == 'POST_TRADE_EVALUATION':
@@ -232,6 +271,7 @@ def validate_decision(value, request):
     if action == 'CLARIFY':
         need(bool(question.strip()), 'DIALOGUE_MODEL_RESULT_INVALID')
         validate_question_sources(question, request)
+        validate_position_size_discussion(question, request['phase'])
     else:
         need(question == '', 'DIALOGUE_MODEL_RESULT_INVALID')
     phase = request['phase']
