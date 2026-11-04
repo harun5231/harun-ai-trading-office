@@ -221,18 +221,29 @@ class Controller:
                         # Durable, read-only evidence analysis shares this account
                         # actor, including ROBOT OFF. Historical archive reads have
                         # no provider-Send/order seam; provider discussion belongs
-                        # only to the existing ON coordinator.
-                        # and its failure must not interrupt protection or reports.
+                        # only to the existing ON coordinator. Evaluation failures
+                        # must not interrupt protection or account reports.
                         if history:
                             try:
                                 from .trade_evaluation import observe_calendar
                                 observe_calendar(self.directory,observation['pnl_calendar'])
-                                from .trade_evaluation_runtime import observe_authenticated_calendar
-                                observe_authenticated_calendar(recovery_coordinator,self.directory,client,
-                                    observation['pnl_calendar'])
-                                self.evaluation_failure=None
                             except Exception:
                                 self.evaluation_failure='POST_TRADE_EVALUATION_UNAVAILABLE'
+                                self.evaluation_binding_status=None
+                            else:
+                                # A persisted observation is available even if
+                                # historical ownership/archive evidence is not.
+                                # Retry binding independently on the next pass;
+                                # never mislabel a healthy journal or interrupt
+                                # account/protection work for missing evidence.
+                                self.evaluation_failure=None
+                                try:
+                                    from .trade_evaluation_runtime import observe_authenticated_calendar
+                                    self.evaluation_binding_status=observe_authenticated_calendar(
+                                        recovery_coordinator,self.directory,client,observation['pnl_calendar'])
+                                except Exception:
+                                    self.evaluation_binding_status=dict(state='BLOCKED_MISSING_EVIDENCE',
+                                        reason='POST_TRADE_EVALUATION_EVIDENCE_UNAVAILABLE')
                         # Observation only, after account/fill recovery. The
                         # independent priority actor never waits for these GETs.
                         if history or recovered:
