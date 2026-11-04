@@ -52,7 +52,7 @@ let clock=Date.parse('2026-10-07T13:40:00Z');
 const ClockDate=class extends Date{constructor(...args){super(...(args.length?args:[clock]));}static now(){return clock;}};
 globalThis.Date=ClockDate;
 const now=()=>new ClockDate().toISOString();
-const data={schema_version:2,source:'BINANCE_FUTURES',generated_at:now(),robot:{robot_on:false,bot_status:'OFF',checked_at:now(),risk_target_usdt:'5',running_positions:1,available_slots:1,manual_exposure:['HYPEUSDT'],bot_entries_today:0,execution_gateway:{connected:false,status:'NOT_CONNECTED',failure_code:'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'}},account:{status:'CONNECTED',checked_at:now(),usdt_wallet_balance:'116.928',usdt_available_balance:'105.25',active_positions:1,positions:[{symbol:'HYPEUSDT',side:'LONG',position_side:'BOTH',quantity:'1.5',entry_price:'28',mark_price:'29',unrealized_pnl:'1.5'}]},reports:{status:'AVAILABLE',checked_at:now(),period_start:now(),period_end:now(),pnl_today_usdt:'3.75',realized_pnl_today_usdt:'4',commission_today_usdt:'-0.25',funding_today_usdt:'0',trades_today:2,complete:true},position_history:{status:'AVAILABLE',kind:'BINANCE_FILLS',checked_at:now(),period_start:now(),period_end:now(),items:[{id:'fill-1',symbol:'BTCUSDT',order_id:'order-1',side:'SELL',position_side:'BOTH',quantity:'0.001',price:'64000',realized_pnl:'4',commission:'0.25',commission_asset:'USDT',time:now()}],complete:true},employees:[{id:'neuro',name:'NeuroAPI Analyst',status:'WAITING'}],activity:[{at:now(),state:'SCREENING',agent:'Coordinator',message:'<img src=x onerror="window.pwned=true">'}]};
+const data={schema_version:2,source:'BINANCE_FUTURES',generated_at:now(),robot:{robot_on:false,bot_status:'OFF',checked_at:now(),risk_target_usdt:'5',max_positions:2,daily_entry_limit:2,running_positions:1,available_slots:1,manual_exposure:['HYPEUSDT'],bot_entries_today:0,execution_gateway:{connected:false,status:'NOT_CONNECTED',failure_code:'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'}},account:{status:'CONNECTED',checked_at:now(),usdt_wallet_balance:'116.928',usdt_available_balance:'105.25',active_positions:1,positions:[{symbol:'HYPEUSDT',side:'LONG',position_side:'BOTH',quantity:'1.5',entry_price:'28',mark_price:'29',unrealized_pnl:'1.5'}]},reports:{status:'AVAILABLE',checked_at:now(),period_start:now(),period_end:now(),pnl_today_usdt:'3.75',realized_pnl_today_usdt:'4',commission_today_usdt:'-0.25',funding_today_usdt:'0',trades_today:2,complete:true},position_history:{status:'AVAILABLE',kind:'BINANCE_FILLS',checked_at:now(),period_start:now(),period_end:now(),items:[{id:'fill-1',symbol:'BTCUSDT',order_id:'order-1',side:'SELL',position_side:'BOTH',quantity:'0.001',price:'64000',realized_pnl:'4',commission:'0.25',commission_asset:'USDT',time:now()}],complete:true},employees:[{id:'neuro',name:'NeuroAPI Analyst',status:'WAITING'}],activity:[{at:now(),state:'SCREENING',agent:'Coordinator',message:'<img src=x onerror="window.pwned=true">'}]};
 data.pnl_calendar={source:'BINANCE_FUTURES',kind:'CLOSED_POSITIONS_FROM_FILLS',status:'PARTIAL',checked_at:now(),timezone:'Asia/Jakarta',start_date:'2026-10-01',end_date:'2026-10-07',complete:false,incomplete_reasons:['SYMBOL_DISCOVERY_PARTIAL'],days:Array.from({length:7},(_,index)=>({date:'2026-10-0'+(index+1),pnl_usdt:null,known_pnl_usdt:index===6?'-6.51598280':'0',closed_positions:index===6?1:0,complete:false})),positions:[{id:'ETH-1',symbol:'ETHUSDT',side:'LONG',position_side:'BOTH',status:'CLOSED',opened_at:'2026-10-07T08:18:23.715Z',closed_at:'2026-10-07T10:07:39.052Z',close_date:'2026-10-07',entry_price:'2610',exit_price:'2575.81',closed_quantity:'0.181',realized_pnl_usdt:'-6.18839000',commission_usdt:'0.32759280',funding_usdt:'0',insurance_usdt:'0',known_pnl_usdt:'-6.51598280',pnl_usdt:'-6.51598280',complete:true}],funding_usdt:'0'};
 data.research={provider:'NEUROBRO_WEB',status:'LOGIN_REQUIRED',checked_at:now(),profile_persistent:true};
 let responseOverride=null;
@@ -90,20 +90,20 @@ class DashboardContract(unittest.TestCase):
         result = subprocess.run(['node', '-e', script], cwd=ROOT, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_monthly_billing_unknowns_edit_payment_links_and_verified_save(self):
+    def test_monthly_billing_simple_crud_verified_save_and_payment_status(self):
         self.run_dom(r"""
 open('billing');assert.match(title.textContent,/TAGIHAN BULANAN/);assert.match(content.textContent,/Belum tersedia/);
 let stored={version:0,recorded_at:null,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
-responseOverride=(url,options)=>{if(url.endsWith('/billing/month')){const payload=JSON.parse(options.body);stored.document=payload.document;stored.version++;return response(stored);}if(url.includes('/billing/month?'))return response(stored);if(url.includes('/billing/history?'))return response({revisions:[stored]});};
-await connect();open('billing');await flush();assert.match(content.textContent,/Saldo OpenAI.*Belum tersedia/);assert.equal(document.getElementById('billingFx').value,'');
+responseOverride=(url,options)=>{if(url.endsWith('/billing/month')){stored.document=JSON.parse(options.body).document;stored.version++;return response(stored);}if(url.includes('/billing/month?'))return response(stored);};
+await connect();open('billing');await flush();assert.match(content.textContent,/TOTAL USDT PERLU WD DARI BINANCE/);assert.equal(document.getElementById('billingFx').value,'');
 document.getElementById('billingAdd').click();
-const edit=(id,value)=>{const node=document.getElementById(id);node.value=value;node.oninput?.();node.onchange?.();};
-edit('billName0','Synthetic VPS <img src=x>');edit('billActual0','160000');edit('billEstimate0','170000');edit('billDue0','2026-10-15');edit('billPaid0','false');edit('billEvidence0','Synthetic invoice');edit('billUrl0','https://console.hetzner.cloud/billing');edit('billingFx','16000');edit('billingFxSource','Synthetic FX quote');
-const coverage=document.getElementById('billingCoverage');coverage.checked=true;coverage.onchange();
-document.getElementById('billingSave').click();await flush();assert.equal(stored.version,1);assert.match(content.textContent,/Tersimpan.*dibaca ulang/);assert.equal(stored.document.bills[0].actual_idr,'160000');
-const payment=walk(content).find(node=>node.tagName==='A'&&node.href==='https://console.hetzner.cloud/billing');assert.ok(payment);assert.equal(payment.rel,'noopener noreferrer');assert.match(payment.textContent,/pemilik/);assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
-assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length>=2,true);
-document.getElementById('billingHistory').click();await flush();assert.match(content.textContent,/Revisi 1/);
+const edit=(id,value)=>{const node=document.getElementById(id);assert.ok(node,id);node.value=value;node.oninput?.();node.onchange?.();};
+edit('billName0','Synthetic VPS <img src=x>');edit('billAmount0','160000');edit('billDue0','2026-10-15');edit('billUrl0','https://billing.sample-service.com/portal');edit('billingFx','16000');
+document.getElementById('billingSave').click();await flush();assert.equal(stored.version,1);assert.match(content.textContent,/Tersimpan/);assert.equal(stored.document.bills[0].amount,'160000');
+const payment=walk(content).find(node=>node.tagName==='A'&&node.href==='https://billing.sample-service.com/portal');assert.ok(payment);assert.equal(payment.rel,'noopener noreferrer');assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
+document.getElementById('billMarkPaid0').click();await flush();assert.equal(stored.version,2);assert.equal(stored.document.bills[0].paid,true);
+document.getElementById('billDelete0').click();await flush();assert.equal(stored.version,3);assert.equal(stored.document.bills.length,0);
+assert.equal(calls.filter(call=>call.method==='POST').length,3);assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length>=4,true);
 for(const fn of listeners.pagehide??[])fn();open('billing');assert.doesNotMatch(content.textContent,/Synthetic VPS/);
 """)
 
@@ -121,33 +121,56 @@ for(const fn of listeners.pagehide??[])fn();finishPost(response({...stored,versi
 assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length,reads);open('billing');assert.doesNotMatch(content.textContent,/Tersimpan/);
 """)
 
-    def test_prepaid_usage_switch_removes_fake_due_date_and_payment_state(self):
+    def test_simple_billing_currency_fees_and_compact_copy(self):
         self.run_dom(r"""
-const stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
-responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):null;
-await connect();open('billing');await flush();assert.match(panel.className,/billing-panel/);document.getElementById('billingAdd').click();
-const kind=document.getElementById('billKind0');kind.focus();kind.value='prepaid_usage';kind.onchange();
-assert.equal(document.getElementById('billDue0'),null);assert.equal(document.getElementById('billPaid0'),null);assert.ok(document.getElementById('billEstimate0'));
-""")
-
-    def test_prepaid_inputs_cashflow_and_portal_allowlist(self):
-        self.run_dom(r"""
-let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{prepaid_topup_estimate_idr:'68000'}};
-responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:1,document:JSON.parse(options.body).document},response(stored)):null;
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
 await connect();open('billing');await flush();document.getElementById('billingAdd').click();
 const edit=(id,value)=>{const field=document.getElementById(id);assert.ok(field,id);field.value=value;field.oninput?.();field.onchange?.();};
-edit('billKind0','prepaid_usage');edit('billName0','OpenAI');edit('billActual0','32000');edit('billEvidence0','Owner official usage export from month start');
-edit('billUsageThrough0','2026-10-06');edit('billCredit0','24000');edit('billCreditEvidence0','Owner official credit snapshot');
-edit('billingPaymentActual','0');edit('billingPaymentEstimate','2000');edit('billingWithdrawalActual','0');edit('billingWithdrawalEstimate','1');edit('billingWithdrawalPercent','1');
-edit('billUrl0','https://evil.test/pay');open('billing');assert.equal(walk(content).some(node=>node.tagName==='A'&&node.href==='https://evil.test/pay'),false);
-edit('billUrl0','https://platform.openai.com/settings/organization/billing/overview');
-document.getElementById('billingSave').click();await flush();assert.equal(stored.document.bills[0].usage.available_credit_idr,'24000');assert.equal(stored.document.bills[0].usage.through_date,'2026-10-06');assert.equal(stored.document.cashflow.withdrawal_fee_percent,'1');assert.match(content.textContent,/68.000/);assert.match(content.textContent,/pemilik/);
+edit('billName0','Sample credit');edit('billAmount0','20');edit('billCurrency0','USD');edit('billDue0','2026-10-05');edit('billUrl0','https://billing.sample-credit.com/pay');edit('billingUsdFx','0.99');
+edit('billingPaymentEstimate','2000');edit('billingWithdrawalEstimate','1');edit('billingWithdrawalPercent','1');
+document.getElementById('billingSave').click();await flush();assert.equal(stored.document.bills[0].currency,'USD');assert.equal(stored.document.bills[0].actual_idr,null);assert.equal(stored.document.simple.usd_per_usdt,'0.99');assert.equal(stored.document.cashflow.withdrawal_fee_percent,'1');
+assert.doesNotMatch(content.textContent,/Usage API|proyeksi|kumulatif|persentase fee|top-up =/);assert.match(content.textContent,/Buka pembayaran/);
+""")
+
+    def test_simple_billing_optional_fees_show_provisional_total_and_stay_blank(self):
+        self.run_dom(r"""
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:'16000',fx_source:'Owner quote',bills:[]},summary:{withdrawal_estimate_usdt:'56.81250000',withdrawal_estimate_complete:false}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
+await connect();open('billing');await flush();
+assert.match(document.getElementById('billingTotal').textContent,/56,8125 USDT/);assert.match(content.textContent,/Estimasi · biaya belum lengkap/);
+for(const id of ['billingPaymentEstimate','billingWithdrawalEstimate','billingWithdrawalPercent'])assert.equal(document.getElementById(id).value,'');
+document.getElementById('billingSave').click();await flush();document.getElementById('billingReload').click();await flush();
+assert.equal(stored.document.cashflow.payment_fee_estimated_idr,null);assert.equal(stored.document.cashflow.withdrawal_fee_estimated_usdt,null);assert.equal(stored.document.cashflow.withdrawal_fee_percent,null);
+for(const id of ['billingPaymentEstimate','billingWithdrawalEstimate','billingWithdrawalPercent'])assert.equal(document.getElementById(id).value,'');
+""")
+
+    def test_simple_billing_principal_comes_from_authenticated_summary(self):
+        self.run_dom(r"""
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{debt:{principal_idr:'1000000',remaining_idr:'900000',principal_status:'AVAILABLE'}}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
+await connect();open('billing');await flush();assert.match(content.textContent,/Utang awal Rp 1.000.000/);assert.match(content.textContent,/Sisa Rp 900.000/);
+document.getElementById('billingSave').click();await flush();assert.equal(stored.document.simple.debt_principal_idr,'1000000');
+stored.summary.debt={principal_idr:null,remaining_idr:null,principal_status:'CONFLICT'};document.getElementById('billingReload').click();await flush();
+assert.match(content.textContent,/Utang awal perlu diperiksa/);assert.match(content.textContent,/Sisa belum tersedia/);assert.doesNotMatch(content.textContent,/Rp 1.000.000/);
+""")
+
+    def test_simple_billing_installment_id_is_stable_and_month_switch_uses_correct_document(self):
+        self.run_dom(r"""
+const months={};const fresh=month=>({version:0,document:{month,coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{debt:{remaining_idr:'1000000'}}});
+responseOverride=(url,options)=>{if(url.includes('/billing/month?')){const month=new URL(url).searchParams.get('month');return response(months[month]??=fresh(month));}if(url.endsWith('/billing/month')){const value=JSON.parse(options.body),month=value.document.month;months[month]={...months[month],version:months[month].version+1,document:value.document};return response(months[month]);}};
+await connect();open('billing');await flush();
+const edit=(id,value)=>{const node=document.getElementById(id);assert.ok(node,id);node.value=value;node.oninput?.();node.onchange?.();};
+edit('billingInstallment','100000');edit('billingInstallmentDue','2026-10-15');document.getElementById('billingInstallmentAdd').click();await flush();
+assert.equal(months['2026-10'].document.bills.length,1);assert.equal(months['2026-10'].document.bills[0].id,'office-debt-2026-10');assert.equal(months['2026-10'].document.bills[0].kind,'debt_installment');
+edit('billingInstallment','80000');document.getElementById('billingInstallmentAdd').click();await flush();assert.equal(months['2026-10'].document.bills.length,1);assert.equal(months['2026-10'].document.bills[0].amount,'80000');
+edit('billingMonth','2026-11');await flush();assert.equal(document.getElementById('billingMonth').value,'2026-11');assert.equal(document.getElementById('billingInstallment').value,'');assert.equal(months['2026-11'].document.bills.length,0);
 """)
 
     def test_account_connection_switch_and_read_only_sections(self):
         self.run_dom(r"""
-assert.deepEqual(statValues(),['—','—','—','—']);open('robot');assert.equal(document.getElementById('robotToggle').disabled,true);assert.match(content.textContent,/Status gateway belum tersedia dari worker/);assert.doesNotMatch(content.textContent,/BINANCE_ORDER_GATEWAY_NOT_CONNECTED/);
-await connect();assert.equal(document.getElementById('apiToken').value,'');assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.match(content.textContent,/HYPEUSDT/);assert.match(content.textContent,/Transport pengiriman order Binance belum tersedia/);assert.match(content.textContent,/Worker belum dapat mengirim order ke Binance/);assert.doesNotMatch(content.textContent,/Eksekusi Binance diblokir/);
+assert.deepEqual(statValues(),['—','—','—','—']);open('robot');assert.equal(document.getElementById('robotToggle').disabled,true);assert.match(content.textContent,/Worker: BELUM TERHUBUNG/);assert.match(content.textContent,/BOT STATUS: BELUM TERSEDIA/);assert.equal(document.getElementById('robotRisk').value,'');
+await connect();assert.equal(document.getElementById('apiToken').value,'');assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.match(content.textContent,/HYPEUSDT/);assert.match(content.textContent,/Worker: TERHUBUNG/);assert.match(content.textContent,/AKUN FUTURES/);assert.match(content.textContent,/Posisi \/ kapasitas1 \/ 2/);assert.doesNotMatch(content.textContent,/Transport pengiriman order|COORDINATOR 24\/7/);
 document.getElementById('robotToggle').click();await flush();assert.match(document.getElementById('robotToggle').textContent,/: ON/);
 const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{robot_on:true});
 open('calendar');assert.match(content.textContent,/PNL Calendar/);assert.match(content.textContent,/ETHUSDT/);assert.match(content.textContent,/−6,52/);assert.match(content.textContent,/Ditutup/);assert.match(content.textContent,/0,181/);assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
@@ -157,7 +180,7 @@ assert.equal(calls.some(call=>/\/order|\/approval|\/simulation/.test(call.url)),
     def test_missing_or_stale_statistics_remain_unknown(self):
         self.run_dom(r"""
 data.account.status='UNAVAILABLE';data.account.usdt_wallet_balance=null;data.account.active_positions=null;data.reports.status='UNAVAILABLE';data.reports.pnl_today_usdt=null;data.reports.trades_today=null;await connect();assert.deepEqual(statValues(),['—','—','—','—']);
-data.account.status='CONNECTED';data.account.checked_at='2020-01-01T00:00:00Z';data.account.usdt_wallet_balance='116.928';[...intervals.values()][0]();await flush();assert.equal(statValues()[0],'—');assert.match(content.textContent,/Data terakhir sudah lama/);assert.equal(snapshots.at(-1).balance,null);
+data.account.status='CONNECTED';data.account.checked_at='2020-01-01T00:00:00Z';data.account.usdt_wallet_balance='116.928';[...intervals.values()][0]();await flush();assert.equal(statValues()[0],'—');assert.match(content.textContent,/Wallet USDT—/);assert.match(content.textContent,/Binance Futures · Diperiksa/);assert.equal(snapshots.at(-1).balance,null);
 """)
 
     def test_late_poll_cannot_restore_disconnected_account_or_token(self):
@@ -185,9 +208,9 @@ await connect();const previous=structuredClone(data);let finish;let intercepted=
 
     def test_risk_settings_preserve_decimal_string_and_only_affect_new_analysis(self):
         self.run_dom(r"""
-open('robot');assert.equal(document.getElementById('robotRisk').value,'5');assert.equal(document.getElementById('robotRisk').disabled,true);await connect();assert.equal(document.getElementById('robotRisk').value,'5');
+open('robot');assert.equal(document.getElementById('robotRisk').value,'');assert.equal(document.getElementById('robotRisk').disabled,true);await connect();assert.equal(document.getElementById('robotRisk').value,'5');
 const risk=document.getElementById('robotRisk');risk.value='7.50000000000000001';risk.oninput();document.getElementById('robotRiskSave').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);await flush();
-const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{risk_target_usdt:'7.50000000000000001'});assert.equal(document.getElementById('robotRisk').value,'7.50000000000000001');assert.equal(data.robot.robot_on,false);assert.match(content.textContent,/hanya untuk analisis baru/);assert.match(content.textContent,/intent yang sudah dibuat tetap/);
+const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{risk_target_usdt:'7.50000000000000001'});assert.equal(document.getElementById('robotRisk').value,'7.50000000000000001');assert.equal(data.robot.robot_on,false);assert.match(content.textContent,/RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE/);assert.equal(document.getElementById('robotRiskSave').textContent,'SIMPAN RISIKO');
 document.getElementById('apiDisconnect').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);
 """)
 
@@ -224,7 +247,10 @@ let finishSave;responseOverride=(url,options)=>url.endsWith('/robot/settings')?n
 
     def test_daily_two_entry_rule_and_off_calendar_preserve_account_reads(self):
         self.run_dom(r"""
-data.robot.bot_entries_today=2;data.employees=['market','neuro','risk','trading','position','reviewer','report','boss'].map(id=>({id,name:id,status:'WORKING'}));await connect();assert.match(content.textContent,/Entry bot hari ini2 \/ 2/);assert.match(content.textContent,/Maksimal 2 entry bot per hari/);assert.match(content.textContent,/hari sebelumnya dan posisi manual tetap memakai slot/);assert.match(content.textContent,/OFF menghentikan riset dan pengiriman entry baru/);assert.match(content.textContent,/Pemantauan fill serta pemulihan proteksi.*tetap berjalan/);assert.match(content.textContent,/OFF tidak menutup posisi atau membatalkan order/);assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');
+data.robot.bot_entries_today=2;data.robot.available_slots=0;data.employees=['market','neuro','risk','trading','position','reviewer','report','boss'].map(id=>({id,name:id,status:'WORKING'}));await connect();
+assert.match(content.textContent,/Entry bot hari ini2/);assert.match(content.textContent,/Slot tersedia0/);assert.match(content.textContent,/Posisi \/ kapasitas1 \/ 2/);
+assert.doesNotMatch(content.textContent,/Maksimal 2 entry|hari sebelumnya dan posisi manual|OFF menghentikan|OFF tidak menutup posisi|Pemantauan fill serta pemulihan/);
+assert.equal(statValues()[0],'116.93');assert.equal(statValues()[3],'1');assert.equal(data.robot.robot_on,false);
 open('calendar');assert.doesNotMatch(content.textContent,/WORKING/);assert.match(content.textContent,/ETHUSDT/);assert.equal(calls.filter(call=>call.method==='POST').length,0);[...intervals.values()][0]();await flush();assert.equal(statValues()[3],'1');assert.equal(calls.some(call=>/\/order|\/cancel|\/close/.test(call.url)),false);
 """)
 
@@ -316,14 +342,14 @@ data.research.status='BUSY';[...intervals.values()][0]();await flush();button.cl
     def test_connected_browser_ticket_is_cleared_when_worker_origin_changes(self):
         self.run_dom(r"""
 data.research.status='CONNECTED';await connect();open('neurobro');responseOverride=url=>url.endsWith('/neurobro/login/start')?response({ticket:'7'.repeat(64),expires_in:60,path:'/neurobro/login'}):null;document.getElementById('neurobroLogin').click();await flush();const link=document.getElementById('neurobroLoginOpen');
-document.getElementById('apiOrigin').value='https://other-worker.test';document.getElementById('apiToken').value='D'.repeat(32);document.getElementById('apiConnect').click();await flush();assert.equal(link.attributes.href,undefined);assert.equal(link.click().defaultPrevented,true);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(data.robot.robot_on,false);
+open('robot');document.getElementById('apiOrigin').value='https://other-worker.test';document.getElementById('apiToken').value='D'.repeat(32);document.getElementById('apiConnect').click();await flush();open('neurobro');assert.equal(link.click().defaultPrevented,true);assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.equal(document.getElementById('neurobroLogin').textContent,'BUKA BROWSER NEUROBRO');assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(data.robot.robot_on,false);
 """)
 
     def test_neurobro_login_rejects_invalid_ticket_and_late_disconnect(self):
         self.run_dom(r"""
 await connect();open('neurobro');
 for(const invalid of [{ticket:'a'.repeat(64),expires_in:60,path:'https://bad.test/'},{ticket:'C'.repeat(64),expires_in:60,path:'/neurobro/login'},{ticket:'a'.repeat(64),expires_in:61,path:'/neurobro/login'},{ticket:'a'.repeat(64),expires_in:0,path:'/neurobro/login'}]){responseOverride=url=>url.endsWith('/neurobro/login/start')?response(invalid):null;document.getElementById('neurobroLogin').click();await flush();assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.match(content.textContent,/tidak sesuai kontrak/);}
-let finish;responseOverride=url=>url.endsWith('/neurobro/login/start')?new Promise(resolve=>{finish=()=>resolve(response({ticket:'b'.repeat(64),expires_in:60,path:'/neurobro/login'}));}):null;document.getElementById('neurobroLogin').click();await flush();document.getElementById('apiDisconnect').click();finish();await flush();assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.equal(content.textContent.includes('b'.repeat(64)),false);assert.equal(document.getElementById('neurobroLogin').disabled,true);assert.equal(document.getElementById('neurobroMenu').dataset.status,'UNAVAILABLE');
+let finish;responseOverride=url=>url.endsWith('/neurobro/login/start')?new Promise(resolve=>{finish=()=>resolve(response({ticket:'b'.repeat(64),expires_in:60,path:'/neurobro/login'}));}):null;document.getElementById('neurobroLogin').click();await flush();open('robot');document.getElementById('apiDisconnect').click();finish();await flush();open('neurobro');assert.equal(document.getElementById('neurobroLoginOpen'),null);assert.equal(timeouts.size,0);assert.equal(content.textContent.includes('b'.repeat(64)),false);assert.equal(document.getElementById('neurobroLogin').disabled,true);assert.equal(document.getElementById('neurobroMenu').dataset.status,'UNAVAILABLE');
 """)
 
     def test_neurobro_ticket_deadline_starts_before_request_and_expired_click_is_blocked(self):
@@ -334,7 +360,7 @@ await connect();open('neurobro');let finish;responseOverride=url=>url.endsWith('
     def test_neurobro_expiry_timer_and_disconnect_remove_ticket_from_hidden_panel(self):
         self.run_dom(r"""
 await connect();open('neurobro');responseOverride=url=>url.endsWith('/neurobro/login/start')?response({ticket:'e'.repeat(64),expires_in:60,path:'/neurobro/login'}):null;document.getElementById('neurobroLogin').click();await flush();const expiredLink=document.getElementById('neurobroLoginOpen');document.getElementById('panelClose').click();clock+=60000;[...timeouts.values()][0].fn();assert.equal(expiredLink.attributes.href,undefined);assert.equal(expiredLink.hidden,true);assert.equal(timeouts.size,0);
-data.research.checked_at=now();open('neurobro');document.getElementById('neurobroLogin').click();await flush();const disconnectedLink=document.getElementById('neurobroLoginOpen');document.getElementById('apiDisconnect').click();assert.equal(disconnectedLink.attributes.href,undefined);assert.equal(timeouts.size,0);assert.equal(disconnectedLink.click().defaultPrevented,true);assert.equal(calls.filter(call=>call.method==='POST').length,2);
+data.research.checked_at=now();open('neurobro');document.getElementById('neurobroLogin').click();await flush();const disconnectedLink=document.getElementById('neurobroLoginOpen');open('robot');document.getElementById('apiDisconnect').click();open('neurobro');assert.equal(timeouts.size,0);assert.equal(disconnectedLink.click().defaultPrevented,true);assert.equal(calls.filter(call=>call.method==='POST').length,2);
 """)
 
     def test_neurobro_pending_or_expired_grant_never_automatically_requests_another(self):

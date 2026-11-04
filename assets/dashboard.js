@@ -17,120 +17,208 @@
   let calendarMonth = null, selectedDay = null;
   let loginBusy = false, loginMessage = '', loginAccess = null, loginExpiryTimer = null;
   let researchOwnerNotice = null;
+  let billingEditing = null, billingScheduleDrafts = {};
   let billingMonth = null, billingRecord = null, billingDraft = null, billingBusy = false, billingMessage = '', billingHistory = null;
 
   function billingField(parent, label, id, value, change, type = 'text') {
     const wrapper = element('label', label), input = element('input');
     input.id = id; input.type = type; input.value = value ?? ''; input.disabled = billingBusy;
+    if (type === 'number') { input.min = '0'; input.step = 'any'; input.inputMode = 'decimal'; }
     input.oninput = () => change(input.value === '' ? null : input.value);
     wrapper.append(input); parent.append(wrapper); return input;
   }
-  function billingLink(parent, url, label) {
+  function billingLink(parent, url) {
     try {
-      const parsed = new URL(url);
-      const routes = { 'platform.openai.com': ['/settings/organization/billing/'], 'hpanel.hostinger.com': ['/'], 'console.hetzner.cloud': ['/'], 'accounts.hetzner.com': ['/'], 'my.vultr.com': ['/'], 'cloud.digitalocean.com': ['/'] };
-      const raw = /^https:\/\/([^/]+)(\/.*)?$/.exec(url || '');
-      if (!raw || /[\s\\%?#]/.test(url) || !routes[raw[1]] || !routes[raw[1]].some(prefix => (raw[2] || '/').startsWith(prefix)) || (raw[2] || '').split('/').some(part => part === '.' || part === '..')) return;
-      const link = element('a', label); link.href = parsed.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; parent.append(link);
-    } catch (_) { /* Missing/invalid links are unavailable, never guessed. */ }
+      const parsed = new URL(url), host = parsed.hostname.toLowerCase().replace(/\.$/, '');
+      if (parsed.protocol !== 'https:' || parsed.username || parsed.password || /[\s\\]/.test(url) || !host || /(?:^|\.)(?:localhost|local|internal|lan|home)$/.test(host)) return;
+      const ipv4 = host.split('.').map(Number), numeric = /^\d+\.\d+\.\d+\.\d+$/.test(host);
+      if (numeric && (ipv4.some(part => part > 255) || ipv4[0] === 0 || ipv4[0] === 10 || ipv4[0] === 127 || ipv4[0] >= 224 || ipv4[0] === 169 && ipv4[1] === 254 || ipv4[0] === 172 && ipv4[1] >= 16 && ipv4[1] <= 31 || ipv4[0] === 192 && ipv4[1] === 168 || ipv4[0] === 100 && ipv4[1] >= 64 && ipv4[1] <= 127)) return;
+      if (!numeric && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)) return;
+      const link = element('a', 'Buka pembayaran'); link.href = parsed.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; parent.append(link);
+    } catch (_) { /* Missing links remain editable; never invent a payment portal. */ }
+  }
+  function simpleBillingDraft() {
+    const doc = billingDraft;
+    doc.simple ??= { version: 1, usd_per_usdt: null, usd_rate_source: null, installment_idr: null, installment_due_date: null, debt_principal_idr: null };
+    doc.simple.recurrence_updates ??= {};
+    const knownPrincipal = billingRecord?.summary?.debt;
+    if (doc.simple.debt_principal_idr == null && knownPrincipal?.principal_status === 'AVAILABLE') doc.simple.debt_principal_idr = knownPrincipal.principal_idr;
+    doc.cashflow ??= { payment_fee_actual_idr: null, payment_fee_estimated_idr: null, withdrawal_fee_actual_usdt: null, withdrawal_fee_estimated_usdt: null, withdrawal_fee_percent: null };
+    doc.bills.forEach((row, index) => {
+      if (row.kind === 'prepaid_usage') return;
+      row.id ??= 'legacy-'+index; row.currency ??= 'IDR';
+      row.amount ??= row.actual_idr ?? row.estimated_idr;
+      row.actual_idr = row.currency === 'IDR' ? row.amount : null; row.estimated_idr = null;
+    });
+    return doc;
+  }
+  function billAmount(row, value = row.amount) {
+    return value == null ? 'Belum diisi' : (row.currency === 'USD' ? '$' : 'Rp ')+Number(value).toLocaleString('id-ID', { maximumFractionDigits: 8 });
+  }
+  function billingRow(ident, name = '', amount = null, currency = 'IDR', due = null) {
+    return { id: ident, name, amount, currency, kind: 'subscription', actual_idr: currency === 'IDR' ? amount : null,
+      estimated_idr: null, due_date: due, payment_url: null, paid: false, evidence: 'Catatan pemilik', recurring: false };
+  }
+  const recurrenceFields = ['name', 'kind', 'amount', 'currency', 'actual_idr', 'estimated_idr', 'payment_url', 'evidence'];
+  function scheduleFor(row, doc = billingDraft) {
+    const ident = row.recurrence_id || row.id, updates = doc?.simple?.recurrence_updates || {};
+    return Object.hasOwn(updates, ident) ? updates[ident] : billingRecord?.recurrence_state?.[ident];
+  }
+  function scheduleDue(day) {
+    const [year, month] = billingMonth.split('-').map(Number), last = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    return billingMonth+'-'+String(Math.min(day, last)).padStart(2, '0');
+  }
+  function billingEditor(row) {
+    if (!billingScheduleDrafts[row.id]) {
+      const values = JSON.parse(JSON.stringify(row)), spec = scheduleFor(row);
+      if (row.paid === true && row.recurrence_id && spec) Object.assign(values, spec.bill, { due_date: scheduleDue(spec.day) });
+      if (row.recurrence_id && spec === null) values.recurring = false;
+      billingScheduleDrafts[row.id] = { values, dirty: false, dueChanged: false };
+    }
+    return billingScheduleDrafts[row.id];
+  }
+  function commitBillingEdits(doc) {
+    for (const row of doc.bills) {
+      const edit = billingScheduleDrafts[row.id]; if (!edit?.dirty) continue;
+      const values = edit.values, ident = row.recurrence_id || (values.recurring ? row.id : null), previous = scheduleFor(row, doc);
+      // Editing a paid subscription changes its following schedule, preserving
+      // the settled occurrence's name, amount, date, currency and payment.
+      if (!(row.paid === true && values.paid === true && ident)) Object.assign(row, values);
+      if (ident) {
+        row.recurrence_id = ident; row.recurring = values.recurring === true;
+        if (row.recurring) {
+          const day = edit.dueChanged || !previous ? Number(values.due_date?.slice(-2)) : previous.day;
+          const bill = {}; for (const key of recurrenceFields) bill[key] = values[key];
+          doc.simple.recurrence_updates[ident] = { day, bill };
+        } else doc.simple.recurrence_updates[ident] = null;
+      }
+      edit.dirty = false;
+    }
+  }
+  function billingFailure(error) {
+    if (error.message === 'Worker HTTP 401' || error.message === 'Worker HTTP 403') return 'Akses worker ditolak. Hubungkan ulang melalui menu Robot.';
+    if (error.message === 'Worker HTTP 400') return 'Periksa nama, nominal, tanggal, atau link tagihan.';
+    if (error.message === 'Worker HTTP 404') return 'Layanan tagihan belum tersedia pada alamat worker.';
+    if (error.message === 'Worker HTTP 409') return 'Tagihan berubah. Muat ulang sebelum menyimpan.';
+    if (error instanceof TypeError || /Load failed|Failed to fetch|NetworkError/i.test(error.message || '')) return 'Koneksi layanan tagihan gagal.';
+    return error.message || 'Tagihan belum tersedia.';
   }
   async function loadBilling(history = false) {
     if (!origin || billingBusy) return;
-    const current = generation, month = billingMonth; billingBusy = true; billingMessage = 'Membaca tagihan…'; paint();
+    const current = generation, month = billingMonth; billingBusy = true; billingMessage = 'Memuat…'; paint();
     try {
       const data = await request('/billing/'+(history ? 'history' : 'month')+'?month='+encodeURIComponent(month));
       if (current !== generation || month !== billingMonth) return;
       if (history) billingHistory = data.revisions;
       else {
-        if (data.document?.month !== month || !Number.isInteger(data.version) || !Array.isArray(data.document.bills)) throw Error('Format tagihan tidak valid');
-        billingRecord = data; billingDraft = JSON.parse(JSON.stringify(data.document)); billingHistory = null;
+        if (data.document?.month !== month || !Number.isInteger(data.version) || !Array.isArray(data.document.bills)) throw Error('Data tagihan tidak valid');
+        billingRecord = data; billingDraft = JSON.parse(JSON.stringify(data.display_document || data.document)); billingHistory = null; billingEditing = null; billingScheduleDrafts = {};
+        simpleBillingDraft();
       }
-      billingMessage = 'Data pemilik · bukan verifikasi provider.';
-    } catch (error) { if (current === generation) billingMessage = error.message+' · Tagihan belum dapat dipastikan.'; }
-    finally { if (current === generation) { billingBusy = false; paint(); } }
+      billingMessage = '';
+    } catch (error) { if (current === generation) billingMessage = billingFailure(error); }
+    finally { if (current === generation) { billingBusy = false; paint(true); } }
   }
   async function saveBilling() {
     if (!origin || !billingRecord || billingBusy) return;
-    const current = generation, month = billingMonth;
-    const document = JSON.parse(JSON.stringify(billingDraft)), version = billingRecord.version;
-    billingBusy = true; billingMessage = 'Menyimpan tagihan…'; paint();
+    const current = generation, month = billingMonth, draft = simpleBillingDraft(), version = billingRecord.version;
+    commitBillingEdits(draft);
+    const document = JSON.parse(JSON.stringify(draft));
+    billingBusy = true; billingMessage = 'Menyimpan…'; paint(true);
     try {
       const saved = await request('/billing/month', 'POST', { document, version });
       if (current !== generation || month !== billingMonth) return;
       const verified = await request('/billing/month?month='+encodeURIComponent(month));
       if (current !== generation || month !== billingMonth) return;
-      if (verified.version !== saved.version || JSON.stringify(verified.document) !== JSON.stringify(document)) throw Error('Verifikasi baca ulang gagal');
-      billingRecord = verified; billingDraft = JSON.parse(JSON.stringify(verified.document)); billingHistory = null;
-      billingMessage = 'Tersimpan dan dibaca ulang · revisi '+verified.version;
-    } catch (error) { if (current === generation) billingMessage = error.message+' · Belum terverifikasi. Muat ulang sebelum mencoba lagi.'; }
-    finally { if (current === generation) { billingBusy = false; paint(); } }
+      if (verified.version !== saved.version || JSON.stringify(verified.document) !== JSON.stringify(document)) throw Error('Simpanan belum terverifikasi');
+      billingRecord = verified; billingDraft = JSON.parse(JSON.stringify(verified.display_document || verified.document)); billingHistory = null; billingEditing = null; billingScheduleDrafts = {};
+      billingMessage = 'Tersimpan';
+    } catch (error) { if (current === generation) billingMessage = billingFailure(error)+' · Muat ulang sebelum mencoba lagi.'; }
+    finally { if (current === generation) { billingBusy = false; paint(true); } }
   }
   function renderBilling() {
     if (!billingMonth) billingMonth = wibDay().slice(0, 7);
-    content.append(notice('Tagihan dan kurs diisi pemilik dari invoice/usage resmi. Kosong = Belum tersedia, bukan nol. Tidak ada pembayaran atau penarikan otomatis.'));
-    billingField(content, 'Bulan (WIB)', 'billingMonth', billingMonth, value => {
+    const total = element('section', undefined, 'billing-total');
+    total.append(element('span', 'TOTAL USDT PERLU WD DARI BINANCE'));
+    const value = billingRecord?.summary?.withdrawal_estimate_usdt;
+    const amount = element('strong', value == null ? 'Belum tersedia' : Number(value).toLocaleString('id-ID', { maximumFractionDigits: 8 })+' USDT'); amount.id = 'billingTotal'; total.append(amount);
+    if (value == null) total.append(element('small', 'Lengkapi nominal, tanggal, atau kurs.'));
+    else if (billingRecord?.summary?.withdrawal_estimate_complete === false) total.append(element('small', 'Estimasi · biaya belum lengkap.'));
+    content.append(total);
+    const navigation = element('div', undefined, 'billing-navigation');
+    billingField(navigation, 'Bulan', 'billingMonth', billingMonth, value => {
       if (!/^20\d{2}-(0[1-9]|1[0-2])$/.test(value || '')) return;
-      billingMonth = value; billingRecord = billingDraft = billingHistory = null; loadBilling();
+      billingMonth = value; billingRecord = billingDraft = billingHistory = null; billingEditing = null; loadBilling();
     }, 'month');
-    const reload = element('button', 'Muat ulang tagihan'); reload.id = 'billingReload'; reload.disabled = !origin || billingBusy; reload.onclick = () => loadBilling(); content.append(reload);
-    content.append(notice(billingMessage || 'Belum tersedia · muat tagihan setelah worker terhubung.'));
-    content.append(element('p', 'Saldo OpenAI: Belum tersedia. Tidak ada sinkronisasi Usage API. Prepaid bukan langganan tetap. Masukkan usage resmi kumulatif sejak tanggal 1 sampai akhir hari WIB yang sudah selesai, beserta kredit tersisa pada tanggal yang sama. Semua bukti adalah catatan pemilik, bukan verifikasi otomatis.'));
-    billingLink(content, 'https://platform.openai.com/settings/organization/billing/overview', 'OpenAI · halaman billing resmi');
-    const metrics = billingRecord?.summary || {};
-    for (const [key, label, unit] of [
-      ['actual_cost_idr', 'Biaya aktual tercatat', 'IDR'], ['estimated_cost_idr', 'Estimasi biaya bulanan', 'IDR'],
-      ['prepaid_projected_usage_idr', 'Proyeksi usage prepaid sebulan', 'IDR'], ['prepaid_topup_estimate_idr', 'Estimasi top-up tambahan prepaid', 'IDR'],
-      ['withdrawal_estimate_usdt', 'Estimasi penarikan termasuk top-up dan fee', 'USDT'],
-      ['estimated_withdrawal_fee_usdt', 'Estimasi fee penarikan (termasuk persentase)', 'USDT'],
-      ['trading_net_usdt', 'PNL trading bulanan setelah fee Binance', 'USDT'],
-      ['net_profit_usdt', 'Profit bersih bulanan setelah biaya aktual', 'USDT'],
-      ['estimated_net_profit_usdt', 'Estimasi profit setelah biaya proyeksi', 'USDT']]) {
-      const value = metrics[key]; content.append(element('p', label+': '+(value == null ? 'Belum tersedia' : unit === 'IDR' ? 'Rp '+Number(value).toLocaleString('id-ID', { maximumFractionDigits: 2 }) : value+' USDT')));
-    }
-    content.append(element('p', 'Ringkasan memakai revisi tersimpan. PNL hanya tersedia jika seluruh bulan lengkap; fee Binance tidak dipotong ulang. Proyeksi usage = usage aktual ÷ hari tercakup × jumlah hari bulan; top-up = maksimum(0, proyeksi − usage aktual − kredit tersisa). Top-up bukan biaya kedua. Penarikan = ((invoice belum dibayar + top-up + fee pembayaran estimasi) ÷ kurs + fee tetap penarikan) ÷ (1 − persentase fee/100), dibulatkan ke atas 8 desimal. Profit aktual hanya memakai fee aktual; profit estimasi memakai fee estimasi. Unknown fee/kredit tetap Belum tersedia. Kurs IDR/USDT harus net spread; fee lain dicatat eksplisit.'));
-    if (!billingDraft) { if (!origin) content.append(renderConnection()); return; }
-    billingDraft.cashflow ??= { payment_fee_actual_idr: null, payment_fee_estimated_idr: null, withdrawal_fee_actual_usdt: null, withdrawal_fee_estimated_usdt: null, withdrawal_fee_percent: null };
-    for (const [key, id, label] of [
-      ['payment_fee_actual_idr', 'billingPaymentActual', 'Fee pembayaran aktual IDR'], ['payment_fee_estimated_idr', 'billingPaymentEstimate', 'Fee pembayaran estimasi IDR (total belum dibayar)'],
-      ['withdrawal_fee_actual_usdt', 'billingWithdrawalActual', 'Fee pencairan aktual USDT (di luar PNL Binance)'], ['withdrawal_fee_estimated_usdt', 'billingWithdrawalEstimate', 'Fee tetap pencairan estimasi USDT'],
-      ['withdrawal_fee_percent', 'billingWithdrawalPercent', 'Fee pencairan estimasi % dari jumlah bruto']]) {
-      billingField(content, label+' · kosong = unknown; isi 0 hanya jika terkonfirmasi', id, billingDraft.cashflow[key], value => { billingDraft.cashflow[key] = value; });
-    }
-    billingField(content, 'Kurs IDR per USDT (tanpa default)', 'billingFx', billingDraft.fx_idr_per_usdt, value => { billingDraft.fx_idr_per_usdt = value; });
-    billingField(content, 'Sumber dan tanggal kurs', 'billingFxSource', billingDraft.fx_source, value => { billingDraft.fx_source = value; });
-    const coverageLabel = element('label', 'Saya memastikan daftar biaya bulan ini lengkap'), coverage = element('input'); coverage.id = 'billingCoverage'; coverage.type = 'checkbox'; coverage.checked = billingDraft.coverage_confirmed; coverage.disabled = billingBusy;
-    coverage.onchange = () => { billingDraft.coverage_confirmed = coverage.checked; }; coverageLabel.append(coverage); content.append(coverageLabel);
-    billingDraft.bills.forEach((row, index) => {
-      const card = element('fieldset'), legend = element('legend', row.name || 'Biaya baru'); card.append(legend);
-      billingField(card, 'Nama layanan', 'billName'+index, row.name, value => { row.name = value || ''; });
-      const kindLabel = element('label', 'Jenis biaya'), kind = element('select'); kind.id = 'billKind'+index;
-      for (const [value, text] of [['subscription', 'Langganan / invoice'], ['prepaid_usage', 'Prepaid · pemakaian, bukan saldo']]) { const option = element('option', text); option.value = value; kind.append(option); }
-      kind.value = row.kind; kind.disabled = billingBusy; kind.onchange = () => { row.kind = kind.value; if (row.kind === 'prepaid_usage') { row.paid = null; row.due_date = null; row.usage ??= { through_date: '', available_credit_idr: null, credit_evidence: null }; } else { delete row.usage; } paint(true); }; kindLabel.append(kind); card.append(kindLabel);
-      billingField(card, 'Aktual Rupiah (invoice / usage terpakai)', 'billActual'+index, row.actual_idr, value => { row.actual_idr = value; });
-      billingField(card, 'Estimasi Rupiah / proyeksi usage sebulan', 'billEstimate'+index, row.estimated_idr, value => { row.estimated_idr = value; });
-      if (row.kind === 'prepaid_usage') {
-        row.usage ??= { through_date: '', available_credit_idr: null, credit_evidence: null };
-        billingField(card, 'Usage resmi dari tanggal 1 sampai akhir hari WIB', 'billUsageThrough'+index, row.usage.through_date, value => { row.usage.through_date = value; }, 'date');
-        billingField(card, 'Kredit tersisa IDR pada tanggal usage (catatan pemilik, bukan saldo terverifikasi)', 'billCredit'+index, row.usage.available_credit_idr, value => { row.usage.available_credit_idr = value; });
-        billingField(card, 'Bukti kredit resmi dan tanggal; konversi USD→IDR jika diperlukan', 'billCreditEvidence'+index, row.usage.credit_evidence, value => { row.usage.credit_evidence = value; });
-        content.append(element('p', 'Estimasi prepaid dihitung dari usage aktual dan tanggal, bukan nominal bulanan tetap. Kredit USD harus dikonversi dengan bukti kurs pemilik; USDT bukan USD.'));
+    const reload = element('button', 'Muat ulang'); reload.id = 'billingReload'; reload.disabled = !origin || billingBusy; reload.onclick = () => loadBilling(); navigation.append(reload); content.append(navigation);
+    if (billingMessage) content.append(element('p', billingMessage, 'billing-message'));
+    if (!billingDraft) { content.append(element('p', 'Hubungkan worker untuk memuat tagihan.')); if (!origin) content.append(renderConnection()); return; }
+    const doc = simpleBillingDraft();
+    if (!doc.bills.length) content.append(element('p', 'Belum ada tagihan bulan ini.', 'billing-empty'));
+    doc.bills.forEach((row, index) => {
+      if (row.kind === 'prepaid_usage') return;
+      const card = element('section', undefined, 'billing-card'); card.dataset.billId = row.id;
+      const heading = element('div', undefined, 'billing-card-head'); heading.append(element('strong', row.name || 'Tagihan baru'));
+      heading.append(element('span', row.paid === true ? 'Lunas' : 'Belum lunas', row.paid === true ? 'billing-paid' : 'billing-unpaid')); card.append(heading);
+      const facts = element('div', undefined, 'billing-card-facts'); facts.append(element('b', billAmount(row)), element('span', row.due_date ? 'Jatuh tempo '+row.due_date.split('-').reverse().join('/') : 'Tanggal belum diisi')); card.append(facts);
+      if (row.recurring === true) card.append(element('small', 'Bulanan', 'billing-recurring'));
+      if (billingEditing === index) {
+        const edit = billingEditor(row), values = edit.values;
+        const change = (key, value) => {
+          values[key] = value; edit.dirty = true;
+          if (key === 'amount' || key === 'currency') values.actual_idr = values.currency === 'IDR' ? values.amount : null;
+          if (key === 'due_date') edit.dueChanged = true;
+        };
+        if (row.paid === true && row.recurrence_id) card.append(element('small', 'Perubahan jadwal berlaku untuk bulan berikutnya.'));
+        billingField(card, 'Nama', 'billName'+index, values.name, value => change('name', value || ''));
+        billingField(card, 'Nominal', 'billAmount'+index, values.amount, value => change('amount', value), 'number');
+        const currencyLabel = element('label', 'Mata uang'), currency = element('select'); currency.id = 'billCurrency'+index; currency.disabled = billingBusy || row.kind === 'debt_installment';
+        for (const code of ['IDR', 'USD']) { const option = element('option', code); option.value = code; currency.append(option); }
+        currency.value = values.currency; currency.onchange = () => change('currency', currency.value); currencyLabel.append(currency); card.append(currencyLabel);
+        billingField(card, 'Jatuh tempo', 'billDue'+index, values.due_date, value => change('due_date', value), 'date');
+        billingField(card, 'Link pembayaran', 'billUrl'+index, values.payment_url, value => change('payment_url', value), 'url');
+        const monthlyLabel = element('label', 'Bulanan'), monthly = element('input'); monthly.type = 'checkbox'; monthly.id = 'billRecurring'+index;
+        monthly.checked = values.recurring === true; monthly.disabled = billingBusy || row.kind !== 'subscription'; monthly.onchange = () => change('recurring', monthly.checked); monthlyLabel.prepend ? monthlyLabel.prepend(monthly) : monthlyLabel.append(monthly); card.append(monthlyLabel);
+        const paidLabel = element('label', 'Pembayaran'), paid = element('select'); paid.id = 'billPaid'+index; paid.disabled = billingBusy;
+        for (const [value, text] of [['false', 'Belum lunas'], ['true', 'Lunas']]) { const option = element('option', text); option.value = value; paid.append(option); }
+        paid.value = String(values.paid === true); paid.onchange = () => change('paid', paid.value === 'true'); paidLabel.append(paid); card.append(paidLabel);
       }
-      if (row.kind === 'subscription') {
-        billingField(card, 'Jatuh tempo (bulan terpilih)', 'billDue'+index, row.due_date, value => { row.due_date = value; }, 'date');
-        const paidLabel = element('label', 'Status pembayaran (catatan pemilik)'), paid = element('select'); paid.id = 'billPaid'+index;
-        for (const [value, text] of [['', 'Belum tersedia'], ['false', 'Belum dibayar'], ['true', 'Sudah dibayar']]) { const option = element('option', text); option.value = value; paid.append(option); }
-        paid.value = row.paid === null ? '' : String(row.paid); paid.disabled = billingBusy; paid.onchange = () => { row.paid = paid.value === '' ? null : paid.value === 'true'; }; paidLabel.append(paid); card.append(paidLabel);
-      }
-      billingField(card, 'Portal pembayaran: OpenAI, Hostinger, Hetzner, Vultr atau DigitalOcean; tanpa query/token', 'billUrl'+index, row.payment_url, value => { row.payment_url = value; }, 'url');
-      billingLink(card, row.payment_url, 'Buka portal provider · diisi pemilik, invoice belum diverifikasi');
-      billingField(card, 'Referensi invoice/usage, periode dan metode proyeksi (tanpa rahasia)', 'billEvidence'+index, row.evidence, value => { row.evidence = value || ''; });
-      const remove = element('button', 'Hapus dari revisi baru'); remove.disabled = billingBusy; remove.onclick = () => { billingDraft.bills.splice(index, 1); paint(); }; card.append(remove); content.append(card);
+      const actions = element('div', undefined, 'billing-card-actions'); billingLink(actions, row.payment_url);
+      const edit = element('button', billingEditing === index ? 'Tutup edit' : 'Edit'); edit.id = 'billEdit'+index; edit.disabled = billingBusy; edit.onclick = () => { billingEditing = billingEditing === index ? null : index; paint(true); };
+      const paid = element('button', row.paid === true ? 'Tandai belum lunas' : 'Tandai lunas'); paid.id = 'billMarkPaid'+index; paid.disabled = billingBusy; paid.onclick = () => { commitBillingEdits(doc); row.paid = row.paid !== true; saveBilling(); };
+      const remove = element('button', 'Hapus'); remove.id = 'billDelete'+index; remove.disabled = billingBusy; remove.onclick = () => {
+        commitBillingEdits(doc);
+        if (row.recurrence_id) doc.simple.recurrence_updates[row.recurrence_id] = null;
+        if (row.paid === true && row.recurrence_id) row.recurring = false; else doc.bills.splice(index, 1);
+        delete billingScheduleDrafts[row.id]; billingEditing = null; saveBilling();
+      };
+      actions.append(edit, paid, remove); card.append(actions); content.append(card);
     });
-    const add = element('button', 'Tambah biaya'); add.id = 'billingAdd'; add.disabled = billingBusy || billingDraft.bills.length >= 30;
-    add.onclick = () => { billingDraft.bills.push({ name: '', kind: 'subscription', actual_idr: null, estimated_idr: null, due_date: null, payment_url: null, paid: null, evidence: '' }); paint(); };
-    const save = element('button', 'Simpan revisi (token kontrol)'); save.id = 'billingSave'; save.disabled = billingBusy; save.onclick = saveBilling;
-    const history = element('button', 'Riwayat revisi'); history.id = 'billingHistory'; history.disabled = billingBusy; history.onclick = () => loadBilling(true); content.append(add, save, history);
-    for (const record of billingHistory || []) { const details = element('details'); details.append(element('summary', 'Revisi '+record.version+' · '+record.recorded_at), element('pre', JSON.stringify(record.document))); content.append(details); }
+    const add = element('button', '+ Tambah tagihan'); add.id = 'billingAdd'; add.disabled = billingBusy || doc.bills.length >= 30;
+    add.onclick = () => { doc.bills.push(billingRow('bill-'+Date.now()+'-'+doc.bills.length)); billingEditing = doc.bills.length-1; paint(true); };
+    const save = element('button', 'Simpan perubahan'); save.id = 'billingSave'; save.disabled = billingBusy; save.onclick = saveBilling; content.append(add, save);
+    const remaining = billingRecord?.summary?.debt?.remaining_idr;
+    const principal = billingRecord?.summary?.debt?.principal_idr;
+    const debtBalance = element('div', undefined, 'billing-debt');
+    debtBalance.append(element('span', 'Utang awal '+(principal == null ? billingRecord?.summary?.debt?.principal_status === 'CONFLICT' ? 'perlu diperiksa' : 'belum tersedia' : 'Rp '+Number(principal).toLocaleString('id-ID'))), element('strong', 'Sisa '+(remaining == null ? 'belum tersedia' : 'Rp '+Number(remaining).toLocaleString('id-ID')))); content.append(debtBalance);
+    const debt = element('details', undefined, 'billing-settings'); debt.append(element('summary', 'Cicilan utang kantor'));
+    billingField(debt, 'Cicilan bulan ini (IDR)', 'billingInstallment', doc.simple.installment_idr, value => { doc.simple.installment_idr = value; }, 'number');
+    billingField(debt, 'Jatuh tempo cicilan', 'billingInstallmentDue', doc.simple.installment_due_date, value => { doc.simple.installment_due_date = value; }, 'date');
+    const installment = element('button', 'Masukkan cicilan ke tagihan'); installment.id = 'billingInstallmentAdd'; installment.disabled = billingBusy;
+    installment.onclick = () => {
+      if (!(Number(doc.simple.installment_idr) > 0) || !doc.simple.installment_due_date?.startsWith(billingMonth+'-')) { billingMessage = 'Isi nominal dan tanggal cicilan bulan ini.'; paint(true); return; }
+      const ident = 'office-debt-'+billingMonth, previous = doc.bills.find(row => row.id === ident);
+      if (previous) { previous.amount = previous.actual_idr = doc.simple.installment_idr; previous.due_date = doc.simple.installment_due_date; }
+      else { const row = billingRow(ident, 'Cicilan utang kantor', doc.simple.installment_idr, 'IDR', doc.simple.installment_due_date); row.kind = 'debt_installment'; row.debt_id = 'office-initial'; doc.bills.push(row); }
+      saveBilling();
+    }; debt.append(installment); content.append(debt);
+    const settings = element('details', undefined, 'billing-settings'); settings.append(element('summary', 'Kurs & biaya'));
+    billingField(settings, '1 USDT = berapa IDR?', 'billingFx', doc.fx_idr_per_usdt, value => { doc.fx_idr_per_usdt = value; doc.fx_source = value == null ? null : 'Input pemilik '+wibDay(); }, 'number');
+    billingField(settings, '1 USDT = berapa USD?', 'billingUsdFx', doc.simple.usd_per_usdt, value => { doc.simple.usd_per_usdt = value; doc.simple.usd_rate_source = value == null ? null : 'Input pemilik '+wibDay(); }, 'number');
+    billingField(settings, 'Fee pembayaran (IDR)', 'billingPaymentEstimate', doc.cashflow.payment_fee_estimated_idr, value => { doc.cashflow.payment_fee_estimated_idr = value; }, 'number');
+    billingField(settings, 'Fee WD (USDT)', 'billingWithdrawalEstimate', doc.cashflow.withdrawal_fee_estimated_usdt, value => { doc.cashflow.withdrawal_fee_estimated_usdt = value; }, 'number');
+    billingField(settings, 'Fee WD (%)', 'billingWithdrawalPercent', doc.cashflow.withdrawal_fee_percent, value => { doc.cashflow.withdrawal_fee_percent = value; }, 'number');
+    settings.append(element('small', 'Isi 0 hanya jika memang tidak ada biaya.')); content.append(settings);
   }
 
   function element(tag, text, className) {
@@ -323,17 +411,19 @@
   }
   function renderRobot() {
     const robot = snapshot?.robot, account = snapshot?.account;
-    const main = section('COORDINATOR 24/7');
+    const main = element('section', undefined, 'dashboard-section');
     const actions = element('div', undefined, 'dashboard-actions');
     const toggle = element('button', 'ROBOT TRADING: '+(robot ? robot.robot_on ? 'ON' : 'OFF' : 'BELUM TERHUBUNG'));
     toggle.id = 'robotToggle'; toggle.disabled = !origin || !online || saving || !robot;
     toggle.setAttribute('aria-pressed', String(robot?.robot_on === true));
     toggle.onclick = () => saveSettings({ robot_on: !snapshot.robot.robot_on }); actions.append(toggle); main.append(actions);
+    main.append(element('p', 'Worker: '+(online ? 'TERHUBUNG' : origin ? 'TIDAK TERJANGKAU' : 'BELUM TERHUBUNG')+
+      ' · Diperiksa '+date(snapshot?.robot?.checked_at ?? snapshot?.generated_at), 'dashboard-status'));
     main.append(element('p', message, 'dashboard-message'));
     const riskControls = element('div', undefined, 'dashboard-connection dashboard-risk');
-    const riskLabel = element('label', 'RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE (USDT, lebih dari 0 sampai 100)');
+    const riskLabel = element('label', 'RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE (USDT)');
     const risk = element('input'); risk.id = 'robotRisk'; risk.type = 'number'; risk.inputMode = 'decimal';
-    risk.min = '0'; risk.max = '100'; risk.step = 'any'; risk.value = riskDraft ?? robot?.risk_target_usdt ?? '5';
+    risk.min = '0'; risk.max = '100'; risk.step = 'any'; risk.value = riskDraft ?? robot?.risk_target_usdt ?? '';
     risk.disabled = !origin || !online || saving || !robot; risk.oninput = () => { riskDraft = risk.value; };
     riskLabel.append(risk);
     const riskActions = element('div', undefined, 'dashboard-actions'), riskSave = element('button', 'SIMPAN RISIKO');
@@ -342,68 +432,40 @@
       try { riskDraft = risk.value; saveSettings({ risk_target_usdt: validRisk(risk.value) }); }
       catch (error) { message = error.message; paint(); }
     };
-    riskActions.append(riskSave); riskControls.append(riskLabel, riskActions,
-      notice('Ukuran posisi dihitung mendekati batas risiko, termasuk fee entry, fee exit, dan cadangan slippage yang tercatat pada setup. Estimasi dapat berbeda dari biaya aktual. Perubahan risiko berlaku hanya untuk analisis baru; setup dan intent yang sudah dibuat tetap memakai risiko sebelumnya.'));
-    main.append(riskControls);
+    riskActions.append(riskSave); riskControls.append(riskLabel, riskActions); main.append(riskControls);
     const ownerAction = researchOwnerAction();
-    const protections = protectionObservations(robot);
-    const incomplete = protections.find(row => protectionLabel(row).startsWith('PROTEKSI BELUM LENGKAP'));
-    const status = element('p', ownerAction ? 'BOT STATUS: '+ownerAction.label+' · Diperiksa '+date(ownerAction.checkedAt) : incomplete ? 'BOT STATUS: '+protectionLabel(incomplete) : robot ? 'BOT STATUS: '+robot.bot_status+(robot.wait_reason ? ' · WAIT: '+robot.wait_reason : '')+(robot.failure_code ? ' · '+robot.failure_code : '') : 'Menunggu status worker.', 'dashboard-status');
+    const incomplete = protectionObservations(robot).find(row => protectionLabel(row).startsWith('PROTEKSI BELUM LENGKAP'));
+    const status = element('p', 'BOT STATUS: '+(ownerAction ? ownerAction.label : incomplete ? protectionLabel(incomplete) : robot?.bot_status ?? 'BELUM TERSEDIA')+
+      (robot?.failure_code ? ' · '+robot.failure_code : ''), 'dashboard-status');
     status.id = 'robotStatus'; status.setAttribute('role', 'status'); main.append(status);
-    if (ownerAction) {
-      main.append(notice('LOGIN NEURO → BUKA BROWSER LOGIN → selesaikan tindakan yang diminta → SELESAI LOGIN. Status ON/OFF tetap sesuai pilihan Anda; setelah chat siap, robot yang masih ON melanjutkan otomatis.', 'warning'));
-      const login = element('button', 'LOGIN NEURO'); login.id = 'robotNeurobroAction';
-      login.onclick = () => { view = 'neurobro'; panel.scrollTop = 0; paint(); }; main.append(login);
-    }
+    main.append(element('p', 'WAIT: '+(robot?.wait_reason ?? '—'), 'dashboard-status'));
     const metrics = element('div', undefined, 'dashboard-metrics');
     field(metrics, 'Risk per SL', number(robot?.risk_target_usdt)+' USDT');
-    field(metrics, 'Posisi / kapasitas', number(account?.active_positions, 0)+' / 2');
+    field(metrics, 'Posisi / kapasitas', number(robot?.running_positions ?? account?.active_positions, 0)+' / '+number(robot?.max_positions, 0));
     field(metrics, 'Slot tersedia', number(robot?.available_slots, 0));
-    field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0)+' / 2');
-    main.append(metrics, gatewayNote(robot));
-    for (const observation of protections) {
-      const row = element('article', undefined, 'dashboard-row');
-      row.append(element('strong', observation.symbol+' · '+protectionLabel(observation)),
-        element('p', 'Diperiksa '+date(observation.observed_at)+' · SL '+(observation.sl_order_id || 'belum terkonfirmasi')+
-          ' · TP '+(observation.tp_order_id || 'belum terkonfirmasi')));
-      main.append(row);
-    }
-    const riskEstimates = robot?.risk_estimates;
-    if (riskEstimates && typeof riskEstimates === 'object' && !Array.isArray(riskEstimates)) {
-      for (const estimate of Object.values(riskEstimates)) {
-        if (!estimate || estimate.kind !== 'MONITORING_ESTIMATE_ONLY' || estimate.source !== 'RISK_MANAGER' ||
-            !/^[A-Z0-9]{2,18}USDT$/.test(estimate.symbol || '') || timestamp(estimate.observed_at) === null) continue;
-        if (estimate.status === 'AVAILABLE') {
-          const costs = estimate.components || {};
-          main.append(notice('ESTIMASI RISIKO '+estimate.symbol+': '+number(estimate.estimated_total_risk, 6)+
-            ' USDT · anggaran order '+number(estimate.original_risk_target_usdt, 6)+
-            ' · selisih estimasi '+number(estimate.estimated_budget_difference_usdt, 6)+' USDT. '+
-            'Kerugian harga '+number(costs.gross_risk, 6)+', fee entry '+number(costs.entry_fee_usdt, 6)+
-            ', fee exit SL '+number(costs.sl_exit_fee_usdt, 6)+', dampak book '+number(costs.sl_book_impact_usdt, 6)+
-            ', cadangan likuiditas '+number(costs.sl_liquidity_uncertainty_usdt, 6)+
-            ' USDT. Basis quantity order semula; parameter order tidak diubah. Diperiksa '+date(estimate.observed_at)+'.'));
-        } else if (estimate.status === 'UNAVAILABLE') {
-          main.append(notice('Estimasi risiko terbaru '+estimate.symbol+' belum tersedia: '+
-            (estimate.failure_code || 'RISK_ESTIMATE_UNAVAILABLE')+'. Parameter dan proteksi order tetap dipertahankan. Diperiksa '+date(estimate.observed_at)+'.'));
-        }
-      }
-    }
-    main.append(notice('Maksimal 2 entry bot per hari WIB. Posisi bawaan dari hari sebelumnya dan posisi manual tetap memakai slot dari kapasitas 2 coin. Order entry yang belum terisi juga memakai slot.'));
-    main.append(notice('ON menjalankan coordinator ketika slot tersedia. OFF menghentikan riset dan pengiriman entry baru. Pemantauan fill serta pemulihan proteksi untuk order dan posisi yang sudah ada tetap berjalan. OFF tidak menutup posisi atau membatalkan order. Dashboard tetap dapat membaca saldo dan posisi.'));
-    if (robot?.last_decision) main.append(notice('Keputusan terakhir: '+robot.last_decision.symbol+' · '+robot.last_decision.status+(robot.last_decision.failure_code ? ' · '+robot.last_decision.failure_code : '')));
-    content.append(main);
-    const current = section('AKUN FUTURES'); source(current, account);
-    const details = element('div', undefined, 'dashboard-metrics');
-    field(details, 'Wallet USDT', number(account?.usdt_wallet_balance)); field(details, 'USDT tersedia', number(account?.usdt_available_balance));
-    field(details, 'Posisi manual', Array.isArray(robot?.manual_exposure) && robot.manual_exposure.length ? robot.manual_exposure.join(', ') : '—');
-    current.append(details);
-    if (account?.positions?.length) for (const row of account.positions) {
+    field(metrics, 'Entry bot hari ini', number(robot?.bot_entries_today, 0)+' / '+number(robot?.daily_entry_limit, 0));
+    main.append(metrics); content.append(main);
+    const current = section('AKUN FUTURES');
+    current.append(element('p', 'Binance Futures · Diperiksa '+date(account?.checked_at), 'dashboard-status'));
+    const details = element('div', undefined, 'dashboard-metrics'), visibleAccount = accountCurrent() ? account : null;
+    field(details, 'Wallet USDT', number(visibleAccount?.usdt_wallet_balance));
+    field(details, 'USDT tersedia', number(visibleAccount?.usdt_available_balance));
+    field(details, 'Posisi manual', visibleAccount && Array.isArray(robot?.manual_exposure) ? robot.manual_exposure.length ? robot.manual_exposure.join(', ') : 'Tidak ada' : 'Belum tersedia');
+    field(details, 'Status akun', account?.status ?? 'BELUM TERSEDIA');
+    field(details, 'Posisi aktif Binance', number(visibleAccount?.active_positions, 0)); current.append(details);
+    if (visibleAccount?.positions?.length) for (const row of visibleAccount.positions) {
       const position = element('article', undefined, 'dashboard-row');
       position.append(element('strong', row.symbol+' · '+row.side), element('p', `Quantity ${number(row.quantity, 8)} · Entry ${number(row.entry_price, 8)} · Mark ${number(row.mark_price, 8)} · Unrealized PnL ${number(row.unrealized_pnl)} USDT`)); current.append(position);
     }
-    else current.append(notice(account?.status === 'CONNECTED' ? 'Tidak ada posisi aktif yang dilaporkan Binance.' : 'Posisi aktif belum tersedia.'));
-    content.append(current, renderConnection());
+    else current.append(notice(visibleAccount ? 'Tidak ada posisi aktif.' : 'Posisi aktif belum tersedia.'));
+    content.append(current);
+    const last = section('KEPUTUSAN TERAKHIR');
+    field(last, 'Coin', robot?.last_decision?.symbol ?? '—');
+    field(last, 'Status', robot?.last_decision?.status ?? '—');
+    // Candidate status is not an exchange order receipt. This field is not exposed by the current DTO.
+    field(last, 'Hasil order', robot?.last_decision?.failure_code ?? 'Belum tersedia'); content.append(last, renderConnection());
   }
+
   function renderConnection() {
     const details = element('details', undefined, 'dashboard-connection'); details.open = !origin;
     details.append(element('summary', 'Koneksi worker privat'));
@@ -465,19 +527,7 @@
     if (loginMessage) main.append(element('p', loginMessage, 'dashboard-message'));
     main.append(notice('Untuk coin yang dipilih, robot mengirim dua gambar chart realtime Binance Futures: 15 menit dan 1 jam. Login dan CAPTCHA diselesaikan langsung oleh pengguna pada browser VPS.'));
     main.append(notice('Saat sesi logout atau membutuhkan verifikasi, screening dan analisis baru menunggu login. Login tidak mengaktifkan robot atau mengubah posisi Binance.'));
-    const agent = agentState(), agentPanel = section('AGENT GPT-5 MINI');
-    const agentStatus = element('p', agent.label, 'dashboard-status');
-    agentStatus.id = 'agentStatus'; agentStatus.dataset.status = agent.status; agentStatus.setAttribute('role', 'status');
-    agentPanel.append(agentStatus);
-    if (agent.checkedAt) {
-      agentPanel.append(notice('Diperiksa '+date(agent.checkedAt)));
-      field(agentPanel, 'Backend', agent.dependencies.backend ? 'Terverifikasi' : 'Belum terverifikasi');
-      field(agentPanel, 'Model GPT-5 Mini', agent.dependencies.model ? 'Panggilan API terverifikasi' : 'Belum terverifikasi');
-      agentPanel.append(notice(agent.verified ? 'Integrasi agent terverifikasi pada pemeriksaan terakhir.' :
-        'Proses agent dan kesiapan seluruh integrasi diperiksa secara terpisah.', agent.verified ? 'normal' : 'warning'));
-    }
-    agentPanel.append(notice('Status agent tidak mengaktifkan robot. Login Neurobro, pengaturan risiko, dan kontrol ON / OFF tetap dikelola melalui kantor ini.'));
-    content.append(main, agentPanel, renderConnection());
+    content.append(main);
   }
   function clearLoginAccess() {
     clearTimeout(loginExpiryTimer); loginExpiryTimer = null;
@@ -787,7 +837,7 @@
     clearLoginAccess();
     generation++; revision++; clearInterval(timer); timer = null; token = ''; origin = ''; snapshot = null;
     researchOwnerNotice = null;
-    billingMonth = billingRecord = billingDraft = billingHistory = null; billingBusy = false; billingMessage = '';
+    billingMonth = billingRecord = billingDraft = billingHistory = null; billingEditing = null; billingScheduleDrafts = {}; billingBusy = false; billingMessage = '';
     polling = false; saving = false; refreshRequested = false; online = false;
     riskDraft = null; resetRiskOnRefresh = null; calendarMonth = null; selectedDay = null;
     loginBusy = false; loginMessage = '';

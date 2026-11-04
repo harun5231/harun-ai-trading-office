@@ -160,72 +160,64 @@ export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff',
   const root = new THREE.Group();
   root.name = `avatar-${id || index}`;
   root.userData = { id: id || String(index), role, name, forward: '+Z' };
-  const skin = material(index % 4 === 3 ? '#b98162' : index % 4 === 2 ? '#d5a07e' : '#f0c6a5');
-  const suit = material(index % 3 === 1 ? '#1b2844' : '#142238');
-  const trouser = material('#111d30');
-  const white = material('#f6f8ff');
-  const black = material('#10131e', 0.45);
-  const hair = material(index % 4 === 2 ? '#292122' : '#141923', 0.48);
-  const colored = material(accent, 0.45);
-  const lapel = material('#2a3b57', 0.58);
-  const iris = material(index % 2 ? '#559db3' : '#716ac4', 0.35);
-  const cheek = material('#d89c97');
+  // Smooth, full-body mascot rigs keep the proven limb lengths and chair/desk
+  // contacts. Colour variation identifies colleagues without changing role IDs.
+  const skin = material(['#9451dc', '#9b58df', '#8750cf', '#a064df'][index % 4], 0.48);
+  const skinShade = material('#7135aa', 0.62);
+  const suit = material(['#e47c32', '#d77538', '#de9144', '#d46d39'][index % 4], 0.78);
+  const trouser = material(role === 'boss' ? '#735077' : '#bf6137', 0.83);
+  const white = material('#f6eee0', 0.78);
+  const black = material('#211c32', 0.45);
+  const colored = material(accent, 0.55);
+  const iris = material('#f1ac42', 0.37);
   const hips = group(root, 'hips', [0, 1.02, 0]);
   const spine = group(hips, 'spine', [0, 0.015, 0]);
-  mesh(spine, 'box', suit, [0, 0.285, 0], [0.43, 0.51, 0.29], 'tailored-jacket');
-  mesh(spine, 'sphere', suit, [0, 0.53, 0], [0.228, 0.09, 0.142]);
-  // The trouser seat stays on the cushion while the jacket leans forward.
-  // Its underside is hipY-.09, exactly matching the supplied seat height.
+  mesh(spine, 'sphere', suit, [0, 0.285, 0], [0.235, 0.302, 0.165], 'mascot-office-jacket');
+  mesh(spine, 'sphere', suit, [0, 0.50, 0], [0.247, 0.095, 0.147], 'jacket-shoulders');
+  // The underside of the seat is hipY-.09, preserving the cushion contact.
   mesh(hips, 'sphere', trouser, [0, -0.036, -0.08], [0.18, 0.054, 0.14], 'tailored-seat');
-  triangle(spine, white, [-0.095, 0.565, 0.155, 0, 0.255, 0.16, 0.095, 0.565, 0.155], owned, 'white-shirt');
-  triangle(spine, lapel, [-0.205, 0.54, 0.157, -0.065, 0.34, 0.168, -0.018, 0.54, 0.17], owned, 'left-lapel');
-  triangle(spine, lapel, [0.205, 0.54, 0.157, 0.018, 0.54, 0.17, 0.065, 0.34, 0.168], owned, 'right-lapel');
-  const tie = mesh(spine, 'box', colored, [0, 0.437, 0.177], [0.042, 0.175, 0.014], 'tie');
-  tie.rotation.z = 0.035;
-  triangle(spine, colored, [-0.021, 0.35, 0.187, 0, 0.319, 0.187, 0.021, 0.35, 0.187], owned, 'tie-tip');
-  mesh(spine, 'box', badge(role, accent, owned), [-0.128, 0.37, 0.177], [0.093, 0.052, 0.011], 'office-badge');
+  mesh(spine, 'cylinder', white, [0, 0.56, 0], [0.105, 0.07, 0.095], 'soft-office-collar');
+  mesh(spine, 'box', white, [0, 0.304, 0.163], [0.018, 0.405, 0.016], 'jacket-zip');
+  mesh(spine, 'box', black, [0.015, 0.405, 0.179], [0.018, 0.038, 0.012], 'zip-pull');
+  mesh(spine, 'sphere', suit, [0, 0.037, 0], [0.217, 0.046, 0.151], 'jacket-waistband');
+  for (const side of [-1, 1]) {
+    const pocket = mesh(spine, 'box', white, [side * 0.136, 0.19, 0.143], [0.087, 0.014, 0.012], 'jacket-pocket-trim');
+    pocket.rotation.z = side * 0.25;
+  }
+  mesh(spine, 'box', badge(role, accent, owned), [-0.123, 0.386, 0.156], [0.083, 0.045, 0.011], 'office-badge');
   mesh(spine, 'cylinder', skin, [0, 0.602, 0], [0.065, 0.105, 0.065], 'neck');
   const head = group(spine, 'head', [0, 0.812, 0.005]);
-  mesh(head, 'sphere', skin, [0, 0, 0], [0.333, 0.337, 0.284], 'anime-head');
-  mesh(head, 'sphere', skin, [0, -0.154, 0.023], [0.251, 0.18, 0.243], 'soft-jaw');
+  mesh(head, 'sphere', skin, [0, 0.012, 0], [0.329, 0.344, 0.283], 'purple-mascot-head');
+  mesh(head, 'sphere', skin, [0, -0.151, 0.027], [0.247, 0.178, 0.241], 'soft-jaw');
   for (const side of [-1, 1]) {
-    mesh(head, 'sphere', skin, [side * 0.319, -0.023, 0], [0.049, 0.075, 0.035], 'ear');
-    mesh(head, 'sphere', cheek, [side * 0.202, -0.076, 0.239], [0.054, 0.015, 0.007]);
-  }
-  const cap = mesh(head, 'hair', hair, [0, 0.027, -0.012], [0.344, 0.348, 0.298], 'slick-hair-cap');
-  cap.rotation.z = -0.065;
-  for (let i = 0; i < 5; i += 1) {
-    const lock = mesh(head, 'cone', hair, [-0.233 + i * 0.099, 0.178 + i * 0.009, 0.205],
-      [0.094, 0.23 - i * 0.012, 0.078], `swept-hair-${i}`);
-    lock.rotation.z = 2.6;
-    lock.rotation.x = -0.42;
+    mesh(head, 'sphere', skin, [side * 0.319, -0.015, 0], [0.047, 0.074, 0.036], 'ear');
+    mesh(head, 'sphere', skinShade, [side * 0.327, -0.014, 0.022], [0.023, 0.041, 0.014], 'ear-inner');
   }
   const eyes = [];
   for (const side of [-1, 1]) {
-    const eye = group(head, side < 0 ? 'left-eye' : 'right-eye', [side * 0.113, 0.022, 0.265]);
-    mesh(eye, 'sphere', white, [0, 0, 0], [0.071, 0.085, 0.015], 'eye-white');
-    mesh(eye, 'sphere', iris, [0, -0.004, 0.015], [0.038, 0.061, 0.012], 'anime-iris');
-    mesh(eye, 'sphere', black, [0, -0.003, 0.026], [0.019, 0.044, 0.007], 'pupil');
-    mesh(eye, 'sphere', white, [-0.014, 0.023, 0.033], [0.011, 0.016, 0.005], 'eye-glint');
-    mesh(eye, 'sphere', white, [0.016, -0.028, 0.032], [0.006, 0.008, 0.004], 'eye-glint-small');
-    curve(head, black, [[side * 0.047, 0.127, 0.23], [side * 0.107, 0.155, 0.227], [side * 0.171, 0.135, 0.208]], 0.009, owned, 'expressive-brow');
-    const lash = mesh(eye, 'box', black, [side * 0.063, 0.048, 0.016], [0.027, 0.013, 0.009], 'upper-lash');
-    lash.rotation.z = side * 0.6;
+    const eye = group(head, side < 0 ? 'left-eye' : 'right-eye', [side * 0.119, 0.019, 0.261]);
+    mesh(eye, 'sphere', black, [0, 0, 0], [0.085, 0.069, 0.025], 'soft-eye-outline');
+    mesh(eye, 'sphere', white, [0, -0.002, 0.018], [0.067, 0.052, 0.014], 'eye-white');
+    mesh(eye, 'sphere', iris, [-side * 0.008, -0.003, 0.031], [0.037, 0.047, 0.012], 'amber-iris');
+    mesh(eye, 'sphere', black, [-side * 0.008, -0.002, 0.041], [0.019, 0.034, 0.008], 'pupil');
+    mesh(eye, 'sphere', white, [-side * 0.008 - 0.01, 0.016, 0.049], [0.009, 0.012, 0.004], 'eye-glint');
+    curve(head, black, [[side * 0.048, 0.119, 0.25], [side * 0.111, 0.143, 0.238], [side * 0.182, 0.116, 0.213]], 0.013, owned, 'expressive-brow');
     eyes.push(eye);
   }
-  mesh(head, 'sphere', skin, [0, -0.087, 0.29], [0.023, 0.03, 0.025], 'nose');
-  curve(head, material('#9a565c'), [[-0.046, -0.139, 0.266], [0, -0.157, 0.284], [0.046, -0.139, 0.266]], 0.007, owned, 'smile');
+  mesh(head, 'sphere', skin, [0, -0.077, 0.292], [0.037, 0.038, 0.035], 'nose');
+  curve(head, skinShade, [[-0.067, -0.139, 0.271], [0, -0.158, 0.291], [0.07, -0.126, 0.266]], 0.009, owned, 'warm-smile');
+  mesh(head, 'sphere', skinShade, [0.078, -0.124, 0.264], [0.012, 0.014, 0.006], 'smile-dimple');
   const headAnchor = group(head, 'label-anchor', [0, 0.43, 0]);
 
   const arms = [], legs = [];
   for (const side of [-1, 1]) {
     const shoulder = group(spine, side < 0 ? 'left-shoulder' : 'right-shoulder', [side * 0.255, 0.514, 0]);
-    mesh(shoulder, 'sphere', suit, [0, 0, 0], [0.087, 0.09, 0.09]);
-    mesh(shoulder, 'cylinder', suit, [0, -0.17, 0], [0.069, 0.34, 0.071], 'upper-arm');
+    mesh(shoulder, 'sphere', white, [0, 0, 0], [0.087, 0.09, 0.09]);
+    mesh(shoulder, 'cylinder', white, [0, -0.17, 0], [0.069, 0.34, 0.071], 'upper-arm');
     const elbow = group(shoulder, 'elbow', [0, -0.34, 0]);
-    mesh(elbow, 'sphere', suit, [0, 0, 0], [0.067, 0.065, 0.067]);
-    mesh(elbow, 'cylinder', suit, [0, -0.155, 0], [0.061, 0.31, 0.064], 'forearm');
-    mesh(elbow, 'cylinder', white, [0, -0.29, 0], [0.061, 0.045, 0.064], 'shirt-cuff');
+    mesh(elbow, 'sphere', white, [0, 0, 0], [0.067, 0.065, 0.067]);
+    mesh(elbow, 'cylinder', white, [0, -0.155, 0], [0.061, 0.31, 0.064], 'forearm');
+    mesh(elbow, 'cylinder', suit, [0, -0.29, 0], [0.061, 0.045, 0.064], 'shirt-cuff');
     const hand = group(elbow, 'wrist', [0, -0.31, 0]);
     mesh(hand, 'sphere', skin, [0, -0.014, 0], [0.057, 0.058, 0.034], 'hand');
     const fingers = [];
@@ -242,9 +234,15 @@ export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff',
     const knee = group(thigh, 'knee', [0, -0.47, 0]);
     mesh(knee, 'sphere', trouser, [0, 0, 0], [0.076, 0.071, 0.076]);
     mesh(knee, 'cylinder', trouser, [0, -0.235, 0], [0.067, 0.47, 0.069], 'shin');
+    mesh(thigh, 'box', white, [side * 0.075, -0.235, 0.012], [0.012, 0.38, 0.027], 'trouser-side-stripe');
+    mesh(knee, 'box', white, [side * 0.065, -0.235, 0.012], [0.012, 0.38, 0.025], 'trouser-shin-stripe');
     const ankle = group(knee, 'ankle', [0, -0.47, 0]);
-    mesh(ankle, 'sphere', black, [0, -0.015, 0.084], [0.088, 0.05, 0.145], 'polished-shoe');
-    mesh(ankle, 'sphere', material('#263344', 0.22), [0, 0.018, 0.163], [0.066, 0.012, 0.035], 'shoe-highlight');
+    mesh(ankle, 'sphere', white, [0, -0.024, 0.075], [0.087, 0.066, 0.145], 'office-sneaker');
+    // Sole underside is ankleY-.105: planted feet actually meet y=0.
+    mesh(ankle, 'sphere', black, [0, -0.083, 0.077], [0.089, 0.022, 0.147], 'sneaker-sole');
+    mesh(ankle, 'sphere', colored, [0, -0.019, -0.032], [0.085, 0.048, 0.041], 'sneaker-heel');
+    for (let lace = 0; lace < 3; lace += 1)
+      mesh(ankle, 'box', suit, [0, 0.033 - lace * 0.004, 0.068 + lace * 0.024], [0.081, 0.009, 0.01], 'sneaker-lace');
     legs.push({ side, pivot: thigh, middle: knee, ankle, pole: new THREE.Vector3(0, 0, 1) });
   }
   const blender = new AnimationClipBlender();
@@ -310,6 +308,10 @@ export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff',
       const idleX = side * THREE.MathUtils.lerp(0.29, 0.18, sitting);
       const idleY = hips.position.y + THREE.MathUtils.lerp(-0.13, 0.13, sitting);
       const idleZ = THREE.MathUtils.lerp(0.03, 0.36, sitting);
+      // Each hand counter-swings its own leg, using the same planted-foot cycle.
+      const stride = reduced ? 0 : -footCycle(gaitPhase + (side < 0 ? 0 : 0.5)).z / 0.25;
+      const walkZ = 0.035 + stride * 0.23;
+      const walkY = hips.position.y - 0.12 + Math.abs(stride) * 0.035;
       const workX = side * (0.175 + (reduced ? 0 : Math.sin(clock * 2.1 + side) * 0.01));
       const workY = 1.13 + (reduced ? 0 : Math.sin(clock * Math.PI * 24 + side) * 0.008);
       // Dock z is deskZ+1.45 and the keyboard is deskZ+.38. Wrists at .99,
@@ -319,8 +321,8 @@ export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff',
       const socialY = hips.position.y + (side > 0 ? 0.42 + wave * 0.065 : 0.08);
       const socialZ = 0.24 + (side > 0 ? wave * 0.05 : 0);
       _target.set(idleX + (workX - idleX) * working + (socialX - idleX) * social,
-        idleY + (workY - idleY) * working + (socialY - idleY) * social,
-        idleZ + (workZ - idleZ) * working + (socialZ - idleZ) * social);
+        idleY + (workY - idleY) * working + (socialY - idleY) * social + (walkY - idleY) * walking,
+        idleZ + (workZ - idleZ) * working + (socialZ - idleZ) * social + (walkZ - idleZ) * walking);
       _target.sub(hips.position).sub(spine.position);
       _inverse.copy(spine.quaternion).invert();
       _target.applyQuaternion(_inverse).sub(arm.pivot.position);
@@ -357,8 +359,8 @@ export function createAvatar({ id, role = 'TEAM', name = '', accent = '#5eafff',
     return { id: root.userData.id, role, disposed, meshes, joints,
       sharedGeometries: geometries.size, sharedMaterials: materials.size,
       ...lastPose, headHeight: head.getWorldPosition(world).y,
-      footHeights: legs.map((leg) => leg.ankle.getWorldPosition(new THREE.Vector3()).y - 0.065),
-      animation: 'ARTICULATED_CLIP_BLEND', forward: '+Z' };
+      footHeights: legs.map((leg) => leg.ankle.getWorldPosition(new THREE.Vector3()).y - 0.105),
+      animation: 'ARTICULATED_CLIP_BLEND', style: 'PURPLE_OFFICE_MASCOT', forward: '+Z' };
   }
   function dispose() {
     if (disposed) return;
