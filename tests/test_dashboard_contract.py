@@ -210,7 +210,7 @@ await connect();const previous=structuredClone(data);let finish;let intercepted=
         self.run_dom(r"""
 open('robot');assert.equal(document.getElementById('robotRisk').value,'');assert.equal(document.getElementById('robotRisk').disabled,true);await connect();assert.equal(document.getElementById('robotRisk').value,'5');
 const risk=document.getElementById('robotRisk');risk.value='7.50000000000000001';risk.oninput();document.getElementById('robotRiskSave').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);await flush();
-const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{risk_target_usdt:'7.50000000000000001'});assert.equal(document.getElementById('robotRisk').value,'7.50000000000000001');assert.equal(data.robot.robot_on,false);assert.match(content.textContent,/RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE/);assert.equal(document.getElementById('robotRiskSave').textContent,'SAVE RISK');
+const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length,1);assert.equal(new URL(writes[0].url).pathname,'/robot/settings');assert.deepEqual(JSON.parse(writes[0].body),{risk_target_usdt:'7.50000000000000001'});assert.equal(document.getElementById('robotRisk').value,'7.50000000000000001');assert.equal(data.robot.robot_on,false);assert.match(content.textContent,/RISIKO PER SL TERMASUK FEE DAN CADANGAN SLIPPAGE/);assert.equal(document.getElementById('robotRiskSave').textContent,'SIMPAN RISIKO');
 document.getElementById('apiDisconnect').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);
 """)
 
