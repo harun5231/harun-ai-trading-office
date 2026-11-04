@@ -411,6 +411,11 @@ class DelegatedDOMBridge:
             # discussion needs no repeated JSON schema or marker code block.
             if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 question = prepare_fresh_followup(question, market, prefix)
+            if evaluation is not None:
+                composers = self.bridge._visible(self.bridge._dom_contract.composer)
+                if len(composers) != 1 or composers[0].input_value(): unknown()
+                question,names,_ = evaluation.prepare_followup(question,composers[0],delivery,payload)
+                state['fresh_names'] = names
             composers = self.bridge._visible(self.bridge._dom_contract.composer)
             if len(composers) != 1 or composers[0].input_value():
                 unknown()
@@ -441,6 +446,10 @@ class DelegatedDOMBridge:
             if type(required) is not list or any(type(key) is not str for key in required):
                 unknown()
             phase = _phase(payload, required)
+            if evaluation is not None:
+                # Preserve this ACTUAL per-turn reply before a model/network
+                # failure can obscure it; this receipt never authorizes trading.
+                evaluation.note_reply(answer,observed_turns)
             active_context = state['fresh']['context'] if state['fresh'] is not None else payload.get('context')
             if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 observed = active_context.get('fetched_at') if isinstance(active_context, dict) else None
@@ -483,6 +492,12 @@ class DelegatedDOMBridge:
             gate()
             if transcript() != observed_turns:
                 unknown()
+            if evaluation is not None:
+                if not response['needs_followup']:
+                    question = evaluation.next_material_question()
+                    if question is not None:
+                        send_followup(question,None,observed_turns,answer,phase)
+                        return
             state['reviewed'] = True
             # Interpret only this actual reply. Internal schema/marker data is
             # owned by this transaction, not another JSON demand in WEB chat.
@@ -623,7 +638,17 @@ class DelegatedDOMBridge:
                 return copy.deepcopy(state['accepted_output'])
             return original_exact_json(answer, marker)
 
-        if file_mode:
+        if evaluation is not None:
+            try:
+                gate()
+                chart_images,chart_evidence = evaluation.prepare_room()
+                gate()
+                from .native_evaluation_browser import HistoricalFileDelivery
+                delivery = HistoricalFileDelivery(evaluation,gate).install()
+            except BaseException:
+                evaluation.close()
+                raise
+        elif file_mode:
             delivery = NativeDataFileDelivery(self.bridge, self.native, gate,
                 wall_clock=self.wall_clock).install()
         self.bridge._answer = delegated_answer
@@ -706,7 +731,7 @@ class DelegatedDOMBridge:
                 except Exception:
                     unknown()
             if evaluation is not None:
-                evaluation.complete(result)
+                result = {**result,'chart_evidence':evaluation.complete(result)}
             if self.native_turn_batch is not None:
                 self.native_turn_batch.evidence('COMPLETE')
             return result
@@ -725,6 +750,8 @@ class DelegatedDOMBridge:
             self.native.exact_json = original_exact_json
             if delivery is not None:
                 delivery.close()
+            if evaluation is not None:
+                evaluation.close()
 
 
 def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None, archive_root=None,

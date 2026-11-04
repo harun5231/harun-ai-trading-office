@@ -209,11 +209,21 @@ class ExistingBridgeHistoricalPhaseTests(unittest.TestCase):
             receipts=Mock(return_value=True)
             actual=DelegatedDOMBridge(bridge,mini,native=api,converter=converter,
                 wall_clock=lambda:NOW+101,monotonic=bridge.clock,daily_room=room,fresh_charts=fresh,followup_receipt=receipts)
-            with patch('agent.native_evaluation_browser.HistoricalEvaluation') as historical:
-                seen=[]
+            with patch('agent.native_evaluation_browser.HistoricalEvaluation') as historical, patch('agent.native_evaluation_browser.HistoricalFileDelivery') as delivery:
+                delivery.return_value.install.return_value=None
+                historical.return_value.prepare_room.return_value=([],[])
+                historical.return_value.next_material_question.return_value=None
+                historical.return_value.complete.return_value=[]
+                seen=[];events=[]
+                historical.return_value.note_reply.side_effect=lambda *_args,**_kwargs:events.append('actual-reply-receipt')
+                run=mini.request.side_effect
+                def reviewed(value):
+                    events.append('model-review');return run(value)
+                mini.request.side_effect=reviewed
                 historical.return_value.before_send.side_effect=lambda *_args,**_kwargs:seen.append(bridge.clicks)
                 result=actual.ask(args,lambda:True,deadline=70)
                 self.assertEqual(seen,[0]);historical.return_value.complete.assert_called_once()
+                self.assertEqual(events,['actual-reply-receipt','model-review'])
             self.assertEqual(result['output']['assessment'],'INCONCLUSIVE')
             self.assertEqual(bridge.clicks,1);fresh.assert_not_called();converter.assert_not_called()
             request=mini.request.call_args.args[0]
@@ -231,14 +241,14 @@ class ExistingBridgeHistoricalPhaseTests(unittest.TestCase):
             room=SimpleNamespace(_connection=db,day='2026-11-01',room_id=ROOM,_prepared=True,
                 store=SimpleNamespace(root=directory),full_turns=lambda:[],original_visible=lambda _:[],verify_prefix=Mock())
             owner=SimpleNamespace(daily_room=room,followup_receipt=Mock(return_value=True),
-                bridge=SimpleNamespace(uploaded_names=[],page=SimpleNamespace(url='https://fixture.invalid/owned')),
-                native=SimpleNamespace(MESSAGE='message',USER_BODY='user-body'))
+                bridge=SimpleNamespace(uploaded_names=[],page=SimpleNamespace(url='https://fixture.invalid/owned'),_fresh_conversation=Mock()),
+                native=SimpleNamespace(MESSAGE='message',USER_BODY='user-body',image_artifacts=Mock(),user_prompt=Mock()))
             historical=HistoricalEvaluation(owner,args,100)
             witness=dict(intent=dict(followup_attachment_names=['one.png','two.png','one.csv','two.csv'],
                 followup_prompt_sha256='e'*64))
             with patch('worker.trade_evaluation_archive.read_bound_material_turn',return_value=witness):
                 with self.assertRaisesRegex(ValueError,'HISTORICAL_TURN_NOT_READABLE_IN_ROOM'):
-                    historical.before_send('Evaluasi historis',transcript=[])
+                    historical._turn_witness(0)
             owner.followup_receipt.assert_not_called()
             db.execute("UPDATE daily_rooms SET room_id=?",('f'*32,))
             with self.assertRaisesRegex(ValueError,'BOUND_ROOM_NOT_AVAILABLE'):HistoricalEvaluation(owner,args,100)

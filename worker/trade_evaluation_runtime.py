@@ -128,36 +128,35 @@ def native_completion_reader(db, archive_root, operation, *, chain_reader=None):
     """Revalidate native wire/source AND actual browser once/completion custody."""
     from .research_provider import source_evidence
     from agent.native_evaluation_protocol import envelope
-    from agent.native_chart_followup import _directory, _private_file, pairs, canonical, sha, MAX_BYTES
-    from .trade_evaluation_archive import _subdirectory
-    import os
+    from agent.native_evaluation_protocol import native_sha as sha
     request = db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
     response = db.execute('SELECT * FROM research_browser_responses WHERE operation=?', (operation,)).fetchone()
     need(request is not None and response is not None, 'EVALUATION_NATIVE_RECEIPT_NOT_FOUND')
     evidence = source_evidence(db, operation)
     need(evidence.get('source_type') == 'NEUROBRO_BROWSER', 'EVALUATION_NATIVE_SOURCE_UNVERIFIED')
     payload = json.loads(request['request_body']);bound = envelope(payload);internal = bound['request']
-    if chain_reader is None:
-        from agent.native_evaluation_rpc import evaluation_chain
-        chain=evaluation_chain(archive_root,operation,request['request_sha256'])
-    else:
-        chain=chain_reader(operation,request['request_sha256'])
+    need(callable(chain_reader),'EVALUATION_AUTHENTICATED_NATIVE_CHAIN_READER_REQUIRED')
+    chain=chain_reader(operation,request['request_sha256'])
     need(type(chain) is list and chain, 'EVALUATION_NATIVE_RECEIPT_NOT_FOUND')
     previous=None
     for n,row in enumerate(chain,1):
         need(type(row) is dict and set(row)=={'intent','complete'},'EVALUATION_NATIVE_RECEIPT_INVALID')
         intent,complete=row['intent'],row['complete']
-        need(complete == dict(intent,intent_sha256=sha(intent),response_id=response['response_id'],
-                final_reply_sha256=response['assistant_sha256'])
+        need(type(complete) is dict
+            and complete == dict(intent,intent_sha256=sha(intent),response_id=complete.get('response_id'),
+                final_reply_sha256=complete.get('final_reply_sha256'))
             and intent['kind']=='NATIVE_POST_TRADE_EVALUATION' and intent['phase']==PHASE
             and intent['operation']==operation and intent['request_sha256']==request['request_sha256']
             and intent['marker']==request['marker'] and intent['input_request_sha256']==bound['request_sha256']
             and intent['input_evidence_sha256']==internal['input_evidence_sha256']
             and intent['room_id']==internal['room_id']
             and intent['followup_sequence']==n and intent['previous_followup_intent_sha256']==previous
-            and __import__('re').fullmatch('[a-f0-9]{64}',intent['historical_access_sha256']),
+            and intent['historical_access_sha256']==digest(internal['historical_materials']),
             'EVALUATION_NATIVE_RECEIPT_MISMATCH')
         previous=sha(intent)
+    from agent.native_evaluation_protocol import validate_material_access_chain
+    validate_material_access_chain(internal,chain,json.loads(response['chart_evidence']),
+        final_response=dict(response_id=response['response_id'],assistant_sha256=response['assistant_sha256']))
     return dict(protocol=PROTOCOL,phase=PHASE,provider='NEUROBRO_WEB',operation=operation,
         request_sha256=bound['request_sha256'],input_evidence_sha256=internal['input_evidence_sha256'],
         room_id=internal['room_id'],sent_this_request=True,received_at=response['received_at'],

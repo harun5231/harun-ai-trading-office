@@ -393,6 +393,151 @@ def read_bound_material_turn(archive_root, material_manifest):
                 os.close(fd)
 
 
+def read_bound_material_files(archive_root, material_manifest, *, charts):
+    """Read the original four files for a historical evaluation in another room.
+
+    Existing receipt/index custody remains authoritative. CSVs are rebuilt
+    byte-for-byte from the archived public observation at its recorded clock;
+    no fresh market data or current-time freshness exception is introduced.
+    The returned PNG evidence omits old upload IDs: a later delivery must prove
+    its own actual attachments and response through the native receipt path.
+    """
+    from agent.native_chart_followup import _directory, _private_file, pairs, canonical, sha, MAX_BYTES
+    from agent.native_chart_capture import WEBSITE_SIDECAR, website_rgb
+    from agent.native_data_files import prepare_data_files
+    from agent.binance_website_chart import SOURCE, CONTRACT, VIEWPORT, PERIODS, url_for
+    from .trade_evaluation_evidence import utc_epoch
+    need(type(charts.MAX_PNG) is int and 1024 <= charts.MAX_PNG <= 16 * 1024 * 1024
+        and callable(charts.png_pixels), 'EVALUATION_NATIVE_PNG_READER_REQUIRED')
+    manifest = material_manifest
+    turn = read_bound_material_turn(archive_root, manifest)
+    intent = turn['intent']
+    core = [{k: r[k] for k in _PNG_FIELDS} for r in intent['followup_chart_evidence']]
+    identity, filename = _index_identity(intent, core)
+    root = Path(archive_root)
+    parent = _directory(root)
+    index = directory = None
+    try:
+        index = _subdirectory(parent, CAPTURE_INDEX)
+        raw_index = _private_file(index, filename, MAX_BYTES)
+        capture = json.loads(raw_index, object_pairs_hook=pairs)
+        need(raw_index == canonical(capture) and capture.get('protocol') == CAPTURE_INDEX_PROTOCOL
+            and capture.get('identity') == identity
+            and capture.get('native_context_sha256') == intent['followup_context_sha256']
+            and capture.get('sidecar_sha256') == manifest['archive_sidecar_sha256']
+            and type(capture.get('paths')) is list and len(capture['paths']) == 2,
+            'EVALUATION_ARCHIVE_INDEX_CHANGED')
+        relative = [Path(p) for p in capture['paths']]
+        need(all(not p.is_absolute() and '..' not in p.parts and p.parts for p in relative)
+            and relative[0] != relative[1] and relative[0].parent == relative[1].parent,
+            'EVALUATION_ARCHIVE_PATH_INVALID')
+        directory = os.dup(parent)
+        for component in relative[0].parent.parts:
+            child = _subdirectory(directory, component)
+            os.close(directory)
+            directory = child
+        raw_sidecar = _private_file(directory, WEBSITE_SIDECAR, MAX_BYTES)
+        sidecar = json.loads(raw_sidecar, object_pairs_hook=pairs)
+        need(hashlib.sha256(raw_sidecar).hexdigest() == capture['sidecar_sha256']
+            and sidecar.get('schema_version') == 2 and sidecar.get('source') == SOURCE
+            and sidecar.get('ui_contract') == CONTRACT and sidecar.get('marker') == intent['marker']
+            and sidecar.get('request_sha256') == intent['request_sha256']
+            and sidecar.get('native_context_canonical_sha256') == capture['native_context_sha256']
+            and sidecar.get('native_context_hash_encoding') == 'JSON_SORTED_COMPACT_ASCII_V1'
+            and sidecar.get('legacy_evidence') == core
+            and sidecar.get('network_navigation_performed') is True
+            and sidecar.get('persistent_browser_context_used') is False
+            and type(sidecar.get('charts')) is dict and set(sidecar['charts']) == {'15m', '1h'},
+            'EVALUATION_ARCHIVE_SIDECAR_MISMATCH')
+        public = sidecar['public_market_context']
+        need(type(public) is dict and public.get('observed_at') == manifest['observed_at']
+            and public['observed_at'] == intent['observed_at']
+            and sha(public) == intent['projected_context_sha256'],
+            'EVALUATION_HISTORICAL_CONTEXT_MISMATCH')
+        # The same 400-closed validator and deterministic CSV formatter used
+        # for the original native delivery; the running bar stays separate.
+        csvs = prepare_data_files(public, now=public['observed_at'])
+        files = {(r['kind'], r['timeframe']): r for r in manifest['files']}
+        need(set(files) == {(kind, tf) for kind in ('PNG', 'CSV') for tf in ('15m', '1h')},
+            'EVALUATION_HISTORICAL_FOUR_FILES_REQUIRED')
+        for row in csvs:
+            saved = files['CSV', row['timeframe']]
+            need(row['name'] == saved['name'] and row['sha256'] == saved['sha256']
+                and row['sha256'] == manifest['delivery_custody']['csv_sha256'][row['timeframe']]
+                and len(row['buffer']) == saved['bytes'] and row['closed_count'] == saved['closed_count'] == 200,
+                'EVALUATION_HISTORICAL_CSV_MISMATCH')
+        need(intent['followup_attachment_names'][2:] == [r['name'] for r in csvs],
+            'EVALUATION_HISTORICAL_CSV_MISMATCH')
+        pngs = []
+        latest_capture = max(utc_epoch(r['captured_at']) for r in core)
+        for tf, path, receipt, submitted_name in zip(('15m', '1h'), relative, core,
+                intent['followup_attachment_names'][:2]):
+            saved = files['PNG', tf]
+            captured = utc_epoch(receipt['captured_at'])
+            need(receipt['source'] == SOURCE and receipt['symbol'] == public['symbol']
+                and receipt['timeframe'] == tf and path.name == saved['name']
+                and all(receipt[k] == saved[k] for k in ('source', 'captured_at', 'sha256', 'bytes'))
+                and public['observed_at'] <= captured <= latest_capture
+                and latest_capture - captured <= 180,
+                'EVALUATION_HISTORICAL_PNG_MISMATCH')
+            raw = _private_file(directory, path.name, charts.MAX_PNG)
+            need(len(raw) == receipt['bytes'] and hashlib.sha256(raw).hexdigest() == receipt['sha256'],
+                'EVALUATION_HISTORICAL_PNG_MISMATCH')
+            row = sidecar['charts'][tf]
+            clip = row.get('capture_clip')
+            need(type(clip) is dict and set(clip) == {'x', 'y', 'width', 'height'}
+                and clip['x'] == clip['y'] == 0 and all(type(clip[k]) is int for k in clip)
+                and 700 <= clip['width'] <= VIEWPORT['width']
+                and 400 <= clip['height'] <= VIEWPORT['height'],
+                'EVALUATION_HISTORICAL_WEBSITE_SCREENSHOT_INVALID')
+            pixels = website_rgb({'png_pixels': charts.png_pixels}, raw, charts.MAX_PNG,
+                dimensions=(clip['width'], clip['height']))
+            need(row.get('source') == SOURCE and row.get('ui_contract') == CONTRACT
+                and row.get('page_url') == url_for(public['symbol']) and row.get('symbol') == public['symbol']
+                and row.get('market') == 'USDT_PERPETUAL' and row.get('timeframe') == tf
+                and row.get('captured_at') == receipt['captured_at']
+                and row.get('capture_observed_at') == float(captured) and row.get('viewport') == VIEWPORT
+                and row.get('observed_bar_interval_ms') == PERIODS[tf]
+                and row.get('screenshot_png_sha256') == receipt['sha256']
+                and row.get('screenshot_rgb_sha256') == hashlib.sha256(pixels).hexdigest()
+                and row.get('exchange_website_screenshot') is True
+                and row.get('browser_screenshot_of_data_render') is False,
+                'EVALUATION_HISTORICAL_WEBSITE_SCREENSHOT_INVALID')
+            visible = row.get('visible_range')
+            need(type(visible) is dict and visible.get('verification') == 'VISIBLE_CANDLE_HOVER_ENDPOINTS_UTC_V1',
+                'EVALUATION_HISTORICAL_WEBSITE_SCREENSHOT_INVALID')
+            first, last = visible.get('first_visible_open_time_ms'), visible.get('last_visible_open_time_ms')
+            period = PERIODS[tf]
+            closed = public['candles'][tf]
+            need(type(first) is int and type(last) is int and first % period == last % period == 0
+                and first <= closed[0]['open_time'] - 2 * period and last >= closed[-1]['open_time']
+                and last <= public.get('collection_finished_server_time_ms', public['server_time_ms']) // period * period
+                and visible.get('required_closed_count') == 200
+                and visible.get('required_first_open_time_ms') == closed[0]['open_time']
+                and visible.get('required_last_close_time_ms') == closed[-1]['close_time']
+                and visible.get('running_candle_in_closed_count') is False
+                and visible.get('covered_closed_count') ==
+                    (min(last, public['server_time_ms'] // period * period - period) - first) // period + 1,
+                'EVALUATION_HISTORICAL_WEBSITE_SCREENSHOT_INVALID')
+            need(submitted_name == intent['marker'] + '-' + tf + '-' + receipt['sha256'][:12] + '.png',
+                'EVALUATION_NATIVE_ARTIFACT_MISMATCH')
+            pngs.append(dict(kind='PNG', name=submitted_name, path=str(root / path), mimeType='image/png',
+                buffer=raw, **receipt))
+        # Retain the actual receipts, index and sidecar: changed/unknown
+        # custody during the read is a blocker, never a replay opportunity.
+        need(_private_file(index, filename, MAX_BYTES) == raw_index
+            and _private_file(directory, WEBSITE_SIDECAR, MAX_BYTES) == raw_sidecar
+            and read_bound_material_turn(root, manifest) == turn,
+            'EVALUATION_ARCHIVE_CHANGED_DURING_READ')
+        return dict(symbol=public['symbol'], paths=[p['path'] for p in pngs], pngs=pngs, csvs=csvs,
+            chart_evidence=deepcopy(core), observed_at=public['observed_at'],
+            captured_at={r['timeframe']: r['captured_at'] for r in core}, turn=turn)
+    finally:
+        for fd in (directory, index, parent):
+            if fd is not None:
+                os.close(fd)
+
+
 class NativeHistoricalArchiveReader:
     """Native namespace adapter; no guessed path or filesystem-wide lookup.
 

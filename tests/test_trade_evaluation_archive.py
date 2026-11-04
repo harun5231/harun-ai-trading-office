@@ -28,6 +28,7 @@ class HistoricalArchiveCustodyTests(unittest.TestCase):
         self.request = dict(request_body=json.dumps(self.payload, sort_keys=True,
             separators=(',', ':')), request_sha256='a' * 64)
         self.wire = dict(self.payload, request_sha256=self.request['request_sha256'])
+        self.native.capture_now += 0.1234567
         self.capture = self.native.capture(self.native.context, self.context,
             self.payload['marker'], self.request['request_sha256'], archive_root=self.root)
         self.charts = [dict(row, attachment_id='native-' + row['timeframe'])
@@ -158,6 +159,62 @@ class HistoricalArchiveCustodyTests(unittest.TestCase):
         self.record(self.intent(number=2, previous=sha(self.first)), complete=False)
         with self.assertRaisesRegex(ValueError, 'CHAIN_INCOMPLETE'):
             archive.read_bound_material_turn(self.root, manifest)
+
+    def test_original_bound_files_rebuild_exact_csv_and_keep_old_capture_times(self):
+        from unittest.mock import patch
+        manifest = self.manifest()
+        with patch('time.time', return_value=4_000_000_000), patch(
+                'agent.native_chart_followup.public_snapshot', side_effect=AssertionError('NO_FRESH_MARKET')):
+            result = archive.read_bound_material_files(self.root, manifest,
+                charts=SimpleNamespace(**self.native.namespace))
+        self.assertEqual(result['paths'], self.capture['paths'])
+        self.assertEqual(result['observed_at'], self.context['fetched_at'])
+        self.assertEqual(result['captured_at'], {r['timeframe']: r['captured_at'] for r in self.charts})
+        self.assertEqual([r['buffer'] for r in result['csvs']], [r['buffer'] for r in self.csvs])
+        self.assertEqual([r['name'] for r in result['csvs']], self.names[2:])
+        self.assertEqual([r['name'] for r in result['pngs']], self.names[:2])
+        self.assertEqual([r['buffer'] for r in result['pngs']],
+            [Path(p).read_bytes() for p in self.capture['paths']])
+        self.assertTrue(all(len(r['buffer'].decode().splitlines()) == 201 for r in result['csvs']))
+        self.assertTrue(all('attachment_id' not in r for r in result['chart_evidence']))
+
+    def test_bound_file_read_refuses_later_unknown_receipt_and_changed_original_png(self):
+        manifest = self.manifest()
+        png = Path(self.capture['paths'][0])
+        original = png.read_bytes()
+        png.write_bytes(original + b'CHANGED')
+        with self.assertRaisesRegex(ValueError, 'HISTORICAL_PNG_MISMATCH'):
+            archive.read_bound_material_files(self.root, manifest, charts=SimpleNamespace(**self.native.namespace))
+        png.write_bytes(original)
+        self.record(self.intent(number=2, previous=sha(self.first)), complete=False)
+        with self.assertRaisesRegex(ValueError, 'CHAIN_INCOMPLETE'):
+            archive.read_bound_material_files(self.root, manifest, charts=SimpleNamespace(**self.native.namespace))
+
+    def test_bound_file_read_checks_full_csv_hash_beyond_filename_prefix(self):
+        manifest = self.manifest()
+        row = next(r for r in manifest['files'] if r['kind'] == 'CSV' and r['timeframe'] == '15m')
+        row['sha256'] = row['sha256'][:8] + '9' * 56
+        manifest['delivery_custody']['csv_sha256']['15m'] = row['sha256']
+        # The native receipt retains the actual filename. The byte reader
+        # additionally checks the whole SHA rather than its display prefix.
+        with self.assertRaisesRegex(ValueError, 'HISTORICAL_CSV_MISMATCH'):
+            archive.read_bound_material_files(self.root, manifest, charts=SimpleNamespace(**self.native.namespace))
+
+    def test_bound_file_read_rechecks_website_facts_not_only_sidecar_hash(self):
+        manifest = self.manifest()
+        sidecar = Path(self.capture['paths'][0]).parent / WEBSITE_SIDECAR
+        value = json.loads(sidecar.read_bytes())
+        value['charts']['15m']['exchange_website_screenshot'] = False
+        from agent.native_chart_followup import canonical
+        sidecar.write_bytes(canonical(value))
+        new_hash = hashlib.sha256(sidecar.read_bytes()).hexdigest()
+        manifest['archive_sidecar_sha256'] = new_hash
+        index = next((Path(self.root) / archive.CAPTURE_INDEX).iterdir())
+        indexed = json.loads(index.read_bytes())
+        indexed['sidecar_sha256'] = new_hash
+        index.write_bytes(canonical(indexed))
+        with self.assertRaisesRegex(ValueError, 'WEBSITE_SCREENSHOT_INVALID'):
+            archive.read_bound_material_files(self.root, manifest, charts=SimpleNamespace(**self.native.namespace))
 
 
 if __name__ == '__main__':

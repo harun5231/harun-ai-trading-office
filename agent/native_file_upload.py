@@ -234,8 +234,11 @@ class NativeDataFileDelivery:
     def _witness(self, root, names, *, user=False):
         return self._witness_ready(self._witness_rows(root, names, user=user), names)
 
+    def data_files(self, payload):
+        return deliver_market_data_files(payload['context'], now=self.wall_clock())
+
     def _upload(self, composer, payload, artifacts):
-        files = deliver_market_data_files(payload['context'], now=self.wall_clock())
+        files = self.data_files(payload)
         self._need(len(files) == 2)
         self.gate()
         bound = self.original_upload(composer, payload, artifacts)
