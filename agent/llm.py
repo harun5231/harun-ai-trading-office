@@ -28,6 +28,13 @@ Neurobro menentukan coin, arah LONG/SHORT/HOLD, ENTRY, SL, dan rekomendasi TP.
 Risk Manager menentukan quantity serta menormalkan TP eksekusi ke target bersih
 2R; jangan meminta persetujuan Neurobro ulang hanya karena normalisasi itu.
 
+Pada prompt analisis awal, minta juga rekomendasi ukuran posisi dari Neurobro
+sebagai bahan diskusi saja. Tegaskan bahwa quantity eksekusi tetap dihitung Risk Manager
+dari risiko Office, termasuk fee dan estimasi slippage. Saran Neurobro tidak
+menjadi instruksi order, tidak menggantikan sizing, dan tidak masuk ringkasan
+setup yang dieksekusi. Jangan meminta ukuran posisi pada screening atau mengubah
+quantity pending yang sudah ada. Kamu sendiri tidak mengarang rekomendasi angka.
+
 Pahami jawaban per coin dan keputusan akhir yang aktif. Jangan menyamakan semua
 coin dengan satu kata HOLD, kartu ringkasan, perbandingan, atau skenario lama.
 Hanya pilih simbol rekomendasi yang dinyatakan di jawaban terbaru; comparison
@@ -70,6 +77,11 @@ SCHEMA = {
 }
 
 
+ADVISORY_QUESTION_DESCRIPTION = ('Bahasa Indonesia alami. Rekomendasi ukuran posisi hanya bahan diskusi; '
+    'quantity eksekusi tetap dihitung Risk Manager dari risiko Office termasuk biaya dan slippage. '
+    'Jangan menulis instruksi untuk mengganti quantity eksekusi atau menambah field quantity.')
+
+
 def dialogue_schema(phase, reply, *, context=None):
     """Constrain format to this phase and explicitly attributed current symbols.
 
@@ -77,6 +89,9 @@ def dialogue_schema(phase, reply, *, context=None):
     excluding amount-only cashtags and avoiding a second USDT quote suffix.
     Attribution does not establish a recommendation or a native catalog listing.
     """
+    properties = dict(SCHEMA['properties'])
+    if phase in ('ANALYSIS', 'COMPOSE_ANALYSIS'):
+        properties['question'] = dict(properties['question'], description=ADVISORY_QUESTION_DESCRIPTION)
     symbols = {base + "USDT" for base in re.findall(
         r"(?<![A-Z0-9])([A-Z0-9]{2,20})(?:[/ -]?USDT)(?![A-Z0-9])", reply.upper())}
     for base in re.findall(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:([A-Z0-9]{2,20}))'''
@@ -87,11 +102,11 @@ def dialogue_schema(phase, reply, *, context=None):
         # A cashtag already spelling a full pair must not gain a second quote.
         symbols.add(base if re.fullmatch(r"[A-Z0-9]{2,20}USDT", base) else base + "USDT")
     if phase.startswith('COMPOSE_'):
-        return {**SCHEMA, 'properties': {**SCHEMA['properties'],
+        return {**SCHEMA, 'properties': {**properties,
             'action': {'type': 'string', 'enum': ['PROMPT']},
             'symbols': {'type': 'array', 'maxItems': 0, 'items': {'type': 'string'}}}}
     if phase == 'POST_TRADE_EVALUATION':
-        return {**SCHEMA, 'properties': {**SCHEMA['properties'],
+        return {**SCHEMA, 'properties': {**properties,
             'action': {'type': 'string', 'enum': ['CLARIFY', 'COMPLETE']},
             'symbols': {'type': 'array', 'maxItems': 0, 'items': {'type': 'string'}}}}
     if phase != 'SCREENING' and isinstance(context, dict):
@@ -109,7 +124,7 @@ def dialogue_schema(phase, reply, *, context=None):
     items = dict(SCHEMA["properties"]["symbols"]["items"])
     if symbols:
         items["enum"] = sorted(symbols)
-    return {**SCHEMA, "properties": {**SCHEMA["properties"],
+    return {**SCHEMA, "properties": {**properties,
         "action": {"type": "string", "enum": actions},
         "symbols": {"type": "array", "maxItems": 2 if symbols else 0, "items": items}}}
 
