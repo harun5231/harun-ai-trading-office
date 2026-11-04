@@ -90,20 +90,20 @@ class DashboardContract(unittest.TestCase):
         result = subprocess.run(['node', '-e', script], cwd=ROOT, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_monthly_billing_unknowns_edit_payment_links_and_verified_save(self):
+    def test_monthly_billing_simple_crud_verified_save_and_payment_status(self):
         self.run_dom(r"""
 open('billing');assert.match(title.textContent,/TAGIHAN BULANAN/);assert.match(content.textContent,/Belum tersedia/);
 let stored={version:0,recorded_at:null,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
-responseOverride=(url,options)=>{if(url.endsWith('/billing/month')){const payload=JSON.parse(options.body);stored.document=payload.document;stored.version++;return response(stored);}if(url.includes('/billing/month?'))return response(stored);if(url.includes('/billing/history?'))return response({revisions:[stored]});};
-await connect();open('billing');await flush();assert.match(content.textContent,/Saldo OpenAI.*Belum tersedia/);assert.equal(document.getElementById('billingFx').value,'');
+responseOverride=(url,options)=>{if(url.endsWith('/billing/month')){stored.document=JSON.parse(options.body).document;stored.version++;return response(stored);}if(url.includes('/billing/month?'))return response(stored);};
+await connect();open('billing');await flush();assert.match(content.textContent,/TOTAL USDT PERLU WD DARI BINANCE/);assert.equal(document.getElementById('billingFx').value,'');
 document.getElementById('billingAdd').click();
-const edit=(id,value)=>{const node=document.getElementById(id);node.value=value;node.oninput?.();node.onchange?.();};
-edit('billName0','Synthetic VPS <img src=x>');edit('billActual0','160000');edit('billEstimate0','170000');edit('billDue0','2026-10-15');edit('billPaid0','false');edit('billEvidence0','Synthetic invoice');edit('billUrl0','https://console.hetzner.cloud/billing');edit('billingFx','16000');edit('billingFxSource','Synthetic FX quote');
-const coverage=document.getElementById('billingCoverage');coverage.checked=true;coverage.onchange();
-document.getElementById('billingSave').click();await flush();assert.equal(stored.version,1);assert.match(content.textContent,/Tersimpan.*dibaca ulang/);assert.equal(stored.document.bills[0].actual_idr,'160000');
-const payment=walk(content).find(node=>node.tagName==='A'&&node.href==='https://console.hetzner.cloud/billing');assert.ok(payment);assert.equal(payment.rel,'noopener noreferrer');assert.match(payment.textContent,/pemilik/);assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
-assert.equal(calls.filter(call=>call.method==='POST').length,1);assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length>=2,true);
-document.getElementById('billingHistory').click();await flush();assert.match(content.textContent,/Revisi 1/);
+const edit=(id,value)=>{const node=document.getElementById(id);assert.ok(node,id);node.value=value;node.oninput?.();node.onchange?.();};
+edit('billName0','Synthetic VPS <img src=x>');edit('billAmount0','160000');edit('billDue0','2026-10-15');edit('billUrl0','https://billing.sample-service.com/portal');edit('billingFx','16000');
+document.getElementById('billingSave').click();await flush();assert.equal(stored.version,1);assert.match(content.textContent,/Tersimpan/);assert.equal(stored.document.bills[0].amount,'160000');
+const payment=walk(content).find(node=>node.tagName==='A'&&node.href==='https://billing.sample-service.com/portal');assert.ok(payment);assert.equal(payment.rel,'noopener noreferrer');assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
+document.getElementById('billMarkPaid0').click();await flush();assert.equal(stored.version,2);assert.equal(stored.document.bills[0].paid,true);
+document.getElementById('billDelete0').click();await flush();assert.equal(stored.version,3);assert.equal(stored.document.bills.length,0);
+assert.equal(calls.filter(call=>call.method==='POST').length,3);assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length>=4,true);
 for(const fn of listeners.pagehide??[])fn();open('billing');assert.doesNotMatch(content.textContent,/Synthetic VPS/);
 """)
 
@@ -121,27 +121,50 @@ for(const fn of listeners.pagehide??[])fn();finishPost(response({...stored,versi
 assert.equal(calls.filter(call=>call.url.includes('/billing/month?')).length,reads);open('billing');assert.doesNotMatch(content.textContent,/Tersimpan/);
 """)
 
-    def test_prepaid_usage_switch_removes_fake_due_date_and_payment_state(self):
+    def test_simple_billing_currency_fees_and_compact_copy(self):
         self.run_dom(r"""
-const stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
-responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):null;
-await connect();open('billing');await flush();assert.match(panel.className,/billing-panel/);document.getElementById('billingAdd').click();
-const kind=document.getElementById('billKind0');kind.focus();kind.value='prepaid_usage';kind.onchange();
-assert.equal(document.getElementById('billDue0'),null);assert.equal(document.getElementById('billPaid0'),null);assert.ok(document.getElementById('billEstimate0'));
-""")
-
-    def test_prepaid_inputs_cashflow_and_portal_allowlist(self):
-        self.run_dom(r"""
-let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{prepaid_topup_estimate_idr:'68000'}};
-responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:1,document:JSON.parse(options.body).document},response(stored)):null;
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
 await connect();open('billing');await flush();document.getElementById('billingAdd').click();
 const edit=(id,value)=>{const field=document.getElementById(id);assert.ok(field,id);field.value=value;field.oninput?.();field.onchange?.();};
-edit('billKind0','prepaid_usage');edit('billName0','OpenAI');edit('billActual0','32000');edit('billEvidence0','Owner official usage export from month start');
-edit('billUsageThrough0','2026-10-06');edit('billCredit0','24000');edit('billCreditEvidence0','Owner official credit snapshot');
-edit('billingPaymentActual','0');edit('billingPaymentEstimate','2000');edit('billingWithdrawalActual','0');edit('billingWithdrawalEstimate','1');edit('billingWithdrawalPercent','1');
-edit('billUrl0','https://evil.test/pay');open('billing');assert.equal(walk(content).some(node=>node.tagName==='A'&&node.href==='https://evil.test/pay'),false);
-edit('billUrl0','https://platform.openai.com/settings/organization/billing/overview');
-document.getElementById('billingSave').click();await flush();assert.equal(stored.document.bills[0].usage.available_credit_idr,'24000');assert.equal(stored.document.bills[0].usage.through_date,'2026-10-06');assert.equal(stored.document.cashflow.withdrawal_fee_percent,'1');assert.match(content.textContent,/68.000/);assert.match(content.textContent,/pemilik/);
+edit('billName0','Sample credit');edit('billAmount0','20');edit('billCurrency0','USD');edit('billDue0','2026-10-05');edit('billUrl0','https://billing.sample-credit.com/pay');edit('billingUsdFx','0.99');
+edit('billingPaymentEstimate','2000');edit('billingWithdrawalEstimate','1');edit('billingWithdrawalPercent','1');
+document.getElementById('billingSave').click();await flush();assert.equal(stored.document.bills[0].currency,'USD');assert.equal(stored.document.bills[0].actual_idr,null);assert.equal(stored.document.simple.usd_per_usdt,'0.99');assert.equal(stored.document.cashflow.withdrawal_fee_percent,'1');
+assert.doesNotMatch(content.textContent,/Usage API|proyeksi|kumulatif|persentase fee|top-up =/);assert.match(content.textContent,/Buka pembayaran/);
+""")
+
+    def test_simple_billing_optional_fees_show_provisional_total_and_stay_blank(self):
+        self.run_dom(r"""
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:'16000',fx_source:'Owner quote',bills:[]},summary:{withdrawal_estimate_usdt:'56.81250000',withdrawal_estimate_complete:false}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
+await connect();open('billing');await flush();
+assert.match(document.getElementById('billingTotal').textContent,/56,8125 USDT/);assert.match(content.textContent,/Estimasi · biaya belum lengkap/);
+for(const id of ['billingPaymentEstimate','billingWithdrawalEstimate','billingWithdrawalPercent'])assert.equal(document.getElementById(id).value,'');
+document.getElementById('billingSave').click();await flush();document.getElementById('billingReload').click();await flush();
+assert.equal(stored.document.cashflow.payment_fee_estimated_idr,null);assert.equal(stored.document.cashflow.withdrawal_fee_estimated_usdt,null);assert.equal(stored.document.cashflow.withdrawal_fee_percent,null);
+for(const id of ['billingPaymentEstimate','billingWithdrawalEstimate','billingWithdrawalPercent'])assert.equal(document.getElementById(id).value,'');
+""")
+
+    def test_simple_billing_principal_comes_from_authenticated_summary(self):
+        self.run_dom(r"""
+let stored={version:0,document:{month:'2026-10',coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{debt:{principal_idr:'1000000',remaining_idr:'900000',principal_status:'AVAILABLE'}}};
+responseOverride=(url,options)=>url.includes('/billing/month?')?response(stored):url.endsWith('/billing/month')?(stored={...stored,version:stored.version+1,document:JSON.parse(options.body).document},response(stored)):null;
+await connect();open('billing');await flush();assert.match(content.textContent,/Utang awal Rp 1.000.000/);assert.match(content.textContent,/Sisa Rp 900.000/);
+document.getElementById('billingSave').click();await flush();assert.equal(stored.document.simple.debt_principal_idr,'1000000');
+stored.summary.debt={principal_idr:null,remaining_idr:null,principal_status:'CONFLICT'};document.getElementById('billingReload').click();await flush();
+assert.match(content.textContent,/Utang awal perlu diperiksa/);assert.match(content.textContent,/Sisa belum tersedia/);assert.doesNotMatch(content.textContent,/Rp 1.000.000/);
+""")
+
+    def test_simple_billing_installment_id_is_stable_and_month_switch_uses_correct_document(self):
+        self.run_dom(r"""
+const months={};const fresh=month=>({version:0,document:{month,coverage_confirmed:false,fx_idr_per_usdt:null,fx_source:null,bills:[]},summary:{debt:{remaining_idr:'1000000'}}});
+responseOverride=(url,options)=>{if(url.includes('/billing/month?')){const month=new URL(url).searchParams.get('month');return response(months[month]??=fresh(month));}if(url.endsWith('/billing/month')){const value=JSON.parse(options.body),month=value.document.month;months[month]={...months[month],version:months[month].version+1,document:value.document};return response(months[month]);}};
+await connect();open('billing');await flush();
+const edit=(id,value)=>{const node=document.getElementById(id);assert.ok(node,id);node.value=value;node.oninput?.();node.onchange?.();};
+edit('billingInstallment','100000');edit('billingInstallmentDue','2026-10-15');document.getElementById('billingInstallmentAdd').click();await flush();
+assert.equal(months['2026-10'].document.bills.length,1);assert.equal(months['2026-10'].document.bills[0].id,'office-debt-2026-10');assert.equal(months['2026-10'].document.bills[0].kind,'debt_installment');
+edit('billingInstallment','80000');document.getElementById('billingInstallmentAdd').click();await flush();assert.equal(months['2026-10'].document.bills.length,1);assert.equal(months['2026-10'].document.bills[0].amount,'80000');
+edit('billingMonth','2026-11');await flush();assert.equal(document.getElementById('billingMonth').value,'2026-11');assert.equal(document.getElementById('billingInstallment').value,'');assert.equal(months['2026-11'].document.bills.length,0);
 """)
 
     def test_account_connection_switch_and_read_only_sections(self):

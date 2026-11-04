@@ -1,5 +1,6 @@
 """Owner-entered monthly expenses. Never contacts providers or the order pipeline."""
 import calendar
+import ipaddress
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, localcontext
 import json
@@ -30,6 +31,24 @@ def payment_url_allowed(value):
             not any(segment in ('.', '..') for segment in url.path.split('/')))
 
 
+def owner_payment_url_allowed(value):
+    """Owner-entered public HTTPS link; stored/rendered only, never fetched."""
+    if not isinstance(value, str) or len(value) > 500 or re.search(r'[\s\\\\]', value):
+        return False
+    try:
+        url = urlsplit(value)
+        if url.scheme != 'https' or not url.hostname or url.username is not None or url.password is not None or url.port == 0:
+            return False
+        host = url.hostname.lower().rstrip('.')
+        try:
+            return ipaddress.ip_address(host).is_global
+        except ValueError:
+            return (bool(re.fullmatch(r'(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}', host))
+                    and not host.endswith(('.localhost', '.local', '.internal', '.lan', '.home')))
+    except ValueError:
+        return False
+
+
 def month_key(value):
     if not isinstance(value, str) or not re.fullmatch(r'20\d{2}-(0[1-9]|1[0-2])', value):
         raise ValueError('INVALID_BILLING_MONTH')
@@ -50,8 +69,23 @@ def text(value, limit=500):
 
 def validate(value, today=None):
     today = today or datetime.now(timezone(timedelta(hours=7))).date()
-    if not isinstance(value, dict) or set(value) - {'cashflow'} != {'month', 'coverage_confirmed', 'fx_idr_per_usdt', 'fx_source', 'bills'}:
+    if not isinstance(value, dict) or set(value) - {'cashflow', 'simple'} != {'month', 'coverage_confirmed', 'fx_idr_per_usdt', 'fx_source', 'bills'}:
         raise ValueError('INVALID_BILLING_DOCUMENT')
+    simple = value.get('simple')
+    if 'simple' in value and simple is None:
+        raise ValueError('INVALID_SIMPLE_BILLING')
+    if simple is not None:
+        if not isinstance(simple, dict) or set(simple) - {'debt_principal_idr'} != {'version', 'usd_per_usdt', 'usd_rate_source', 'installment_idr', 'installment_due_date'} or type(simple['version']) is not int or simple['version'] != 1:
+            raise ValueError('INVALID_SIMPLE_BILLING')
+        money(simple['usd_per_usdt'], True); money(simple['installment_idr'], True)
+        money(simple.get('debt_principal_idr'), True)
+        if simple['usd_per_usdt'] is not None:
+            text(simple['usd_rate_source'])
+        elif simple['usd_rate_source'] is not None:
+            raise ValueError('FX_SOURCE_WITHOUT_RATE')
+        due = simple['installment_due_date']
+        if due is not None and (not isinstance(due, str) or date.fromisoformat(due).isoformat() != due or not due.startswith(value['month']+'-')):
+            raise ValueError('INVALID_DUE_DATE')
     if 'cashflow' in value:
         fees = value['cashflow']
         if not isinstance(fees, dict) or set(fees) != {'payment_fee_actual_idr', 'payment_fee_estimated_idr', 'withdrawal_fee_actual_usdt', 'withdrawal_fee_estimated_usdt', 'withdrawal_fee_percent'}:
@@ -68,10 +102,26 @@ def validate(value, today=None):
         text(value['fx_source'])
     elif value['fx_source'] is not None:
         raise ValueError('FX_SOURCE_WITHOUT_RATE')
-    names = set()
+    names, ids = set(), set()
     for row in value['bills']:
-        if not isinstance(row, dict) or set(row) - {'usage'} != {'name', 'kind', 'actual_idr', 'estimated_idr', 'due_date', 'payment_url', 'paid', 'evidence'}:
+        if not isinstance(row, dict) or set(row) - {'usage', 'id', 'amount', 'currency', 'debt_id'} != {'name', 'kind', 'actual_idr', 'estimated_idr', 'due_date', 'payment_url', 'paid', 'evidence'}:
             raise ValueError('INVALID_BILL')
+        if simple is not None and row['kind'] != 'prepaid_usage':
+            if not {'id', 'amount', 'currency'} <= set(row) or not isinstance(row['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', row['id']) or row['id'] in ids or row['currency'] not in ('IDR', 'USD'):
+                raise ValueError('INVALID_SIMPLE_BILL')
+            ids.add(row['id']); money(row['amount'])
+            if row['actual_idr'] != (row['amount'] if row['currency'] == 'IDR' else None) or row['estimated_idr'] is not None:
+                raise ValueError('CONFLICTING_BILL_AMOUNT')
+            if row['kind'] == 'debt_installment':
+                if row.get('debt_id') != 'office-initial' or row['currency'] != 'IDR':
+                    raise ValueError('INVALID_DEBT_INSTALLMENT')
+                money(row['amount'], True)
+            elif 'debt_id' in row:
+                raise ValueError('INVALID_DEBT_INSTALLMENT')
+            if row['paid'] is True and (row['amount'] is None or row['due_date'] is None):
+                raise ValueError('INCOMPLETE_PAID_BILL')
+        elif any(key in row for key in ('id', 'amount', 'currency', 'debt_id')):
+            raise ValueError('INVALID_SIMPLE_BILL')
         if 'usage' in row:
             usage = row['usage']
             if row['kind'] != 'prepaid_usage' or not isinstance(usage, dict) or set(usage) != {'through_date', 'available_credit_idr', 'credit_evidence'}:
@@ -85,7 +135,8 @@ def validate(value, today=None):
             elif usage['credit_evidence'] is not None:
                 raise ValueError('CREDIT_EVIDENCE_WITHOUT_AMOUNT')
         text(row['name'], 80); text(row['evidence'])
-        if row['name'].casefold() in names or row['kind'] not in ('subscription', 'prepaid_usage'):
+        kinds = ('subscription', 'prepaid_usage', 'prepaid_topup', 'debt_installment') if simple is not None else ('subscription', 'prepaid_usage')
+        if row['name'].casefold() in names or row['kind'] not in kinds:
             raise ValueError('INVALID_BILL')
         names.add(row['name'].casefold())
         money(row['actual_idr']); money(row['estimated_idr'])
@@ -98,7 +149,7 @@ def validate(value, today=None):
                 raise ValueError('INVALID_DUE_DATE')
         if row['payment_url'] is not None:
             text(row['payment_url'], 500)
-            if not payment_url_allowed(row['payment_url']):
+            if not (owner_payment_url_allowed(row['payment_url']) if simple is not None else payment_url_allowed(row['payment_url'])):
                 raise ValueError('INVALID_PAYMENT_URL')
 
 
@@ -121,6 +172,28 @@ class Store:
     def read(self, month):
         rows = self.history(month)
         return rows[-1] if rows else dict(version=0, recorded_at=None, document=dict(month=month, coverage_confirmed=False, fx_idr_per_usdt=None, fx_source=None, bills=[]))
+
+    def debt_summary(self, current_document=None):
+        """Latest monthly revisions only: edits/reloads never count a payment twice."""
+        with self.connect() as db:
+            documents = {} if db is None else {month: json.loads(raw) for month, raw in db.execute(
+                'SELECT r.month,r.document FROM revisions r WHERE r.version=(SELECT MAX(x.version) FROM revisions x WHERE x.month=r.month)')}
+        if current_document is not None:
+            documents[current_document['month']] = current_document
+        paid = Decimal(0); count = 0; principals = set()
+        for document in documents.values():
+            if document.get('simple', {}).get('version') != 1:
+                continue
+            principal = document['simple'].get('debt_principal_idr')
+            if principal is not None:
+                principals.add(Decimal(principal))
+            for row in document['bills']:
+                if row['kind'] == 'debt_installment' and row.get('debt_id') == 'office-initial' and row['paid'] is True and row['amount'] is not None:
+                    paid += Decimal(row['amount']); count += 1
+        principal = next(iter(principals)) if len(principals) == 1 else None
+        return dict(principal_idr=str(principal) if principal is not None else None,
+                    paid_idr=str(paid), remaining_idr=str(max(principal-paid, Decimal(0))) if principal is not None else None,
+                    paid_installments=count, principal_status='CONFLICT' if len(principals) > 1 else 'AVAILABLE' if principal is not None else 'UNKNOWN')
 
     def save(self, value, version):
         validate(value)
@@ -181,6 +254,7 @@ def extend_handler(base, controller, origin):
                     summary = summarize(record['document'], read_month(controller.directory, month))
                 except Exception:
                     summary = summarize(record['document'], {})
+                summary['debt'] = store.debt_summary(record['document'])
                 return self.reply(200, dict(record, summary=summary))
             except ValueError:
                 return self.reply(400, {'error': 'INVALID_BILLING_REQUEST'})
@@ -218,7 +292,72 @@ def summarize(value, pnl):
     """Accrual costs are not topups. Verified income PNL already includes trading fees."""
     with localcontext() as context:
         context.prec = 60
+        if value.get('simple', {}).get('version') == 1:
+            # Funding a top-up or repaying principal is not operating expense.
+            # Preserve verified trading income without inventing usage accounting.
+            costs = [row for row in value['bills'] if row['kind'] not in ('prepaid_topup', 'debt_installment')]
+            result = _summarize(dict(value, bills=costs), pnl)
+            funding = _simple_withdrawal(value)
+            if result['estimated_net_profit_usdt'] is not None:
+                old_fee, new_fee = result['estimated_withdrawal_fee_usdt'], funding['estimated_withdrawal_fee_usdt']
+                result['estimated_net_profit_usdt'] = (format(Decimal(result['estimated_net_profit_usdt'])+Decimal(old_fee)-Decimal(new_fee), '.8f')
+                    if old_fee is not None and new_fee is not None else None)
+            result.update(funding)
+            return result
         return _summarize(value, pnl)
+
+
+def _simple_withdrawal(value):
+    from decimal import ROUND_CEILING
+    missing = set(); base = Decimal(0); fees = value.get('cashflow', {})
+    def convert(raw, currency, label='Nominal tagihan'):
+        if raw is None:
+            missing.add(label); return None
+        if Decimal(raw) == 0:
+            return Decimal(0)
+        key = 'fx_idr_per_usdt' if currency == 'IDR' else 'usd_per_usdt'
+        rate = value.get(key) if currency == 'IDR' else value['simple'].get(key)
+        if rate is None:
+            missing.add('Kurs '+currency+'/USDT'); return None
+        return Decimal(raw)/Decimal(rate)
+    for row in value['bills']:
+        if row['kind'] == 'prepaid_usage':
+            # Preserve historical usage/expense records as usage, never turn
+            # them into a second payable invoice alongside a planned top-up.
+            if not any(bill['kind'] == 'prepaid_topup' for bill in value['bills']):
+                missing.add('Nominal top-up')
+            continue
+        if row['paid'] is True:
+            continue
+        if row['due_date'] is None:
+            missing.add('Tanggal jatuh tempo'); continue
+        if not row['due_date'].startswith(value['month']+'-'):
+            continue
+        part = convert(row['amount'], row['currency'])
+        if part is not None:
+            base += part
+    unpaid = any(row['kind'] != 'prepaid_usage' and row['paid'] is not True for row in value['bills'])
+    if not unpaid and not missing:
+        return dict(withdrawal_estimate_usdt='0.00000000', estimated_withdrawal_fee_usdt='0.00000000', withdrawal_missing=[], withdrawal_estimate_complete=True)
+    unknown_fees = set()
+    payment_raw = fees.get('payment_fee_estimated_idr')
+    payment = convert(payment_raw, 'IDR') if payment_raw is not None else None
+    fixed, percent = fees.get('withdrawal_fee_estimated_usdt'), fees.get('withdrawal_fee_percent')
+    if payment_raw is None: unknown_fees.add('Fee pembayaran IDR')
+    if fixed is None: unknown_fees.add('Fee WD USDT')
+    if percent is None: unknown_fees.add('Fee WD %')
+    if missing:
+        return dict(withdrawal_estimate_usdt=None, estimated_withdrawal_fee_usdt=None,
+                    withdrawal_missing=sorted(missing | unknown_fees), withdrawal_estimate_complete=False)
+    # Unknown fees stay unknown in the saved document. Include the components
+    # actually supplied and label this amount provisional while any are missing.
+    before_fee = base+payment if payment is not None else base
+    withdrawal = before_fee+Decimal(fixed) if fixed is not None else before_fee
+    if percent is not None:
+        withdrawal /= 1-Decimal(percent)/100
+    return dict(withdrawal_estimate_usdt=format(withdrawal.quantize(Decimal('.00000001'), rounding=ROUND_CEILING), 'f'),
+                estimated_withdrawal_fee_usdt=format(withdrawal-before_fee, '.8f') if not unknown_fees else None,
+                withdrawal_missing=sorted(unknown_fees), withdrawal_estimate_complete=not unknown_fees)
 
 
 def _summarize(value, pnl):
