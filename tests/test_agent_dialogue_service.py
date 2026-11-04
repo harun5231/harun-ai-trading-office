@@ -17,6 +17,19 @@ from agent import dialogue_service as d
 from agent.llm import OpenAIDialogue
 from agent.memory import Memory
 
+# Verbatim rejected question from the retained runtime reply, without account
+# data or a claim that its sizing/setup requests were ever accepted or sent.
+REJECTED_SCREENING_QUESTION = (
+    'Neurobro, tahap: SCREENING. Pilih 2 coin yang menurutmu paling menarik dan punya peluang '
+    'rate profit tinggi saat ini di Binance Futures. Untuk tiap coin, berikan: simbol, arah '
+    '(LONG/SHORT/HOLD), timeframe yang kamu pakai (mis. 15M/1H), alasan singkat (struktur harga, '
+    'momentum, likuiditas, wick, volatilitas), dan level penting dari data Binance jika ada '
+    '(ENTRY, SL, TP). Sebagai bahan diskusi saja, sertakan juga rekomendasi ukuran posisi '
+    '(quantity atau % dari akun) — ini hanya untuk referensi; eksekusi/quantity final tetap '
+    'ditentukan Risk Manager berdasarkan risiko Office termasuk fee dan estimasi slippage. '
+    'Jelaskan apakah setup ini ready untuk LIMIT/PENDING atau masih butuh konfirmasi lebih '
+    'lanjut. Balas ringkas dan jelas per coin.')
+
 
 def request(*, phase='SCREENING', reply='BTCUSDT', index=0, conversation='native-cycle:one'):
     from tests.test_agent_native_market_context import native_context
@@ -52,6 +65,144 @@ class DialogueServiceTests(unittest.TestCase):
         self.calls.append(payload)
         return {'status':'completed','output':[{'type':'message','content':[
             {'type':'output_text','text':json.dumps(self.output)}]}]}
+
+    def compose_screening_request(self):
+        from worker.prompts import SCREENING
+        value = request(reply=SCREENING, conversation='compose:offline-runtime-recovery')
+        value['phase'] = 'COMPOSE_SCREENING'
+        return value
+
+    def seed_rejected_screening(self, value, *, keep_raw=True, input_hash=None,
+                                decision=None, updated=None):
+        from agent.llm import compose_screening_input_sha256
+        memo = {key: item for key, item in value.items() if key != 'deadline_epoch'}
+        parent_id = 'delegated-model:' + value['request_id']
+        updated = time.time() - 2 if updated is None else updated
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+            (parent_id, 'DELEGATED_MODEL_DIALOGUE', hashlib.sha256(d.canonical(memo).encode()).hexdigest(),
+             'UNKNOWN', None, updated))
+        raw_decision = decision or {'action': 'PROMPT', 'symbols': [],
+                                   'question': REJECTED_SCREENING_QUESTION}
+        raw = {'schema_version': 1, 'authority': 'UNVALIDATED_MODEL_OUTPUT',
+            'phase': 'COMPOSE_SCREENING', 'native_reply_sha256': value['reply_sha256'],
+            'model_input_sha256': input_hash or compose_screening_input_sha256([], value['reply']),
+            'raw_output_text': json.dumps(raw_decision), 'raw_decision': raw_decision,
+            'json_decoded': True, 'model_response_id': 'resp_offline_retained_rejection'}
+        key = 'dialogue-model-raw:' + hashlib.sha256(d.canonical(raw).encode()).hexdigest()
+        raw['observed_at'] = updated - 0.008
+        if keep_raw:
+            self.memory.put(key, raw)
+        return parent_id, key, raw
+
+    def test_actual_rejected_screening_is_not_accepted_and_known_receipt_gets_once_child(self):
+        value = self.compose_screening_request()
+        value.update(request_id='f555395a6d3130aee060edce866b8b1f3a2d8f322c7869dbe873f506193e4604',
+            conversation_id='compose:d7c273b11c94b685754797534111d37898fd714cc5231ba8fbd1774232d5442e')
+        bad = {'action': 'PROMPT', 'symbols': [], 'question': REJECTED_SCREENING_QUESTION}
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_MODEL_RESULT_INVALID'):
+            d.validate_position_size_discussion(bad['question'], 'COMPOSE_SCREENING')
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_MODEL_RESULT_INVALID'):
+            d.validate_decision(bad, value)
+        parent_id, raw_key, raw = self.seed_rejected_screening(value)
+        parent_before = tuple(self.memory.db.execute('SELECT * FROM operations').fetchone())
+        self.assertEqual(parent_before[2],
+                         'df5602614122843fca8b860a87c16150f92fe04c1f78a48a633342794489ffe3')
+        self.output = {'action': 'PROMPT', 'symbols': [], 'question': value['reply']}
+        result = self.engine.process(value)
+        self.assertEqual(result['decision'], self.output)
+        self.assertEqual(result['request_id'], value['request_id'])
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(tuple(self.memory.db.execute('SELECT * FROM operations WHERE operation_id=?',
+                                                     (parent_id,)).fetchone()), parent_before)
+        self.assertEqual(self.memory.get(raw_key), raw)
+        checkpoint = self.memory.get('dialogue-screening-rejection:' + parent_id)
+        self.assertFalse(checkpoint['rejected_output_accepted'])
+        self.assertEqual(checkpoint['model_input_sha256'],
+                         '5774542163b81fc3f541dd095c68fde869c6853486cd5cfb4c7fd44896842e36')
+        self.assertEqual(self.memory.counts()['operations'], {'DONE': 1, 'UNKNOWN': 1})
+        self.assertNotIn(REJECTED_SCREENING_QUESTION,
+                         json.dumps(self.memory.history(value['conversation_id'])))
+        value['deadline_epoch'] += 1
+        self.assertEqual(self.engine.process(value), result)
+        self.memory.close(); self.memory = Memory(self.base/'agent.sqlite3')
+        self.model = OpenAIDialogue(self.key, self.memory, transport=self.transport)
+        self.engine = d.DialogueEngine(self.memory, self.key, model=self.model)
+        self.assertEqual(self.engine.process(value), result)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_network_unknown_without_received_rejected_raw_remains_blocked(self):
+        value = self.compose_screening_request()
+        self.seed_rejected_screening(value, keep_raw=False)
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 1})
+
+    def test_wrong_input_or_changed_raw_digest_cannot_authorize_child(self):
+        value = self.compose_screening_request()
+        parent_id, raw_key, raw = self.seed_rejected_screening(value, input_hash='f'*64)
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.memory.db.execute('DELETE FROM metadata WHERE key=?', (raw_key,))
+        raw['model_input_sha256'] = '5774542163b81fc3f541dd095c68fde869c6853486cd5cfb4c7fd44896842e36'
+        self.memory.put(raw_key, raw)  # Deliberately retain the now-wrong digest key.
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 1})
+
+    def test_valid_raw_is_not_a_generic_unknown_retry_grant(self):
+        value = self.compose_screening_request()
+        self.seed_rejected_screening(value, decision={
+            'action': 'PROMPT', 'symbols': [], 'question': value['reply']})
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.assertEqual(self.calls, [])
+
+    def test_ambiguous_multiple_received_rejections_remain_blocked(self):
+        value = self.compose_screening_request()
+        _, _, raw = self.seed_rejected_screening(value)
+        second = dict(raw, model_response_id='resp_another_received_rejection')
+        identity = {key: item for key, item in second.items() if key != 'observed_at'}
+        self.memory.put('dialogue-model-raw:' + hashlib.sha256(d.canonical(identity).encode()).hexdigest(), second)
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.assertEqual(self.calls, [])
+
+    def test_unknown_child_without_new_raw_is_not_replayed_using_parent_receipt(self):
+        value = self.compose_screening_request()
+        self.seed_rejected_screening(value, updated=time.time())
+        def disconnected(payload):
+            self.calls.append(payload)
+            raise RuntimeError('OFFLINE_UNCONFIRMED_TRANSPORT')
+        self.model.transport = disconnected
+        with self.assertRaises(d.DialogueError):
+            self.engine.process(value)
+        with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.process(value)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 2})
+
+    def test_each_new_known_rejection_receipt_has_its_own_once_child_without_round_cap(self):
+        value = self.compose_screening_request()
+        self.seed_rejected_screening(value, updated=time.time())
+        def completed(payload):
+            self.calls.append(payload)
+            decision = {'action': 'PROMPT', 'symbols': [],
+                'question': REJECTED_SCREENING_QUESTION if len(self.calls) <= 4 else value['reply']}
+            return {'id': 'resp_offline_child_' + str(len(self.calls)), 'status': 'completed',
+                    'output': [{'type': 'message', 'content': [{'type': 'output_text',
+                                                               'text': json.dumps(decision)}]}]}
+        self.model.transport = completed
+        for _ in range(4):
+            with self.assertRaises(d.DialogueError):
+                self.engine.process(value)
+        result = self.engine.process(value)
+        self.assertEqual(result['decision']['question'], value['reply'])
+        self.assertEqual(len(self.calls), 5)
+        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 5, 'DONE': 1})
+        self.assertEqual(self.engine.process(value), result)
+        self.assertEqual(len(self.calls), 5)
 
     def test_real_model_payload_and_success_never_have_tools_prices_or_trading_authority(self):
         value=self.engine.process(request())

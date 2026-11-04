@@ -523,6 +523,133 @@ def _recover_cancel_checkpoints(coordinator, journal, today, native):
                 'resolved_at': time.time()})
 
 
+_TERMINAL_REVIEW = 'ORDER_TERMINAL_NOT_APPLIED'
+_TERMINAL_API_FIELDS = ('operation', 'idempotency', 'body_hash', 'state',
+                        'created', 'attempts', 'output', 'failure_code')
+
+
+def _terminal_review_api(db, claim, intent, native):
+    """Bind the exact uncertain request; never waive an unrelated operation."""
+    body = json.loads(claim['request_body'])
+    context = body.get('context', {})
+    if (claim['operation'] != 'pending-review-v1:' + claim['intent_ref'][:32] + ':' + str(claim['sequence'])
+            or body.get('operation') != claim['operation'] or body.get('output_schema') != REVIEW_SCHEMA
+            or context.get('symbol') != intent['symbol']
+            or context.get('pending_review') != {'intent_ref': claim['intent_ref'],
+                'symbol': intent['symbol'], 'entry_created_at': claim['entry_created_at']}):
+        raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_REQUEST_UNVERIFIED')
+    rebuilt, serialized, request_hash = native['research_provider'].request_body(
+        claim['operation'], body['prompt'], REVIEW_SCHEMA, context)
+    if (rebuilt != body or serialized != claim['request_body']
+            or request_hash != claim['request_sha256'] or _sha(serialized) != request_hash):
+        raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_REQUEST_UNVERIFIED')
+    api = db.execute('SELECT * FROM api_requests WHERE operation=?', (claim['operation'],)).fetchone()
+    source = db.execute('SELECT request_body,request_sha256 FROM research_browser_requests '
+                        'WHERE operation=?', (claim['operation'],)).fetchone()
+    if api is None:
+        if source is not None:
+            raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_REQUEST_UNVERIFIED')
+        return None
+    value = {key: api[key] for key in _TERMINAL_API_FIELDS}
+    if (value['body_hash'] != request_hash or value['state'] not in ('PENDING', 'NEEDS_REVIEW', _TERMINAL_REVIEW)
+            or value['attempts'] != 1 or value['output'] is not None or value['idempotency'] is not None
+            or not _finite(value['created']) or value['created'] < claim['created']
+            or source is None or source['request_body'] != serialized
+            or source['request_sha256'] != request_hash):
+        raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_REQUEST_UNVERIFIED')
+    return value
+
+
+def _retire_terminal_review_api(db, before, operation):
+    """One atomic CAS, after its forensic checkpoint is durable in the sidecar.
+
+    Retain the unknown response, error, attempts and request identity. A crash
+    after this statement still leaves the review unresolved until recovery.
+    The ordinary browser refuses to replay this distinct, non-COMPLETE state.
+    """
+    if before is None:
+        return not any(db.execute('SELECT 1 FROM '+table+' WHERE operation=?',
+                                  (operation,)).fetchone() for table in
+                       ('api_requests', 'research_browser_requests', 'research_browser_responses'))
+    current = db.execute('SELECT * FROM api_requests WHERE operation=?', (before['operation'],)).fetchone()
+    if current is None:
+        return False
+    value = {key: current[key] for key in _TERMINAL_API_FIELDS}
+    if value == dict(before, state=_TERMINAL_REVIEW):
+        return True  # Interrupted after the exact CAS; do not write it again.
+    if value != before or before['state'] not in ('PENDING', 'NEEDS_REVIEW'):
+        return False
+    query = ('UPDATE api_requests SET state=? WHERE ' +
+             ' AND '.join(key + ' IS ?' for key in _TERMINAL_API_FIELDS))
+    return db.execute(query, (_TERMINAL_REVIEW, *(before[key] for key in _TERMINAL_API_FIELDS))).rowcount == 1
+
+
+def _recover_terminal_order_reviews(coordinator, journal, account, today, native):
+    """Retire an inapplicable discussion only after the owned order is terminal.
+
+    An uncertain browser response is still uncertain. Its exact claim and any
+    recorded decision remain in the journal; terminal retirement does not assert an
+    analyst reply or authorize a cancellation/replay. The original gateway and
+    native observation verifier, rather than an empty account or an old label,
+    must confirm that this same order has no remaining entry or position.
+    """
+    guard = native['research_guard']
+    claims = journal.execute("SELECT * FROM pending_reviews WHERE state IN "
+        "('REVIEWING','CANCEL_PREPARED','NEEDS_REVIEW')").fetchall()
+    for claim in claims:
+        row = _intent_row(coordinator.db, claim['intent_id'])
+        if (not row or row['state'] not in ('CLOSED', 'REJECTED')
+                or row['created'] != claim['entry_created_at']
+                or type(row['payload']) is not str or _sha(row['payload']) != claim['intent_ref']
+                or not _gate(coordinator, today)):
+            continue
+        intent = coordinator.verified_intent(row)
+        with (owned_intent_lock(coordinator.db, intent['client_order_id']),
+              guard.gateway_transaction_reads(), guard.gateway_mutations(coordinator.gateway_allowed)):
+            observation = coordinator.gateway.reconcile(intent)
+            coordinator.record_gateway_observation(row['id'], row['candidate_id'], observation, account)
+        current = _intent_row(coordinator.db, claim['intent_id'])
+        if (not current or current['state'] not in ('CLOSED', 'REJECTED')
+                or current['created'] != claim['entry_created_at']
+                or current['payload'] != row['payload'] or not current['result']
+                or not _gate(coordinator, today)):
+            continue
+        result = json.loads(current['result'])
+        if (type(result) is not dict or result.get('state') != current['state']
+                or result.get('source') != 'BINANCE_FUTURES'
+                or result.get('client_order_id') != intent['client_order_id']):
+            continue
+        api = _terminal_review_api(coordinator.db, claim, intent, native)
+        previous = json.loads(claim['result']) if claim['result'] else None
+        if type(previous) is dict and previous.get('resolution') == 'NATIVE_GATEWAY_ORDER_TERMINAL_PREPARED':
+            prepared = previous
+            before = prepared['api_before']
+            if (prepared.get('request_sha256') != claim['request_sha256']
+                    or prepared.get('api_before_sha256') != _sha(_json(before))
+                    or api not in (before, None if before is None else dict(before, state=_TERMINAL_REVIEW))):
+                raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_CHECKPOINT_UNVERIFIED')
+        else:
+            if api is not None and api['state'] == _TERMINAL_REVIEW:
+                raise PendingReviewUnavailable('PENDING_REVIEW_TERMINAL_CHECKPOINT_UNVERIFIED')
+            prepared = {'resolution': 'NATIVE_GATEWAY_ORDER_TERMINAL_PREPARED',
+                'request_sha256': claim['request_sha256'], 'previous_state': claim['state'],
+                'api_before': api, 'api_before_sha256': _sha(_json(api)),
+                'prior_result': previous, 'gateway_observation': result,
+                'prepared_at': time.time()}
+            _set_state(journal, claim['operation'], claim['state'], result=prepared)
+        if not _gate(coordinator, today) or not _retire_terminal_review_api(
+                coordinator.db, prepared['api_before'], claim['operation']):
+            continue
+        _set_state(journal, claim['operation'], _TERMINAL_REVIEW, result={
+            'resolution': 'NATIVE_GATEWAY_ORDER_TERMINAL',
+            'review_outcome': 'NOT_INFERRED', 'previous_state': prepared['previous_state'],
+            'prior_result': prepared['prior_result'], 'request_sha256': claim['request_sha256'],
+            'api_before': prepared['api_before'], 'api_before_sha256': prepared['api_before_sha256'],
+            'prepared_gateway_observation': prepared['gateway_observation'],
+            'prepared_at': prepared['prepared_at'],
+            'gateway_observation': result, 'resolved_at': time.time()})
+
+
 def review_then_advance(coordinator, account, today):
     """Called once under the native Coordinator cycle lock, before new entries."""
     if not _gate(coordinator, today):
@@ -546,6 +673,7 @@ def review_then_advance(coordinator, account, today):
                 monitored = _monitor_existing(coordinator, account, today, native)
                 with _journal(coordinator.db, create=True) as recovering:
                     _recover_cancel_checkpoints(coordinator, recovering, today, native)
+                    _recover_terminal_order_reviews(coordinator, recovering, account, today, native)
                 if not existing.execute("SELECT 1 FROM pending_reviews WHERE state IN "
                         "('REVIEWING','CANCEL_PREPARED','NEEDS_REVIEW') LIMIT 1").fetchone():
                     return coordinator.advance_execution(account, today)

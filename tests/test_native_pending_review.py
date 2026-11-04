@@ -551,6 +551,178 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 1)
         self.assertEqual((self.coordinator.ask_count, self.coordinator.advance_count), (1, 0))
 
+    def uncertain_review_then_terminal_order(self, state='CLOSED'):
+        self.coordinator.raise_at_ask = ValueError('UNKNOWN_BROWSER_OUTCOME')
+        self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_OUTCOME_UNKNOWN')
+        self.coordinator.raise_at_ask = None
+        result = {'source': 'BINANCE_FUTURES', 'symbol': self.intent['symbol'],
+            'client_order_id': self.intent['client_order_id'], 'order_id': '111',
+            'state': state, 'filled_quantity': '1' if state == 'CLOSED' else '0',
+            'observed_at': datetime.now(timezone.utc).isoformat(),
+            'sl_confirmed': False, 'tp_confirmed': False}
+        if state == 'CLOSED':
+            result.update(first_fill_at=self.fill_time, exit_order_id='444',
+                closed_at=datetime.fromtimestamp(time.time()-0.1, timezone.utc).isoformat())
+        self.assertEqual(self.coordinator.record_gateway_observation(
+            self.operation, self.operation, result, {})['bot_status'], state)
+        return result
+
+    def add_uncertain_native_review_request(self):
+        claim = self.claims()[0]
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            (claim['operation'], None, claim['request_sha256'], 'NEEDS_REVIEW',
+             claim['created'] + 0.001, 1, None, 'NEUROBRO_BROWSER_OUTCOME_UNKNOWN'))
+        self.db.execute('INSERT INTO research_browser_requests VALUES(?,?,?)',
+            (claim['operation'], claim['request_body'], claim['request_sha256']))
+        return dict(self.db.execute('SELECT * FROM api_requests WHERE operation=?',
+                                   (claim['operation'],)).fetchone())
+
+    def test_unknown_discussion_retires_only_after_exact_order_native_terminal_reconciliation(self):
+        result = self.uncertain_review_then_terminal_order()
+        original_payload = self.db.execute('SELECT payload FROM order_intents').fetchone()[0]
+        with pending._journal(self.db, create=True) as journal:
+            journal.execute('UPDATE pending_reviews SET result=?',
+                (json.dumps({'failure': 'UNKNOWN_BROWSER_OUTCOME'}),))
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result) as reconcile:
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+            claim = self.claims()[0]
+            self.assertEqual((claim['state'], claim['decision'], claim['source_sha256']),
+                             ('ORDER_TERMINAL_NOT_APPLIED', None, None))
+            resolution = json.loads(claim['result'])
+            self.assertEqual(resolution['resolution'], 'NATIVE_GATEWAY_ORDER_TERMINAL')
+            self.assertEqual(resolution['review_outcome'], 'NOT_INFERRED')
+            self.assertEqual(resolution['prior_result'], {'failure': 'UNKNOWN_BROWSER_OUTCOME'})
+            self.assertEqual(resolution['gateway_observation']['state'], 'CLOSED')
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+            self.assertEqual(reconcile.call_count, 1)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+        self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0], original_payload)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM research_browser_responses').fetchone()[0], 0)
+        self.assertEqual(len(self.claims()), 1)
+
+    def test_unknown_discussion_for_unfilled_rejected_order_uses_same_native_recovery(self):
+        result = self.uncertain_review_then_terminal_order('REJECTED')
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        self.assertEqual(self.claims()[0]['state'], 'ORDER_TERMINAL_NOT_APPLIED')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 0)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+
+    def test_terminal_label_without_fresh_valid_native_observation_does_not_release_review(self):
+        self.uncertain_review_then_terminal_order()
+        # A live/invalid observation cannot undo terminal ownership or be
+        # accepted merely because the ledger used to say CLOSED.
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value={
+                'source': 'UNVERIFIED', 'state': 'CLOSED'}):
+            self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_OUTCOME_UNKNOWN')
+        self.assertEqual(self.claims()[0]['state'], 'NEEDS_REVIEW')
+        self.assertEqual(self.db.execute('SELECT state FROM order_intents').fetchone()[0], 'NEEDS_REVIEW')
+        self.assertEqual(self.coordinator.advance_count, 0)
+
+    def test_terminal_recovery_requires_same_payload_and_entry_creation(self):
+        for column, value in (('intent_ref', 'f'*64), ('entry_created_at', '2000-01-01T00:00:00Z')):
+            with self.subTest(column=column):
+                # Each subcase starts from the same preserved unknown claim.
+                if not self.claims():
+                    result = self.uncertain_review_then_terminal_order()
+                with pending._journal(self.db, create=True) as journal:
+                    original = journal.execute('SELECT '+column+' FROM pending_reviews').fetchone()[0]
+                    journal.execute('UPDATE pending_reviews SET '+column+'=?', (value,))
+                with patch.object(self.coordinator.gateway, 'reconcile', return_value=result) as reconcile:
+                    self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_OUTCOME_UNKNOWN')
+                    reconcile.assert_not_called()
+                with pending._journal(self.db, create=True) as journal:
+                    journal.execute('UPDATE pending_reviews SET '+column+'=?', (original,))
+                self.assertEqual(self.claims()[0]['state'], 'NEEDS_REVIEW')
+        self.assertEqual(self.coordinator.advance_count, 0)
+
+    def test_terminal_recovery_gateway_failure_keeps_original_uncertain_claim(self):
+        self.uncertain_review_then_terminal_order()
+        before = self.claims()[0]
+        with patch.object(self.coordinator.gateway, 'reconcile', side_effect=ValueError('NATIVE_HISTORY_UNAVAILABLE')):
+            self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_STATE_UNVERIFIED')
+        self.assertEqual(self.claims()[0], before)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.advance_count), (1, 0))
+
+    def test_exact_uncertain_native_api_retires_without_faking_an_answer(self):
+        result = self.uncertain_review_then_terminal_order()
+        before = self.add_uncertain_native_review_request()
+        source = tuple(self.db.execute('SELECT * FROM research_browser_requests').fetchone())
+        self.assertTrue(self.coordinator.unresolved_research())
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        after = dict(self.db.execute('SELECT * FROM api_requests').fetchone())
+        self.assertEqual(after, dict(before, state='ORDER_TERMINAL_NOT_APPLIED'))
+        self.assertEqual(tuple(self.db.execute('SELECT * FROM research_browser_requests').fetchone()), source)
+        self.assertFalse(self.coordinator.unresolved_research())
+        claim = self.claims()[0]
+        self.assertEqual(claim['state'], 'ORDER_TERMINAL_NOT_APPLIED')
+        self.assertEqual(json.loads(claim['result'])['api_before'], before)
+        self.assertIsNone(claim['decision'])
+        self.assertIsNone(claim['source_sha256'])
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+
+    def test_terminal_retirement_crash_before_api_CAS_recovers_without_replay(self):
+        result = self.uncertain_review_then_terminal_order()
+        before = self.add_uncertain_native_review_request()
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            with patch.object(pending, '_retire_terminal_review_api', side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_tick()
+            claim = self.claims()[0]
+            self.assertEqual(claim['state'], 'NEEDS_REVIEW')
+            self.assertEqual(json.loads(claim['result'])['resolution'], 'NATIVE_GATEWAY_ORDER_TERMINAL_PREPARED')
+            self.assertEqual(dict(self.db.execute('SELECT * FROM api_requests').fetchone()), before)
+            self.assertEqual(self.coordinator.advance_count, 0)
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        self.assertEqual(self.claims()[0]['state'], 'ORDER_TERMINAL_NOT_APPLIED')
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+
+    def test_terminal_retirement_crash_after_api_CAS_keeps_review_blocked_then_recovers(self):
+        result = self.uncertain_review_then_terminal_order()
+        before = self.add_uncertain_native_review_request()
+        original_set = pending._set_state
+        def interrupted(journal, operation, state, **kwargs):
+            if state == 'ORDER_TERMINAL_NOT_APPLIED':
+                raise KeyboardInterrupt
+            return original_set(journal, operation, state, **kwargs)
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            with patch.object(pending, '_set_state', side_effect=interrupted):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.run_tick()
+            self.assertEqual(self.claims()[0]['state'], 'NEEDS_REVIEW')
+            self.assertEqual(dict(self.db.execute('SELECT * FROM api_requests').fetchone()),
+                             dict(before, state='ORDER_TERMINAL_NOT_APPLIED'))
+            self.assertEqual(self.coordinator.advance_count, 0)
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+        self.assertEqual(self.claims()[0]['state'], 'ORDER_TERMINAL_NOT_APPLIED')
+        self.assertEqual(json.loads(self.claims()[0]['result'])['api_before'], before)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+
+    def test_changed_native_request_hash_cannot_be_retired(self):
+        result = self.uncertain_review_then_terminal_order()
+        self.add_uncertain_native_review_request()
+        self.db.execute("UPDATE api_requests SET body_hash=?", ('f'*64,))
+        before = dict(self.db.execute('SELECT * FROM api_requests').fetchone())
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_STATE_UNVERIFIED')
+        self.assertEqual(dict(self.db.execute('SELECT * FROM api_requests').fetchone()), before)
+        self.assertEqual(self.claims()[0]['state'], 'NEEDS_REVIEW')
+        self.assertEqual(self.coordinator.advance_count, 0)
+
+    def test_terminal_recovery_never_clears_an_unrelated_uncertain_operation(self):
+        result = self.uncertain_review_then_terminal_order()
+        self.add_uncertain_native_review_request()
+        unrelated = ('another-unknown-operation', None, 'b'*64, 'NEEDS_REVIEW',
+                     time.time(), 1, None, 'NEUROBRO_BROWSER_OUTCOME_UNKNOWN')
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)', unrelated)
+        with patch.object(self.coordinator.gateway, 'reconcile', return_value=result):
+            self.run_tick()
+        self.assertEqual(tuple(self.db.execute('SELECT * FROM api_requests WHERE operation=?',
+                                              (unrelated[0],)).fetchone()), unrelated)
+        self.assertTrue(self.coordinator.unresolved_research())
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+
     def test_unresolved_native_order_keeps_original_highest_priority_before_new_review(self):
         self.db.execute("UPDATE order_intents SET state='NEEDS_REVIEW'")
         self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')

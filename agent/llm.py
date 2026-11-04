@@ -80,6 +80,19 @@ SCHEMA = {
 ADVISORY_QUESTION_DESCRIPTION = ('Bahasa Indonesia alami. Rekomendasi ukuran posisi hanya bahan diskusi; '
     'quantity eksekusi tetap dihitung Risk Manager dari risiko Office termasuk biaya dan slippage. '
     'Jangan menulis instruksi untuk mengganti quantity eksekusi atau menambah field quantity.')
+COMPOSE_TASK_HEADER = '\nTugas percakapan dari workflow pemilik:\n'
+
+
+def compose_screening_input_sha256(history, reply):
+    """Reconstruct the existing model input, never an accepted model output."""
+    if (not isinstance(history, list) or len(history) > 12
+            or any(not isinstance(item, dict) or set(item) != {'role', 'content'}
+                or item['role'] not in ('user', 'assistant') or not isinstance(item['content'], str)
+                for item in history) or not isinstance(reply, str)):
+        raise AgentError('MODEL_HISTORY_INVALID')
+    messages = [dict(item) for item in history]
+    messages.append({'role': 'user', 'content': 'Fase: COMPOSE_SCREENING' + COMPOSE_TASK_HEADER + reply})
+    return hashlib.sha256(json.dumps(messages, ensure_ascii=False).encode()).hexdigest()
 
 
 def dialogue_schema(phase, reply, *, context=None):
@@ -102,6 +115,10 @@ def dialogue_schema(phase, reply, *, context=None):
         # A cashtag already spelling a full pair must not gain a second quote.
         symbols.add(base if re.fullmatch(r"[A-Z0-9]{2,20}USDT", base) else base + "USDT")
     if phase.startswith('COMPOSE_'):
+        if phase == 'COMPOSE_SCREENING':
+            if not 0 < len(reply) <= 1600:
+                raise AgentError('MODEL_INPUT_TOO_LARGE')
+            properties['question'] = {**properties['question'], 'enum': [reply]}
         return {**SCHEMA, 'properties': {**properties,
             'action': {'type': 'string', 'enum': ['PROMPT']},
             'symbols': {'type': 'array', 'maxItems': 0, 'items': {'type': 'string'}}}}
@@ -375,7 +392,7 @@ class OpenAIDialogue:
                 raise AgentError("MODEL_MARKET_CONTEXT_UNEXPECTED")
             context = validated_market_context(context)
         composition = phase.startswith('COMPOSE_')
-        content = ("Fase: " + phase + ("\nTugas percakapan dari workflow pemilik:\n" if composition
+        content = ("Fase: " + phase + (COMPOSE_TASK_HEADER if composition
             else "\nJawaban Neurobro terbaru:\n") + reply)
         if source_facts is not None:
             from .dialogue_service import validate_source_facts
@@ -389,6 +406,11 @@ class OpenAIDialogue:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         schema = dialogue_schema(phase, reply, context=context)
         instructions = INSTRUCTIONS + ("\nUntuk COMPOSE, susun pesan awal yang akan dikirim ke Neurobro berdasarkan tugas dan fakta ini. Gunakan action PROMPT, symbols [], dan tulis pesan bahasa Indonesia di question. Jangan mengulang schema teknis atau marker; integrasi menambah ringkasan/identitasnya. Jangan menentukan setup sendiri.\n" if composition else '')
+        if phase == 'COMPOSE_SCREENING':
+            instructions += ('\nKHUSUS SCREENING: question harus menyalin persis teks tugas pemilik, '
+                'dengan jumlah coin yang diminta. Jangan menambahkan permintaan arah, ENTRY, SL, TP, '
+                'ukuran posisi, quantity, atau persentase akun. Analisis setup baru dilakukan sesudah '
+                'coin dipilih dan chart coin tersebut tersedia.\n')
         if phase.endswith('POST_TRADE_EVALUATION'):
             instructions += ('\nKamu bertindak sebagai pengelola diskusi/evaluator operasional Hermes. '
                 'Ini evaluasi transaksi historis milik robot, bukan screening atau setup baru. '
@@ -437,7 +459,9 @@ class OpenAIDialogue:
                 any(not isinstance(s, str) or not re.fullmatch(r"[A-Z0-9]{2,20}USDT", s) for s in value["symbols"]) or
                 any(s not in schema["properties"]["symbols"]["items"].get("enum", []) for s in value["symbols"]) or
                 len(set(value["symbols"])) != len(value["symbols"]) or
-                not isinstance(value["question"], str) or len(value["question"]) > 1600):
+                not isinstance(value["question"], str) or len(value["question"]) > 1600 or
+                'enum' in schema['properties']['question']
+                    and value['question'] not in schema['properties']['question']['enum']):
             raise AgentError("MODEL_RESPONSE_INVALID")
         if self._live_transport:
             self._completed_at = time.time()

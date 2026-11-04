@@ -213,13 +213,14 @@ class ComposedPromptServiceTests(unittest.TestCase):
                 calls.append(payload)
                 return {'status': 'completed', 'output': [{'type': 'message', 'content': [
                     {'type': 'output_text', 'text': json.dumps({'action': 'PROMPT', 'symbols': [],
-                     'question': 'Pilih 2 coin Binance Futures yang struktur 15M dan 1H paling jelas.'})}]}]}
+                     'question': 'Screening 2 coin dari Binance Futures.'})}]}]}
             model = OpenAIDialogue(key, memory, transport=transport)
             engine = service.DialogueEngine(memory, key, model=model)
             value = request(phase='SCREENING', reply='Screening 2 coin dari Binance Futures.')
             value['phase'] = 'COMPOSE_SCREENING'
             first = engine.process(value)
             self.assertEqual(first['decision']['action'], 'PROMPT')
+            self.assertEqual(first['decision']['question'], value['reply'])
             self.assertFalse(first['needs_followup'])
             self.assertIn('COMPOSE', calls[0]['instructions'])
             value['deadline_epoch'] += 2
@@ -256,7 +257,7 @@ class ComposedPromptServiceTests(unittest.TestCase):
                 return {'schema_version': 1, 'ok': True,
                     **{key: value[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
                     'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
-                    'decision': {'action':'PROMPT','symbols':[], 'question':'Pilih coin yang paling jelas saat ini.'},
+                    'decision': {'action':'PROMPT','symbols':[], 'question':value['reply']},
                     'needs_followup': False, 'reason':'DIALOGUE_DECISION'}
             reasoner.compose = Mock(side_effect=compose)
             hook = DelegatedDOMBridge(bridge, reasoner, native=module,
@@ -265,7 +266,7 @@ class ComposedPromptServiceTests(unittest.TestCase):
             result = hook.ask(value, lambda: True, deadline=80)
             self.assertEqual(result['output'], {'symbols':['BTCUSDT']})
             sent = bridge.messages[0]['text']
-            self.assertTrue(sent.startswith('Pilih coin yang paling jelas'))
+            self.assertTrue(sent.startswith(value['prompt']))
             self.assertNotIn('OUTPUT_JSON_SCHEMA', sent)
             self.assertEqual(module.user_prompt(value), sent)
             self.assertEqual(module.user_prompt(value), sent)
