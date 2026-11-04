@@ -9,7 +9,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-from agent.llm import INSTRUCTIONS, SCHEMA, OpenAIDialogue, dialogue_schema, read_api_key, validated_market_context
+from agent.llm import (INSTRUCTIONS, SCHEMA, OpenAIDialogue, dialogue_schema,
+    read_api_key, validated_market_context, compose_screening_input_sha256)
 from agent.memory import Memory
 from agent.models import AgentError, BudgetExceeded
 
@@ -34,6 +35,31 @@ class LLMTests(unittest.TestCase):
             self.calls.append(payload)
             return response(output)
         return OpenAIDialogue("/not/read/by/fake", self.memory, transport=transport, **kwargs)
+
+    def test_compose_screening_preserves_owner_prompt_for_one_two_and_replacement_coins(self):
+        from worker.prompts import SCREENING, REPLACEMENT_SCREENING
+        from worker.account_state import SCREENING_ONE
+        for prompt in (SCREENING, SCREENING_ONE, REPLACEMENT_SCREENING.format(count=1),
+                       REPLACEMENT_SCREENING.format(count=2)):
+            with self.subTest(prompt=prompt):
+                answer = self.model({'action': 'PROMPT', 'symbols': [], 'question': prompt}).plan(
+                    [], prompt, phase='COMPOSE_SCREENING', jakarta_day='2026-11-05')
+                self.assertEqual(answer.question, prompt)
+                schema = self.calls[-1]['text']['format']['schema']
+                self.assertEqual(schema['properties']['question']['enum'], [prompt])
+                self.assertIn('KHUSUS SCREENING', self.calls[-1]['instructions'])
+        with self.assertRaisesRegex(AgentError, 'MODEL_RESPONSE_INVALID'):
+            self.model({'action': 'PROMPT', 'symbols': [],
+                        'question': SCREENING + '. Sertakan rekomendasi ukuran posisi.'}).plan(
+                [], SCREENING, phase='COMPOSE_SCREENING', jakarta_day='2026-11-05')
+
+    def test_retained_runtime_screening_input_hash_reconstructs_exactly(self):
+        from worker.prompts import SCREENING
+        self.assertEqual(compose_screening_input_sha256([], SCREENING),
+                         '5774542163b81fc3f541dd095c68fde869c6853486cd5cfb4c7fd44896842e36')
+        self.assertNotEqual(compose_screening_input_sha256(
+            [{'role': 'user', 'content': 'Unrelated earlier message'}], SCREENING),
+            '5774542163b81fc3f541dd095c68fde869c6853486cd5cfb4c7fd44896842e36')
 
     def test_real_responses_payload_has_no_tools_or_price_authority(self):
         model = self.model({"action": "SCREENING", "symbols": ["ETHUSDT"], "question": ""})

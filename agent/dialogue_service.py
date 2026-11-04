@@ -27,7 +27,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
-from .llm import OpenAIDialogue, read_api_key, validated_market_context
+from .llm import (OpenAIDialogue, read_api_key, validated_market_context,
+                  compose_screening_input_sha256)
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
 
@@ -58,6 +59,7 @@ PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'D
     'DIALOGUE_OPERATION_ID_MISMATCH', 'DIALOGUE_MODEL_UNAVAILABLE', 'DIALOGUE_MODEL_NOT_SENT',
     'DIALOGUE_MODEL_RESULT_INVALID', 'DIALOGUE_FOREIGN_SYMBOL', 'DIALOGUE_PRICE_PROPOSAL_REFUSED',
     'DIALOGUE_SOURCE_FACTS_INVALID', 'DIALOGUE_RESPONSE_LIMIT', 'DIALOGUE_UNAVAILABLE'})
+SCREENING_RECOVERY_POLICY = 'ORIGINAL_SCREENING_KNOWN_REJECTION_V1'
 
 
 class DialogueError(AgentError):
@@ -245,6 +247,8 @@ def validate_decision(value, request):
     if request['phase'].startswith('COMPOSE_'):
         need(action == 'PROMPT' and not symbols and bool(question.strip()),
              'DIALOGUE_MODEL_RESULT_INVALID')
+        if request['phase'] == 'COMPOSE_SCREENING':
+            need(question == request['reply'], 'DIALOGUE_MODEL_RESULT_INVALID')
         validate_question_sources(question, request)
         mentioned = set(re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', question.upper()))
         source_symbols = set(re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', request['reply'].upper()))
@@ -414,6 +418,89 @@ class DialogueEngine:
             and self._authenticated_key_identity is not None
             and key_identity(self.key_file) == self._authenticated_key_identity)
 
+    def _rejected_screening_child(self, request, parent_id, parent_payload, caller_payload):
+        """A known rejected answer may get a new, once-only model operation.
+
+        This is not UNKNOWN replay or acceptance of that rejected text. Bind a
+        unique, completed raw response to the exact original input and the
+        serialized engine's immediate rejection checkpoint. Network ambiguity,
+        missing/changed evidence and other phases remain blocked. The parent
+        and its original UNKNOWN/error evidence are never changed.
+        """
+        def bound(ok):
+            need(ok, 'DIALOGUE_OPERATION_UNKNOWN')
+        bound(request['phase'] == 'COMPOSE_SCREENING' and request['market_context'] is None
+              and 'source_facts' not in request)
+        parent_hash = hashlib.sha256(canonical(parent_payload).encode()).hexdigest()
+        row = self.memory.db.execute('SELECT kind,request_hash,state,updated_at FROM operations '
+                                     'WHERE operation_id=?', (parent_id,)).fetchone()
+        bound(row is not None and row[:3] == ('DELEGATED_MODEL_DIALOGUE', parent_hash, 'UNKNOWN'))
+        checkpoint_key = 'dialogue-screening-rejection:' + parent_id
+        checkpoint = self.memory.get(checkpoint_key)
+        history = (checkpoint['model_history'] if type(checkpoint) is dict
+                   else self.memory.history(request['conversation_id'], max_chars=8000, max_messages=12))
+        model_input_hash = compose_screening_input_sha256(history, request['reply'])
+        caller_hash = hashlib.sha256(canonical(caller_payload).encode()).hexdigest()
+        used_receipts = set()
+        for encoded, in self.memory.db.execute(
+                "SELECT value FROM metadata WHERE key LIKE 'dialogue-screening-rejection:%'"):
+            value = decode_json(encoded.encode())
+            if (value.get('caller_request_sha256') == caller_hash
+                    and value.get('parent_operation') != parent_id):
+                used_receipts.add(value.get('rejected_receipt_key'))
+        matches = []
+        for key, encoded in self.memory.db.execute(
+                "SELECT key,value FROM metadata WHERE key LIKE 'dialogue-model-raw:%'"):
+            try:
+                raw = decode_json(encoded.encode())
+                identity = {name: value for name, value in raw.items() if name != 'observed_at'}
+                if (key in used_receipts
+                        or key != 'dialogue-model-raw:' + hashlib.sha256(canonical(identity).encode()).hexdigest()
+                        or raw.get('schema_version') != 1 or raw.get('authority') != 'UNVALIDATED_MODEL_OUTPUT'
+                        or raw.get('phase') != 'COMPOSE_SCREENING' or raw.get('json_decoded') is not True
+                        or raw.get('native_reply_sha256') != request['reply_sha256']
+                        or raw.get('model_input_sha256') != model_input_hash
+                        or not isinstance(raw.get('model_response_id'), str)
+                        or re.fullmatch(r'resp_[A-Za-z0-9_-]{1,150}', raw['model_response_id']) is None
+                        or type(raw.get('observed_at')) not in (int, float)
+                        or not math.isfinite(raw['observed_at'])
+                        or not 0 <= row[3] - raw['observed_at'] <= 1):
+                    continue
+                decision = decode_json(raw['raw_output_text'].encode())
+                if (decision != raw.get('raw_decision') or set(decision) != {'action', 'symbols', 'question'}
+                        or decision['action'] != 'PROMPT' or decision['symbols'] != []
+                        or not text_safe(decision['question'], 1600)):
+                    continue
+                # Prove the original rejection, independently of the new exact
+                # screening wording rule. This is the observed phase error.
+                try:
+                    validate_position_size_discussion(decision['question'], 'COMPOSE_SCREENING')
+                except DialogueError as error:
+                    if str(error) != 'DIALOGUE_MODEL_RESULT_INVALID':
+                        continue
+                else:
+                    continue
+                matches.append((key, raw))
+            except (DialogueError, ValueError, TypeError, KeyError, AttributeError):
+                continue
+        bound(len(matches) == 1)
+        raw_key, raw = matches[0]
+        child_seed = {'policy': SCREENING_RECOVERY_POLICY, 'parent_operation': parent_id,
+                      'parent_request_sha256': parent_hash, 'rejected_receipt_key': raw_key}
+        child_id = 'delegated-model-screening-recovery:' + hashlib.sha256(canonical(child_seed).encode()).hexdigest()
+        child_payload = {**child_seed, 'caller_request': caller_payload}
+        record = {**child_seed, 'schema_version': 1, 'child_operation': child_id,
+                  'child_request_sha256': hashlib.sha256(canonical(child_payload).encode()).hexdigest(),
+                  'caller_request_sha256': caller_hash,
+                  'model_history': history, 'model_input_sha256': model_input_hash,
+                  'model_response_id': raw['model_response_id'],
+                  'rejected_receipt_sha256': hashlib.sha256(canonical(raw).encode()).hexdigest(),
+                  'rejection': 'DIALOGUE_MODEL_RESULT_INVALID', 'rejected_output_accepted': False}
+        bound(checkpoint is None or checkpoint == record)
+        if checkpoint is None:
+            self.memory.put(checkpoint_key, record)
+        return child_id, child_payload
+
     def process(self, request):
         # This precedes Memory.operation: OFF/expired gates reject even DONE replays.
         request = validate_request(decode_json(canonical(request).encode()), now=self.clock())
@@ -478,7 +565,18 @@ class DialogueEngine:
                 # buy another model call or change the already-authored text.
                 memo_request = ({key: value for key, value in request.items()
                     if key != 'deadline_epoch'} if request['phase'].startswith('COMPOSE_') else request)
-                result = self.memory.operation(operation_id, 'DELEGATED_MODEL_DIALOGUE', memo_request, execute)
+                current_id, operation_payload = operation_id, memo_request
+                visited = set()
+                while True:
+                    validate_request(request, now=self.clock())
+                    need(current_id not in visited, 'DIALOGUE_OPERATION_UNKNOWN')
+                    visited.add(current_id)
+                    try:
+                        result = self.memory.operation(current_id, 'DELEGATED_MODEL_DIALOGUE', operation_payload, execute)
+                        break
+                    except AmbiguousOperation:
+                        current_id, operation_payload = self._rejected_screening_child(
+                            request, current_id, operation_payload, memo_request)
             except AmbiguousOperation:
                 raise DialogueError('DIALOGUE_OPERATION_UNKNOWN') from None
             except NotSent:
