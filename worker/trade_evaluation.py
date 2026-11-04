@@ -2,8 +2,9 @@
 
 The append-only SQLite file is separate from the financial/order ledger. A poll's
 source snapshots and derived jobs commit together; replay makes no new events.
-Historical chart/decision linkage and a Neurobro evaluation protocol are not
-available here. Jobs explicitly remain blocked, not 'evaluated'.
+Jobs remain blocked until strict historical evidence joins are supplied. The
+binding/once-intent/completion APIs below never dispatch a provider request;
+only an actual source-bound native receipt can project an analyst evaluation.
 """
 import hashlib
 import json
@@ -44,7 +45,7 @@ def _snapshot(db):
                 streak_complete=scope.get('streak_complete', False),
                 streak_scope='OBSERVED_CLOSED_POSITIONS',
                 history_missing_reasons=scope.get('history_missing_reasons', []),
-                jobs=list(_latest(db, 'job').values()))
+                jobs=_project_evaluations(db, list(_latest(db, 'job').values())))
 
 
 def read_status(directory):
@@ -135,3 +136,152 @@ def _observe(db, calendar):
         if db.in_transaction:
             db.execute('ROLLBACK')
         raise
+
+
+# These operations extend the SAME append-only snapshot journal. They neither
+# mutate the trading ledger nor dispatch messages; the existing native caller
+# must supply verified history/archive/native-receipt readers.
+def _validated_binding(binding):
+    from .trade_evaluation_evidence import PROTOCOL, digest, need
+    import re
+    need(type(binding)is dict and binding.get('version')==PROTOCOL
+        and binding.get('binding_sha256')==digest({k:v for k,v in binding.items()if k!='binding_sha256'}),
+        'EVALUATION_BINDING_INVALID')
+    need(all(type(binding.get(k))is str and re.fullmatch('[a-f0-9]{64}',binding[k])for k in
+        ('closed_position_sha256','financial_receipt_sha256','fills_sha256','original_reply_sha256'))
+        and type(binding.get('original_reply'))is str
+        and hashlib.sha256(binding['original_reply'].encode()).hexdigest()==binding['original_reply_sha256']
+        and binding.get('source_evidence',{}).get('source_type')=='NEUROBRO_BROWSER'
+        and binding.get('original_decision',{}).get('side')in('LONG','SHORT')
+        and type(binding.get('materials'))is dict
+        and {(r.get('kind'),r.get('timeframe'))for r in binding['materials'].get('files',[])}==
+            {(kind,tf)for kind in('PNG','CSV')for tf in('15m','1h')},'EVALUATION_BINDING_INVALID')
+    return binding
+
+
+def _project_evaluations(db, jobs):
+    from .trade_evaluation_evidence import digest
+    bindings=_latest(db,'binding');results=_latest(db,'analyst_evaluation');intents=_latest(db,'evaluation_intent');trades=_latest(db,'trade')
+    for job in jobs:
+        if job['status']=='SUPERSEDED_HISTORY_REVISION':continue
+        valid={}
+        for trade_id in job['trade_ids']:
+            value=bindings.get(trade_id)
+            trade=trades.get(trade_id)
+            if value is not None and trade is not None:
+                _validated_binding(value)
+                if value['closed_position_sha256']==digest(trade):valid[trade_id]=value
+        if len(valid)!=len(job['trade_ids']):continue
+        missing=[r for r in job['missing_reasons']if r not in
+            ('HISTORICAL_CHART_ARCHIVE_NOT_LINKED','ORIGINAL_NEUROBRO_DECISION_NOT_LINKED')]
+        if any(r!='REQUIRES_NEUROBRO_EVALUATION'for r in missing):continue
+        evidence_sha=digest(dict(job_id=job['id'],trade_ids=job['trade_ids'],
+            bindings=[valid[t]['binding_sha256']for t in job['trade_ids']]))
+        job.update(status='REQUIRES_NEUROBRO_EVALUATION',evidence_complete=True,
+            missing_reasons=['REQUIRES_NEUROBRO_EVALUATION'],input_evidence_sha256=evidence_sha,
+            evidence_bindings={t:valid[t]['binding_sha256']for t in job['trade_ids']})
+        result=results.get(job['id']);intent=intents.get(job['id'])
+        if result is not None and result['input_evidence_sha256']==evidence_sha:
+            job.update(status='EVALUATED'if result['assessment']!='INCONCLUSIVE'else'EVALUATED_INCONCLUSIVE',
+                missing_reasons=[],analyst_evaluation=result)
+        elif intent is not None and intent['operation']not in {r['operation']for r in results.values()}:
+            job.update(status='EVALUATION_OUTCOME_UNKNOWN',
+                missing_reasons=['NATIVE_EVALUATION_RECEIPT_NOT_CONFIRMED'])
+    return jobs
+
+
+def attach_evidence(directory, binding):
+    """Persist the strict join produced by bind_closed_trade; no financial write."""
+    from .trade_evaluation_evidence import digest, need
+    _validated_binding(binding)
+    with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        trades=_latest(db,'trade');trade=trades.get(binding['trade_id'])
+        need(trade is not None and binding['closed_position_sha256']==digest(trade),
+            'EVALUATION_HISTORY_REVISION_CHANGED')
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _append(db,'binding',binding['trade_id'],binding)
+            result=_snapshot(db);db.execute('COMMIT');return result
+        except BaseException:
+            db.execute('ROLLBACK');raise
+
+
+def claim_evaluation(directory, job_id, room_id, *, now=None):
+    """Durably claim one same-room native request BEFORE a possible Send.
+
+    Never call the provider again after this returns an existing unresolved
+    claim. A completed result can be read from status; there is no blind replay
+    or arbitrary new operation ID after a crash.
+    """
+    import time,math
+    from .trade_evaluation_evidence import evaluation_request, digest, need
+    at=time.time()if now is None else now
+    need(type(at)in(int,float)and math.isfinite(at)and at>0,'EVALUATION_TIME_INVALID')
+    with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        jobs={j['id']:j for j in _snapshot(db)['jobs']};job=jobs.get(job_id)
+        need(job is not None and job['status']=='REQUIRES_NEUROBRO_EVALUATION','EVALUATION_JOB_NOT_READY')
+        request=evaluation_request(job,_latest(db,'binding'),room_id)
+        old=_latest(db,'evaluation_intent').get(job_id)
+        if old is not None:
+            done=_latest(db,'analyst_evaluation').get(job_id)
+            need(done is not None and done['operation']==old['operation'],'EVALUATION_OUTCOME_UNKNOWN_NO_REPLAY')
+            need(old['operation']!=request['operation'],'EVALUATION_ALREADY_COMPLETED_NO_REPLAY')
+        value=dict(request=request,operation=request['operation'],job_id=job_id,
+            request_sha256=digest(request),input_evidence_sha256=request['input_evidence_sha256'],reserved_at=at)
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _append(db,'evaluation_intent',job_id,value);db.execute('COMMIT');return value
+        except BaseException:
+            db.execute('ROLLBACK');raise
+
+
+def complete_evaluation(directory, operation, *, native_receipt_reader):
+    """Append a real, source-bound Neurobro receipt, not a model/owner assertion.
+
+    The trusted internal reader revalidates browser request/completion/room
+    custody and returns the normalized native envelope. Its request_sha256
+    links the internal evaluation request; the adapter must also verify the
+    actual native wire-body hash through source_evidence_sha256, never relabel
+    that transport hash as this input digest. The envelope itself is
+    never accepted from Office input or a provider reply claiming verification.
+    """
+    import re,math
+    from .trade_evaluation_evidence import digest, need, parse_evaluation_reply, PROTOCOL
+    need(callable(native_receipt_reader),'EVALUATION_NATIVE_RECEIPT_READER_REQUIRED')
+    with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        values=[]if db is None else [v for v in _latest(db,'evaluation_intent').values()if v['operation']==operation]
+        need(len(values)==1,'EVALUATION_INTENT_NOT_UNIQUE');intent=values[0]
+    receipt=native_receipt_reader(operation)
+    request=intent['request']
+    need(type(receipt)is dict and set(receipt)=={'protocol','phase','provider','operation','request_sha256',
+        'input_evidence_sha256','room_id','sent_this_request','received_at','response_id','source_evidence_sha256',
+        'assistant_text','assistant_sha256'}and receipt.get('protocol')==PROTOCOL
+        and receipt.get('phase')=='POST_TRADE_EVALUATION'and receipt.get('provider')=='NEUROBRO_WEB'
+        and receipt.get('operation')==operation and receipt.get('request_sha256')==intent['request_sha256']
+        and receipt.get('input_evidence_sha256')==intent['input_evidence_sha256']
+        and receipt.get('room_id')==request['room_id']and receipt.get('sent_this_request')is True
+        and type(receipt.get('received_at'))in(int,float)and math.isfinite(receipt['received_at'])
+        and receipt['received_at']>=intent['reserved_at']
+        and type(receipt.get('response_id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',receipt['response_id'])
+        and type(receipt.get('source_evidence_sha256'))is str
+        and re.fullmatch('[a-f0-9]{64}',receipt['source_evidence_sha256'])
+        and type(receipt.get('assistant_text'))is str
+        and receipt.get('assistant_sha256')==__import__('hashlib').sha256(receipt['assistant_text'].encode()).hexdigest(),
+        'EVALUATION_NATIVE_RECEIPT_MISMATCH')
+    answer=parse_evaluation_reply(receipt['assistant_text'])
+    record=dict(operation=operation,input_evidence_sha256=intent['input_evidence_sha256'],
+        assessment=answer['assessment'],findings=answer['findings'],native_receipt=receipt,
+        experiment_outcome=dict(status='NOT_RUN',reason='ANALYST_PROPOSALS_ARE_NOT_EXPERIMENT_RESULTS'))
+    with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        need(_latest(db,'evaluation_intent').get(intent['job_id'])==intent,'EVALUATION_INTENT_CHANGED')
+        job=next(j for j in _snapshot(db)['jobs']if j['id']==intent['job_id'])
+        need(job.get('input_evidence_sha256')==intent['input_evidence_sha256'],'EVALUATION_HISTORY_REVISION_CHANGED')
+        old=_latest(db,'analyst_evaluation').get(intent['job_id'])
+        if old is not None and old.get('operation')==operation:
+            need(old==record,'EVALUATION_RECEIPT_REPLAY_CHANGED');return _snapshot(db)
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _append(db,'analyst_evaluation',intent['job_id'],record)
+            result=_snapshot(db);db.execute('COMMIT');return result
+        except BaseException:
+            db.execute('ROLLBACK');raise

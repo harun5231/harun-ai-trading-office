@@ -149,3 +149,14 @@ crashes before/after atomic replacement. The exact 8192-byte valid financial DB
 hardlinked as SHM regression fails on the prior implementation for **both**
 ingestion and status, and now remains byte-identical and queryable. No real
 orders or Neurobro/provider/financial requests are needed.
+
+## Handover continuation: evidence binding
+
+`worker.trade_evaluation_evidence` now supplies strict lifecycle/order/research
+binding and a reader for existing native historical PNG/CSV sidecars. The same
+journal adds durable once-intents and source-bound evaluation receipts; a history
+revision invalidates the result without deleting its evidence. These are offline
+interfaces, not a deployed evaluation consumer. Native evaluation phase/schema
+admission, owned archive lookup and delivery/response custody adapters still need
+to be connected after the retained b844 clarification and df80 worker activation.
+No autonomous evaluation or win-rate experiment is claimed from these helpers.
