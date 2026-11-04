@@ -149,3 +149,57 @@ crashes before/after atomic replacement. The exact 8192-byte valid financial DB
 hardlinked as SHM regression fails on the prior implementation for **both**
 ingestion and status, and now remains byte-identical and queryable. No real
 orders or Neurobro/provider/financial requests are needed.
+
+## Handover continuation: evidence binding
+
+`worker.trade_evaluation_evidence` now supplies strict lifecycle/order/research
+binding and a reader for existing native historical PNG/CSV sidecars. The same
+journal adds durable once-intents and source-bound evaluation receipts; a history
+revision invalidates the result without deleting its evidence. These are offline
+interfaces, not a deployed evaluation consumer. Native evaluation phase/schema
+admission, owned archive lookup and delivery/response custody adapters still need
+to be connected after the retained b844 clarification and df80 worker activation.
+No autonomous evaluation or win-rate experiment is claimed from these helpers.
+
+## Historical Neurobro consumer (source; not a VPS completion claim)
+
+`trade_evaluation_runtime` joins the already authenticated account-history cache
+and owned CLOSED intent to original research and historical material custody.
+The existing native account actor binds evidence; the existing coordinator only
+starts `POST_TRADE_EVALUATION` after normal work returns idle/capacity-full and
+there is no unresolved trading work or financial transaction. Owner ON/readiness
+controls remain in force. Protection and account actors stay independent. The
+one DailyRoom serializes historical discussion with trading; no daemon is added.
+
+The existing browser service needs the source-hash-bound additive patch in
+`scripts/patch_native_evaluation_service.py`. Its authenticated
+`POST /v1/historical-evidence` only reads a BOUND room, original private PNG/CSV
+archive and native receipt chains. It cannot navigate, Send, choose paths or
+create an order. New website captures produce an owned lookup index; a missing
+legacy index/four-file receipt stays blocked. Historical validation uses the
+original capture instant without changing any live clock/freshness rule.
+
+Evaluation reuses actual historical four-file turns when readable in the current
+BOUND room. Otherwise it reads the original owned archive and delivers two PNGs
+and two CSVs per historical material turn through the existing native upload,
+labelled with the recorded capture times. A streak can continue through multiple
+material turns under one operation and DailyRoom; no fresh chart substitutes for
+old evidence. An immutable planned intent precedes each upload, followed by a
+chained actual-upload/Send intent with the new attachment IDs. Each observed
+reply completes its own turn receipts with the actual native UI message ID and
+raw reply hash. A separate final-assessment receipt binds that ordered chain to
+the actual final native response ID; intermediate replies are not relabelled as
+the last response. Final custody requires
+all expected material groups and actual user-turn witnesses, not merely the last
+PNG pair. Unknown outcomes are recovered only from native completion custody and
+are never replayed. Results cannot become setups, orders, strategy changes or
+claimed completed experiments. This B4 phase cannot select the B1 clarification
+task or re-send its attachments; it only accepts the journal's owned CLOSED-trade
+bindings.
+
+Native release assembly must package the new `agent/native_evaluation_{protocol,
+browser,rpc}.py`, `worker/trade_evaluation_{evidence,archive,runtime}.py`, the existing
+snapshot helper, and the changed provider/dialogue/actor hooks together. Do not
+apply this source to the already staged df80 worker-only artifact or relabel that
+receipt. Runtime archive access, new-phase dialogue and analyst response still
+require deployment evidence; offline tests/fixtures do not establish them.

@@ -44,13 +44,13 @@ def helper_token():
 
 def browser_request(method, url, headers=None, body=None, timeout=15):
     """Fixed internal service; no proxies, redirects, secrets in URL or logs."""
-    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask')):
+    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask'), ('POST', BASE + '/v1/historical-evidence')):
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     if method == 'GET' and body is not None:
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     try:
         raw = None if body is None else encode(body).encode('utf-8')
-        if raw is not None and len(raw) > MAX_REQUEST_BYTES + 128:
+        if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + 128):
             raise Review('NEUROBRO_BROWSER_REQUEST_TOO_LARGE')
         request = Request(url, data=raw, method=method, headers=headers or {})
         opener = build_opener(ProxyHandler({}), NoRedirect())
@@ -62,11 +62,12 @@ def browser_request(method, url, headers=None, body=None, timeout=15):
             status = response.code
             if status not in (200, 409):
                 return status, {}, None
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
-            if len(raw) > MAX_RESPONSE_BYTES:
+            maximum = 24*1024*1024 if url.endswith('/v1/historical-evidence') else MAX_RESPONSE_BYTES
+            raw = response.read(maximum + 1)
+            if len(raw) > maximum:
                 raise Review('INVALID_RESPONSE_ENVELOPE')
             try:
-                value = json.loads(raw, parse_float=D, object_pairs_hook=unique,
+                value = json.loads(raw, parse_float=(float if url.endswith('/v1/historical-evidence') else D), object_pairs_hook=unique,
                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
             except (ValueError, TypeError):
                 raise Review('INVALID_RESPONSE_ENVELOPE') from None
@@ -207,6 +208,15 @@ class NeuroBrowser:
             self._token = ''
         self.transport = transport
         ensure_journal(self.db)
+        from .trade_evaluation_runtime import NativeEvaluationReads, EvaluationConsumer
+        try:
+            native_reads = NativeEvaluationReads(self)
+            self.evaluation_consumer = EvaluationConsumer(native_reads.directory,
+                archive_reader=native_reads.archive, room_reader=native_reads.room,
+                native_receipt_reader=native_reads.completion)
+        except ValueError:
+            self.evaluation_consumer = None # No native archive authority in an in-memory fixture.
+            self.evaluation_failure = 'EVALUATION_LEDGER_PATH_UNVERIFIED'
 
     def headers(self):
         if not self._token:
@@ -259,7 +269,7 @@ class NeuroBrowser:
                 return False
         if not permitted():
             raise ResearchPaused('RESEARCH_PAUSED')
-        if (schema not in (SETUP_SCHEMA, SETUP_SCHEMA_V4) and screening_count(schema) is None) and not __import__('agent.native_pending_protocol', fromlist=('is_pending_schema',)).is_pending_schema(schema):
+        if (schema not in (SETUP_SCHEMA, SETUP_SCHEMA_V4) and screening_count(schema) is None) and not __import__('agent.native_pending_protocol', fromlist=('is_pending_schema',)).is_pending_schema(schema) and not __import__('agent.native_evaluation_protocol', fromlist=('is_evaluation_schema',)).is_evaluation_schema(schema):
             raise Review('INVALID_OUTPUT_SCHEMA')
         if screening_count(schema) is not None and (not isinstance(catalog, dict) or not catalog):
             raise Review('SCREENING_CATALOG_REQUIRED')
@@ -400,3 +410,5 @@ class NeuroBrowser:
 
 
 __import__('agent.native_pending_protocol', fromlist=('install_worker_browser_protocol',)).install_worker_browser_protocol(globals())
+
+__import__('agent.native_evaluation_protocol', fromlist=('install_worker_protocol',)).install_worker_protocol(globals())

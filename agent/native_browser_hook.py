@@ -81,6 +81,9 @@ class DelegatedDOMBridge:
         self.native_turn_batch = native_turn_batch
         self.native = native or importlib.import_module(type(bridge).__module__)
         self.bridge, self.client = bridge, client
+        from .native_evaluation_protocol import install_dom_protocol
+        if callable(getattr(self.native, 'request_kind', None)):
+            install_dom_protocol(vars(self.native))
         self.clock, self.wall_clock = monotonic, wall_clock
         if converter is None:
             from .native_market_context import convert_native_market_context
@@ -166,6 +169,12 @@ class DelegatedDOMBridge:
                  'accepted_reply_sha256': None, 'accepted_output': None,
                  'asked_questions': []}
         payload_digest = _digest(payload)
+        from .native_evaluation_protocol import is_evaluation_schema
+        historical = is_evaluation_schema(payload.get('output_schema'))
+        evaluation = None
+        if historical:
+            from .native_evaluation_browser import HistoricalEvaluation
+            evaluation = HistoricalEvaluation(self, payload, until)
         file_mode = data_file_mode(self.native, payload)
         delivery = None
 
@@ -189,7 +198,7 @@ class DelegatedDOMBridge:
                     self.converter(fresh['context'], now=self.wall_clock())
                 else:
                     self.native.image_artifacts(chart_images, chart_evidence)
-                if self.prompt_cache is not None and payload.get('context') is not None:
+                if self.prompt_cache is not None and payload.get('context') is not None and not historical:
                     from .native_chart_followup import material_dispatch_provenance
                     active = state['fresh']
                     context = active['context'] if active is not None else payload['context']
@@ -400,8 +409,13 @@ class DelegatedDOMBridge:
                 unknown()
             # The operation remains bound by native transcript/receipts. Human
             # discussion needs no repeated JSON schema or marker code block.
-            if phase != 'SCREENING':
+            if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 question = prepare_fresh_followup(question, market, prefix)
+            if evaluation is not None:
+                composers = self.bridge._visible(self.bridge._dom_contract.composer)
+                if len(composers) != 1 or composers[0].input_value(): unknown()
+                question,names,_ = evaluation.prepare_followup(question,composers[0],delivery,payload)
+                state['fresh_names'] = names
             composers = self.bridge._visible(self.bridge._dom_contract.composer)
             if len(composers) != 1 or composers[0].input_value():
                 unknown()
@@ -418,6 +432,9 @@ class DelegatedDOMBridge:
             state.update(phase='FOLLOWUP_SENT', prefix=prefix, question=question,
                          url=self.bridge.page.url, previous=None, stable=0)
             state['turn_names'].append(list(state['fresh_names']))
+            if evaluation is not None:
+                evaluation.before_send(question, transcript=prefix)
+                gate()
             buttons[0].click(timeout=self.bridge._timeout(5000))
 
         def review(answer):
@@ -429,8 +446,12 @@ class DelegatedDOMBridge:
             if type(required) is not list or any(type(key) is not str for key in required):
                 unknown()
             phase = _phase(payload, required)
+            if evaluation is not None:
+                # Preserve this ACTUAL per-turn reply before a model/network
+                # failure can obscure it; this receipt never authorizes trading.
+                evaluation.note_reply(answer,observed_turns)
             active_context = state['fresh']['context'] if state['fresh'] is not None else payload.get('context')
-            if phase != 'SCREENING':
+            if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 observed = active_context.get('fetched_at') if isinstance(active_context, dict) else None
                 if (type(observed) in (int, float) and math.isfinite(observed)
                         and self.wall_clock() - observed > 180):
@@ -444,7 +465,7 @@ class DelegatedDOMBridge:
                         'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.',
                         reference, observed_turns, answer, phase)
                     return
-            market = None if phase == 'SCREENING' else self.converter(active_context, now=self.wall_clock())
+            market = None if phase in ('SCREENING', 'POST_TRADE_EVALUATION') else self.converter(active_context, now=self.wall_clock())
             operation = payload.get('operation')
             request_sha = payload.get('request_sha256')
             if type(operation) is not str or type(request_sha) is not str:
@@ -471,6 +492,12 @@ class DelegatedDOMBridge:
             gate()
             if transcript() != observed_turns:
                 unknown()
+            if evaluation is not None:
+                if not response['needs_followup']:
+                    question = evaluation.next_material_question()
+                    if question is not None:
+                        send_followup(question,None,observed_turns,answer,phase)
+                        return
             state['reviewed'] = True
             # Interpret only this actual reply. Internal schema/marker data is
             # owned by this transaction, not another JSON demand in WEB chat.
@@ -494,7 +521,7 @@ class DelegatedDOMBridge:
                     output = None  # Do not fall back to an old/conflicting card.
             complete = type(output) is dict and set(required).issubset(output)
             expected_symbol = (payload.get('context') or {}).get('symbol')
-            if complete and phase != 'SCREENING' and output.get('symbol') != expected_symbol:
+            if complete and phase in ('ANALYSIS', 'PENDING_REVIEW') and output.get('symbol') != expected_symbol:
                 output, complete, parse_error = None, False, 'NEUROBRO_FOREIGN_COIN'
             required_question = None
             action = response['decision']['action']
@@ -513,7 +540,11 @@ class DelegatedDOMBridge:
                 required_question = ('Mohon ringkas ' + count + 'coin pilihanmu sesuai kapasitas '
                     'yang diminta dalam bentuk COIN: simbol USDT Perpetual. '
                     'Jangan sertakan coin pembanding sebagai pilihan.')
-            if phase != 'SCREENING' and not complete and not response['needs_followup']:
+            if phase == 'POST_TRADE_EVALUATION' and not complete and not response['needs_followup']:
+                required_question = ('Mohon pertegas penilaian historis berdasarkan bukti yang tersedia: '
+                    'PENILAIAN SETUP: SESUAI BUKTI, TIDAK SESUAI BUKTI, atau BELUM CUKUP BUKTI. '
+                    'Jangan membuat setup atau transaksi baru.')
+            if phase in ('ANALYSIS', 'PENDING_REVIEW') and not complete and not response['needs_followup']:
                 # A model HOLD/COMPLETE decision cannot replace the native
                 # marker/schema binding. Ask the WEB author to restate its own
                 # answer; never turn an unbound fragment into a local setup.
@@ -607,7 +638,17 @@ class DelegatedDOMBridge:
                 return copy.deepcopy(state['accepted_output'])
             return original_exact_json(answer, marker)
 
-        if file_mode:
+        if evaluation is not None:
+            try:
+                gate()
+                chart_images,chart_evidence = evaluation.prepare_room()
+                gate()
+                from .native_evaluation_browser import HistoricalFileDelivery
+                delivery = HistoricalFileDelivery(evaluation,gate).install()
+            except BaseException:
+                evaluation.close()
+                raise
+        elif file_mode:
             delivery = NativeDataFileDelivery(self.bridge, self.native, gate,
                 wall_clock=self.wall_clock).install()
         self.bridge._answer = delegated_answer
@@ -621,7 +662,7 @@ class DelegatedDOMBridge:
                     required = payload.get('output_schema', {}).get('required', [])
                     phase = _phase(payload, required)
                     prompt = payload['prompt']
-                    market = None if phase == 'SCREENING' else self.converter(
+                    market = None if phase in ('SCREENING', 'POST_TRADE_EVALUATION') else self.converter(
                         payload['context'], now=self.wall_clock())
                     identity = _digest({'kind': 'MINI_COMPOSE_V1', 'payload_sha256': payload_digest})
                     compose = {'schema_version': 1, 'request_id': identity,
@@ -651,7 +692,14 @@ class DelegatedDOMBridge:
                 status = self.bridge.status()
                 raise self.native.NotSubmitted(status if status in
                     {'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED'} else 'UNAVAILABLE') from None
-            result = self.bridge.ask(payload, dispatch_check, chart_images=chart_images,
+            def final_dispatch():
+                if dispatch_check() is not True: return False
+                if evaluation is not None:
+                    evaluation.before_send(self.native.user_prompt(payload),
+                        transcript=self.daily_room.full_turns())
+                    return dispatch_check() is True
+                return True
+            result = self.bridge.ask(payload, final_dispatch, chart_images=chart_images,
                 chart_evidence=chart_evidence, deadline=deadline, receipt_callback=None)
             if state['accepted_output'] is not None:
                 if (type(result) is not dict or type(result.get('assistant_text')) is not str
@@ -682,6 +730,8 @@ class DelegatedDOMBridge:
                     result = {**result, 'chart_evidence': copy.deepcopy(state['bound_charts'])}
                 except Exception:
                     unknown()
+            if evaluation is not None:
+                result = {**result,'chart_evidence':evaluation.complete(result)}
             if self.native_turn_batch is not None:
                 self.native_turn_batch.evidence('COMPLETE')
             return result
@@ -700,6 +750,8 @@ class DelegatedDOMBridge:
             self.native.exact_json = original_exact_json
             if delivery is not None:
                 delivery.close()
+            if evaluation is not None:
+                evaluation.close()
 
 
 def install_native_bridge(bridge, *, fresh_charts=None, followup_receipt=None, archive_root=None,

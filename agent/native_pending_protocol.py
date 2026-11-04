@@ -176,6 +176,10 @@ def dialogue_phase_for_payload(payload, required):
     Request admission and every send retain their independent freshness checks;
     this structural binding alone cannot dispatch or cancel anything.
     """
+    from .native_evaluation_protocol import is_evaluation_schema, envelope, PHASE
+    if type(payload) is dict and is_evaluation_schema(payload.get('output_schema')):
+        envelope(payload)
+        return PHASE
     try:
         if (type(required) is list and len(required) == 3
                 and set(required) == {'symbol', 'order_ref', 'decision'}

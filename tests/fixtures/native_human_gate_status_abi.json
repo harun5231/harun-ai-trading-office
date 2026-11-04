@@ -1,0 +1,16 @@
+{
+  "actual_module_sha256": "c842713f886992af7289bc6503b57ef6d06fc59dcb85f3be7cc1230ef6fd1071",
+  "source_job": "41821380923-1",
+  "selectors": {
+    "MESSAGE": "[data-message-id]",
+    "SEND": "[data-tour='chat-area'] > button:has(svg.lucide-arrow-up)"
+  },
+  "status": {
+    "line": 222,
+    "source": "def status(self):\n        observation = dict(reason='OBSERVATION_EXCEPTION', counts={})\n        self._session_observation = observation\n        if not self._origin_valid():\n            observation['reason'] = 'ORIGIN_UNAPPROVED'\n            return 'UNAVAILABLE'\n        if self._visible(\"iframe[src*='challenges.cloudflare.com'], iframe[src*='hcaptcha.com'], iframe[src*='/recaptcha/']\"):\n            observation['reason'] = 'CHALLENGE_VISIBLE'\n            return 'CHALLENGE_REQUIRED'\n        if self._visible(\"input[type='password'], input[autocomplete='one-time-code']\"):\n            observation['reason'] = 'LOGIN_FIELDS_VISIBLE'\n            return 'LOGIN_REQUIRED'\n        contract, state = detect(self.page, self._visible, observation)\n        if state == 'CONNECTED':\n            if (self._visible(\"[role='dialog'], [role='alertdialog']\")\n                    or (contract == RAIL_INPUT_GROUP and self._current_secure_loader_blocking())):\n                observation['reason'] = 'VISIBLE_BLOCKING_DIALOG'\n                return 'UNAVAILABLE'\n            if self._operation_contract is not None and contract != self._operation_contract:\n                observation['reason'] = 'OPERATION_LAYOUT_CHANGED'\n                return 'UNAVAILABLE'\n            self._dom_contract = contract\n        return state"
+  },
+  "_visible": {
+    "line": 208,
+    "source": "def _visible(self, selector):\n        locator = self.page.locator(selector)\n        return [locator.nth(index) for index in range(locator.count()) if locator.nth(index).is_visible()]"
+  }
+}

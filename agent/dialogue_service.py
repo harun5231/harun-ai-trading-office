@@ -35,7 +35,7 @@ from .models import AgentError, AmbiguousOperation, NotSent
 # former 64 KiB request. The response and HTTP-header limits remain unchanged.
 MAX_BODY = 384 * 1024
 MAX_RESPONSE = 16384
-BASE_PHASES = frozenset({'SCREENING', 'ANALYSIS', 'PENDING_REVIEW'})
+BASE_PHASES = frozenset({'SCREENING', 'ANALYSIS', 'PENDING_REVIEW', 'POST_TRADE_EVALUATION'})
 PHASES = BASE_PHASES | frozenset('COMPOSE_' + phase for phase in BASE_PHASES)
 ACTIONS = frozenset({'SCREENING', 'CLARIFY', 'HOLD', 'TAHAN', 'BATALKAN', 'COMPLETE', 'PROMPT'})
 SHA = re.compile(r'[a-f0-9]{64}', re.ASCII)
@@ -179,7 +179,7 @@ def validate_request(value, *, now=None):
     need(deadline > now, 'DIALOGUE_DEADLINE_EXPIRED')
     if 'source_facts' in value:
         validate_source_facts(value['source_facts'])
-    if value['phase'] in {'SCREENING', 'COMPOSE_SCREENING'}:
+    if value['phase'] in {'SCREENING', 'COMPOSE_SCREENING', 'POST_TRADE_EVALUATION', 'COMPOSE_POST_TRADE_EVALUATION'}:
         need(value['market_context'] is None, 'DIALOGUE_MARKET_CONTEXT_INVALID')
     else:
         try:
@@ -215,6 +215,8 @@ def validate_decision(value, request):
             'DIALOGUE_MODEL_RESULT_INVALID')
         return value
     need(action != 'PROMPT', 'DIALOGUE_MODEL_RESULT_INVALID')
+    if request['phase'] == 'POST_TRADE_EVALUATION':
+        need(action in {'COMPLETE', 'CLARIFY'} and not symbols, 'DIALOGUE_MODEL_RESULT_INVALID')
     question_symbols = re.findall(r'(?<![A-Z0-9])([A-Z0-9]{2,20}USDT)(?![A-Z0-9])', question.upper())
     for symbol in [*symbols, *question_symbols]:
         base = re.escape(symbol[:-4])
@@ -241,7 +243,7 @@ def validate_decision(value, request):
     if action in {'HOLD', 'TAHAN', 'BATALKAN'}:
         need(re.search(r'\b'+action+r'\b', request['reply'], re.I) is not None,
              'DIALOGUE_MODEL_RESULT_INVALID')
-    need(action != 'COMPLETE' or phase == 'ANALYSIS', 'DIALOGUE_MODEL_RESULT_INVALID')
+    need(action != 'COMPLETE' or phase in {'ANALYSIS', 'POST_TRADE_EVALUATION'}, 'DIALOGUE_MODEL_RESULT_INVALID')
     return value
 
 

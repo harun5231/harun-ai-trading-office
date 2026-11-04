@@ -90,13 +90,18 @@ def dialogue_schema(phase, reply, *, context=None):
         return {**SCHEMA, 'properties': {**SCHEMA['properties'],
             'action': {'type': 'string', 'enum': ['PROMPT']},
             'symbols': {'type': 'array', 'maxItems': 0, 'items': {'type': 'string'}}}}
+    if phase == 'POST_TRADE_EVALUATION':
+        return {**SCHEMA, 'properties': {**SCHEMA['properties'],
+            'action': {'type': 'string', 'enum': ['CLARIFY', 'COMPLETE']},
+            'symbols': {'type': 'array', 'maxItems': 0, 'items': {'type': 'string'}}}}
     if phase != 'SCREENING' and isinstance(context, dict):
         current = context.get('symbol')
         if isinstance(current, str) and re.fullmatch(r'[A-Z0-9]{2,20}USDT', current):
             symbols = {current}
     actions = {"SCREENING": ["SCREENING", "CLARIFY", "HOLD"],
                "ANALYSIS": ["CLARIFY", "HOLD", "COMPLETE"],
-               "PENDING_REVIEW": ["CLARIFY", "HOLD", "TAHAN", "BATALKAN"]}[phase]
+               "PENDING_REVIEW": ["CLARIFY", "HOLD", "TAHAN", "BATALKAN"],
+               "POST_TRADE_EVALUATION": ["CLARIFY", "COMPLETE"]}[phase]
     # OpenAI Structured Outputs permits at most 1,000 enum values per schema.
     # Refuse an unrepresentable format without truncating attributed candidates.
     if len(symbols) + len(actions) > 1000:
@@ -337,7 +342,8 @@ class OpenAIDialogue:
 
     def plan(self, history, reply, *, phase, jakarta_day, context=None, source_facts=None):
         if phase not in ("SCREENING", "ANALYSIS", "PENDING_REVIEW",
-                         "COMPOSE_SCREENING", "COMPOSE_ANALYSIS", "COMPOSE_PENDING_REVIEW"):
+                         "COMPOSE_SCREENING", "COMPOSE_ANALYSIS", "COMPOSE_PENDING_REVIEW",
+                         "POST_TRADE_EVALUATION", "COMPOSE_POST_TRADE_EVALUATION"):
             raise ValueError("DIALOGUE_PHASE_INVALID")
         if not isinstance(reply, str) or not 1 <= len(reply) <= 16000:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
@@ -350,7 +356,7 @@ class OpenAIDialogue:
                 raise AgentError("MODEL_HISTORY_INVALID")
             messages.append(item)
         if context is not None:
-            if phase in ("SCREENING", "COMPOSE_SCREENING"):
+            if phase in ("SCREENING", "COMPOSE_SCREENING", "POST_TRADE_EVALUATION", "COMPOSE_POST_TRADE_EVALUATION"):
                 raise AgentError("MODEL_MARKET_CONTEXT_UNEXPECTED")
             context = validated_market_context(context)
         composition = phase.startswith('COMPOSE_')
@@ -368,6 +374,14 @@ class OpenAIDialogue:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         schema = dialogue_schema(phase, reply, context=context)
         instructions = INSTRUCTIONS + ("\nUntuk COMPOSE, susun pesan awal yang akan dikirim ke Neurobro berdasarkan tugas dan fakta ini. Gunakan action PROMPT, symbols [], dan tulis pesan bahasa Indonesia di question. Jangan mengulang schema teknis atau marker; integrasi menambah ringkasan/identitasnya. Jangan menentukan setup sendiri.\n" if composition else '')
+        if phase.endswith('POST_TRADE_EVALUATION'):
+            instructions += ('\nKamu bertindak sebagai pengelola diskusi/evaluator operasional Hermes. '
+                'Ini evaluasi transaksi historis milik robot, bukan screening atau setup baru. '
+                'Materi historis harus tetap terhubung ke chart/lampiran asli dan hasil transaksi. '
+                'Jangan menganggap keuntungan/kerugian membuktikan sebabnya. Pisahkan bukti, hipotesis, '
+                'dan usulan eksperimen yang BELUM DIJALANKAN. Jangan mengubah strategi, risiko, atau order. '
+                'COMPLETE hanya berarti evaluasi jelas; jika bukti kurang, BELUM CUKUP BUKTI sah. '
+                'Gunakan symbols [] dan klarifikasi bahasa Indonesia jika ada pertentangan yang relevan.\n')
         # Reserve a conservative UTF-8-byte upper bound before dispatch. Failed or
         # interrupted requests retain their reservation; there are no blind retries.
         self.memory.reserve_budget(jakarta_day, len(encoded) + len(instructions.encode()) + len(json.dumps(schema).encode()),

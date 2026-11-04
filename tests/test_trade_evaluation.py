@@ -85,12 +85,13 @@ class DurableEvaluationTests(unittest.TestCase):
         state = module.observe_calendar(self.path, dict(positions=[position('4', pnl='0', closed='2026-11-04T00:00:00Z')]))
         self.assertEqual(state['consecutive_losses'], 0)
 
-    def test_authoritative_native_account_actor_persists_while_off_and_retries_failed_journal(self):
+    def _run_native_account_actor(self, *, journal_failure_once=False, binding_failure=False):
         import ast
         import threading
         from types import SimpleNamespace
         from unittest.mock import patch
         module = self.module()
+        from worker import trade_evaluation_runtime
         source = Path(__file__).resolve().parents[1] / 'vps_native/worker/api_service.py'
         cls = next(node for node in ast.parse(source.read_bytes()).body if isinstance(node, ast.ClassDef) and node.name == 'Controller')
         actor = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == 'account_loop')
@@ -118,26 +119,48 @@ class DurableEvaluationTests(unittest.TestCase):
         exec(compile(ast.Module(body=[actor], type_ignores=[]), str(source), 'exec'), scope)
         controller = SimpleNamespace(directory=self.path, stopping=stop, state_lock=threading.Lock(),
             open_ledger=lambda: SimpleNamespace(db=SimpleNamespace(close=lambda: None)),
-            protection=SimpleNamespace(recover_pending=lambda *a: None),
+            protection=SimpleNamespace(recover_pending=lambda *a: calls.append('protection')),
             account_wakeup=SimpleNamespace(wait=wait, clear=lambda: None), progress=lambda **k: None,
             clear_failure=lambda **k: None, failure=lambda *a, **k: calls.append('service_failure'))
         actual = module.observe_calendar
         attempts = []
         def fail_once(*args):
             attempts.append(1)
-            if len(attempts) == 1: raise OSError('PRIVATE_PATH_SECRET')
+            if journal_failure_once and len(attempts) == 1: raise OSError('PRIVATE_PATH_SECRET')
             return actual(*args)
-        with patch.object(module, 'observe_calendar', side_effect=fail_once):
+        with patch.object(module, 'observe_calendar', side_effect=fail_once), patch.object(
+                trade_evaluation_runtime, 'observe_authenticated_calendar',
+                side_effect=ValueError('AUTHENTICATED_HISTORY_CACHE_REQUIRED') if binding_failure else None,
+                return_value=dict(state='OBSERVED')) as binder:
             scope['account_loop'](controller)
+        return module, controller, calls, attempts, binder.call_count
+
+    def test_authoritative_native_account_actor_persists_while_off_and_retries_failed_journal(self):
+        module, controller, calls, attempts, bindings = self._run_native_account_actor(journal_failure_once=True)
         self.assertEqual(len(attempts), 3)
-        self.assertEqual(calls, ['snapshot', 'risk'] * 3)
+        self.assertEqual(bindings, 2) # No binding from the failed persistence pass.
+        self.assertEqual(calls, ['protection', 'snapshot', 'risk'] * 3)
         self.assertEqual(module.read_status(self.path)['processed_trade_ids'], ['a'])
         self.assertIsNone(controller.evaluation_failure)
+        self.assertEqual(controller.evaluation_binding_status, dict(state='OBSERVED'))
         db = sqlite3.connect(self.path / module.FILENAME)
         try:
             self.assertEqual(db.execute('SELECT count(*) FROM evaluation_events').fetchone()[0], 3)
         finally:
             db.close()
+
+    def test_missing_authenticated_binding_keeps_persisted_journal_available_and_protection_running(self):
+        module, controller, calls, attempts, bindings = self._run_native_account_actor(binding_failure=True)
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual(bindings, 3) # Missing evidence retries independently.
+        self.assertEqual(calls, ['protection', 'snapshot', 'risk'] * 3)
+        self.assertIsNone(controller.evaluation_failure)
+        self.assertEqual(controller.evaluation_binding_status,
+            dict(state='BLOCKED_MISSING_EVIDENCE', reason='POST_TRADE_EVALUATION_EVIDENCE_UNAVAILABLE'))
+        state = module.read_status(self.path)
+        self.assertEqual(state['processed_trade_ids'], ['a'])
+        self.assertEqual(state['jobs'][0]['status'], 'BLOCKED_MISSING_EVIDENCE')
+        self.assertEqual(state['jobs'][0]['experiment_outcome']['status'], 'NOT_RUN')
 
     def test_native_office_status_exposes_journal_readonly_and_masks_storage_failure(self):
         import ast
