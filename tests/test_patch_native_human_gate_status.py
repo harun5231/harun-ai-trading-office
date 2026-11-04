@@ -45,7 +45,7 @@ class NativeStatusPatchTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(FIXTURE['_visible']['source'].encode()).hexdigest(),p.VISIBLE_BEFORE_SHA256)
         self.assertEqual(FIXTURE['selectors']['MESSAGE'],'[data-message-id]')
 
-    def test_patch_adds_only_the_guard_and_preserves_original_native_source(self):
+    def test_patch_adds_only_the_guards_optional_callback_and_preserves_native_source(self):
         raw=native_source()
         after=p.patch(raw,expected_sha256=hashlib.sha256(raw).hexdigest())
         inserted=("        from agent.native_human_gate_status import visible_human_gate\n"
@@ -53,7 +53,13 @@ class NativeStatusPatchTests(unittest.TestCase):
             "            observation['reason'] = 'CHALLENGE_VISIBLE'\n"
             "            return 'CHALLENGE_REQUIRED'\n").encode()
         self.assertEqual(after.count(inserted),1)
-        self.assertEqual(after.replace(inserted,b''),raw)
+        ordinary=("        from agent.native_human_gate_status import acknowledge_known_maintenance_notice\n"
+            "        acknowledge_known_maintenance_notice(self.page, message_selector=MESSAGE,\n"
+            "            maintenance_allowed=maintenance_allowed)\n").encode()
+        self.assertEqual(after.count(ordinary),1)
+        restored=after.replace(inserted,b'').replace(ordinary,b'').replace(
+            b'def status(self, *, maintenance_allowed=None):',b'def status(self):')
+        self.assertEqual(restored,raw)
         ast.parse(after)
 
     def test_changed_parent_native_methods_and_message_contract_are_refused(self):

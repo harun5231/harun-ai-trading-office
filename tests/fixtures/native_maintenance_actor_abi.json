@@ -1,0 +1,12 @@
+{
+  "actual_module_sha256": "5569f51b8f06028ea96e525b5cdf113f21f78bcb4f58c514f189e4bed3b1b37a",
+  "source_job": "41851485690-1",
+  "_observe_site_status": {
+    "line": 155,
+    "source": "def _observe_site_status(self):\n        \"\"\"Existing owner-thread status poll, with a separate cached explanation.\"\"\"\n        reason, counts = 'OBSERVATION_UNVERIFIED', {}\n        try:\n            self._status(self._bridge.status())\n        except Exception:\n            self._status('UNAVAILABLE')\n            reason = 'OBSERVATION_EXCEPTION'\n        else:\n            try:\n                observation = self._bridge.session_observation()\n                if (type(observation) is dict and set(observation) == {'reason', 'counts'}\n                        and observation['reason'] in SESSION_REASONS\n                        and type(observation['counts']) is dict\n                        and set(observation['counts']).issubset(SESSION_COUNTS)\n                        and all(type(item) is int and 0 <= item <= 129\n                            for item in observation['counts'].values())):\n                    reason, counts = observation['reason'], dict(observation['counts'])\n            except Exception:\n                pass\n        page_metadata = dict(selected_page_closed=None, context_page_count=None,\n            matching_origin_page_count=None, metadata_verified=False)\n        try:\n            pages = list(self._context.pages)\n            selected = self._bridge.page\n            if len(pages) <= 128:\n                matches = 0\n                for page in pages:\n                    url = urlsplit(page.url)\n                    if (url.scheme == 'https' and url.hostname == 'app.neurobro.ai'\n                            and url.port in (None, 443)):\n                        matches += 1\n                closed = selected.is_closed()\n                if type(closed) is bool:\n                    page_metadata = dict(selected_page_closed=closed,\n                        context_page_count=len(pages), matching_origin_page_count=matches,\n                        metadata_verified=True)\n        except Exception:\n            pass\n        with self.lock:\n            self._session_diagnostic = dict(status=self.current_status, reason=reason,\n                counts=counts, checked_at=self.checked_at, page_metadata=page_metadata,\n                observed_monotonic=time.monotonic())"
+  },
+  "_mode": {
+    "line": 209,
+    "source": "def _mode(self):\n        with self.lock:\n            return self.mode"
+  }
+}
