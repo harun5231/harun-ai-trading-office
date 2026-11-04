@@ -120,7 +120,9 @@ def compact_summary(payload):
     else:
         summary = ('Jika keputusan sudah jelas, akhiri dengan ringkasan COIN, LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
                    'Jika HOLD adalah penilaian pasar, jelaskan alasannya; jangan mengarang level yang belum ditetapkan. '
-                   'Quantity dihitung Risk Manager, jadi tidak perlu menentukan ukuran posisi.')
+                   'Jika setup valid, berikan rekomendasi ukuran posisi hanya sebagai bahan diskusi. '
+                   'Quantity eksekusi tetap dihitung Risk Manager berdasarkan risiko Office, termasuk fee dan estimasi slippage; '
+                   'rekomendasi ukuran posisi tidak menjadi instruksi order.')
     return summary + '\nAcuan percakapan: ' + marker
 
 

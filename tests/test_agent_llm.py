@@ -205,7 +205,9 @@ class LLMTests(unittest.TestCase):
                 payload=self.calls[-1];format=payload["text"]["format"]
                 self.assertTrue(format["strict"])
                 question=format["schema"]["properties"]["question"]
-                self.assertEqual(question,{"type":"string","maxLength":1600})
+                self.assertEqual({key:value for key,value in question.items() if key != 'description'},
+                    {"type":"string","maxLength":1600})
+                self.assertEqual('description' in question, phase == 'ANALYSIS')
                 self.assertNotIn("pattern",question)
                 self.assertIn("bahasa Indonesia",payload["instructions"])
                 self.assertIn("Angka harus berasal",payload["instructions"])
