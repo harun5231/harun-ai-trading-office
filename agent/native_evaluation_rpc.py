@@ -95,8 +95,10 @@ def handle(value, *, archive_root='/profile/research', native_package='browser_r
             os.close(parent)
     if kind=='COMPLETION':
         need(set(value)=={'kind','operation','request_sha256'},'EVALUATION_NATIVE_REQUEST_INVALID')
-        return dict(kind=kind,operation=value['operation'],request_sha256=value['request_sha256'],
-            chain=evaluation_chain(archive_root,value['operation'],value['request_sha256']))
+        chain=evaluation_chain(archive_root,value['operation'],value['request_sha256'])
+        # The raw final result is retained in the immutable final intent, not
+        # synthesized here from reply hashes or a new page/provider read.
+        return dict(kind=kind,operation=value['operation'],request_sha256=value['request_sha256'],chain=chain)
     need(kind=='ARCHIVE' and set(value)=={'kind','operation','request','response'},
         'EVALUATION_NATIVE_REQUEST_INVALID')
     request,response=value['request'],value['response']
