@@ -1,5 +1,7 @@
 """Owner-entered monthly expenses. Never contacts providers or the order pipeline."""
 import calendar
+from copy import deepcopy
+import hashlib
 import ipaddress
 from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal, localcontext
@@ -75,7 +77,7 @@ def validate(value, today=None):
     if 'simple' in value and simple is None:
         raise ValueError('INVALID_SIMPLE_BILLING')
     if simple is not None:
-        if not isinstance(simple, dict) or set(simple) - {'debt_principal_idr'} != {'version', 'usd_per_usdt', 'usd_rate_source', 'installment_idr', 'installment_due_date'} or type(simple['version']) is not int or simple['version'] != 1:
+        if not isinstance(simple, dict) or set(simple) - {'debt_principal_idr', 'recurrence_updates'} != {'version', 'usd_per_usdt', 'usd_rate_source', 'installment_idr', 'installment_due_date'} or type(simple['version']) is not int or simple['version'] != 1:
             raise ValueError('INVALID_SIMPLE_BILLING')
         money(simple['usd_per_usdt'], True); money(simple['installment_idr'], True)
         money(simple.get('debt_principal_idr'), True)
@@ -102,9 +104,9 @@ def validate(value, today=None):
         text(value['fx_source'])
     elif value['fx_source'] is not None:
         raise ValueError('FX_SOURCE_WITHOUT_RATE')
-    names, ids = set(), set()
+    names, ids, recurring_ids = set(), set(), set()
     for row in value['bills']:
-        if not isinstance(row, dict) or set(row) - {'usage', 'id', 'amount', 'currency', 'debt_id'} != {'name', 'kind', 'actual_idr', 'estimated_idr', 'due_date', 'payment_url', 'paid', 'evidence'}:
+        if not isinstance(row, dict) or set(row) - {'usage', 'id', 'amount', 'currency', 'debt_id', 'recurring', 'recurrence_id'} != {'name', 'kind', 'actual_idr', 'estimated_idr', 'due_date', 'payment_url', 'paid', 'evidence'}:
             raise ValueError('INVALID_BILL')
         if simple is not None and row['kind'] != 'prepaid_usage':
             if not {'id', 'amount', 'currency'} <= set(row) or not isinstance(row['id'], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', row['id']) or row['id'] in ids or row['currency'] not in ('IDR', 'USD'):
@@ -120,7 +122,16 @@ def validate(value, today=None):
                 raise ValueError('INVALID_DEBT_INSTALLMENT')
             if row['paid'] is True and (row['amount'] is None or row['due_date'] is None):
                 raise ValueError('INCOMPLETE_PAID_BILL')
-        elif any(key in row for key in ('id', 'amount', 'currency', 'debt_id')):
+            if 'recurring' in row and type(row['recurring']) is not bool:
+                raise ValueError('INVALID_RECURRENCE')
+            if 'recurrence_id' in row:
+                ident = row['recurrence_id']
+                if not isinstance(ident, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', ident) or ident in recurring_ids:
+                    raise ValueError('INVALID_RECURRENCE')
+                recurring_ids.add(ident)
+            if row.get('recurring') is True and (row['kind'] != 'subscription' or row.get('recurrence_id') is None or row['due_date'] is None):
+                raise ValueError('INVALID_RECURRENCE')
+        elif any(key in row for key in ('id', 'amount', 'currency', 'debt_id', 'recurring', 'recurrence_id')):
             raise ValueError('INVALID_SIMPLE_BILL')
         if 'usage' in row:
             usage = row['usage']
@@ -151,6 +162,33 @@ def validate(value, today=None):
             text(row['payment_url'], 500)
             if not (owner_payment_url_allowed(row['payment_url']) if simple is not None else payment_url_allowed(row['payment_url'])):
                 raise ValueError('INVALID_PAYMENT_URL')
+    updates = simple.get('recurrence_updates', {}) if simple is not None else {}
+    if not isinstance(updates, dict):
+        raise ValueError('INVALID_RECURRENCE')
+    for ident, spec in updates.items():
+        if not isinstance(ident, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', ident):
+            raise ValueError('INVALID_RECURRENCE')
+        if spec is None:
+            continue
+        if not isinstance(spec, dict) or set(spec) != {'day', 'bill'} or type(spec['day']) is not int or not 1 <= spec['day'] <= 31 or not isinstance(spec['bill'], dict) or set(spec['bill']) != set(RECURRENCE_FIELDS) or spec['bill'].get('kind') != 'subscription':
+            raise ValueError('INVALID_RECURRENCE')
+        # Reuse the same bill/currency/link validator; this is schedule metadata,
+        # never a second billing database or an automatically paid transaction.
+        sample = dict(spec['bill'], id='recurrence-shape', paid=False, due_date=recurrence_due(value['month'], spec['day']))
+        validate(dict(value, bills=[sample], simple={key: item for key, item in simple.items() if key != 'recurrence_updates'}), today=today)
+
+
+RECURRENCE_FIELDS = ('name', 'kind', 'amount', 'currency', 'actual_idr', 'estimated_idr', 'payment_url', 'evidence')
+
+
+def recurrence_due(month, day):
+    year, number = map(int, month_key(month).split('-'))
+    return f'{month}-{min(day, calendar.monthrange(year, number)[1]):02}'
+
+
+def recurrence_spec(row, day=None):
+    return dict(day=day if day is not None else date.fromisoformat(row['due_date']).day,
+                bill={key: deepcopy(row[key]) for key in RECURRENCE_FIELDS})
 
 
 class Store:
@@ -172,6 +210,54 @@ class Store:
     def read(self, month):
         rows = self.history(month)
         return rows[-1] if rows else dict(version=0, recorded_at=None, document=dict(month=month, coverage_confirmed=False, fx_idr_per_usdt=None, fx_source=None, bills=[]))
+
+    def recurrence_state(self, month):
+        """Explicit schedule changes in existing append-only monthly revisions.
+
+        A payment-only revision cannot reactivate a stopped subscription. Rowid
+        preserves insertion order across months without relying on wall clock.
+        """
+        month_key(month)
+        with self.connect() as db:
+            rows = [] if db is None else list(db.execute('SELECT month, document FROM revisions ORDER BY rowid'))
+        previous, state, missing = {}, {}, object()
+        for selected, raw in rows:
+            document = json.loads(raw)
+            updates = document.get('simple', {}).get('recurrence_updates', {})
+            old = previous.get(selected, {})
+            if selected <= month:
+                for ident in old.keys() | updates.keys():
+                    if old.get(ident, missing) != updates.get(ident, missing):
+                        state[ident] = deepcopy(updates.get(ident))
+            previous[selected] = updates
+        return state
+
+    def display_document(self, month, record=None, state=None):
+        """Project unpaid occurrences; GET never appends revisions or changes paid bills."""
+        document = deepcopy((record or self.read(month))['document'])
+        state = self.recurrence_state(month) if state is None else state
+        represented, bills = set(), []
+        for original in document['bills']:
+            row = deepcopy(original); ident = row.get('recurrence_id')
+            if ident is not None:
+                represented.add(ident)
+            if ident in state and row.get('recurring') is True and row['paid'] is not True:
+                spec = state[ident]
+                if spec is None:
+                    continue
+                row.update(deepcopy(spec['bill']), due_date=recurrence_due(month, spec['day']))
+            bills.append(row)
+        for ident, spec in sorted(state.items()):
+            if spec is None or ident in represented:
+                continue
+            occurrence = 'monthly-'+hashlib.sha256((ident+':'+month).encode()).hexdigest()[:32]
+            bills.append(dict(deepcopy(spec['bill']), id=occurrence, due_date=recurrence_due(month, spec['day']),
+                              paid=False, recurring=True, recurrence_id=ident))
+        if bills != document['bills'] and 'simple' not in document:
+            document['simple'] = dict(version=1, usd_per_usdt=None, usd_rate_source=None, installment_idr=None,
+                                      installment_due_date=None, debt_principal_idr=None, recurrence_updates={})
+        document['bills'] = bills
+        return document
 
     def debt_summary(self, current_document=None):
         """Latest monthly revisions only: edits/reloads never count a payment twice."""
@@ -199,6 +285,10 @@ class Store:
         validate(value)
         if type(version) is not int or version < 0:
             raise ValueError('INVALID_BILLING_VERSION')
+        updates = value.get('simple', {}).get('recurrence_updates', {})
+        inherited = {row['recurrence_id'] for row in value['bills'] if row.get('recurring') is True and row['recurrence_id'] not in updates}
+        if inherited and not inherited <= self.recurrence_state(value['month']).keys():
+            raise ValueError('INVALID_RECURRENCE')
         with self.connect(write=True) as db:
             db.execute('CREATE TABLE IF NOT EXISTS revisions (month TEXT NOT NULL, version INTEGER NOT NULL, recorded_at TEXT NOT NULL, document TEXT NOT NULL, PRIMARY KEY(month, version))')
             db.execute('BEGIN IMMEDIATE')
@@ -249,13 +339,15 @@ def extend_handler(base, controller, origin):
                 if urlsplit(self.path).path == '/billing/history':
                     return self.reply(200, {'revisions': store.history(month)})
                 record = store.read(month)
+                recurring = store.recurrence_state(month)
+                display = store.display_document(month, record, recurring)
                 try:
                     from .monthly_pnl import read_month
-                    summary = summarize(record['document'], read_month(controller.directory, month))
+                    summary = summarize(display, read_month(controller.directory, month))
                 except Exception:
-                    summary = summarize(record['document'], {})
+                    summary = summarize(display, {})
                 summary['debt'] = store.debt_summary(record['document'])
-                return self.reply(200, dict(record, summary=summary))
+                return self.reply(200, dict(record, display_document=display, recurrence_state=recurring, summary=summary))
             except ValueError:
                 return self.reply(400, {'error': 'INVALID_BILLING_REQUEST'})
             except Exception:

@@ -55,15 +55,15 @@ class OwnerNoticeTests(unittest.TestCase):
 class OwnerNoticeDashboardTests(unittest.TestCase):
     run_dom = dashboard.DashboardContract.run_dom
 
-    def test_robot_on_verify_notice_opens_existing_login_panel_without_mutation(self):
+    def test_robot_on_verify_notice_and_existing_login_menu_without_mutation(self):
         self.run_dom(r"""
 data.robot.robot_on=true;data.robot.bot_status='WAITING';data.robot.wait_reason='NEUROBRO_UNAVAILABLE';
 data.research.status='CHALLENGE_REQUIRED';await connect();
 assert.match(document.getElementById('robotStatus').textContent,/BOT STATUS: MENUNGGU VERIFIKASI MANUSIA/);
-assert.match(document.getElementById('robotStatus').textContent,/Diperiksa/);
+assert.match(content.textContent,/Worker: TERHUBUNG · Diperiksa/);
 assert.match(document.getElementById('robotToggle').textContent,/ON/);
-assert.match(content.textContent,/SELESAI LOGIN/);
-document.getElementById('robotNeurobroAction').click();
+assert.equal(document.getElementById('robotNeurobroAction'),null);assert.match(content.textContent,/WAIT: NEUROBRO_UNAVAILABLE/);
+open('neurobro');
 assert.equal(document.getElementById('panelTitle').textContent,'LOGIN NEURO');
 assert.equal(data.robot.robot_on,true);assert.equal(calls.filter(call=>call.method==='POST').length,0);
 """)
@@ -86,24 +86,24 @@ data.robot.robot_on=true;data.robot.bot_status='WAITING';data.robot.wait_reason=
 data.research.status='UNAVAILABLE';await connect();
 assert.doesNotMatch(document.getElementById('robotStatus').textContent,/MENUNGGU (LOGIN|VERIFIKASI)/);
 assert.equal(document.getElementById('robotNeurobroAction'),null);
-assert.match(document.getElementById('robotStatus').textContent,/NEUROBRO_UNAVAILABLE/);
+assert.match(content.textContent,/WAIT: NEUROBRO_UNAVAILABLE/);
 assert.equal(data.robot.robot_on,true);assert.equal(calls.filter(call=>call.method==='POST').length,0);
 """)
 
-    def test_monitoring_estimate_shows_actual_difference_without_mutating_order_or_owner_choice(self):
+    def test_monitoring_estimate_telemetry_remains_without_extra_robot_copy(self):
         self.run_dom(r"""
 data.research.status='CONNECTED';data.robot.robot_on=false;
 data.robot.risk_estimates={'hao-old':{kind:'MONITORING_ESTIMATE_ONLY',source:'RISK_MANAGER',status:'AVAILABLE',
 symbol:'BTCUSDT',client_order_id:'hao-old',observed_at:now(),estimated_total_risk:'5.85',
 original_risk_target_usdt:'5',estimated_budget_difference_usdt:'0.85',order_parameters_changed:false,
 components:{gross_risk:'5',entry_fee_usdt:'0.1',sl_exit_fee_usdt:'0.1',sl_book_impact_usdt:'0.15',sl_liquidity_uncertainty_usdt:'0.5'}}};
-await connect();assert.match(content.textContent,/ESTIMASI RISIKO BTCUSDT/);
-assert.match(content.textContent,/selisih estimasi 0[.,]85/);assert.match(content.textContent,/fee entry/);
-assert.match(content.textContent,/parameter order tidak diubah/);
+const original=structuredClone(data.robot.risk_estimates);await connect();
+assert.doesNotMatch(content.textContent,/ESTIMASI RISIKO BTCUSDT|selisih estimasi|fee entry|parameter order tidak diubah/);
+assert.deepEqual(data.robot.risk_estimates,original);assert.equal(data.robot.risk_estimates['hao-old'].order_parameters_changed,false);
 assert.equal(data.robot.robot_on,false);assert.equal(calls.filter(call=>call.method==='POST').length,0);
 """)
 
-    def test_each_position_reports_confirmed_ids_without_claiming_incomplete_protection(self):
+    def test_bot_status_keeps_incomplete_protection_without_detailed_rows(self):
         self.run_dom(r"""
 data.research.status='CONNECTED';data.robot.robot_on=true;data.robot.bot_status='POSITION_PROTECTED';
 data.robot.protection_observations={'hao-one':{source:'BINANCE_FUTURES',state:'PROTECTION_INCOMPLETE',
@@ -112,7 +112,7 @@ sl_confirmed:true,sl_order_id:'22',tp_confirmed:false,tp_order_id:null,observed_
 await connect();assert.match(document.getElementById('robotStatus').textContent,/PROTEKSI BELUM LENGKAP: SL TERPASANG, TP BELUM TERKONFIRMASI/);
 assert.doesNotMatch(content.textContent,/POSISI TERLINDUNGI: SL DAN TP TERKONFIRMASI/);
 const row=data.robot.protection_observations['hao-one'];row.tp_confirmed=true;row.tp_order_id='33';row.state='POSITION_PROTECTED';
-[...intervals.values()][0]();await flush();assert.match(content.textContent,/BTCUSDT · POSISI TERLINDUNGI: SL DAN TP TERKONFIRMASI/);
+[...intervals.values()][0]();await flush();assert.match(document.getElementById('robotStatus').textContent,/BOT STATUS: POSITION_PROTECTED/);assert.doesNotMatch(content.textContent,/BTCUSDT · POSISI TERLINDUNGI/);assert.equal(row.sl_order_id,'22');assert.equal(row.tp_order_id,'33');
 row.tp_order_id='22';[...intervals.values()][0]();await flush();assert.match(content.textContent,/TP BELUM TERKONFIRMASI/);
 assert.doesNotMatch(content.textContent,/POSISI TERLINDUNGI: SL DAN TP TERKONFIRMASI/);
 assert.equal(calls.filter(call=>call.method==='POST').length,0);

@@ -5,6 +5,7 @@
 .billing-panel .panel-head{position:sticky;top:-18px;z-index:1;padding:6px 0 12px;background:#10252d}
 .billing-panel label{display:block;margin:10px 0;color:#c9dce0;font-size:12px;line-height:1.5}
 .billing-panel input,.billing-panel select{display:block;width:100%;min-height:44px;margin-top:5px;padding:10px;background:#122934;border:1px solid var(--line);border-radius:8px;color:#fff;font:16px system-ui,sans-serif;box-sizing:border-box}
+.billing-panel input[type=checkbox]{display:inline-block;width:22px;height:22px;min-height:22px;margin:0 9px 0 0;vertical-align:middle}.billing-recurring{display:inline-block;margin:0 0 6px;color:#b8ddcd;font-size:11px}
 .billing-panel button,.billing-panel a{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 12px;margin:5px 5px 5px 0;border-radius:8px;border:1px solid var(--line);background:#365e68;color:#eff6ff;font:12px/1.5 system-ui,sans-serif;box-sizing:border-box;text-decoration:none;overflow-wrap:anywhere}
 .billing-panel button:disabled,.billing-panel input:disabled,.billing-panel select:disabled{opacity:.5}
 .billing-panel p,.billing-panel summary,.billing-panel small{font-size:12px;line-height:1.5;overflow-wrap:anywhere}

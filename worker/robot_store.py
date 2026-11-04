@@ -177,6 +177,7 @@ class RobotStore:
         value = empty_account()
         value.update(json.loads(row[0]) if row else dict(bot_status='OFF', checked_at=None, failure_code=None, wait_reason='ROBOT_OFF'))
         value.update(self.settings(), bot_entries_today=self.entries(today), execution_gateway=OrderGateway().status())
+        value.update(max_positions=slots(0), daily_entry_limit=slots(0))
         value['carry_quota_verified']=carry_quota.ready(self.db,today,value.get('running_symbols') or ())
         value['carry_entries_today']=(len(carry_quota.charged_symbols(self.db,today))
             if value['carry_quota_verified'] else None)

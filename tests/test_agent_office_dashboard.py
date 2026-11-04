@@ -18,7 +18,7 @@ class OfficeAgentDashboardTests(unittest.TestCase):
     def test_missing_optional_agent_does_not_break_existing_office_login_or_controls(self):
         self.run_dom(r"""
 await connect();open('neurobro');
-assert.match(document.getElementById('agentStatus').textContent,/Status agent belum tersedia/);
+assert.equal(document.getElementById('agentStatus'),null);assert.equal(document.getElementById('apiOrigin'),null);assert.doesNotMatch(content.textContent,/AGENT GPT-5 MINI|Koneksi worker privat/);
 assert.equal(document.getElementById('neurobroStatus').dataset.status,'LOGIN_REQUIRED');
 assert.equal(document.getElementById('neurobroLogin').disabled,false);
 open('robot');assert.equal(document.getElementById('robotToggle').disabled,false);
@@ -27,12 +27,12 @@ assert.equal(data.robot.robot_on,false);assert.equal(calls.filter(call=>call.met
 assert.equal(calls.some(call=>/127\.0\.0\.1|localhost|\/health|\/agent\//.test(call.url)),false);
 """)
 
-    def test_fresh_off_process_is_visible_without_false_model_or_integration_readiness(self):
+    def test_fresh_off_agent_telemetry_does_not_reintroduce_removed_panel(self):
         self.run_dom(AGENT + r"""
 await connect();open('neurobro');
-assert.equal(document.getElementById('agentStatus').dataset.status,'PAUSED');
-assert.match(content.textContent,/Agent dijeda/);
-assert.match(content.textContent,/Belum terverifikasi/);
+assert.equal(document.getElementById('agentStatus'),null);
+assert.equal(data.agent.state,'PAUSED');assert.equal(data.agent.reason,'ROBOT_OFF');
+assert.doesNotMatch(content.textContent,/AGENT GPT-5 MINI|Agent dijeda|Belum terverifikasi/);
 assert.doesNotMatch(content.textContent,/Integrasi agent terverifikasi pada pemeriksaan terakhir/);
 assert.equal(data.robot.robot_on,false);assert.equal(calls.filter(call=>call.method==='POST').length,0);
 """)
@@ -42,10 +42,10 @@ assert.equal(data.robot.robot_on,false);assert.equal(calls.filter(call=>call.met
 data.agent.integration_verified=true;
 for(const name of ['backend','browser','model'])data.agent.dependencies[name]={verified:true,checked_at:now()};
 await connect();open('neurobro');
-assert.match(content.textContent,/Panggilan API terverifikasi/);
+assert.equal(document.getElementById('agentStatus'),null);assert.equal(data.agent.dependencies.model.verified,true);
 assert.doesNotMatch(content.textContent,/Integrasi agent terverifikasi pada pemeriksaan terakhir/);
 data.research.status='CONNECTED';[...intervals.values()][0]();await flush();
-assert.match(content.textContent,/Integrasi agent terverifikasi pada pemeriksaan terakhir/);
+assert.equal(document.getElementById('neurobroStatus').dataset.status,'CONNECTED');assert.equal(document.getElementById('agentStatus'),null);assert.equal(data.agent.integration_verified,true);
 data.agent.dependencies.model.checked_at='2020-01-01T00:00:00Z';[...intervals.values()][0]();await flush();
 assert.doesNotMatch(content.textContent,/Integrasi agent terverifikasi pada pemeriksaan terakhir/);
 assert.equal(data.robot.robot_on,false);
@@ -54,10 +54,10 @@ assert.equal(data.robot.robot_on,false);
     def test_stale_or_future_agent_status_does_not_make_account_offline(self):
         self.run_dom(AGENT + r"""
 data.agent.checked_at=new ClockDate(clock-60000).toISOString();await connect();open('neurobro');
-assert.equal(document.getElementById('agentStatus').dataset.status,'UNAVAILABLE');
-assert.match(content.textContent,/Status agent perlu diperbarui/);assert.equal(statValues()[0],'116.93');
+assert.equal(document.getElementById('agentStatus'),null);
+assert.doesNotMatch(content.textContent,/AGENT GPT-5 MINI|Status agent perlu diperbarui/);assert.equal(statValues()[0],'116.93');
 data.agent.checked_at=new ClockDate(clock+6000).toISOString();[...intervals.values()][0]();await flush();
-assert.equal(document.getElementById('agentStatus').dataset.status,'UNAVAILABLE');
+assert.equal(document.getElementById('agentStatus'),null);
 assert.equal(document.getElementById('neurobroLogin').disabled,false);
 """)
 
@@ -65,21 +65,21 @@ assert.equal(document.getElementById('neurobroLogin').disabled,false);
         self.run_dom(AGENT + r"""
 data.agent.state=['RUNNING'];data.agent.reason='<img src=x onerror="pwned=true">';
 data.agent.api_key='DO_NOT_RENDER_SECRET';await connect();open('neurobro');
-assert.equal(document.getElementById('agentStatus').dataset.status,'UNAVAILABLE');
+assert.equal(document.getElementById('agentStatus'),null);
 assert.doesNotMatch(content.textContent,/DO_NOT_RENDER_SECRET|onerror|pwned/);
 assert.equal(walk(content).some(node=>node.tagName==='IMG'),false);
 assert.equal(document.getElementById('neurobroLogin').disabled,false);
 """)
 
-    def test_disconnect_clears_optional_agent_evidence_and_worker_snapshot_stays_unchanged(self):
+    def test_disconnect_preserves_backend_agent_and_clears_only_connection_view(self):
         self.run_dom(AGENT + r"""
 await connect();open('neurobro');
 assert.equal(snapshots.at(-1).robot_on,false);assert.equal(Object.hasOwn(snapshots.at(-1),'agent'),false);
 assert.deepEqual(snapshots.at(-1).employees,data.employees);
-document.getElementById('apiDisconnect').click();
-assert.equal(document.getElementById('agentStatus').dataset.status,'UNAVAILABLE');
+open('robot');document.getElementById('apiDisconnect').click();open('neurobro');
+assert.equal(document.getElementById('agentStatus'),null);
 assert.equal(document.getElementById('neurobroLogin').disabled,true);
-assert.equal(snapshots.at(-1).status,'OFFLINE');assert.equal(calls.filter(call=>call.method==='POST').length,0);
+assert.equal(snapshots.at(-1).status,'OFFLINE');assert.equal(data.agent.state,'PAUSED');assert.equal(data.agent.service,'harun-neurobro-agent');assert.equal(calls.filter(call=>call.method==='POST').length,0);
 """)
 
 
