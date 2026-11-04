@@ -1,9 +1,11 @@
-"""Observe a visible verification gate, without interacting with its widget.
+"""Observe verification, and acknowledge one known ordinary AUTO-only notice.
 
 The ordinary native origin/iframe/login checks remain authoritative. This adds
 the site's public session-expired overlay and Cloudflare iframe title which can
 remain visible above an otherwise authenticated composer. Message descendants
 are excluded so a past discussion about verification is not a current gate.
+The verification observer never interacts with a security widget. A separate,
+fail-closed helper below can acknowledge only the proved maintenance notice.
 """
 from __future__ import annotations
 
@@ -104,3 +106,87 @@ def visible_human_gate(page, *, message_selector):
     if type(value) is not bool:
         raise ValueError('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
     return value
+
+
+KNOWN_MAINTENANCE_BODY = (
+    'Pemeliharaan terjadwal 5 Nov, 03:00–04:00 UTC. '
+    'Gangguan singkat mungkin terjadi.')
+
+# This is intentionally not a general modal closer. Recheck the exact public
+# notice and frontmost native button synchronously, then dispatch ONE click.
+# There is no challenge interaction, application-state access or private API.
+KNOWN_MAINTENANCE_UI_JS = r'''(root, contract) => {
+ if(contract.automation_allowed!==true)return false;
+ const doc=root.ownerDocument,view=doc.defaultView;
+ const msg=contract.message_selector;
+ const norm=s=>String(s||'').replace(/\s+/g,' ').trim();
+ const compact=s=>norm(s).replace(/\s/g,'').replace('03:00-04:00','03:00–04:00');
+ const inMessage=e=>!!e.closest(msg);
+ const visible=e=>{
+  if(!e||!e.isConnected)return false;
+  const r=e.getBoundingClientRect();
+  if(r.width<=0||r.height<=0||r.right<=0||r.bottom<=0||r.left>=view.innerWidth||r.top>=view.innerHeight)return false;
+  for(let p=e,depth=0;p&&depth<8;p=p.parentElement,depth++){
+   const s=getComputedStyle(p);
+   if(s.display==='none'||s.visibility==='hidden'||s.visibility==='collapse'||Number(s.opacity)===0)return false;
+  }
+  return true;
+ };
+ const modals=Array.from(root.querySelectorAll('[role="dialog"],[role="alertdialog"]')).filter(e=>!inMessage(e)&&visible(e));
+ if(modals.length!==1)return false;
+ const dialog=modals[0];
+ if(dialog.querySelector(msg)||dialog.closest('[inert]'))return false;
+ if(dialog.querySelector('iframe,input,select,textarea,a,code,pre,script,style,object,embed,form,[contenteditable],[href],[src],[formaction],[onclick]'))return false;
+ const security=Array.from(root.querySelectorAll('iframe,input[type="password"],input[autocomplete="one-time-code"]')).filter(e=>!inMessage(e)&&visible(e));
+ if(security.length)return false;
+ const buttons=Array.from(dialog.querySelectorAll('button,[role="button"]')).filter(visible);
+ if(buttons.length!==1)return false;
+ const button=buttons[0];
+ if(button.tagName!=='BUTTON'||norm(button.textContent)!=='Mengerti'||button.disabled||button.getAttribute('aria-disabled')==='true'
+   ||button.closest('[inert]')||button.form||button.getAttribute('form')!==null||getComputedStyle(button).pointerEvents==='none')return false;
+ const walker=doc.createTreeWalker(dialog,NodeFilter.SHOW_ELEMENT|NodeFilter.SHOW_TEXT,{
+  acceptNode:n=>n.nodeType===1?(n.matches(msg)?NodeFilter.FILTER_REJECT:NodeFilter.FILTER_SKIP):NodeFilter.FILTER_ACCEPT
+ });
+ let node,text=[],count=0;
+ while((node=walker.nextNode())){
+  const p=node.parentElement;if(!p||inMessage(p)||!visible(p))continue;
+  if(++count>32)return false;
+  const value=norm(node.nodeValue);if(value)text.push(value);
+  if(text.join(' ').length>500)return false;
+ }
+ const expected='Pemeliharaan terjadwal '+contract.expected_body+' Mengerti';
+ if(compact(text.join(' '))!==compact(expected))return false;
+ const r=button.getBoundingClientRect(),hit=doc.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+ if(!hit||(hit!==button&&!button.contains(hit)))return false;
+ button.click();
+ return true;
+}'''
+
+
+def acknowledge_known_maintenance_notice(page, *, message_selector, maintenance_allowed=None):
+    """Attempt the one ordinary button only under a current native AUTO gate.
+
+    The source-bound Actor observation supplies the callback. Legacy callers,
+    MANUAL/session owners and uncertain mode observations cannot click. Return
+    means only whether this call dispatched its single DOM click; the original
+    native DOM detection MUST decide readiness afterwards, even on exceptions.
+    """
+    if not callable(maintenance_allowed):
+        return False
+    if (type(message_selector) is not str or not 0 < len(message_selector) <= 1024
+            or any(ord(c) < 32 or ord(c) == 127 for c in message_selector)):
+        return False
+    try:
+        if maintenance_allowed() is not True:
+            return False
+        target = page.locator('html')
+        if maintenance_allowed() is not True:
+            return False
+        value = target.evaluate(KNOWN_MAINTENANCE_UI_JS, {
+            'message_selector': message_selector, 'automation_allowed': True,
+            'expected_body': KNOWN_MAINTENANCE_BODY}, timeout=UI_OBSERVATION_TIMEOUT_MS)
+        return value is True
+    except Exception:
+        # The original native status still observes the actual current page.
+        # In particular, an uncertain click is never a CONNECTED assertion.
+        return False
