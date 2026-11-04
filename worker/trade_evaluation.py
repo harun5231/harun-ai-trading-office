@@ -285,3 +285,31 @@ def complete_evaluation(directory, operation, *, native_receipt_reader):
             result=_snapshot(db);db.execute('COMMIT');return result
         except BaseException:
             db.execute('ROLLBACK');raise
+
+
+def read_evaluation_claim(directory, operation):
+    """Only an unresolved, current evidence claim can authorize native Send.
+
+    The native adapter also checks its own immutable wire request and owner ON
+    gate. Completed results remain readable through status, never dispatchable.
+    """
+    from .trade_evaluation_evidence import need, digest
+    with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS) as db:
+        if db is None:return None
+        intents=[v for v in _latest(db,'evaluation_intent').values() if v['operation']==operation]
+        if not intents:return None
+        need(len(intents)==1,'EVALUATION_INTENT_NOT_UNIQUE')
+        intent=intents[0]
+        job=next((j for j in _snapshot(db)['jobs'] if j['id']==intent['job_id']),None)
+        need(job is not None and job['status']=='EVALUATION_OUTCOME_UNKNOWN'
+            and job.get('input_evidence_sha256')==intent['input_evidence_sha256']
+            and digest(intent['request'])==intent['request_sha256'],'EVALUATION_HISTORY_REVISION_CHANGED')
+        return intent
+
+
+def evaluation_operation(directory, job_id):
+    """Recover the existing once operation; never allocate a replacement ID."""
+    with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS) as db:
+        if db is None:return None
+        value=_latest(db,'evaluation_intent').get(job_id)
+        return value['operation'] if value else None

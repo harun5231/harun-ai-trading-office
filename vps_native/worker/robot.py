@@ -32,6 +32,7 @@ class Coordinator:
         self.gateway=gateway if gateway is not None else OrderGateway()
         if new_setup_policy not in (None,DYNAMIC_RISK_MODEL):raise Review('INVALID_COST_MODEL')
         self.new_setup_policy=new_setup_policy
+        self.evaluation_consumer=getattr(neuro,'evaluation_consumer',None)
     def tick(self):
         # Processes share the cycle lock; overlapping coordinators cannot spend twice.
         path=Path(self.db.execute('PRAGMA database_list').fetchone()[2]).parent/'cycle.lock'
@@ -43,7 +44,11 @@ class Coordinator:
             except OSError:return self.store.report('REJECTED',reason='ROBOT_CYCLE_LOCK_UNAVAILABLE')
             today=day()
             try:
-                with research_reads(lambda:self.allowed(today)):return self._tick()
+                with research_reads(lambda:self.allowed(today)):
+                    result=self._tick()
+                    from .trade_evaluation_runtime import after_trading_tick
+                    after_trading_tick(self,today,result)
+                    return result
             except ResearchReadPaused:
                 return self.store.report('WAITING',wait_reason=self.pause_reason())
             except Exception as error:
@@ -85,7 +90,7 @@ class Coordinator:
         if not self.completed_research(job['operation'],job['cycle'],job['kind'],job['symbol']):raise Review('ROBOT_REQUEST_NEEDS_REVIEW')
         return cycle,data
     def unresolved_research(self):
-        if self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') LIMIT 1").fetchone():return True
+        if self.db.execute("SELECT 1 FROM api_requests WHERE state IN ('PENDING','NEEDS_REVIEW') AND operation NOT LIKE 'post-trade-evaluation:%' LIMIT 1").fetchone():return True
         for job in self.db.execute("SELECT * FROM robot_jobs WHERE state IN ('PENDING','NEEDS_REVIEW')"):
             if job['state']=='NEEDS_REVIEW':return True
             try:self.research_job(job)

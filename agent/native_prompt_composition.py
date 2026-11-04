@@ -32,7 +32,10 @@ def compact_protocol(rendered, payload):
         return rendered  # The installed chart formatter already emits compact prose.
     rendered = rendered.split(separator, 1)[0].rstrip()
     required = set(payload.get('output_schema', {}).get('required', []))
-    if required == {'symbols'}:
+    if required == {'assessment', 'findings'}:
+        summary = ('Akhiri PENILAIAN SETUP: SESUAI BUKTI, TIDAK SESUAI BUKTI, atau '
+            'BELUM CUKUP BUKTI beserta alasan. Evaluasi ini tidak mengubah strategi atau order.')
+    elif required == {'symbols'}:
         summary = 'Akhiri dengan ringkasan COIN: simbol USDT Perpetual pilihanmu.'
     elif required == {'symbol', 'order_ref', 'decision'}:
         summary = ('Akhiri dengan COIN dan KEPUTUSAN: TAHAN atau BATALKAN untuk order '

@@ -160,3 +160,36 @@ interfaces, not a deployed evaluation consumer. Native evaluation phase/schema
 admission, owned archive lookup and delivery/response custody adapters still need
 to be connected after the retained b844 clarification and df80 worker activation.
 No autonomous evaluation or win-rate experiment is claimed from these helpers.
+
+## Historical Neurobro consumer (source; not a VPS completion claim)
+
+`trade_evaluation_runtime` joins the already authenticated account-history cache
+and owned CLOSED intent to original research and historical material custody.
+The existing native account actor binds evidence; the existing coordinator only
+starts `POST_TRADE_EVALUATION` after normal work returns idle/capacity-full and
+there is no unresolved trading work or financial transaction. Owner ON/readiness
+controls remain in force. Protection and account actors stay independent. The
+one DailyRoom serializes historical discussion with trading; no daemon is added.
+
+The existing browser service needs the source-hash-bound additive patch in
+`scripts/patch_native_evaluation_service.py`. Its authenticated
+`POST /v1/historical-evidence` only reads a BOUND room, original private PNG/CSV
+archive and native receipt chains. It cannot navigate, Send, choose paths or
+create an order. New website captures produce an owned lookup index; a missing
+legacy index/four-file receipt stays blocked. Historical validation uses the
+original capture instant without changing any live clock/freshness rule.
+
+Evaluation reuses actual historical four-file turns that remain readable in the
+same BOUND room, verifies their original reply and visible decoded PNG/CSV tiles,
+and durably records a once intent before Send. A different room or missing loaded
+historical turn is an explicit material-access blocker; this source does not yet
+re-upload historical materials across rooms. Unknown Send outcomes are recovered
+only from native completion custody and are never replayed. Results cannot become
+setups, orders, strategy changes or claimed completed experiments.
+
+Native release assembly must package the new `agent/native_evaluation_{protocol,
+browser,rpc}.py`, `worker/trade_evaluation_{evidence,archive,runtime}.py`, the existing
+snapshot helper, and the changed provider/dialogue/actor hooks together. Do not
+apply this source to the already staged df80 worker-only artifact or relabel that
+receipt. Runtime archive access, new-phase dialogue and analyst response still
+require deployment evidence; offline tests/fixtures do not establish them.

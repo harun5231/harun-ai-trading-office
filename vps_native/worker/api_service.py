@@ -219,12 +219,17 @@ class Controller:
                     else:
                         store.report_office(observation)
                         # Durable, read-only evidence analysis shares this account
-                        # actor, including ROBOT OFF. It has no order/provider seam
+                        # actor, including ROBOT OFF. Historical archive reads have
+                        # no provider-Send/order seam; provider discussion belongs
+                        # only to the existing ON coordinator.
                         # and its failure must not interrupt protection or reports.
                         if history:
                             try:
                                 from .trade_evaluation import observe_calendar
                                 observe_calendar(self.directory,observation['pnl_calendar'])
+                                from .trade_evaluation_runtime import observe_authenticated_calendar
+                                observe_authenticated_calendar(recovery_coordinator,self.directory,client,
+                                    observation['pnl_calendar'])
                                 self.evaluation_failure=None
                             except Exception:
                                 self.evaluation_failure='POST_TRADE_EVALUATION_UNAVAILABLE'

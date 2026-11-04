@@ -553,6 +553,16 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
                 'legacy_evidence': result['evidence'], 'network_navigation_performed': True,
                 'navigation_started_at': navigated_at,
                 'persistent_browser_context_used': False}, name=WEBSITE_SIDECAR)
+            # Historical evaluation locates only captures actually produced by
+            # this actor. An index failure cannot interrupt live analysis; the
+            # evaluation journal will expose the missing owned lookup instead.
+            try:
+                from worker.trade_evaluation_archive import record_capture_lookup
+                record_capture_lookup(archive_root,
+                    {'paths': list(result[images_key]), 'evidence': result['evidence']},
+                    {'marker': marker, 'request_sha256': request_sha256, 'context': context_dict})
+            except Exception:
+                pass
             guard();step('COMPLETE');outcome = 'CAPTURED'
             return result
         except BaseException as error:

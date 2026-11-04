@@ -40,6 +40,8 @@ FILE_WITNESS = r'''(root, args) => {
 
 
 def enabled(native, payload):
+    from .native_evaluation_protocol import is_evaluation_schema
+    if type(payload) is dict and is_evaluation_schema(payload.get('output_schema')): return False
     return (type(payload) is dict and not screening_payload(payload)
         and payload.get('context') is not None
         and getattr(getattr(native, 'user_prompt', None), '__harun_data_files_v1__', False) is True)

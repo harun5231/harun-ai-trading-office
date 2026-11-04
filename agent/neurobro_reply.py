@@ -189,6 +189,11 @@ def parse_reply_for_payload(reply, payload):
     if type(required) is not list or not all(type(key) is str for key in required):
         raise ReplyIncomplete('NEUROBRO_SCHEMA_UNVERIFIED')
     fields = set(required)
+    from .native_evaluation_protocol import is_evaluation_schema, envelope
+    if is_evaluation_schema(payload['output_schema']):
+        envelope(payload)
+        from worker.trade_evaluation_evidence import parse_evaluation_reply
+        return parse_evaluation_reply(reply)
     if fields == {'symbols'}:
         parsed = parse_screening_reply(reply)
         limits = payload['output_schema'].get('properties', {}).get('symbols', {})
