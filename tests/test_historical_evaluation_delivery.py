@@ -67,7 +67,8 @@ class HistoricalDeliveryTests(unittest.TestCase):
             turns=[{'role':'user','text':prompt,'attachments':list(ui.uploaded_names)},
                 {'role':'assistant','text':TEXT,'complete':True,'id':'ui-native-reply-1'}]
             evaluation.note_reply(TEXT,turns)
-            final=dict(assistant_text=TEXT,response_id='genuine-native-fixture',chart_evidence=bound)
+            final=dict(assistant_text=TEXT,response_id='genuine-native-fixture',chart_evidence=bound,
+                output=__import__('worker.trade_evaluation_evidence',fromlist=('parse_evaluation_reply',)).parse_evaluation_reply(TEXT))
             self.assertEqual(evaluation.complete(final),bound)
             actual=__import__('agent.native_evaluation_rpc',fromlist=('evaluation_chain',)).evaluation_chain(
                 directory,args['operation'],args['request_sha256'])

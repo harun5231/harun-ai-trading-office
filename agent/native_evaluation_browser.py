@@ -253,8 +253,14 @@ class HistoricalEvaluation:
             'EVALUATION_HISTORICAL_MATERIAL_INCOMPLETE')
         charts=copy.deepcopy(self.sent_charts)
         prior=[dict(intent=value,complete=self.completions[value['followup_sequence']]) for value in self.intents]
+        # Retain the ACTUAL final native result before returning over HTTP.
+        # If that HTTP/worker handoff dies, recovery reads these exact bytes;
+        # it must never reconstruct a reply from hashes or send it again.
+        native_result={**{k:self.payload[k] for k in ('operation','marker','request_sha256')},
+            **copy.deepcopy(result),'chart_evidence':charts}
         final=self._persist('FINAL_ASSESSMENT',source_chain_sha256=digest(prior),
-            final_ui_message_id=self.last_ui['message_id'],final_ui_reply_sha256=self.last_ui['assistant_sha256'])
+            final_ui_message_id=self.last_ui['message_id'],final_ui_reply_sha256=self.last_ui['assistant_sha256'],
+            native_result=native_result,native_received_at=self.owner.wall_clock())
         self._complete_intent(final,result['response_id'],self.last_ui['assistant_sha256'])
         chain=[dict(intent=value,complete=self.completions[value['followup_sequence']]) for value in self.intents]
         validate_material_access_chain(self.request,chain,charts,

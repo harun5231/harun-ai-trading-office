@@ -322,8 +322,34 @@ class NeuroBrowser:
                 raise ResearchPaused(result['reason'])
             if code != 200:
                 raise Review('NEUROBRO_BROWSER_OUTCOME_UNKNOWN')
+            try:
+                return self._record_browser_response(operation,body,request_hash,result,schema,validate,context,
+                    catalog=catalog)
+            except Review as error:
+                failure = str(error)
+                raise
+        except Exception as error:
+            if isinstance(error, ResearchPaused) and not sent:
+                self.db.execute('BEGIN IMMEDIATE')
+                try:
+                    self.db.execute("DELETE FROM research_browser_requests WHERE operation=? AND NOT EXISTS(SELECT 1 FROM research_browser_responses WHERE operation=?)", (operation, operation))
+                    self.db.execute("DELETE FROM api_requests WHERE operation=? AND state='PENDING' AND output IS NULL AND attempts<=1", (operation,))
+                    self.db.execute('COMMIT')
+                except BaseException:
+                    self.db.execute('ROLLBACK')
+                    raise
+                raise ResearchPaused(str(error)) from None
+            self.db.execute("UPDATE api_requests SET state='NEEDS_REVIEW',failure_code=? WHERE operation=? AND state='PENDING'",
+                            (failure, operation))
+            raise Review(failure) from None
+
+    def _record_browser_response(self, operation, body, request_hash, result, schema, validate, context,
+                                 *, catalog=None, received_at=None, recovery=False):
+        """The same exact-response recorder for HTTP delivery and verified recovery."""
+        failure = 'INVALID_RESPONSE_ENVELOPE'
+        try:
             failure = 'INVALID_RESPONSE_ENVELOPE'
-            if code != 200 or not isinstance(result, dict):
+            if not isinstance(result, dict):
                 raise Review(failure)
             required = {'operation', 'marker', 'request_sha256', 'output', 'assistant_text', 'response_id'}
             if set(result) not in (required, required | {'chart_evidence'}):
@@ -342,7 +368,7 @@ class NeuroBrowser:
             raw_output = response_output_text(value)
             raw_charts = result.get('chart_evidence')
             chart_text = response_output_text(raw_charts)
-            received_at = time.time()
+            received_at = time.time() if received_at is None else received_at
             try:
                 receipt_output = canonical_output(value, schema, catalog)
             except Exception:
@@ -354,14 +380,22 @@ class NeuroBrowser:
             self.db.execute('BEGIN IMMEDIATE')
             try:
                 current = self.db.execute('SELECT state,body_hash,attempts,output,created FROM api_requests WHERE operation=?', (operation,)).fetchone()
-                if (not current or current['state'] != 'PENDING' or current['body_hash'] != request_hash
+                if (not current or current['state'] not in (('PENDING','NEEDS_REVIEW') if recovery else ('PENDING',)) or current['body_hash'] != request_hash
                         or current['attempts'] != 1 or current['output'] is not None):
                     raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
-                self.db.execute('''INSERT INTO research_browser_responses(
-                    operation,response_id,output_sha256,assistant_text,assistant_sha256,
-                    chart_evidence,received_at,chart_max_age) VALUES(?,?,?,?,?,?,?,?)''',
-                    (operation, result['response_id'], sha(receipt_output), text, sha(text),
-                     chart_text, received_at, self.chart_max_age))
+                old_receipt = self.db.execute('SELECT * FROM research_browser_responses WHERE operation=?', (operation,)).fetchone()
+                if old_receipt is not None:
+                    expected = (result['response_id'],sha(receipt_output),text,sha(text),chart_text)
+                    actual = tuple(old_receipt[key] for key in ('response_id','output_sha256','assistant_text','assistant_sha256','chart_evidence'))
+                    if not recovery or actual != expected:
+                        raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
+                    received_at = old_receipt['received_at']
+                else:
+                    self.db.execute('''INSERT INTO research_browser_responses(
+                        operation,response_id,output_sha256,assistant_text,assistant_sha256,
+                        chart_evidence,received_at,chart_max_age) VALUES(?,?,?,?,?,?,?,?)''',
+                        (operation, result['response_id'], sha(receipt_output), text, sha(text),
+                         chart_text, received_at, self.chart_max_age))
                 self.db.execute('COMMIT')
             except BaseException:
                 self.db.execute('ROLLBACK')
@@ -378,8 +412,8 @@ class NeuroBrowser:
             failure = 'LOCAL_PROCESSING_FAILED'
             self.db.execute('BEGIN IMMEDIATE')
             try:
-                changed = self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=? AND state='PENDING'",
-                                          (cached, operation)).rowcount
+                changed = self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=? AND state=?",
+                                          (cached, operation, current['state'])).rowcount
                 if changed != 1:
                     raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
                 self.db.execute('COMMIT')
@@ -387,20 +421,36 @@ class NeuroBrowser:
                 self.db.execute('ROLLBACK')
                 raise
             return value
-        except Exception as error:
-            if isinstance(error, ResearchPaused) and not sent:
-                self.db.execute('BEGIN IMMEDIATE')
-                try:
-                    self.db.execute("DELETE FROM research_browser_requests WHERE operation=? AND NOT EXISTS(SELECT 1 FROM research_browser_responses WHERE operation=?)", (operation, operation))
-                    self.db.execute("DELETE FROM api_requests WHERE operation=? AND state='PENDING' AND output IS NULL AND attempts<=1", (operation,))
-                    self.db.execute('COMMIT')
-                except BaseException:
-                    self.db.execute('ROLLBACK')
-                    raise
-                raise ResearchPaused(str(error)) from None
-            self.db.execute("UPDATE api_requests SET state='NEEDS_REVIEW',failure_code=? WHERE operation=? AND state='PENDING'",
-                            (failure, operation))
+        except Exception:
             raise Review(failure) from None
+
+    def recover_evaluation_response(self, operation, completion):
+        """Record actual durable native completion without calling ask/transport.
+
+        Recovery is restricted to an existing once-admitted historical request.
+        Missing/incomplete/wrong native custody causes no local response/status
+        write. The normal provider recorder still validates raw output/charts.
+        """
+        from .trade_evaluation_recovery import validate_native_completion
+        from agent.native_evaluation_protocol import is_evaluation_schema
+        row = self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
+        current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if row is None or current is None:
+            raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
+        body = json.loads(row['request_body'], object_pairs_hook=unique)
+        rebuilt, serialized, wire = request_body(operation,body['prompt'],body['output_schema'],body['context'])
+        if (not is_evaluation_schema(body['output_schema']) or body != rebuilt
+                or serialized != row['request_body'] or row['request_sha256'] != wire
+                or (row['provider'],row['contract_version'],row['marker']) != (BROWSER_PROVIDER,BROWSER_CONTRACT,body['marker'])
+                or current['body_hash'] != wire or current['idempotency'] is not None
+                or current['attempts'] != 1 or current['output'] is not None
+                or current['state'] not in ('PENDING','NEEDS_REVIEW')):
+            raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
+        verified = validate_native_completion({**body,'request_sha256':wire},completion,now=time.time())
+        if not current['created'] <= verified['received_at'] <= time.time():
+            raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
+        return self._record_browser_response(operation,body,wire,verified['result'],body['output_schema'],
+            lambda value: None,body['context'],received_at=verified['received_at'],recovery=True)
 
     @staticmethod
     def _proven_unsent(result, body, request_hash):
