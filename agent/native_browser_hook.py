@@ -198,7 +198,9 @@ class DelegatedDOMBridge:
                     self.converter(fresh['context'], now=self.wall_clock())
                 else:
                     self.native.image_artifacts(chart_images, chart_evidence)
-                if self.prompt_cache is not None and payload.get('context') is not None and not historical:
+                if (self.prompt_cache is not None and payload.get('context') is not None and not historical
+                        and _phase(payload, payload.get('output_schema', {}).get('required'))
+                            in ('ANALYSIS', 'PENDING_REVIEW')):
                     from .native_chart_followup import material_dispatch_provenance
                     active = state['fresh']
                     context = active['context'] if active is not None else payload['context']

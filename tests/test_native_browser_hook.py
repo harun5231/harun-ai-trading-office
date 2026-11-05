@@ -12,6 +12,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 from datetime import datetime, timezone
+from contextlib import contextmanager
 
 from agent.native_browser_hook import DelegatedDOMBridge, install_native_bridge
 
@@ -111,6 +112,91 @@ def client(action='CLARIFY'):
 def native():
  return SimpleNamespace(OutcomeUnknown=OutcomeUnknown,NotSubmitted=NotSubmitted,MAX_ANSWER=65536,
   image_artifacts=Mock(return_value=[]),exact_json=Mock(return_value=None))
+
+
+class ComposedMaterialGateTests(unittest.TestCase):
+ """Replacement metadata is not chart data; setup/review charts stay gated."""
+ def harness(self, payload):
+  self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+  root=Path(self.directory.name);root.chmod(0o700)
+  self.module=native();module=self.module
+  module.user_prompt=lambda value:value['prompt']+'\n\n'+value['marker']
+  class Room:
+   conversation_id='neurobro:existing-daily-room'
+   store=SimpleNamespace(root=root)
+   @contextmanager
+   def operation(self,value):yield self
+  class ComposedBridge(Bridge):
+   def ask(self,value,*args,**kwargs):
+    copied=copy.deepcopy(value);copied['prompt']=module.user_prompt(value)
+    return super().ask(copied,*args,**kwargs)
+  count=int(payload.get('context',{}).get('requested_count',1))
+  symbols=['RUNEUSDT','TIAUSDT'][:count]
+  self.bridge=ComposedBridge(initial='COIN: '+', '.join(symbols))
+  def result(value, action, symbols, question=''):
+   return {'schema_version':1,'ok':True,
+    **{key:value[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
+    'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
+    'decision':{'action':action,'symbols':symbols,'question':question},
+    'needs_followup':False,'reason':'DIALOGUE_DECISION'}
+  self.reasoner=Mock(request=Mock(side_effect=lambda value:result(value,'SCREENING',symbols)),
+   compose=Mock(side_effect=lambda value:result(value,'PROMPT',[],value['reply'])))
+  self.converter=Mock(side_effect=AssertionError('Coin-screening metadata is not market data'))
+  self.hook=DelegatedDOMBridge(self.bridge,self.reasoner,native=module,converter=self.converter,
+   daily_room=Room(),compose_enabled=True,monotonic=self.bridge.clock,wall_clock=lambda:1793864323.0)
+
+ def test_one_or_two_coin_replacement_composes_and_reads_without_random_charts(self):
+  from worker.account_state import screening_contract
+  from worker.prompts import REPLACEMENT_SCREENING
+  for count in (1,2):
+   with self.subTest(count=count):
+    _,schema=screening_contract(count)
+    value=request();value.update(operation='2026-11-05:robot-v9:0:screening:1:'+str(count),
+     prompt=REPLACEMENT_SCREENING.format(count=count),output_schema=schema,
+     context={'requested_count':count,'excluded_symbols':['BTCUSDT','ETHUSDT'],
+      'replacement_instruction':'Choose different Binance USD-M USDT perpetual coins that are not in excluded_symbols.'})
+    self.harness(value);before=copy.deepcopy(value)
+    with patch('agent.native_chart_followup.material_dispatch_provenance',
+       side_effect=AssertionError('Screening does not have selected-coin charts')) as material:
+     result=self.hook.ask(value,lambda:True,deadline=80)
+    self.assertEqual(result['output'],{'symbols':['RUNEUSDT','TIAUSDT'][:count]})
+    self.assertEqual(self.bridge.clicks,1);self.assertEqual(self.bridge.fresh_calls,1)
+    self.assertIn(value['prompt'],self.bridge.messages[0]['text'])
+    self.reasoner.compose.assert_called_once();self.reasoner.request.assert_called_once()
+    self.assertEqual(self.reasoner.compose.call_args.args[0]['phase'],'COMPOSE_SCREENING')
+    self.assertEqual(self.reasoner.request.call_args.args[0]['phase'],'SCREENING')
+    self.assertIsNone(self.reasoner.compose.call_args.args[0]['market_context'])
+    self.assertIsNone(self.reasoner.request.call_args.args[0]['market_context'])
+    self.converter.assert_not_called();material.assert_not_called()
+    self.assertEqual(value,before)
+
+ def test_analysis_and_pending_review_still_refuse_missing_or_stale_website_screenshots(self):
+  from agent.native_chart_followup import material_dispatch_provenance
+  from agent.binance_website_chart import SOURCE
+  from agent.native_pending_protocol import REVIEW_SCHEMA
+  from tests.test_agent_closed_candles_200 import native_context_200
+  from worker.neuroapi import SETUP_SCHEMA_V4
+  now=1793864323.0
+  for phase in ('ANALYSIS','PENDING_REVIEW'):
+   for invalid in ('missing','stale'):
+    with self.subTest(phase=phase,invalid=invalid):
+     value=request();value.update(context=native_context_200(now),output_schema=SETUP_SCHEMA_V4)
+     if phase=='PENDING_REVIEW':
+      reference='c'*64
+      value.update(operation='pending-review-v1:'+reference[:32]+':1',output_schema=REVIEW_SCHEMA)
+      value['context']['pending_review']={'intent_ref':reference,'symbol':'BTCUSDT',
+       'entry_created_at':datetime.fromtimestamp(now-18001,timezone.utc).isoformat()}
+     self.harness(value)
+     charts=[] if invalid=='missing' else [{'source':SOURCE,'symbol':'BTCUSDT','timeframe':tf,
+      'captured_at':datetime.fromtimestamp(now-181,timezone.utc).isoformat(),'sha256':'a'*64}
+      for tf in ('1h','15m')]
+     with patch('agent.native_chart_followup.material_dispatch_provenance',
+        wraps=material_dispatch_provenance) as material:
+      with self.assertRaises(NotSubmitted):
+       self.hook.ask(value,lambda:True,deadline=80,chart_evidence=charts)
+     material.assert_called_once()
+     self.assertEqual(self.bridge.clicks,0)
+     self.reasoner.compose.assert_not_called();self.reasoner.request.assert_not_called()
 
 
 class NativeHookTests(unittest.TestCase):
