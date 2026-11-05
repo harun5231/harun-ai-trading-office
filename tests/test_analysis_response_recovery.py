@@ -14,7 +14,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from worker.core import Review
+from worker.core import Review,DYNAMIC_RISK_MODEL
 from worker.neuroapi import SETUP_SCHEMA_V4
 from worker.analysis_response_recovery import (KIND,NATIVE_SOURCE,TERMINAL,REASON,
     wire,sha,digest,validate_observation,recover_received_analysis,record_analysis_candidate,
@@ -50,6 +50,7 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.provider=object.__new__(self.native.NeuroBrowser);self.provider.db=self.db
         self.provider.chart_max_age=180;self.provider.transport=self.forbid
         self.context=native_context_200(NOW-100)
+        self.context['risk_constraints']={'risk_model':DYNAMIC_RISK_MODEL}
         self.body,serialized,self.request_hash=self.source.request_body(OP,'Prompt analisis pemilik — terbaru',SETUP_SCHEMA_V4,self.context)
         self.payload={**self.body,'request_sha256':self.request_hash};self.created=NOW-90
         self.data=dict(target=2,queue=['ETHUSDT'],seen=['BTCUSDT'],screen=0,replacements=0,round_symbols=['BTCUSDT','ETHUSDT'])
@@ -268,6 +269,55 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.db.execute('BEGIN IMMEDIATE')
         with self.assertRaises(Review):record_analysis_candidate(self.db,(OP,CYCLE,'BTCUSDT','HOLD',None,None))
         self.db.execute('ROLLBACK')
+
+    def coordinator(self):
+        # The captured native source retains this unused legacy import; the
+        # standalone repository fixture has already removed that old constant.
+        with patch('worker.account_state.MAX_REPLACEMENTS',None,create=True):
+            module=native_module('worker.native_robot_recovery_fixture',ROOT/'vps_native/worker/robot.py')
+        self.addCleanup(lambda:sys.modules.pop('worker.native_robot_recovery_fixture',None))
+        coordinator=object.__new__(module.Coordinator)
+        coordinator.db=self.db;coordinator.neuro=self.provider;coordinator.stopping=None
+        coordinator.account_factory=lambda:None;coordinator.new_setup_policy=DYNAMIC_RISK_MODEL
+        coordinator.allowed=lambda today:True
+        coordinator.execution_slots=lambda account,today:2
+        coordinator.settle_previous_research=lambda today,account:None
+        coordinator.recover_invalid_screening=lambda today,account:None
+        coordinator.market=SimpleNamespace(max_age=180,catalog=lambda:{'BTCUSDT':{},'ETHUSDT':{}})
+        coordinator.store=SimpleNamespace(settings=lambda:dict(robot_on=True,risk_target_usdt='5'),
+            entries=lambda today:0,report_account=lambda account:None,
+            results=lambda cycle:list(self.db.execute('SELECT * FROM robot_candidates WHERE cycle=?',(cycle,))),
+            report=lambda status,account=None,reason=None,**kw:dict(bot_status=status,reason=reason,**kw))
+        coordinator.exposed_symbols=lambda account:set()
+        self.provider.require_key=lambda:None
+        return module,coordinator
+
+    def test_actual_native_scheduler_drains_recovered_cached_hold_without_resend(self):
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW),'RESUME_CACHED')
+        module,coordinator=self.coordinator()
+        with patch.object(module,'day',return_value=DAY),patch.object(module.time,'time',return_value=NOW), \
+                patch.object(module,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None), \
+                patch.object(module,'analysis_context',return_value=(self.context,None)):
+            result=coordinator._tick()
+        self.assertEqual(result['bot_status'],'HOLD')
+        self.assertEqual(self.row('robot_jobs')['state'],'COMPLETE')
+        self.assertEqual(self.row('robot_candidates')['status'],'HOLD')
+        self.assertEqual(json.loads(self.row('robot_cycles')['data'])['queue'],['ETHUSDT'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
+    def test_actual_native_scheduler_screens_actual_two_free_slots_after_stale_recovery(self):
+        envelope=self.fixture(stale=True,approval=False)
+        self.assertEqual(recover_received_analysis(self.provider,envelope,now=NOW+301),'NOEXEC')
+        data=json.loads(self.row('robot_cycles')['data']);data['queue']=[];data['round_symbols']=['BTCUSDT']
+        self.db.execute('UPDATE robot_cycles SET data=?',(json.dumps(data),))
+        module,coordinator=self.coordinator();calls=[]
+        coordinator.screen=lambda cycle,data,count,account,today,initial:(calls.append(count) or {'count':count})
+        with patch.object(module,'day',return_value=DAY),patch.object(module.time,'time',return_value=NOW+302), \
+                patch.object(module,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None):
+            result=coordinator._tick()
+        self.assertEqual(result,{'count':2});self.assertEqual(calls,[2])
 
     def test_initial_only_material_proves_posted_attachments_and_stale_nonexecution(self):
         from agent.native_analysis_material import retain_prepared,read_prepared

@@ -559,7 +559,9 @@ class Coordinator:
         if not initial and not replaceable:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
-        return self.screen(cycle,data,remaining if initial else min(remaining,replaceable),account,today,initial)
+        # A proved replacement trigger searches the actual remaining capacity;
+        # a prior temporarily unknown answer does not hide another free slot.
+        return self.screen(cycle,data,remaining,account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None,*,data=None,context=None):
         self.db.execute('BEGIN IMMEDIATE')
         try:
