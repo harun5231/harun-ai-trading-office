@@ -49,12 +49,13 @@ def browser_request(method, url, headers=None, body=None, timeout=15):
     if method == 'GET' and body is not None:
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     observation = url == BASE + '/v1/screening-recovery'
-    if observation and (type(body) is not dict or set(body) != {'action','payload'}
-            or body['action'] != 'ANALYSIS_RECEIVED_OBSERVE'):
+    if observation and (type(body) is not dict
+            or body.get('action') not in ('ANALYSIS_RECEIVED_OBSERVE','ANALYSIS_RECEIVED_CONTINUE')
+            or set(body) != ({'action','payload','grant'} if body.get('action')=='ANALYSIS_RECEIVED_CONTINUE' else {'action','payload'})):
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     try:
         raw = None if body is None else encode(body).encode('utf-8')
-        if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + 128):
+        if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + (4096 if observation else 128)):
             raise Review('NEUROBRO_BROWSER_REQUEST_TOO_LARGE')
         request = Request(url, data=raw, method=method, headers=headers or {})
         opener = build_opener(ProxyHandler({}), NoRedirect())
@@ -124,7 +125,12 @@ function never grants a replay, initializes tables, changes state, or reads keys
             return False
         owner_material = owner_material_request(body)
         if now - created > (NEW_OPERATION_SECONDS if owner_material else max_age):
-            return False
+            # An observed incomplete answer may continue its original native
+            # conversation under a fresh sealed followup grant. This does not
+            # alter the original request clock or permit its first Send again.
+            from .analysis_continuation import verify_dispatch_grant
+            if not owner_material or not verify_dispatch_grant(db,operation,request_sha256,today,now):
+                return False
         validation_at = created if owner_material else now
         cycle = db.execute('SELECT * FROM robot_cycles WHERE id=?', (job['cycle'],)).fetchone()
         if (not cycle or cycle['state'] != 'ACTIVE' or cycle['day'] != today
@@ -290,6 +296,28 @@ class NeuroBrowser:
             raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
         if code != 200 or not isinstance(result,dict):
             raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
+        return result
+
+    def continue_received_analysis(self, operation, grant):
+        """Continue a received turn through the same actor's followup hook.
+
+        This fixed action never enters ordinary ask(), whose UNKNOWN receipt
+        still prohibits re-sending the initial prompt.
+        """
+        self.require_key()
+        from .analysis_continuation import active_grant
+        current=active_grant(self.db,operation)
+        if current is None or current['grant'] != json.dumps(grant,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False):
+            raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
+        request=self.db.execute('SELECT request_body,request_sha256 FROM research_browser_requests WHERE operation=?',(operation,)).fetchone()
+        if request is None:raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
+        payload={**json.loads(request['request_body']), 'request_sha256':request['request_sha256']}
+        code,_,result=self.transport('POST',BASE+'/v1/screening-recovery',self.headers(),
+            dict(action='ANALYSIS_RECEIVED_CONTINUE',payload=payload,grant=grant),timeout=930)
+        if code!=200 or not isinstance(result,dict):
+            raise Review('ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN')
+        if result.get('grant_id')!=grant['grant_id'] or result.get('operation')!=operation or result.get('request_sha256')!=request['request_sha256']:
+            raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
         return result
 
     def record_validation(self, operation, error):

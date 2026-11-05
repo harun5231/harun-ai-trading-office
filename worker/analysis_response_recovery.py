@@ -201,7 +201,7 @@ def _approval(proof,payload,context_sha,output):
     return False
 
 
-def validate_observation(provider,envelope,payload,created,*,now,retained=False):
+def validate_observation(provider,envelope,payload,created,*,now,retained=False,repair=False):
     from agent.neurobro_reply import parse_reply_for_payload, ReplyIncomplete, _TECHNICAL
     need(type(envelope) is dict and envelope.get('kind')==KIND and envelope.get('operation_completed') is False
         and envelope.get('operation')==payload['operation'] and envelope.get('request_sha256')==payload['request_sha256'])
@@ -254,9 +254,27 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False)
         if len(unique)==1:reviewed['rows'][index]['attachments']=list(next(iter(unique)))
     # Apply the parser to the ENTIRE current authored response as well as the
     # selected coin. A technical complaint cannot disappear behind its footer.
-    need(_TECHNICAL.search(rows[-1]['text']) is None,'NEUROBRO_INPUT_UNREADABLE')
-    try:output=parse_reply_for_payload(rows[-1]['text'],payload)
-    except ReplyIncomplete as error:raise Review(str(error)) from None
+    technical=_TECHNICAL.search(rows[-1]['text']) is not None
+    output=None;reason='NEUROBRO_INPUT_UNREADABLE' if technical else None
+    if not technical:
+        try:output=parse_reply_for_payload(rows[-1]['text'],payload)
+        except ReplyIncomplete as error:reason=str(error)
+    if repair:
+        # This is permission to continue the SAME conversation, never a market
+        # decision. All posted-turn, source, material and identity checks above
+        # remain mandatory even when the final answer needs clarification.
+        if reason is None:
+            setup(output,payload['context']['symbol'],require_declared_rr=False,require_gross_rr=False)
+            if not _approval(reviewed,payload,context_sha,output):reason='ANALYSIS_MINI_APPROVAL_NOT_RETAINED'
+        need(reason in {'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
+            'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
+            'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
+            'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'},'ANALYSIS_CONTINUATION_NOT_REQUIRED')
+        return dict(reason=reason,reply_sha256=sha(rows[-1]['text']),
+            latest_user_prompt_sha256=sha(rows[-2]['text']),next_followup_sequence=len(rows)//2,
+            received_at=proof['finished_at'])
+    need(not technical,'NEUROBRO_INPUT_UNREADABLE')
+    need(reason is None,reason)
     setup(output,payload['context']['symbol'],require_declared_rr=False,require_gross_rr=False)
     approved=_approval(reviewed,payload,context_sha,output)
     need(stale or approved,'ANALYSIS_MINI_APPROVAL_NOT_RETAINED')
@@ -485,15 +503,42 @@ def resume_uncertain_analysis(coordinator,today,account):
             need(journal is not None and journal['phase']=='PREPARED' and journal['proof_sha256']==sha(journal['proof']))
             envelope=json.loads(journal['proof'])
         else:envelope=observe(operation)
-        phase=recover_received_analysis(coordinator.neuro,envelope,
+        from .analysis_continuation import restore_received_checkpoint,admit,record_return,active_grant,retry_not_sent
+        restore_received_checkpoint(coordinator.neuro,envelope,
             permitted=lambda:coordinator.allowed(today))
+        def continue_grant(grant):
+            try:result=coordinator.neuro.continue_received_analysis(operation,grant)
+            except Exception:
+                record_return(coordinator.neuro,grant)
+                raise Review('ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN') from None
+            record_return(coordinator.neuro,grant,result)
+            return coordinator.store.report('WAITING',account,wait_reason='ANALYSIS_CONTINUATION_REPLY_RECONCILING')
+        active=active_grant(coordinator.db,operation)
+        if active is not None and active['state']=='NOT_SENT':
+            # Its admitted queue is intentionally retained. Reconcile this
+            # positive pre-upload failure before ordinary cached-job handling.
+            grant=retry_not_sent(coordinator.neuro,envelope,permitted=lambda:coordinator.allowed(today))
+            return continue_grant(grant)
+        try:
+            phase=recover_received_analysis(coordinator.neuro,envelope,
+                permitted=lambda:coordinator.allowed(today))
+        except Review as error:
+            repairable={'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
+                'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
+                'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
+                'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'}
+            continuation=getattr(coordinator.neuro,'continue_received_analysis',None)
+            if str(error) not in repairable or not callable(continuation):raise
+            grant=admit(coordinator.neuro,envelope,permitted=lambda:coordinator.allowed(today))
+            return continue_grant(grant)
     except Exception as error:
         reason=str(error)
         safe={'NEUROBRO_LOGIN_REQUIRED','NEUROBRO_LOGIN_IN_PROGRESS','NEUROBRO_CHALLENGE_REQUIRED',
             'NEUROBRO_BUSY','NEUROBRO_UNAVAILABLE','NEUROBRO_BROWSER_NOT_CONFIGURED','RESEARCH_PAUSED',
             'ANALYSIS_REPLY_NOT_COMPLETE','ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_INPUT_UNREADABLE',
             'NEUROBRO_REPLY_INCOMPLETE','NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE',
-            'ANALYSIS_INITIAL_MATERIAL_RECEIPT_MISSING','ANALYSIS_RESPONSE_OBSERVATION_PENDING'}
+            'ANALYSIS_INITIAL_MATERIAL_RECEIPT_MISSING','ANALYSIS_RESPONSE_OBSERVATION_PENDING',
+            'ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN','ANALYSIS_CONTINUATION_SOURCE_ALREADY_ADMITTED'}
         return coordinator.store.report('WAITING',account,wait_reason=(reason if reason in safe else 'ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED'))
     return coordinator.store.report('WAITING',account,wait_reason=(
         'ANALYSIS_RECEIVED_STALE_REPLACEMENT_PENDING' if phase=='NOEXEC' else 'ANALYSIS_RECEIVED_RESUME_PENDING'))
