@@ -13,7 +13,7 @@ from unittest.mock import Mock
 from agent import dialogue_service as service
 from agent.native_prompt_composition import PromptCompositionCache
 from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
-    parse_pending_reply, parse_screening_reply, parse_reply_for_payload)
+    parse_pending_reply, parse_screening_reply, parse_reply_for_payload, attributed_symbols)
 
 
 class PerCoinReplyTests(unittest.TestCase):
@@ -29,6 +29,47 @@ class PerCoinReplyTests(unittest.TestCase):
         self.assertEqual(aave['side'], 'HOLD')
         self.assertTrue(all(aave[key] is None for key in
             ('entry_price', 'limit_entry', 'take_profit', 'stop_loss', 'risk_reward')))
+
+    def test_actual_rune_final_hold_ignores_usdt_amounts_and_future_discussion(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_rune_final_hold_20261105.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            'd3d14cedbb31628f3077c386b3b1bb61d5da0fd24cf68ce27fde93b52cf9799a')
+        self.assertEqual(attributed_symbols(reply), {'RUNEUSDT'})
+        result = parse_analysis_reply(reply, 'RUNEUSDT')
+        self.assertEqual(result['side'], 'HOLD')
+        self.assertTrue(all(value is None for key, value in result.items() if key not in ('symbol', 'side')))
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        parsed = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'RUNEUSDT'}})
+        self.assertEqual(parsed['side'], 'HOLD')
+        self.assertIsNone(parsed['limit_entry'])
+
+    def test_money_amounts_never_bind_a_coin_but_real_prefixed_symbols_and_coin_labels_do(self):
+        self.assertEqual(attributed_symbols('Risiko 2.50 USDT, notional 169 USDT.'), set())
+        self.assertEqual(attributed_symbols('1000PEPEUSDT dan 1INCHUSDT.'),
+            {'1000PEPEUSDT', '1INCHUSDT'})
+        self.assertEqual(parse_analysis_reply('COIN: 169USDT\nARAH: HOLD', '169USDT')['side'], 'HOLD')
+        self.assertEqual(parse_analysis_reply('Ringkasan: COIN: 169USDT | HOLD | ENTRY: —',
+            '169USDT')['side'], 'HOLD')
+        with self.assertRaisesRegex(ReplyIncomplete, 'COIN_UNVERIFIED'):
+            parse_analysis_reply('Risiko 2.50 USDT, notional 169 USDT.\nHOLD', '169USDT')
+
+    def test_bare_summary_direction_remains_coin_bound_unambiguous_and_input_checked(self):
+        base = 'Ringkasan: COIN: $RUNEUSDT | HOLD | ENTRY: — | TP: — | SL: —'
+        self.assertEqual(parse_analysis_reply(base, 'RUNEUSDT')['side'], 'HOLD')
+        for reply, reason in ((base.replace('RUNEUSDT', 'TIAUSDT'), 'COIN_UNVERIFIED'),
+                ('RUNEUSDT dibanding TIAUSDT.\n' + base, 'COIN_UNVERIFIED'),
+                ('Chart belum terbaca.\n' + base, 'INPUT_UNREADABLE'),
+                ('Keputusan: LONG\n' + base, 'DECISION_CONFLICT'),
+                ('Ringkasan: COIN: $RUNEUSDT | HOLD | LONG | ENTRY: —', 'DECISION_CONFLICT')):
+            with self.subTest(reply=reply), self.assertRaisesRegex(ReplyIncomplete, reason):
+                parse_analysis_reply(reply, 'RUNEUSDT')
+
+    def test_conditional_future_long_is_never_an_active_pipe_summary_entry(self):
+        reply = ('Jika breakout terkonfirmasi, pertimbangkan LONG.\n'
+            'Ringkasan: COIN: $RUNEUSDT | LONG | ENTRY: 1 | TP: 3 | SL: 0.5')
+        with self.assertRaisesRegex(ReplyIncomplete, 'SETUP_CONDITIONAL'):
+            parse_analysis_reply(reply, 'RUNEUSDT')
 
     def test_explicit_final_summary_supersedes_old_card_without_old_levels(self):
         reply = ('COIN: LINKUSDT\nARAH: HOLD\nKartu lama.\n\n'

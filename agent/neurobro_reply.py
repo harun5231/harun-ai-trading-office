@@ -49,7 +49,14 @@ def clean(reply):
 
 
 def attributed_symbols(reply):
-    return {symbol(match.group(1)) for match in _PAIR.finditer(reply)}
+    # Unlabelled numeric USDT values are money amounts, including a regex
+    # match starting after a decimal point (2.50 USDT). Explicit COIN labels
+    # retain their original authority; catalog validation still owns listings.
+    values = {symbol(match.group(1)) for match in _PAIR.finditer(reply)
+        if not symbol(match.group(1))[:-4].isdigit()}
+    values.update(symbol(value) for value in re.findall(
+        r'\b(?:COIN|KOIN|SYMBOL|SIMBOL)\s*[:=]\s*\$?(' + PAIR + r')\b', reply, re.I))
+    return values
 
 
 def coin_block(reply, requested):
@@ -88,7 +95,18 @@ def _decision(block, allowed):
     standalone = re.findall(r'^\s*' + expression + r'\s*(?:[.!]|$)', block, re.I | re.M)
     headings = re.findall(r'^\s*' + PAIR + r'\s*(?:[-—:|]\s*|\s+)'
         + expression + r'\s*[.!]?\s*$', block, re.I | re.M)
-    values = {value.upper() for value in [*labelled, *standalone, *headings]}
+    # A native human summary may use a bare direction cell after its explicit
+    # coin, while the full coin block still owns input/conflict/condition checks.
+    summary = []
+    if set(allowed) == {'LONG', 'SHORT', 'HOLD'}:
+        lines = re.findall(r'^\s*(?:Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*)?'
+            r'(?:COIN|KOIN|SYMBOL|SIMBOL)\s*[:=]\s*\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M)
+        for line in lines:
+            for field in line.split('|'):
+                match = re.fullmatch(expression, field.strip(), re.I)
+                if match:
+                    summary.append(match.group(1))
+    values = {value.upper() for value in [*labelled, *standalone, *headings, *summary]}
     if len(values) != 1:
         raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT' if values else 'NEUROBRO_REPLY_INCOMPLETE')
     return values.pop()

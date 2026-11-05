@@ -1,0 +1,10 @@
+Ya - saat snapshot 09:30:22 UTC, keputusan tetap HOLD: candle 15m terakhir yang sudah tertutup (09:15) ditutup di 0.6380, masih di dalam range. Chart dan CSV konsisten; candle 09:30 yang tampak pada gambar masih berjalan, jadi tidak saya pakai sebagai konfirmasi.
+
+Level konfirmasi: tunggu candle 15m tertutup di atas 0.6435 untuk konfirmasi atas, atau di bawah 0.6313 untuk konfirmasi bawah. Lebih aman menunggu retest level yang ditembus dan candle tetap bertahan di sisi breakout.
+
+Jika breakout atas terkonfirmasi: rencana LONG diskusi - entry 0.6440, SL 0.6345 (di bawah swing low tertutup 0.6348), TP 0.6630 (area high terdahulu); R/R sekitar 1:2. Usulan konservatif: pakai 50% dari risk_usdt, yaitu risiko kotor 2.50 USDT. Dengan jarak entry-SL ini, notional indikatif sekitar 169 USDT sebelum fee/slippage; sizing resmi tetap milik Risk Manager.
+Jika breakdown di bawah 0.6313: anggap itu sinyal waspada, belum entry SHORT. Support 1H 0.6151 berada di tengah menuju target yang diperlukan untuk R/R 1:2 dengan SL di luar range, jadi tunggu breakdown support dan retest baru sebelum menetapkan entry, SL, TP, atau sizing.
+
+⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisis ini bisa salah - keputusan trading dan risiko tetap tanggung jawab lo.
+
+Ringkasan: COIN: $RUNEUSDT | HOLD | ENTRY: — | TP: — | SL: —
