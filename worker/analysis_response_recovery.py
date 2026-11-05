@@ -509,6 +509,7 @@ def resume_uncertain_analysis(coordinator,today,account):
         restore_received_checkpoint(coordinator.neuro,envelope,
             permitted=lambda:coordinator.allowed(today))
         def continue_grant(grant):
+            coordinator.store.report('ANALYZING',account)
             try:result=coordinator.neuro.continue_received_analysis(operation,grant)
             except Exception:
                 record_return(coordinator.neuro,grant)
