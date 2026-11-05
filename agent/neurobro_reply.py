@@ -141,10 +141,33 @@ def _level(block, names):
     return format(value, 'f')
 
 
+def _inline_summary_fields(block):
+    # Native textContent may flatten a structured COIN/ARAH/ENTRY/TP/SL
+    # summary into one line. Restore field boundaries only for that explicit
+    # coin-qualified form; ordinary prose keeps its original interpretation.
+    direction = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)'
+        r'(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?[ \t]*[:=][ \t]*(?:LONG|SHORT|HOLD)\b')
+    prefix = re.compile(r'^[ \t]*' + _COIN_LABEL + r'\$?(' + PAIR + r')'
+        r'(?:[ \t]+Perpetual)?[ \t]+' + direction, re.I)
+    labels = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?'
+        r'|LIMIT ENTRY|ENTRY LIMIT|ENTRY_PRICE|ENTRY|STOP LOSS|STOP_LOSS|SL'
+        r'|TAKE PROFIT|TAKE_PROFIT|TP')
+    lines = []
+    for line in block.split('\n'):
+        match = prefix.match(line)
+        if match:
+            if attributed_symbols(line) != {symbol(match.group(1))}:
+                raise ReplyIncomplete('NEUROBRO_COIN_UNVERIFIED')
+            line = re.sub(r'[ \t]+(?=(?:' + labels + r')[ \t]*[:=])', '\n', line, flags=re.I)
+        lines.append(line)
+    return '\n'.join(lines)
+
+
 def parse_analysis_reply(reply, requested):
     block = coin_block(reply, requested)
     if _TECHNICAL.search(block):
         raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
+    block = _inline_summary_fields(block)
     decision = _decision(block, ('LONG', 'SHORT', 'HOLD'))
     fields = {'symbol': requested, 'side': decision, 'entry_price': None,
         'limit_entry': None, 'stop_loss': None, 'take_profit': None, 'risk_reward': None}

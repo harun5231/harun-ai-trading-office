@@ -17,6 +17,43 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_actual_flattened_xrp_summary_retains_explicit_hold(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_xrp_flattened_hold_20261105.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '20d4636e2788551de99101f510d2a90cf863d47cf0b648c1d01c082baa5c38a1')
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        result = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'XRPUSDT'}})
+        self.assertEqual((result['symbol'], result['side']), ('XRPUSDT', 'HOLD'))
+        self.assertTrue(all(value is None for key, value in result.items() if key not in ('symbol', 'side')))
+
+    def test_inline_prices_require_explicit_unique_fields_for_the_same_coin(self):
+        for direction, target, stop in (('LONG', '3', '0.5'), ('SHORT', '0.5', '3')):
+            with self.subTest(direction=direction):
+                result = parse_analysis_reply('COIN: XRPUSDT Perpetual ARAH: ' + direction
+                    + ' ENTRY: 1 TP: ' + target + ' SL: ' + stop, 'XRPUSDT')
+                self.assertEqual((result['side'], result['limit_entry']), (direction, '1'))
+        replies = (
+            'COIN: XRPUSDT Perpetual ARAH: LONG ENTRY: 1 TP: 3 SL: 0.5 TP: 4',
+            'COIN: XRPUSDT Perpetual ARAH: LONG ENTRY: 1-2 TP: 3 SL: 0.5',
+            'COIN: XRPUSDT Perpetual ARAH: LONG ENTRY - 1 TP - 3 SL - 0.5',
+            'Saya membahas COIN: XRPUSDT Perpetual ARAH: LONG ENTRY: 1 TP: 3 SL: 0.5')
+        for reply in replies:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'XRPUSDT')
+
+    def test_inline_summary_preserves_technical_coin_conflict_and_conditional_guards(self):
+        base = 'COIN: XRPUSDT Perpetual ARAH: HOLD ENTRY: Tidak ditetapkan TP: Tidak ditetapkan SL: Tidak ditetapkan'
+        for reply in (base.replace('XRPUSDT', 'AAVEUSDT'), base + ' ARAH: LONG',
+                base + ' COIN: AAVEUSDT ARAH: HOLD',
+                'COIN: XRPUSDT Perpetual ARAH: HOLD karena chart belum terbaca.'):
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'XRPUSDT')
+        with self.assertRaisesRegex(ReplyIncomplete, 'SETUP_CONDITIONAL'):
+            parse_analysis_reply('COIN: XRPUSDT Perpetual ARAH: LONG ENTRY: 1 TP: 3 SL: 0.5\nJika breakout terjadi.', 'XRPUSDT')
+        with self.assertRaisesRegex(ReplyIncomplete, 'INPUT_UNREADABLE'):
+            parse_analysis_reply('Chart belum terbaca.\n' + base, 'XRPUSDT')
+
     def test_actual_readable_doge_hold_uses_natural_coin_whitespace_summary(self):
         reply = (Path(__file__).parent / 'fixtures/neurobro_doge_clear_hold_20261105.txt').read_text()
         self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
