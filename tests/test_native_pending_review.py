@@ -392,8 +392,11 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(order['take_profit'], self.intent['protection']['take_profit'])
         self.assertEqual(order['estimated_loss'], '5.85')
         self.assertEqual(order['cost_components']['evidence_sha256'], 'c'*64)
-        self.assertIn('selisih terhadap anggaran order 0.85 USDT', body['prompt'])
-        self.assertIn('bukan izin mengubah parameter order', body['prompt'])
+        self.assertNotIn('anggaran', body['prompt'].lower())
+        self.assertNotIn('5.85', body['prompt'])
+        self.assertNotIn('0.85 USDT', body['prompt'])
+        self.assertNotIn('fee entry', body['prompt'])
+        self.assertIn('Jangan mengubah entry, quantity, SL atau TP', body['prompt'])
         self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0], original)
 
     def test_first_review_uses_exchange_acceptance_not_local_claim_time(self):

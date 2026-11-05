@@ -1,4 +1,4 @@
-# Exact user literals; do not normalize LF or whitespace before sending.
+# Owner-approved prompt literals; do not normalize LF or whitespace before sending.
 # Do not reflow or normalize whitespace before sending.
 SCREENING = 'pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
 REPLACEMENT_SCREENING = 'pilihkan {count} coin pengganti yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
@@ -7,5 +7,5 @@ Tentukan !
 LONG, SHORT, atau HOLD
 ENTRY
 TP
-SL : yang tidak mudah terkena wick atau di jilat para bandar.
+SL : berdasarkan struktur pasar, swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi; jangan letakkan di area yang mudah tersapu wick.
 RISK REWARD 1:2"""

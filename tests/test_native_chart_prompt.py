@@ -22,6 +22,8 @@ class NativeChartPromptTests(unittest.TestCase):
     def payload(self):
         context = native_context_200()
         context['risk_constraints'] = {'private_user_setting': 'not forwarded'}
+        context['risk_manager_facts'] = {'symbol': 'BTCUSDT', 'risk_usdt': '5',
+            'cost_components': {'private_fee_canary': '5.123'}}
         return {'prompt': 'Exact approved user prompt.\nDo not change any text.',
             'output_schema': {'required': ['symbol', 'side']}, 'context': context,
             'marker': 'TEST_MARKER_V1', 'request_sha256': 'b' * 64}
@@ -42,6 +44,12 @@ class NativeChartPromptTests(unittest.TestCase):
         self.assertNotIn('OUTPUT_JSON_SCHEMA', result)
         self.assertNotIn('CONTEXT_JSON:', result)
         self.assertNotIn('private_user_setting', result)
+        self.assertNotIn('risk_usdt', result)
+        self.assertNotIn('private_fee_canary', result)
+        self.assertNotIn('5.123', result)
+        self.assertNotIn('ukuran posisi', result)
+        self.assertIn('RISK REWARD 1:2', result)
+        self.assertIn('swing high/low', result)
         self.assertNotIn('"candles"', result)
         self.assertLess(len(result), 4000)
         self.assertIs(namespace['user_prompt'], hook)
@@ -107,6 +115,16 @@ class NativeChartPromptTests(unittest.TestCase):
         _, hook = self.hook(lambda payload: payload['prompt'])
         with self.assertRaisesRegex(ValueError, 'NATIVE_DATA_FILES_UNVERIFIED'):
             hook(self.payload())
+
+    def test_private_budget_or_advisory_sizing_prompt_is_rejected_before_formatter(self):
+        calls = []
+        _, hook = self.hook(lambda payload: calls.append(payload) or formatter(payload))
+        for text in ('Anggaran risiko 5 USDT.',
+                     'Berikan rekomendasi ukuran posisi hanya sebagai bahan diskusi.'):
+            payload = self.payload(); payload['prompt'] = text
+            with self.subTest(text=text), self.assertRaisesRegex(ValueError, 'PAYLOAD_UNVERIFIED'):
+                hook(payload)
+        self.assertEqual(calls, [])
 
     def test_legacy_insufficient_history_rejected_before_formatter(self):
         calls = []

@@ -304,7 +304,12 @@ class SourcedConversationTests(unittest.TestCase):
         self.assertEqual(service.validate_source_facts([fact]), [fact])
         request['source_facts'] = [fact]
         service.validate_decision({'action': 'CLARIFY', 'symbols': [],
-            'question': 'Risk Manager menghitung TP 17.85 dari risiko 3; bagaimana struktur 1H?'}, request)
+            'question': 'Risk Manager menghitung TP 17.85; bagaimana struktur 1H?'}, request)
+        with self.assertRaises(service.DialogueError):
+            service.validate_web_question(
+                'Risk Manager menghitung TP 17.85 dari risiko 3; bagaimana struktur 1H?', request)
+        with self.assertRaisesRegex(service.DialogueError, 'PRICE_PROPOSAL_REFUSED'):
+            service.validate_web_question('Apakah ENTRY 3 masih sesuai struktur 1H?', request)
         changed = copy.deepcopy(fact); changed['values']['execution_tp'] = '99'
         with self.assertRaisesRegex(service.DialogueError, 'SOURCE_FACTS_INVALID'):
             service.validate_source_facts([changed])
@@ -510,6 +515,37 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.hook.client.request.assert_called_once()
         self.assertEqual(responses[0]['decision'], saved['mini_decision'])
         self.assertIs(responses[0]['needs_followup'], True)
+
+    def test_legacy_private_sizing_question_is_replaced_only_at_future_web_boundary(self):
+        fixture = self.fixture()
+        fixture.bridge.initial = 'COIN: BTCUSDT\nARAH: LONG\nENTRY: 100\nSL: 99'
+        fixture.bridge.final = 'COIN: BTCUSDT\nARAH: HOLD\nBelum ada setup aktif.'
+        fixture.value['context']['risk_manager_facts'] = {'symbol': 'BTCUSDT', 'risk_usdt': '5'}
+        unsafe = ('Sebagai rekomendasi saja, berapa ukuran posisi berdasarkan risk_usdt=5? '
+            'Quantity eksekusi tetap dihitung Risk Manager; ini hanya bahan diskusi.')
+        responses = []
+        def reason(value):
+            first = value['reply'] == fixture.bridge.initial
+            result = {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                'decision': {'action': 'CLARIFY' if first else 'HOLD', 'symbols': ['BTCUSDT'],
+                    'question': unsafe if first else ''},
+                'needs_followup': first, 'reason': 'DIALOGUE_DECISION'}
+            responses.append(result)
+            return result
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertEqual(fixture.bridge.clicks, 2)
+        self.assertEqual(responses[0]['decision']['question'], unsafe)
+        sent = fixture.bridge.messages[2]['text']
+        self.assertTrue(sent.startswith('Mohon pertegas keputusan akhir'))
+        self.assertNotIn('risk_usdt', sent)
+        self.assertNotIn('ukuran posisi', sent)
+        self.assertNotIn('Quantity', sent)
+        fixture.refresh.assert_called_once()
 
     def test_complete_short_setup_still_allows_mini_clarification_with_new_charts(self):
         fixture = self.fixture()

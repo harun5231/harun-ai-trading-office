@@ -763,7 +763,9 @@ class NativeFreshFollowupTests(unittest.TestCase):
    if point=='formatter':
     original=self.module.user_prompt
     def render(payload):
-     result=original(payload);self.enabled=False;return result
+     result=original(payload)
+     if self.bridge.clicks:self.enabled=False
+     return result
     self.module.user_prompt=render
    else:
     original=self.bridge._visible;calls=[]

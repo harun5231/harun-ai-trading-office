@@ -28,7 +28,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from zoneinfo import ZoneInfo
 
 from .llm import (OpenAIDialogue, read_api_key, validated_market_context,
-                  compose_screening_input_sha256)
+                  compose_screening_input_sha256, web_source_facts,
+                  web_prompt_allowed, POSITION_SIZE)
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
 
@@ -112,17 +113,25 @@ def _number_values(value):
     return result
 
 
-def validate_question_sources(question, request):
+def validate_question_sources(question, request, *, web_outbound=False):
     """Allow natural discussion of known facts without inventing new levels.
 
     This is source checking only. A question never becomes executable setup
     data, and numeric attribution does not authorize a new trade or quantity.
     """
+    if web_outbound:
+        need(web_prompt_allowed(question), 'DIALOGUE_MODEL_RESULT_INVALID')
     known = _number_values(request.get('reply', ''))
     known.update(_number_values(request.get('market_context')))
     if 'source_facts' in request:
         validate_source_facts(request['source_facts'])
-    known.update(_number_values(request.get('source_facts')))
+    # Immutable legacy Mini receipts retain their original source attribution.
+    # A NEW outbound question may use only the public projection of those facts.
+    if web_outbound:
+        known.update(_number_values([fact['values'] for fact in
+            web_source_facts(request.get('source_facts', []))]))
+    else:
+        known.update(_number_values(request.get('source_facts')))
     # These are the owner's fixed timeframe/reward vocabulary, not price data.
     without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', '', question)
     need(_number_values(without_timeframes) <= known, 'DIALOGUE_PRICE_PROPOSAL_REFUSED')
@@ -131,7 +140,11 @@ def validate_question_sources(question, request):
          'DIALOGUE_PRICE_PROPOSAL_REFUSED')
 
 
-POSITION_SIZE = r'(?:quantity|ukuran posisi|jumlah kontrak|position size)'
+def validate_web_question(question, request):
+    """Future WEB policy; never retroactively invalidate a Mini receipt."""
+    validate_question_sources(question, request, web_outbound=True)
+    validate_position_size_discussion(question, request['phase'])
+    return question
 
 
 def validate_position_size_discussion(question, phase):

@@ -14,6 +14,8 @@ from pathlib import Path
 import stat
 import uuid
 
+from .llm import web_prompt_allowed
+
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'),
@@ -28,6 +30,8 @@ def compact_protocol(rendered, payload):
     """Keep human discussion/CSV metadata while moving schema to integration."""
     separator = '\n\nOUTPUT_JSON_SCHEMA:\n'
     marker = payload.get('marker')
+    if not web_prompt_allowed(rendered):
+        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
     if separator not in rendered and isinstance(marker, str) and rendered.count(marker) == 1:
         return rendered  # The installed chart formatter already emits compact prose.
     rendered = rendered.split(separator, 1)[0].rstrip()
@@ -43,9 +47,12 @@ def compact_protocol(rendered, payload):
     else:
         summary = ('Setelah pembahasannya jelas, ringkas COIN, ARAH: LONG/SHORT/HOLD, '
             'ENTRY, TP, dan SL. Gunakan satu harga per level untuk setup aktif; '
-            'HOLD tidak perlu level order. Jika setup valid, berikan rekomendasi ukuran posisi hanya sebagai bahan diskusi. '
-            'Quantity eksekusi tetap dihitung Risk Manager berdasarkan risiko Office, termasuk fee dan estimasi slippage; '
-            'rekomendasi ukuran posisi tidak menjadi instruksi order.')
+            'HOLD tidak perlu level order. Gunakan RISK REWARD 1:2. '
+            'Tentukan SL berdasarkan struktur, swing high/low, likuiditas, volatilitas, '
+            'wick, false breakout, dan titik invalidasi. '
+            'ENTRY dan SL ditetapkan Neurobro; Risk Manager hanya menormalkan TP eksekusi. '
+            'Rekomendasi TP dengan RR 1:3 atau 1:4 tetap boleh disampaikan. '
+            'HOLD pasar yang jelas mengakhiri pembahasan coin ini untuk mencari coin pengganti.')
     if not isinstance(marker, str) or not marker:
         raise ValueError('NATIVE_COMPOSE_MARKER_UNVERIFIED')
     rendered += '\n\n' + summary

@@ -360,21 +360,8 @@ def _prompt(intent, intent_ref, order=None):
         lines.append('Diterima Binance pada '+order['accepted_at']+'; sudah menunggu '+
             str(round(order['age_seconds']/3600, 3))+' jam. Status '+order['status']+
             ', quantity terisi '+str(order['filled_quantity'])+'.')
-    if order.get('risk_usdt') is not None:
-        lines.append('Anggaran risiko yang melekat pada order ini '+str(order['risk_usdt'])+' USDT.')
-    if order.get('estimate_status') == 'AVAILABLE':
-        components = order['cost_components']
-        lines.append('Estimasi risiko terbaru untuk quantity order yang tetap sama '+str(order['estimated_loss'])+
-            ' USDT; selisih terhadap anggaran order '+str(components['estimated_budget_difference_usdt'])+
-            ' USDT. Komponennya: kerugian harga '+str(components['gross_risk'])+
-            ', fee entry '+str(components['entry_fee_usdt'])+', fee exit SL '+str(components['sl_exit_fee_usdt'])+
-            ', dampak book penutup '+str(components['sl_book_impact_usdt'])+
-            ', cadangan ketidakpastian likuiditas SL '+str(components['sl_liquidity_uncertainty_usdt'])+
-            ' USDT. Ini pembaruan estimasi, bukan izin mengubah parameter order.')
-    elif order.get('estimate_status') == 'UNAVAILABLE':
-        lines.append('Pembaruan estimasi biaya sedang tidak tersedia secara teknis; '
-            'itu bukan keputusan pasar dan bukan alasan tunggal membatalkan order. '
-            'Nilai kembali validitas harga yang sudah terpasang dari bahan chart terbaru.')
+    # Budgets and detailed cost estimates remain in pending_order_context for
+    # internal Risk Manager/receipts; they never become Neurobro WEB material.
     lines.append('Apakah entry pada harga yang sudah terpasang masih valid? Jelaskan alasan '
         'yang relevan dengan kondisi terbaru. TAHAN berarti mempertahankan order yang sama '
         'dan mengevaluasinya lagi lima jam setelah keputusan ini. BATALKAN hanya berarti '
