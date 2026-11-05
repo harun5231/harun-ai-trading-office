@@ -40,6 +40,22 @@ class LostNotSentCustodyTests(unittest.TestCase):
         continuation._admit(self.root,self.case.grant,self.case.grant['source_capture_name'])
         self.assertIsNone(self.read())
 
+    def test_partial_unrelated_loaded_prefix_keeps_exact_owned_message_custody(self):
+        before=continuation._semantic(self.current)
+        self.current['rows']=self.current['rows'][2:]
+        self.current['file_tiles']=[{**item,'row':item['row']-2}for item in self.current['file_tiles']]
+        scope=self.current['operation_scope']
+        for key in ('initial_user','latest_user','reply_row'):scope[key]-=2
+        scope['user_rows']=[index-2 for index in scope['user_rows']]
+        witness=self.current['room_witness']
+        for key in ('initial_analysis_user_rows','followup_user_rows'):
+            witness[key]=[index-2 for index in witness[key]]
+        self.assertEqual(observer._project_operation(self.current)['row_offset'],4)
+        self.assertEqual(continuation._semantic(self.current),before)
+        self.assertEqual(self.read()['latest_attempt'],1)
+        self.current['rows'][-1]['id']='foreign-final-native-id'
+        with self.assertRaises(ValueError):self.read()
+
     def test_any_upload_send_or_completed_marker_prevents_positive_recovery(self):
         for kind in ('upload-started','send-attempted','completed'):
             name=self.base+'.'+kind+'.json'

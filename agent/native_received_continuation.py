@@ -84,7 +84,9 @@ def _semantic(capture):
     return dict(payload_sha256=capture['payload_sha256'],page_url=capture['page_url'],
         native_source_sha256=capture['native_source_sha256'],
         room={key:capture['room'][key]for key in('day','room_id','url')},
-        rows=identities(projected['rows']),row_offset=projected['row_offset'],
+        # An unrelated history prefix may be partially loaded after restart.
+        # Bind every owned native message, not its index in that loaded prefix.
+        rows=identities(projected['rows']),
         rendered_prompt_receipt=capture['rendered_prompt_receipt'],receipt_files=capture['receipt_files'])
 
 
