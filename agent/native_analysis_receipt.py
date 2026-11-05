@@ -53,19 +53,29 @@ def persist_review(root, payload, request, response, turns, *, context, observed
     raw = canonical(value)
     _need(len(raw) <= MAX_REVIEW_BYTES)
     directory = _directory(root)
+    temporary = '.analysis-review-' + os.urandom(16).hex() + '.tmp'
     try:
-        try:
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
-        except FileExistsError:
-            existing = json.loads(_private_file(directory, name, MAX_REVIEW_BYTES))
-            _need({key: child for key, child in existing.items() if key != 'observed_at'}
-                == {key: child for key, child in value.items() if key != 'observed_at'})
-            return existing
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-        os.fsync(directory)
-        return value
+        try:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+            os.fsync(directory)
+        except FileExistsError:
+            pass
+        os.unlink(temporary, dir_fd=directory)
+        existing = json.loads(_private_file(directory, name, MAX_REVIEW_BYTES))
+        def identity(record):
+            copied = copy.deepcopy(record); copied.pop('observed_at', None)
+            # A cached result for the same exact native transcript may be read
+            # again with a new technical call deadline. Keep the first receipt.
+            copied['request'].pop('deadline_epoch', None)
+            return copied
+        _need(identity(existing) == identity(value))
+        return existing
     finally:
+        try: os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError: pass
         os.close(directory)
 
 

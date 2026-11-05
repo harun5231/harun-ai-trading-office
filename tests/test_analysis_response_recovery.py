@@ -269,6 +269,36 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         with self.assertRaises(Review):record_analysis_candidate(self.db,(OP,CYCLE,'BTCUSDT','HOLD',None,None))
         self.db.execute('ROLLBACK')
 
+    def test_initial_only_material_proves_posted_attachments_and_stale_nonexecution(self):
+        from agent.native_analysis_material import retain_prepared,read_prepared
+        from agent.native_data_files import deliver_market_data_files
+        envelope=self.fixture(approval=False);proof=envelope['observation']
+        chart=proof['receipt_files']['native.intent.json']['value']['followup_chart_evidence']
+        files=deliver_market_data_files(self.context,now=NOW-90)
+        names=[self.payload['marker']+'-'+row['timeframe']+'-'+row['sha256'][:12]+'.png' for row in chart]+[row['name'] for row in files]
+        proof['rows']=proof['rows'][:2];proof['rows'][1]['text']='COIN: BTCUSDT\nARAH: HOLD'
+        proof['rows'][0]['attachments']=names
+        proof['room_witness']['followup_user_rows']=[]
+        proof['receipt_files']={};proof['file_tiles']=proof['file_tiles'][:1]
+        tile=proof['file_tiles'][0]
+        tile['images']=[dict(alt=name,visible=True,decoded=dict(complete=True,width=1300,height=700)) for name in names[:2]]
+        tile['file_tile_witnesses']=[dict(names=names,witness=[dict(name=name,ready=True,matches=1) for name in names])]
+        retain_prepared(self.root.name,self.payload,chart,names,files,proof['rows'][0]['text'],observed_at=NOW-60)
+        proof['prepared_materials']=read_prepared(self.root.name,self.payload)
+        proof['observed_at']=NOW+300;proof['finished_at']=NOW+301
+        self.seal(envelope)
+        self.assertEqual(recover_received_analysis(self.provider,envelope,now=NOW+302),'NOEXEC')
+        self.assertTrue(received_nonexecuted(self.db,self.row('robot_candidates')))
+
+    def test_review_receipt_is_immutable_and_idempotent_for_new_technical_deadline(self):
+        original=read_reviews(self.root.name,self.payload)[0]['value']
+        request=copy.deepcopy(original['request']);request['deadline_epoch']+=10
+        result=persist_review(self.root.name,self.payload,request,original['response'],self.envelope['observation']['rows'],
+            context=self.context,observed_at=NOW-10)
+        self.assertEqual(result,original)
+        self.assertEqual(len(read_reviews(self.root.name,self.payload)),1)
+        self.assertFalse(any(path.name.endswith('.tmp') for path in Path(self.root.name).iterdir()))
+
     def test_native_provider_uses_only_existing_fixed_no_send_rpc(self):
         seen=[];self.provider._token='x'*40;self.provider.require_key=lambda:None
         self.provider.transport=lambda method,url,headers,body,timeout:(seen.append((method,url,body)) or (200,{},self.envelope))

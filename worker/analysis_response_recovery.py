@@ -167,14 +167,19 @@ def _material(proof,payload,provider,created):
 
 def _approval(proof,payload,context_sha,output):
     """A current raw reply cannot invent a missing prior model decision."""
-    from agent.dialogue_service import RESULT_FIELDS, validate_result
+    result_fields={'schema_version','ok','request_id','conversation_id','phase','reply_sha256',
+        'authority','trading_authority','decision','needs_followup','reason'}
     final=proof['rows'][-1];reply_sha=sha(final['text'])
     for entry in proof.get('review_receipts',[]):
         value=_entry(entry)
         if value.get('reply_sha256')!=reply_sha:continue
-        result=value.get('response'); need(type(result) is dict and set(result)==RESULT_FIELDS)
-        validate_result(result,value['request'])
-        request_id=value['request_id']
+        result=value.get('response'); need(type(result) is dict and set(result)==result_fields)
+        request=value.get('request');request_id=value['request_id']
+        need(type(request) is dict and request.get('request_id')==request_id
+            and request.get('phase')=='ANALYSIS' and request.get('conversation_id')==value['conversation_id']
+            and request.get('reply')==final['text'] and request.get('reply_sha256')==reply_sha
+            and type(request.get('market_context')) is dict
+            and request['market_context'].get('symbol')==payload['context']['symbol'])
         need(value.get('kind')=='NATIVE_ANALYSIS_MINI_REVIEW_V1' and value.get('schema_version')==1
             and value['operation']==payload['operation'] and value['request_sha256']==payload['request_sha256']
             and value['payload_sha256']==digest(payload) and value['context_sha256']==context_sha
@@ -183,10 +188,12 @@ def _approval(proof,payload,context_sha,output):
             and request_id==digest(dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
                 reply_sha256=reply_sha,phase='ANALYSIS',transcript_sha256=value['transcript_sha256']))
             and finite(value['observed_at']) and value['observed_at']<=proof['finished_at'])
-        need(result['schema_version']==1 and result['ok'] is True and result['request_id']==request_id
+        need(type(result['schema_version']) is int and result['schema_version']==1 and result['ok'] is True and result['request_id']==request_id
             and result['conversation_id']==value['conversation_id'] and result['phase']=='ANALYSIS'
             and result['reply_sha256']==reply_sha and result['authority']=='DIALOGUE_CONTROL_ONLY'
             and result['trading_authority'] is False and result['needs_followup'] is False
+            and result['reason']=='DIALOGUE_DECISION'
+            and type(result['decision']) is dict and set(result['decision'])=={'action','symbols','question'}
             and result['decision']['action']==('HOLD' if output['side']=='HOLD' else 'COMPLETE')
             and result['decision']['question']==''
             and result['decision']['symbols'] in ([],[payload['context']['symbol']]))
