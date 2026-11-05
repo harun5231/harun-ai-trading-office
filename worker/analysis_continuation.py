@@ -143,7 +143,7 @@ def _observation_semantics(proof):
         native_source_sha256=proof['native_source_sha256'],
         room={key:proof['room'][key] for key in ('day','room_id','url')},
         rows=[digest({key:value for key,value in row.items() if key!='attachments'}) for row in proof['rows']],
-        row_offset=proof['row_offset'],rendered_prompt_receipt=proof['rendered_prompt_receipt'],
+        rendered_prompt_receipt=proof['rendered_prompt_receipt'],
         receipt_files=proof['receipt_files'])
 
 

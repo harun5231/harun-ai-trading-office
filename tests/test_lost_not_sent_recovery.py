@@ -19,7 +19,7 @@ class LostNotSentRecoveryTests(unittest.TestCase):
         self.addCleanup(self.f.doCleanups);self.f.setUp()
         self.db,self.provider=self.f.db,self.f.provider
         self.envelope=copy.deepcopy(self.f.envelope)
-        self.envelope['observation']['row_offset']=0
+        self.envelope['observation']['row_offset']=99
         prefix=sha(wire({key:self.f.f.payload[key]for key in('operation','request_sha256')}))[:16]
         self.envelope['capture_name']='received-analysis-observation-'+prefix+'-'+self.envelope['capture_sha256']+'.json'
         self.f.f.seal(self.envelope)
@@ -73,6 +73,22 @@ class LostNotSentRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(Review,'ANALYSIS_CONTINUATION_CLOSURE_ALREADY_CONSUMED'):
             recover_lost_not_sent(self.provider,early,now=NOW+105)
         self.assertEqual(active_grant(self.db,OP)['state'],'UNKNOWN')
+
+    def test_partial_history_prefix_offset_changes_but_owned_native_identity_must_match(self):
+        # Reloading fewer earlier room rows changes the unrelated prefix count.
+        reloaded=copy.deepcopy(self.fresh)
+        self.assertEqual(reloaded['observation']['row_offset'],99)
+        reloaded['observation']['row_offset']=0
+        self.f.f.seal(reloaded)
+        self.assertEqual(digest(_observation_semantics(reloaded['observation'])),
+            self.fresh['observation']['continuation_not_sent']['source_semantics_sha256'])
+        foreign=copy.deepcopy(reloaded)
+        foreign['observation']['rows'][-1]['id']='another-native-owned-message'
+        self.f.f.seal(foreign)
+        with self.assertRaises(Review):recover_lost_not_sent(self.provider,foreign,now=NOW+1001)
+        self.assertEqual(active_grant(self.db,OP)['state'],'UNKNOWN')
+        self.assertTrue(recover_lost_not_sent(self.provider,reloaded,now=NOW+1001))
+        self.assertEqual(active_grant(self.db,OP)['state'],'NOT_SENT')
 
     def test_missing_latest_closure_or_no_receipt_never_infers_unsent(self):
         envelope=copy.deepcopy(self.fresh);envelope['observation']['continuation_not_sent']=None;self.f.f.seal(envelope)
