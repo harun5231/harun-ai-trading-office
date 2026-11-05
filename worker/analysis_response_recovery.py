@@ -201,12 +201,25 @@ def _approval(proof,payload,context_sha,output):
         need(type(result['schema_version']) is int and result['schema_version']==1 and result['ok'] is True and result['request_id']==request_id
             and result['conversation_id']==value['conversation_id'] and result['phase']=='ANALYSIS'
             and result['reply_sha256']==reply_sha and result['authority']=='DIALOGUE_CONTROL_ONLY'
-            and result['trading_authority'] is False and result['needs_followup'] is False
+            and result['trading_authority'] is False and type(result['needs_followup']) is bool
             and result['reason']=='DIALOGUE_DECISION'
             and type(result['decision']) is dict and set(result['decision'])=={'action','symbols','question'}
-            and result['decision']['action']==('HOLD' if output['side']=='HOLD' else 'COMPLETE')
-            and result['decision']['question']==''
+            and result['decision']['action'] in ('HOLD','COMPLETE','CLARIFY')
+            and type(result['decision']['question']) is str and len(result['decision']['question'])<=1600
             and result['decision']['symbols'] in ([],[payload['context']['symbol']]))
+        action=result['decision']['action'];question=result['decision']['question']
+        need(result['needs_followup'] is (action=='CLARIFY')
+            and (bool(question.strip()) if action=='CLARIFY' else question==''))
+        if action=='CLARIFY':
+            # Mirror the existing native hook's clear_market_hold policy. The
+            # actual Mini CLARIFY action/question remain immutable; a present
+            # unconditional author HOLD needs no speculative sizing discussion.
+            from agent.neurobro_reply import coin_block
+            return (output['side']=='HOLD' and not re.search(
+                r'\b(?:jika|apabila|bersyarat|alternatif|skenario)\b',
+                coin_block(final['text'],payload['context']['symbol']),re.I))
+        need(action==('HOLD' if output['side']=='HOLD' else 'COMPLETE'),
+            'NEUROBRO_DECISION_CONFLICT')
         return True
     return False
 
@@ -275,7 +288,12 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False,
         # remain mandatory even when the final answer needs clarification.
         if reason is None:
             setup(output,payload['context']['symbol'],require_declared_rr=False,require_gross_rr=False)
-            if not _approval(reviewed,payload,context_sha,output):reason='ANALYSIS_MINI_APPROVAL_NOT_RETAINED'
+            try:approved=_approval(reviewed,payload,context_sha,output)
+            except Review as error:
+                if str(error)!='NEUROBRO_DECISION_CONFLICT':raise
+                reason='NEUROBRO_DECISION_CONFLICT'
+            else:
+                if not approved:reason='ANALYSIS_MINI_APPROVAL_NOT_RETAINED'
         need(reason in {'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
             'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
             'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',

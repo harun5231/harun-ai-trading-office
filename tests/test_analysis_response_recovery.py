@@ -77,7 +77,7 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         proof=envelope['observation'];raw=wire(proof)
         envelope.update(observation_sha256=sha(raw),observation_bytes=len(raw.encode()))
         return envelope
-    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None):
+    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None,mini_decision=None):
         check=NOW-60;observed=NOW+300 if stale else NOW-10
         url='https://app.neurobro.ai/chat/'+'a'*32
         initial=[dict(source='BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT',symbol='BTCUSDT',timeframe=tf,
@@ -124,10 +124,10 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
             request=dict(schema_version=1,request_id=request_id,conversation_id='neurobro:'+DAY+':'+'a'*32,
                 phase='ANALYSIS',reply=reply,reply_sha256=reply_sha,market_context={'symbol':'BTCUSDT'},
                 gate=dict(robot_on=True,native_dispatch_verified=True),deadline_epoch=NOW+50)
+            decision=mini_decision or dict(action='HOLD' if 'ARAH: HOLD' in reply else 'COMPLETE',symbols=['BTCUSDT'],question='')
             response=dict(schema_version=1,ok=True,request_id=request_id,conversation_id=request['conversation_id'],phase='ANALYSIS',
                 reply_sha256=reply_sha,authority='DIALOGUE_CONTROL_ONLY',trading_authority=False,
-                decision=dict(action='HOLD' if 'ARAH: HOLD' in reply else 'COMPLETE',symbols=['BTCUSDT'],question=''),
-                needs_followup=False,reason='DIALOGUE_DECISION')
+                decision=decision,needs_followup=decision['action']=='CLARIFY',reason='DIALOGUE_DECISION')
             persist_review(self.root.name,self.payload,request,response,rows,context=self.context,observed_at=NOW-20 if reviewed_at is None else reviewed_at)
             proof['review_receipts']=read_reviews(self.root.name,self.payload)
         return self.seal(dict(kind=KIND,operation=OP,request_sha256=self.request_hash,
@@ -382,6 +382,52 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
             recover_received_analysis(self.provider,self.envelope,now=NOW)
         self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
         self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+
+    def test_clear_hold_retains_mini_clarify_without_another_size_discussion(self):
+        reply='COIN: BTCUSDT\nARAH: HOLD\nHarga di dalam range; entry belum valid.'
+        decision=dict(action='CLARIFY',symbols=['BTCUSDT'],question='Apakah ada setup entry selanjutnya?')
+        self.envelope=self.fixture(reply=reply,mini_decision=decision)
+        original=copy.deepcopy(self.envelope['observation']['review_receipts'])
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW),'RESUME_CACHED')
+        self.assertEqual(self.envelope['observation']['review_receipts'],original)
+        self.assertEqual(next(item['value']['response']['decision']for item in original
+            if item['value']['reply_sha256']==sha(reply)),decision)
+        self.assertEqual(self.row('api_requests')['state'],'COMPLETE')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
+    def test_same_identity_complete_for_authored_hold_is_repairable_conflict(self):
+        self.envelope=self.fixture(reply='COIN: BTCUSDT\nARAH: HOLD\nKeputusan pasar terkini.',
+            mini_decision=dict(action='COMPLETE',symbols=['BTCUSDT'],question=''))
+        basis=validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW,repair=True)
+        self.assertEqual(basis['reason'],'NEUROBRO_DECISION_CONFLICT')
+        with self.assertRaisesRegex(Review,'NEUROBRO_DECISION_CONFLICT'):
+            recover_received_analysis(self.provider,self.envelope,now=NOW)
+        self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
+        self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+
+    def test_conditional_hold_with_mini_clarify_still_needs_discussion(self):
+        self.envelope=self.fixture(reply='COIN: BTCUSDT\nARAH: HOLD\nJika kondisi berubah, skenario perlu dikonfirmasi.',
+            mini_decision=dict(action='CLARIFY',symbols=['BTCUSDT'],question='Mohon perjelas skenario saat ini?'))
+        with self.assertRaisesRegex(Review,'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'):
+            recover_received_analysis(self.provider,self.envelope,now=NOW)
+        self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+
+    def test_actual_xrp_inline_hold_uses_existing_clear_market_hold_review_policy(self):
+        from agent.neurobro_reply import parse_analysis_reply
+        reply=(ROOT/'tests/fixtures/neurobro_xrp_flattened_hold_20261105.txt').read_text()
+        self.assertEqual(parse_analysis_reply(reply,'XRPUSDT')['side'],'HOLD')
+        # The isolated account fixture uses BTC; preserve the actual reply form
+        # while rebinding only the test symbol to its own immutable request.
+        reply=reply.replace('XRPUSDT','BTCUSDT')
+        decision=dict(action='CLARIFY',symbols=['BTCUSDT'],question='Mohon rekomendasi sebagai bahan diskusi?')
+        self.envelope=self.fixture(reply=reply,mini_decision=decision)
+        original=copy.deepcopy(next(item['value']['response']for item in self.envelope['observation']['review_receipts']
+            if item['value']['reply_sha256']==sha(reply)))
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW),'RESUME_CACHED')
+        self.assertEqual(next(item['value']['response']for item in self.envelope['observation']['review_receipts']
+            if item['value']['reply_sha256']==sha(reply)),original)
+        self.assertEqual(original['decision']['action'],'CLARIFY')
+        self.assertTrue(original['needs_followup'])
 
     def test_native_provider_uses_only_existing_fixed_no_send_rpc(self):
         seen=[];self.provider._token='x'*40;self.provider.require_key=lambda:None
