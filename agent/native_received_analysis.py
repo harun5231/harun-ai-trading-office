@@ -16,7 +16,7 @@ import stat
 import threading
 import time
 
-from .native_daily_room import DailyRoom
+from .native_daily_room import DailyRoom, identities
 from .native_file_upload import FILE_WITNESS
 from .native_chart_followup import _directory, _private_file, pairs
 
@@ -141,6 +141,19 @@ def _receipts(root, payload):
         os.close(parent)
 
 
+def _image_observation(image):
+    value = dict(alt=image.get_attribute('alt'), visible=image.is_visible(),
+        decoded=image.evaluate('(image) => ({complete:image.complete, '
+            'width:image.naturalWidth,height:image.naturalHeight})'))
+    # Ordinary public loading attributes help explain a pending image. Never
+    # retain src/currentSrc or signed image URLs in this observation.
+    for name, allowed in (('loading', {'lazy', 'eager', 'auto'}),
+            ('decoding', {'sync', 'async', 'auto'}), ('fetchpriority', {'high', 'low', 'auto'})):
+        observed = image.get_attribute(name)
+        value[name] = observed if observed is None or observed in allowed else 'OTHER'
+    return value
+
+
 def _file_tiles(room, raw, native, rows, receipt_files, *, prepared=(), indices=None):
     groups = []
     for entry in receipt_files.values():
@@ -160,14 +173,105 @@ def _file_tiles(room, raw, native, rows, receipt_files, *, prepared=(), indices=
         actual = []
         for number in range(images.count()):
             image = images.nth(number)
-            actual.append(dict(alt=image.get_attribute('alt'), visible=image.is_visible(),
-                decoded=image.evaluate('(image) => ({complete:image.complete, '
-                    'width:image.naturalWidth,height:image.naturalHeight})')))
+            actual.append(_image_observation(image))
         witnesses = [dict(names=names, witness=node.evaluate(FILE_WITNESS,
             dict(names=names, bodySelector=native.USER_BODY))) for names in groups]
         output.append(dict(row=index, prompt_sha256=text_sha(row['text']), images=actual,
                            file_tile_witnesses=witnesses))
     return output
+
+
+def _materialize_images(actor, room, raw, native, capture, selected):
+    """Load only owned pending PNGs through ordinary visible UI scrolling.
+
+    The full pre-action capture is immutable before the first scroll. A decoded
+    image is accepted only after a real DOM read; text, IDs, footer completion,
+    room and owner-thread authority must survive every action and wait.
+    """
+    rows = capture['rows']; expected = identities(rows); url = capture['page_url']
+    pending = []
+    for tile in capture['file_tiles']:
+        if tile['row'] not in selected: continue
+        images = tile['images']
+        if len(images) != 2: continue
+        actual_names = [image['alt'] for image in images]
+        groups = [group for group in tile['file_tile_witnesses']
+            if len(group['names']) == 4 and len(set(group['names'])) == 4
+            and set(actual_names) == set(group['names'][:2])
+            and len(group['witness']) == 4
+            and all(item.get('name') == name and item.get('matches') == 1
+                for item, name in zip(group['witness'], group['names']))]
+        if len({tuple(group['names']) for group in groups}) != 1: continue
+        for image in images:
+            state = image['decoded']
+            if (image['visible'] is True and state.get('complete') is False
+                    and state.get('width') == 0 and state.get('height') == 0):
+                pending.append((tile['row'], image['alt']))
+    if not pending:
+        return rows
+    until = min(raw.operation_deadline, raw.clock() + 8)
+    capture['image_materialization'] = dict(kind='OWNED_PNG_UI_MATERIALIZATION_V1',
+        sends=0, uploads=0, requested=len(pending), actions=[])
+
+    def check():
+        _gate(actor)
+        need(raw.clock() < until, 'RECEIVED_ANALYSIS_IMAGE_DECODE_PENDING')
+        need(raw.page.url == url, 'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+        status = raw.status(maintenance_allowed=lambda: False)
+        capture['status'] = status
+        capture['session_observation'] = copy.deepcopy(raw.session_observation())
+        need(status == 'CONNECTED', 'RECEIVED_ANALYSIS_BROWSER_NOT_READY')
+        need(raw.clock() < until, 'RECEIVED_ANALYSIS_IMAGE_DECODE_PENDING')
+        observed = room.full_turns()
+        need(identities(observed) == expected and raw.page.url == url,
+            'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+        need(raw.clock() < until, 'RECEIVED_ANALYSIS_IMAGE_DECODE_PENDING')
+        return observed
+
+    def locate(index, name):
+        nodes = room.original_visible(native.MESSAGE)
+        need(len(nodes) == len(rows), 'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+        images = nodes[index].locator('img')
+        need(images.count() == 2, 'RECEIVED_ANALYSIS_IMAGE_IDENTITY_CHANGED')
+        matched = [images.nth(i) for i in range(2) if images.nth(i).get_attribute('alt') == name]
+        need(len(matched) == 1 and matched[0].is_visible(), 'RECEIVED_ANALYSIS_IMAGE_IDENTITY_CHANGED')
+        return matched[0]
+
+    capture['stage'] = 'BEFORE_IMAGE_MATERIALIZATION'
+    check(); _save(room.store.root, capture)
+    for index, name in pending:
+        check(); image = locate(index, name)
+        event = dict(global_row=index, name=name, scroll_attempted=True, decoded=False)
+        capture['image_materialization']['actions'].append(event)
+        # Persist the exact intended UI action too, before it can happen.
+        _save(room.store.root, capture)
+        check()
+        image.scroll_into_view_if_needed(timeout=max(1, min(1500, int((until-raw.clock())*1000))))
+        event['scroll_dispatched'] = True
+        check()
+        image_until = min(until, raw.clock() + 2)
+        while True:
+            check(); image = locate(index, name)
+            event['last_observation'] = _image_observation(image)
+            decoded = event['last_observation']['decoded']
+            need(raw.clock() <= image_until, 'RECEIVED_ANALYSIS_IMAGE_DECODE_PENDING')
+            need(type(decoded) is dict and type(decoded.get('width')) is int
+                and type(decoded.get('height')) is int, 'RECEIVED_ANALYSIS_IMAGE_IDENTITY_CHANGED')
+            if decoded.get('complete') is True and decoded['width'] > 0 and decoded['height'] > 0:
+                event.update(decoded=True, dimensions=[decoded['width'], decoded['height']])
+                break
+            need(decoded.get('complete') is False and decoded['width'] == decoded['height'] == 0,
+                'RECEIVED_ANALYSIS_IMAGE_DECODE_FAILED')
+            need(raw.clock() < image_until, 'RECEIVED_ANALYSIS_IMAGE_DECODE_PENDING')
+            raw.page.wait_for_timeout(min(100, max(1, int((image_until-raw.clock())*1000))))
+            check()
+    observed = check()
+    capture['rows'] = observed
+    capture['stage'] = 'AFTER_IMAGE_MATERIALIZATION'
+    capture['file_tiles'] = _file_tiles(room, raw, native, observed, capture['receipt_files'],
+        prepared=capture.get('prepared_materials', ()), indices=selected)
+    _save(room.store.root, capture)
+    return observed
 
 
 def _room_witness(record, rows, raw, root, cached, receipts, *, payload=None, generic=False):
@@ -300,6 +404,9 @@ def observe(actor, delegated, value):
             selected = scope['user_rows'] if scope is not None else None
             capture['file_tiles'] = _file_tiles(room, raw, native, rows, capture['receipt_files'],
                 prepared=capture.get('prepared_materials',()),indices=selected)
+            if (generic and capture['status'] == 'CONNECTED' and scope.get('verified') is True
+                    and scope.get('reply_complete') is True):
+                rows = _materialize_images(actor, room, raw, native, capture, selected)
             capture['in_process_data_file_deliveries'] = copy.deepcopy(getattr(raw, 'data_file_deliveries', []))
             if not generic:
                 capture['room_witness'] = _room_witness(record, rows, raw, room.store.root, cached, capture['receipt_files'])
