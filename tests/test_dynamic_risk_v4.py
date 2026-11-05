@@ -1,6 +1,8 @@
 import copy
+import json
 from dataclasses import asdict, replace, fields
 from fractions import Fraction as F
+from pathlib import Path
 import time
 import unittest
 from unittest.mock import patch
@@ -9,7 +11,7 @@ from worker.core import (D, Review, Signal, Rules, DynamicRules, FEE_SOURCE,
     RISK_MODEL, DYNAMIC_RISK_MODEL, DYNAMIC_REWARD_RISK_POLICY,
     risk_check, maximum_risk_quantity, preflight, validate_normalized_plan, verified_rr)
 from worker.dynamic_risk import (COST_SOURCE, BRACKET_SOURCE, costs, estimate_existing,
-    leverage_for, market_evidence, book_impact, MODEL)
+    leverage_for, market_evidence, book_impact, MODEL, plan as dynamic_plan)
 
 
 class DynamicOwnerRiskTests(unittest.TestCase):
@@ -163,6 +165,53 @@ class DynamicOwnerRiskTests(unittest.TestCase):
             self.assertEqual(plans[0]['quantity'],plans[1]['quantity'])
             self.assertEqual(plans[0]['tp'],plans[1]['tp'])
             self.assertEqual([p['neurobro_tp']for p in plans],list(tps))
+
+    def test_observed_inj_maximum_lot_and_cost_components_remain_unchanged(self):
+        fixture=json.loads((Path(__file__).parent/'fixtures'/'inj_v4_risk_summary_20261105.json').read_text())
+        summary=fixture['market_summary'];observed=fixture['observed_plan']
+        book={side:[tuple(F(D(v))for v in row)for row in summary[side+'_first_two']]
+            for side in('bids','asks')}
+        evidence=dict(raw=summary,book=book,closing_side='SELL',
+            midpoint=(book['bids'][0][0]+book['asks'][0][0])/2,
+            uncertainty=F(D(summary['future_liquidity_uncertainty_rate'])),
+            move_reserve=F(D(summary['price_move_q95_rate'])),execution_reserve=F(0),
+            price_move_count=200,execution_sample_count=0,horizons=[900.0])
+        brackets=dict(schema_version=1,symbol='INJUSDT',source=BRACKET_SOURCE,
+            observed_at=fixture['bracket_observed_at'],brackets=[
+                dict(notional_floor='0',notional_cap='10000',max_leverage=75)])
+        rules=DynamicRules(D('.1'),D('.1'),D('500000'),D('.001'),D('5'),
+            fixture['rules_observed_at'],min_price=D('.001'),max_price=D('2000'),
+            taker_fee_rate=D(fixture['taker_fee_rate']),fee_observed_at=fixture['fee_observed_at'],
+            fee_symbol='INJUSDT',fee_source=FEE_SOURCE,dynamic_cost_evidence=summary,
+            leverage_brackets=brackets)
+        model=fixture['signal']
+        signal=Signal(model['symbol'],model['side'],D(model['entry']),D(model['neurobro_tp']),D(model['sl']))
+        # Raw 200-candle history is unavailable in the sanitized report. Inject
+        # its observed derived summary; do not fabricate candles to pass parsing.
+        with patch('worker.dynamic_risk.market_evidence',return_value=evidence):
+            original=dynamic_plan(signal,rules,D('5'),check_fresh=False)
+            self.assertEqual((original['entry'],original['sl'],original['neurobro_tp']),
+                ('8.26','8.18','8.48'))
+            self.assertEqual((original['quantity'],original['tp']),('27.8','8.726'))
+            for key,value in observed.items():
+                self.assertLessEqual(abs(D(original[key])-D(value)),D('0.000000000000001'))
+            self.assertEqual(original['risk'],fixture['recomputed_exact']['risk'])
+            self.assertEqual(original['net_reward'],fixture['recomputed_exact']['net_reward'])
+            next_lot=costs(signal.entry,D(original['tp']),signal.sl,D('27.9'),rules,
+                signal.side,check_fresh=False)
+            self.assertEqual(next_lot['risk'],fixture['recomputed_exact']['next_lot_risk'])
+            self.assertLess(D(original['risk']),D('5'))
+            self.assertGreater(D(next_lot['risk']),D('5'))
+            frozen=copy.deepcopy(original)
+            validate_normalized_plan(original,rules)
+            margin=copy.deepcopy(brackets)
+            margin.update(schema_version=2,margin=dict(
+                source='BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE',asset='USDT',
+                observed_at=fixture['bracket_observed_at'],available_balance_usdt='1000'))
+            new=dynamic_plan(signal,replace(rules,leverage_brackets=margin),D('5'),check_fresh=False)
+            for key in('entry','sl','tp','quantity','risk','net_reward','leverage'):
+                self.assertEqual(new[key],original[key])
+            self.assertEqual(original,frozen)
 
     def test_calculation_does_not_depend_on_callers_decimal_precision(self):
         from decimal import localcontext
