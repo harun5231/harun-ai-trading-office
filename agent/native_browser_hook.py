@@ -182,10 +182,35 @@ class DelegatedDOMBridge:
             raise self.native.OutcomeUnknown()
 
         def gate(*, check_material=False):
-            if (self.clock() >= until or self.bridge.status() != 'CONNECTED'
-                    or dispatch_check() is not True
-                    or state['initial_url'] is not None and self.bridge.page.url != state['initial_url']):
+            # Retain the failing predicate's actual observation. Evaluating the
+            # gate again after an UNKNOWN journal transition cannot explain why
+            # the original in-flight read stopped. Keep native short-circuit
+            # order and exactly one call to each reached predicate.
+            current = self.clock()
+            status = permission = current_url = None
+            def failed(reason):
+                state['gate_failure'] = {'reason': reason, 'clock': current,
+                    'deadline': until, 'phase': state['phase'], 'check_material': check_material,
+                    'site_status': status if isinstance(status, str) and re.fullmatch(
+                        '[A-Z][A-Z_]{0,39}', status) else None,
+                    'dispatch': None if permission is None else permission is True,
+                    'initial_url_sha256': (hashlib.sha256(state['initial_url'].encode()).hexdigest()
+                        if isinstance(state['initial_url'], str) else None),
+                    'current_url_sha256': (hashlib.sha256(current_url.encode()).hexdigest()
+                        if isinstance(current_url, str) else None)}
                 unknown()
+            if current >= until:
+                failed('DEADLINE')
+            status = self.bridge.status()
+            if status != 'CONNECTED':
+                failed('SITE_STATUS')
+            permission = dispatch_check()
+            if permission is not True:
+                failed('DISPATCH_NOT_PERMITTED')
+            if state['initial_url'] is not None:
+                current_url = self.bridge.page.url
+                if current_url != state['initial_url']:
+                    failed('CONVERSATION_URL_CHANGED')
             if check_material:
                 # Reuse the native PNG, timeframe, symbol, hash and age admission.
                 if state['fresh'] is not None:
