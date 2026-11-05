@@ -149,22 +149,67 @@ def parse_screening_reply(reply):
     final = list(_FINAL.finditer(text))
     if final:
         text = text[final[-1].end():].strip()
-    labels = re.findall(r'^\s*(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)\s*[:=]\s*([^\n]+)',
-        text, re.I | re.M)
+    labels = list(re.finditer(r'^[ \t]*(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)'
+        r'(?:[ \t]*\(([12])\))?[ \t]*[:=][ \t]*([^\n]*)$', text, re.I | re.M))
     if not labels:
         raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
     result = []
-    for label in labels:
+    for index, label in enumerate(labels):
+        count, content = label.groups()
+        if not content:
+            # The native renderer preserves table columns as tabs. Read only
+            # the explicitly labelled selection table's coin column, never
+            # pairs mentioned in its reasons, comparisons or earlier prose.
+            end = labels[index + 1].start() if index + 1 < len(labels) else len(text)
+            selected = _screening_table(text[label.end():end])
+            if count is not None and len(selected) != int(count):
+                raise ReplyIncomplete('NEUROBRO_SCREENING_COUNT_MISMATCH')
+            result.extend(selected)
+            continue
         # Do not extract pairs from comparison prose or a conditional choice.
-        if re.search(r'\b(?:dibanding|alternatif|jika|apabila|atau)\b', label, re.I):
+        if re.search(r'\b(?:dibanding|alternatif|jika|apabila|atau)\b', content, re.I):
             raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
-        pairs = [symbol(match.group(1)) for match in _PAIR.finditer(label)]
+        pairs = [symbol(match.group(1)) for match in _PAIR.finditer(content)]
         if not pairs:
             raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
+        if count is not None and len(pairs) != int(count):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_COUNT_MISMATCH')
         result.extend(pairs)
     if not 1 <= len(result) <= 2 or len(result) != len(set(result)):
         raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
     return {'symbols': result}
+
+
+def _screening_table(block):
+    lines = block.strip().splitlines()
+    if not lines:
+        raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
+
+    def cells(line):
+        return [cell.strip() for cell in re.split(r'\t|\|', line.strip().strip('|'))]
+
+    if cells(lines[0])[0].upper() not in {'COIN', 'KOIN', 'SYMBOL', 'SIMBOL'}:
+        raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
+    selected = []
+    for line in lines[1:]:
+        if not line.strip():
+            break  # A later paragraph is not another selection-table row.
+        row = cells(line)
+        if all(re.fullmatch(r':?-{3,}:?', cell) for cell in row):
+            continue  # Markdown separator; the native DOM renderer omits it.
+        value = row[0]
+        match = re.fullmatch(r'(?:\$([A-Z0-9]{2,20})[ \t]+\((' + PAIR
+            + r')\)|(' + PAIR + r'))', value, re.I)
+        if match is None:
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        base, named, direct = match.groups()
+        choice = symbol(named or direct)
+        if base is not None and base.upper() + 'USDT' != choice:
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        selected.append(choice)
+    if not selected:
+        raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
+    return selected
 
 
 def parse_pending_reply(reply, requested):

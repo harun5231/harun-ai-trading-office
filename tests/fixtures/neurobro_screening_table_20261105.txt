@@ -1,0 +1,19 @@
+Dari hasil scan alpha + futures, dua nama mid-cap yang paling layak buat scalping di Binance USDⓈ-M sekarang: $RUNE dan $TIA. Dua-duanya segar (belum ada di radar lo), likuid, dan punya katalis/struktur yang beda dari mayoritas pasar.
+
+RUNE - KATALIS NYATA, SHORTS MASIH BAYAR
+
+THORChain baru buka ulang 7 rute swap (BTC, ETH, Tron) dan daily fee melonjak dari $3.7K ke $140K - itu fundamental, bukan sekadar rumor. Funding Binance masih negatif (-0.09%) artinya posisi short yang nanggung bayar, sementara price naik +2% di volume $24M.
+
+TIA - SHORT SQUEEZE BARU MULAI
+
+OI Binance naik +4.46% dan likuidasi short ($122.8K) jauh di atas likuidasi long ($39.5K) - shorts lagi terpojok, funding masih moderat (+0.27%) jadi belum overcrowded. Ini kondisi ideal buat scalping long mengikuti 1h structure.
+
+Bottom line: Entry long di area pullback, TP1 dulu 60-70% posisi, sisanya lanjut ke TP2 - dua-duanya kasih R:R sekitar 1:2 net setelah fee, sesuai standar lo. Kedua setup bisa langsung dicek - dan kalau mau, lo juga bisa trading keduanya langsung di NeuroWallet.
+
+⚖️ Neurobro adalah alat riset dan bukan financial advice! Kami terus improve, tapi tetap bisa salah - yang trading dan risiko yang lo ambil, tetap keputusan lo.
+
+COIN PILIHAN (2):
+
+Coin	Alasan Singkat
+$RUNE (RUNEUSDT)	Katalis fundamental: THORChain aktif lagi, swap fee naik 38x; funding negatif = shorts bayar; entry ~0.630, SL 0.615, TP 0.655/0.685, confidence 7
+$TIA (TIAUSDT)	OI naik +4.5%, likuidasi short 3x long = squeeze; funding sehat; entry ~0.450, SL 0.438, TP 0.470/0.490, confidence 6
