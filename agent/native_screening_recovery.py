@@ -469,6 +469,9 @@ def identifier_checkpoint_verified(anchors, binding, archive_root):
 
 def recover(actor, delegated_bridge, value):
     """Existing actor-thread entry. Returns the native four-field result."""
+    from .native_received_analysis import is_observation, observe
+    if is_observation(value):
+        return observe(actor, delegated_bridge, value)
     payload, evidence = _unpack(value); _actor_gate(actor)
     need(actor.claim.locked(), 'SCREENING_RECOVERY_ACTOR_CLAIM_REQUIRED')
     need(actor.thread.ident == threading.get_ident(),
@@ -586,7 +589,9 @@ def recover(actor, delegated_bridge, value):
 
 def enqueue(actor, value):
     """Authenticated service calls this; only the existing actor touches DOM."""
-    payload, _ = _unpack(value)
+    from .native_received_analysis import is_observation, validate as validate_observation
+    observation = is_observation(value)
+    payload = validate_observation(value) if observation else _unpack(value)[0]
     native = actor._bridge.native
     if actor.stopping.is_set(): raise native.NotSubmitted('UNAVAILABLE')
     if not actor.claim.acquire(blocking=False): raise native.NotSubmitted('BUSY')
@@ -596,14 +601,20 @@ def enqueue(actor, value):
         with actor.lock:
             if actor.mode != 'AUTOMATION': raise native.NotSubmitted('BUSY')
             status, ready = actor.current_status, actor.ready
-        if status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
+        if not observation and status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
             raise native.NotSubmitted(status)
-        if not ready or status != 'CONNECTED': raise native.NotSubmitted('UNAVAILABLE')
+        if not ready or (not observation and status != 'CONNECTED'): raise native.NotSubmitted('UNAVAILABLE')
         task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
         actor.queue.put_nowait(task); queued = True; actor._wake.set()
         if not task['done'].wait(45): raise native.OutcomeUnknown()
         if 'error' in task: raise task['error']
         result = task['result']
+        if observation:
+            need(type(result) is dict and result.get('kind') == 'NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1'
+                 and result.get('operation') == payload['operation']
+                 and result.get('request_sha256') == payload['request_sha256']
+                 and result.get('operation_completed') is False)
+            return result
         need(type(result) is dict and set(result) == _RESULT)
         return {**{key: payload[key] for key in ('operation', 'marker', 'request_sha256')}, **result}
     finally:
