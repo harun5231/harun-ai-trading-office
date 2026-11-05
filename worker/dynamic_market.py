@@ -75,6 +75,26 @@ def bracket_evidence(client, symbol, *, clock=time.time):
         symbol=symbol, observed_at=clock(), brackets=brackets)
 
 
+def margin_bracket_evidence(client, symbol, *, clock=time.time):
+    """Freeze new-setup margin limits without upgrading archived bracket data."""
+    result = bracket_evidence(client, symbol, clock=clock)
+    raw = client.signed_get('/fapi/v3/account')
+    try:
+        need(type(raw) is dict and type(raw.get('availableBalance')) is str,
+            'MARGIN_EVIDENCE_UNAVAILABLE')
+        text = raw['availableBalance']
+        need(len(text) <= 64 and re.fullmatch(r'\d+(?:\.\d+)?', text),
+            'INVALID_MARGIN_EVIDENCE')
+        available = D(text)
+        need(available.is_finite() and available >= 0, 'INVALID_MARGIN_EVIDENCE')
+    except (TypeError, ValueError, InvalidOperation):
+        raise Review('INVALID_MARGIN_EVIDENCE') from None
+    result['schema_version'] = 2
+    result['margin'] = dict(source='BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE',
+        asset='USDT', observed_at=clock(), available_balance_usdt=format(available, 'f'))
+    return result
+
+
 def execution_samples(db, symbol):
     if db is None:
         return []
@@ -89,7 +109,8 @@ def execution_samples(db, symbol):
         (symbol,))]
 
 
-def dynamic_rules(market, symbol, rules, context, client, *, db=None, clock=time.time):
+def dynamic_rules(market, symbol, rules, context, client, *, db=None, clock=time.time,
+        margin_sizing=True):
     """Refresh book and account brackets before calculating a new setup."""
     need(context.get('symbol') == symbol, 'MARKET_CONTEXT_MISMATCH')
     book = market.depth(symbol)
@@ -102,8 +123,10 @@ def dynamic_rules(market, symbol, rules, context, client, *, db=None, clock=time
         symbol=symbol, observed_at=observed, bids=book['bids'], asks=book['asks'],
         price_moves=closed_moves(context), execution_samples=execution_samples(db, symbol))
     values = {f.name: getattr(rules, f.name) for f in fields(Rules)}
+    brackets = (margin_bracket_evidence if margin_sizing else bracket_evidence)(
+        client, symbol, clock=clock)
     return DynamicRules(**values, dynamic_cost_evidence=evidence,
-        leverage_brackets=bracket_evidence(client, symbol, clock=clock))
+        leverage_brackets=brackets)
 
 
 def record_execution(db, *, symbol, side, order_id, execution_id, filled_at,

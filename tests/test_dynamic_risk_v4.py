@@ -75,14 +75,104 @@ class DynamicOwnerRiskTests(unittest.TestCase):
         changed=copy.deepcopy(rules.leverage_brackets);changed['account_max_leverage']=10
         self.assertEqual(self.plan(rules=replace(rules,leverage_brackets=changed))['leverage'],10)
 
+    def margin_rules(self, available='1000', brackets=None, **changes):
+        rules=self.rules(**changes)
+        account=copy.deepcopy(rules.leverage_brackets)
+        account.update(schema_version=2,margin=dict(
+            source='BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE',asset='USDT',
+            observed_at=account['observed_at'],available_balance_usdt=available))
+        if brackets is not None:account['brackets']=brackets
+        return replace(rules,leverage_brackets=account)
+
+    def test_margin_limited_quantity_is_largest_legal_lot_and_tp_keeps_nominal_target(self):
+        for side in ('LONG','SHORT'):
+            with self.subTest(side=side):
+                rules=self.margin_rules('2');p=self.plan(side,rules=rules)
+                q=F(D(p['quantity']));entry=F(D(p['entry']));fee=F(rules.taker_fee_rate)
+                required=lambda amount:amount*entry/F(p['leverage'])+amount*entry*fee
+                self.assertLessEqual(required(q),F(2))
+                self.assertGreater(required(q+F(rules.step)),F(2))
+                self.assertLess(D(p['risk']),D('5'))
+                self.assertEqual(p['target_net_reward_usdt'],'10')
+                self.assertEqual((p['entry'],p['sl']),('100','99'if side=='LONG'else'101'))
+                validate_normalized_plan(p,rules);preflight(p,rules)
+
+    def test_account_notional_cap_and_tier_margin_choose_global_maximum(self):
+        for tiers,available,expected in (([
+                dict(notional_floor='0',notional_cap='200',max_leverage=75)],'1000','1.99'),
+                ([dict(notional_floor='0',notional_cap='200',max_leverage=75),
+                dict(notional_floor='200',notional_cap='100000',max_leverage=20)],'5','1.99'),
+                ([dict(notional_floor='0',notional_cap='100',max_leverage=1),
+                dict(notional_floor='100',notional_cap='100000',max_leverage=75)],'2','1.44')):
+            with self.subTest(tiers=tiers,available=available):
+                rules=self.margin_rules(available,brackets=tiers)
+                p=self.plan(rules=rules)
+                self.assertEqual(p['quantity'],expected)
+                self.assertLessEqual(D(p['risk']),D('5'))
+                validate_normalized_plan(p,rules)
+
+    def test_new_margin_evidence_is_required_fresh_and_can_prevent_a_legal_order(self):
+        rules=self.margin_rules('0')
+        with self.assertRaisesRegex(Review,'NO_LEGAL_MAX_RISK_QUANTITY'):
+            self.plan(rules=rules)
+        rules=self.margin_rules('2',min_notional=D('200'))
+        with self.assertRaisesRegex(Review,'NO_LEGAL_MAX_RISK_QUANTITY'):
+            self.plan(rules=rules)
+        rules=self.margin_rules('2');bad=copy.deepcopy(rules.leverage_brackets)
+        bad['margin']['observed_at']-=301
+        with self.assertRaisesRegex(Review,'STALE_MARGIN_EVIDENCE'):
+            self.plan(rules=replace(rules,leverage_brackets=bad))
+        bad=copy.deepcopy(rules.leverage_brackets);bad.pop('margin')
+        with self.assertRaisesRegex(Review,'MARGIN_EVIDENCE_UNAVAILABLE'):
+            self.plan(rules=replace(rules,leverage_brackets=bad))
+
+    def test_account_leverage_cap_limits_quantity_using_fees_and_exact_margin(self):
+        rules=self.margin_rules('2');account=copy.deepcopy(rules.leverage_brackets)
+        account['account_max_leverage']=10
+        p=self.plan(rules=replace(rules,leverage_brackets=account))
+        self.assertEqual(p['leverage'],10)
+        self.assertEqual(p['quantity'],'0.19')
+
+    def test_missing_depth_only_blocks_if_a_larger_account_legal_lot_could_fit_risk(self):
+        tiers=[dict(notional_floor='0',notional_cap='100',max_leverage=75),
+            dict(notional_floor='100',notional_cap='200',max_leverage=1),
+            dict(notional_floor='200',notional_cap='100000',max_leverage=75)]
+        rules=self.margin_rules('3',brackets=tiers)
+        evidence=copy.deepcopy(rules.dynamic_cost_evidence)
+        evidence['bids']=[['99.99','1.5']]
+        rules=replace(rules,dynamic_cost_evidence=evidence)
+        p=risk_check(Signal('ETHUSDT','LONG',D('100'),D('100.5'),D('97')),rules,
+            risk_model=MODEL)
+        # Every legal lot above .99 is at least 2 units, whose price loss alone
+        # exceeds R. The observed book therefore proves .99 is the legal maximum.
+        self.assertEqual(p['quantity'],'0.99')
+        with self.assertRaisesRegex(Review,'SLIPPAGE_DEPTH_INSUFFICIENT'):
+            self.plan(rules=rules)
+
+    def test_legacy_v4_plan_uses_its_frozen_schema_without_new_margin_arithmetic(self):
+        rules=self.rules();old=self.plan(rules=rules);frozen=copy.deepcopy(old)
+        constrained=self.plan(rules=self.margin_rules('2'))
+        self.assertGreater(D(old['quantity']),D(constrained['quantity']))
+        validate_normalized_plan(old,rules);preflight(old,rules)
+        self.assertEqual(old,frozen)
+
+    def test_new_margin_policy_normalizes_both_above_and_below_neurobro_tp(self):
+        rules=self.margin_rules()
+        for side,tps in (('LONG',('100.01','120')),('SHORT',('99.99','80'))):
+            plans=[self.plan(side,tp=tp,rules=rules)for tp in tps]
+            self.assertEqual(plans[0]['quantity'],plans[1]['quantity'])
+            self.assertEqual(plans[0]['tp'],plans[1]['tp'])
+            self.assertEqual([p['neurobro_tp']for p in plans],list(tps))
+
     def test_calculation_does_not_depend_on_callers_decimal_precision(self):
         from decimal import localcontext
-        rules=self.rules();expected=self.plan(rules=rules)
-        with localcontext() as context:
-            context.prec=3
-            actual=self.plan(rules=rules)
-            validate_normalized_plan(actual,rules)
-        self.assertEqual(actual,expected)
+        for rules in (self.rules(),self.margin_rules('2')):
+            expected=self.plan(rules=rules)
+            with localcontext() as context:
+                context.prec=3
+                actual=self.plan(rules=rules)
+                validate_normalized_plan(actual,rules)
+            self.assertEqual(actual,expected)
 
     def test_close_side_uses_correct_book_and_adverse_price_direction(self):
         rules=self.rules();long=self.plan('LONG',rules=rules);short=self.plan('SHORT',rules=rules)
