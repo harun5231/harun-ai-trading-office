@@ -353,6 +353,36 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(len(read_reviews(self.root.name,self.payload)),1)
         self.assertFalse(any(path.name.endswith('.tmp') for path in Path(self.root.name).iterdir()))
 
+    def retain_older_identical_reply_review(self):
+        current=self.envelope['observation']['review_receipts'][0]['value']
+        turns=copy.deepcopy(self.envelope['observation']['rows'])
+        turns[-1]['id']='older-native-message-id'
+        context=native_context_200(NOW-101)
+        request=copy.deepcopy(current['request'])
+        request['request_id']=digest(dict(operation=OP,request_sha256=self.request_hash,
+            reply_sha256=request['reply_sha256'],phase='ANALYSIS',transcript_sha256=digest(turns)))
+        response=copy.deepcopy(current['response']);response['request_id']=request['request_id']
+        persist_review(self.root.name,self.payload,request,response,turns,context=context,observed_at=NOW-30)
+        return next(entry for entry in read_reviews(self.root.name,self.payload)
+            if entry['value']['request_id']==request['request_id'])
+
+    def test_identical_reply_reviews_select_only_current_transcript_context_identity(self):
+        old=self.retain_older_identical_reply_review()
+        current=self.envelope['observation']['review_receipts'][0]
+        self.envelope['observation']['review_receipts']=[old,current]
+        self.seal(self.envelope)
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW),'RESUME_CACHED')
+        self.assertEqual(self.row('api_requests')['state'],'COMPLETE')
+        self.assertEqual(len(read_reviews(self.root.name,self.payload)),2)
+
+    def test_older_identical_reply_does_not_become_current_approval(self):
+        self.envelope['observation']['review_receipts']=[self.retain_older_identical_reply_review()]
+        self.seal(self.envelope)
+        with self.assertRaisesRegex(Review,'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'):
+            recover_received_analysis(self.provider,self.envelope,now=NOW)
+        self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
+        self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+
     def test_native_provider_uses_only_existing_fixed_no_send_rpc(self):
         seen=[];self.provider._token='x'*40;self.provider.require_key=lambda:None
         self.provider.transport=lambda method,url,headers,body,timeout:(seen.append((method,url,body)) or (200,{},self.envelope))

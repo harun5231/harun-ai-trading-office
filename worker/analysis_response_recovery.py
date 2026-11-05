@@ -170,9 +170,19 @@ def _approval(proof,payload,context_sha,output):
     result_fields={'schema_version','ok','request_id','conversation_id','phase','reply_sha256',
         'authority','trading_authority','decision','needs_followup','reason'}
     final=proof['rows'][-1];reply_sha=sha(final['text'])
+    transcript_sha=digest(proof['rows'])
+    expected_id=digest(dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
+        reply_sha256=reply_sha,phase='ANALYSIS',transcript_sha256=transcript_sha))
+    identity=dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
+        payload_sha256=digest(payload),context_sha256=context_sha,phase='ANALYSIS',
+        conversation_id='neurobro:'+proof['room']['day']+':'+proof['room']['room_id'],
+        transcript_sha256=transcript_sha,request_id=expected_id,reply_sha256=reply_sha)
     for entry in proof.get('review_receipts',[]):
         value=_entry(entry)
-        if value.get('reply_sha256')!=reply_sha:continue
+        # Identical authored text can occur in several actual dialogue turns.
+        # A valid historical review of another transcript/context is not the
+        # current Mini approval; it must neither approve nor poison this turn.
+        if any(value.get(key)!=expected for key,expected in identity.items()):continue
         result=value.get('response'); need(type(result) is dict and set(result)==result_fields)
         request=value.get('request');request_id=value['request_id']
         need(type(request) is dict and request.get('request_id')==request_id

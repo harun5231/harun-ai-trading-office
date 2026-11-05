@@ -165,6 +165,67 @@ class AnalysisContinuationTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
         self.assertEqual(self.db.execute('SELECT state FROM analysis_continuation_grants').fetchone()[0],'OBSERVED_NEW_REPLY')
 
+    def test_sixteen_row_stale_market_hold_ignores_unbound_complete_review_and_replaces(self):
+        envelope=copy.deepcopy(self.envelope)
+        self.f.data['queue']=[]
+        self.db.execute('UPDATE robot_cycles SET data=?',(json.dumps(self.f.data),))
+        latest_context=None
+        for sequence in range(2,8):
+            if sequence==7:
+                grant=admit(self.provider,envelope,now=NOW)
+                record_return(self.provider,grant,now=NOW+1)
+            proof=envelope['observation'];rows=proof['rows']
+            previous=proof['receipt_files']['native.intent.json' if sequence==2 else 'native.'+str(sequence-1)+'.intent.json']['value']
+            observed=NOW-60+sequence*2
+            latest_context=native_context_200(observed)
+            charts=[dict(row,captured_at=utc(observed+1),sha256=sha(tf+'-'+str(sequence)),attachment_id='fresh-'+tf+'-'+str(sequence))
+                for row,tf in zip(previous['followup_chart_evidence'],('15m','1h'))]
+            names=[self.f.payload['marker']+'-'+row['timeframe']+'-'+row['sha256'][:12]+'.png' for row in charts]
+            names+=['BTCUSDT_'+tf+'_200_closed_'+sha(tf+'-csv-'+str(sequence))[:8]+'.csv'for tf in ('15m','1h')]
+            prompt='Chart dan CSV terbaru putaran '+str(sequence)+'.\n'+self.f.payload['marker']
+            reply='COIN: $BTCUSDT | ARAH: HOLD | ENTRY: - | TP: - | SL: -\nHOLD tetap keputusan pasar.'
+            intent=copy.deepcopy(previous)
+            intent.update(followup_sequence=sequence,previous_followup_intent_sha256=digest(previous),
+                initial_reply_sha256=sha(rows[-1]['text']),initial_turns_sha256=digest(rows),
+                followup_prompt_sha256=sha(prompt),followup_context_sha256=digest(latest_context),
+                followup_chart_evidence=charts,followup_attachment_names=names,observed_at=observed,
+                material_send_check=dict(symbol='BTCUSDT',running_candles_separate=True,
+                    closed_candles_per_timeframe=200,closed_candles_total=400,send_checked_at=observed+2,
+                    data_observed_at=observed,data_age_at_send_check_seconds=2,screenshots=[]))
+            proof['receipt_files']['native.'+str(sequence)+'.intent.json']=dict(value=intent,sha256=digest(intent),bytes=len(wire(intent,ascii=True)))
+            index=len(rows);rows.extend([dict(role='user',text=prompt,attachments=names),dict(role='assistant',text=reply,complete=True,id='native-final-'+str(sequence))])
+            proof['file_tiles'].append(dict(row=index,prompt_sha256=sha(prompt),
+                images=[dict(alt=name,visible=True,decoded=dict(complete=True,width=1314,height=738))for name in names[:2]],
+                file_tile_witnesses=[dict(names=names,witness=[dict(name=name,ready=True,matches=1)for name in names])]))
+            proof['room_witness']['followup_user_rows']=list(range(2,len(rows),2))
+            self.f.seal(envelope)
+        self.assertEqual(len(rows),16)
+        # Retain the ACTUAL conflicting model action under a different native
+        # transcript digest. It is never rewritten into a Mini HOLD approval.
+        reviewed=copy.deepcopy(rows);reviewed[-2]['attachments'].reverse()
+        request_id=digest(dict(operation=OP,request_sha256=self.f.request_hash,reply_sha256=sha(reply),phase='ANALYSIS',transcript_sha256=digest(reviewed)))
+        request=dict(schema_version=1,request_id=request_id,conversation_id='neurobro:'+DAY+':'+'a'*32,phase='ANALYSIS',reply=reply,reply_sha256=sha(reply),
+            market_context={'symbol':'BTCUSDT'},gate={'robot_on':True,'native_dispatch_verified':True},deadline_epoch=NOW+40)
+        response=dict(schema_version=1,ok=True,request_id=request_id,conversation_id=request['conversation_id'],phase='ANALYSIS',reply_sha256=sha(reply),
+            authority='DIALOGUE_CONTROL_ONLY',trading_authority=False,decision=dict(action='COMPLETE',symbols=['BTCUSDT'],question=''),needs_followup=False,reason='DIALOGUE_DECISION')
+        persist_review(self.f.root.name,self.f.payload,request,response,reviewed,context=latest_context,observed_at=NOW+1)
+        proof['review_receipts']=read_reviews(self.f.root.name,self.f.payload)
+        proof.update(observed_at=NOW+300,finished_at=NOW+301);self.f.seal(envelope)
+        basis=validate_observation(self.provider,envelope,self.f.payload,self.f.created,now=NOW+302,repair=True)
+        self.assertEqual(basis['reason'],'ANALYSIS_MINI_APPROVAL_NOT_RETAINED')
+        self.assertTrue(restore_received_checkpoint(self.provider,envelope,now=NOW+302))
+        self.assertEqual(recover_received_analysis(self.provider,envelope,now=NOW+302),'NOEXEC')
+        self.assertEqual(self.f.row('api_requests')['state'],'RECEIVED_STALE_NOT_EXECUTED')
+        self.assertIsNone(self.f.row('api_requests')['output'])
+        self.assertEqual(proof['review_receipts'][0]['value']['response']['decision']['action'],'COMPLETE')
+        module,coordinator=self.f.coordinator();counts=[]
+        coordinator.screen=lambda cycle,data,count,account,today,initial:(counts.append(count)or {'count':count})
+        with patch.object(module,'day',return_value=DAY),patch.object(module.time,'time',return_value=NOW+303), \
+                patch.object(module,'account_state',return_value={}),patch('agent.native_pending_review.review_then_advance',return_value=None):
+            self.assertEqual(coordinator._tick(),{'count':2})
+        self.assertEqual(counts,[2])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
     def test_owner_off_and_incomplete_followup_never_admit(self):
         self.db.execute('UPDATE robot_settings SET enabled=0')
         with self.assertRaises(Review):admit(self.provider,self.envelope,now=NOW)
