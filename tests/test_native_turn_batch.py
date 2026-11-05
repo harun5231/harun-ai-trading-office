@@ -1,5 +1,6 @@
 """Compare batched live DOM reads with the installed native f017 reader."""
 import base64
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -144,6 +145,41 @@ class ChromiumEquivalence(unittest.TestCase):
 
 
 class FailureEvidence(unittest.TestCase):
+    def test_playwright_marker_and_message_hash_survive_without_raw_error_text(self):
+        message='Locator.evaluate: Error: HUMAN_GATE_UI_OBSERVATION_UNVERIFIED token=private-value'
+        with tempfile.TemporaryDirectory()as root:
+            try:
+                raise RuntimeError(message)
+            except RuntimeError as error:
+                retain_return_failure(root,{'operation':'owned:DOGE','request_sha256':'d'*64},
+                    {'phase':'FOLLOWUP_SENT'},172,195,error)
+            raw=(Path(root)/('native-return-failure-'+'d'*64+'.json')).read_text()
+            item=json.loads(raw)['chain'][0]
+            self.assertEqual(item['reason'],'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
+            self.assertEqual(item['message_sha256'],hashlib.sha256(message.encode()).hexdigest())
+            self.assertEqual(item['message_characters'],len(message))
+            self.assertNotIn('private-value',raw)
+
+    def test_classified_observer_attempts_are_retained_without_losing_original_error(self):
+        from agent.native_human_gate_status import HumanGateObservationUnavailable
+        observation={'reason':'HUMAN_GATE_UI_CONTEXT_UNAVAILABLE','attempts':3,
+            'elapsed_ms':80,'errors':[{'reason':'HUMAN_GATE_UI_CONTEXT_UNAVAILABLE',
+            'retryable':True,'exception_class':'Error','message_sha256':'e'*64,'message_characters':40}]}
+        with tempfile.TemporaryDirectory()as root:
+            try:
+                try:raise RuntimeError('Execution context was destroyed secret=private-value')
+                except RuntimeError as original:
+                    raise HumanGateObservationUnavailable('HUMAN_GATE_UI_CONTEXT_UNAVAILABLE',observation)from original
+            except HumanGateObservationUnavailable as error:
+                retain_return_failure(root,{'operation':'owned:DOGE','request_sha256':'d'*64},
+                    {'phase':'FOLLOWUP_SENT'},172,195,error)
+            raw=(Path(root)/('native-return-failure-'+'d'*64+'.json')).read_text()
+            rows=json.loads(raw)['chain']
+            self.assertEqual(rows[0]['ui_observation'],observation)
+            self.assertEqual([row['class']for row in rows],['HumanGateObservationUnavailable','RuntimeError'])
+            self.assertEqual(len(rows[1]['message_sha256']),64)
+            self.assertNotIn('private-value',raw)
+
     def test_evidence_writer_failure_does_not_change_the_hook_exception(self):
         from types import SimpleNamespace
         from tests.test_native_browser_hook import Bridge, client, request, OutcomeUnknown

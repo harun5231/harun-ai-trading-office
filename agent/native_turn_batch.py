@@ -241,9 +241,16 @@ def retain_return_failure(root, payload, state, clock, deadline, error):
                            'function': frame.tb_frame.f_code.co_name, 'line': frame.tb_lineno})
             frame = frame.tb_next
         text = str(current)
-        chain.append({'class': type(current).__name__,
-                      'reason': text if re.fullmatch('[A-Z][A-Z0-9_]{0,119}', text) else None,
-                      'frames': frames})
+        reason = text if re.fullmatch('[A-Z][A-Z0-9_]{0,119}', text) else None
+        if 'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED' in text:
+            reason = 'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED'
+        item = {'class': type(current).__name__, 'reason': reason, 'frames': frames,
+            'message_sha256': hashlib.sha256(text.encode('utf-8', 'replace')).hexdigest(),
+            'message_characters': len(text)}
+        from .native_human_gate_status import HumanGateObservationUnavailable
+        if isinstance(current, HumanGateObservationUnavailable):
+            item['ui_observation'] = current.observation
+        chain.append(item)
         current = current.__context__
     value = {'schema_version': 1, 'operation': payload.get('operation'),
         'request_sha256': digest, 'phase': state.get('phase'),
