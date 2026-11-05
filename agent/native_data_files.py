@@ -110,7 +110,8 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
         'Data dan kedua gambar diambil berurutan; harga dapat bergerak di antaranya, '
         'jadi perhatikan waktu pengambilannya. '
         f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
-        'Periksa juga dua gambar chart terlampir: simbol, timeframe, rentang waktu, dan harga harus terbaca. '
+        'Periksa juga dua gambar chart terlampir: body/wick candle, simbol, timeframe, sumbu waktu, dan harga harus terbaca. '
+        'Verifikasi sedikitnya 200 candle tertutup terlihat; jangan menyatakannya jika gambar tidak membuktikannya. '
         'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '
         'Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; '
         'itu bukan keputusan HOLD berdasarkan pasar.')

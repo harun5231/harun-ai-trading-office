@@ -82,7 +82,9 @@ class NativeDataFileTests(unittest.TestCase):
         self.assertNotIn('large public context', rendered)
         self.assertIn(files[0]['name'], rendered)
         self.assertIn(files[1]['name'], rendered)
-        self.assertLess(len(rendered), 2200)
+        self.assertLess(len(rendered), 2500)
+        self.assertIn('body/wick candle', rendered)
+        self.assertIn('jangan menyatakannya jika gambar tidak membuktikannya', rendered)
         projected = convert_native_market_context(payload['context'], now=NOW)
         for frame,label in (('15m','15M'),('1h','1H')):
             window=projected['candle_windows'][frame]
