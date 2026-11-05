@@ -273,3 +273,24 @@ Native packaging must also include `worker/trade_evaluation_metrics.py` alongsid
 the existing journal/evidence/runtime modules. These source and offline tests do
 not prove a production archive join, analyst discussion, experiment, complete
 account-month accounting or improved performance.
+
+## Initial four-file custody
+
+The native actor returns its original `bridge.ask` result directly; it has no
+separate initial Send journal. Initial historical evidence therefore uses the
+actual authenticated worker request/response completion together with one exact
+immutable four-file prepared record, one terminal native transcript/Mini review
+and the original rendered-prompt cache. The native file reader checks decoded
+PNGs and actual CSV user tiles before accepting that transcript; its review is
+persisted only after the transcript remains unchanged across Mini. Preparation
+alone, Mini output alone and turn-batch counters never prove delivery.
+
+`NATIVE_INITIAL_ANALYSIS_REVIEW_CUSTODY_V1` names the real request/response,
+prepared, review and prompt-cache hashes explicitly. It does not invent an
+initial Send intent, completion file or follow-up receipt. Operation, wire hash,
+provider contract, original reply, exact upload IDs, context, CSV bytes, prompt
+and recorded clock order must match. Existing follow-up validation remains the
+exclusive path whenever **any** own follow-up leaf exists, including incomplete
+or malformed leaves. A common in-memory material view supports original-room
+prompt/PNG/CSV inspection and cross-room redelivery of the same archived bytes;
+the original receipt records and historical capture times remain unchanged.
