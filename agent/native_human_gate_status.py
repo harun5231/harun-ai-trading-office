@@ -9,8 +9,51 @@ fail-closed helper below can acknowledge only the proved maintenance notice.
 """
 from __future__ import annotations
 
+import hashlib
+import time
+from urllib.parse import urlsplit
+
 
 UI_OBSERVATION_TIMEOUT_MS = 1500
+UI_OBSERVATION_ATTEMPTS = 3
+
+
+class HumanGateObservationUnavailable(ValueError):
+    def __init__(self, reason, observation):
+        super().__init__(reason)
+        self.observation = observation
+
+
+def _read_error(error):
+    """Classify only known transient read failures, never security outcomes."""
+    text = str(error)
+    browser_error = type(error).__module__.startswith('playwright.')
+    if browser_error and 'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED' in text:
+        code, retry = 'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED', True
+    elif browser_error and any(marker in text for marker in ('Execution context was destroyed',
+            'Cannot find context with specified id', 'Element is not attached to the DOM',
+            'Frame was detached', 'JSHandle is disposed')):
+        code, retry = 'HUMAN_GATE_UI_CONTEXT_UNAVAILABLE', True
+    else:
+        code, retry = 'HUMAN_GATE_UI_EVALUATION_FAILED', False
+    return dict(reason=code, retryable=retry, exception_class=type(error).__name__,
+        message_sha256=hashlib.sha256(text.encode('utf-8', 'replace')).hexdigest(),
+        message_characters=len(text))
+
+
+def _page_url(page, expected=None):
+    try:
+        current = page.url
+        if page.is_closed() is not False:
+            raise ValueError
+        parsed = urlsplit(current)
+        if parsed.scheme != 'https' or parsed.netloc != 'app.neurobro.ai':
+            raise ValueError
+    except Exception:
+        raise ValueError('HUMAN_GATE_UI_PAGE_UNAVAILABLE') from None
+    if expected is not None and current != expected:
+        raise ValueError('HUMAN_GATE_UI_PAGE_CHANGED')
+    return current
 
 # Read only light-DOM/public UI: no challenge body, shadow-root access, network,
 # application state, clicks, typing, navigation or verification attempt.
@@ -95,17 +138,64 @@ def visible_human_gate(page, *, message_selector):
 
     ``message_selector`` is supplied by the source-bound native patch, from its
     actual message contract, never from a request or Office setting. Observation
-    errors propagate to the native UNAVAILABLE path; they do not invent login,
-    verification, or a CONNECTED observation.
+    Known transient read errors may resample the same approved open page within
+    one 1500ms total budget. Only a fresh successful boolean is returned. Failed
+    observations still reach native UNAVAILABLE, never a guessed login or
+    CONNECTED state. No page action, model call or WEB Send is retried.
     """
     if (type(message_selector) is not str or not 0 < len(message_selector) <= 1024
             or any(ord(c) < 32 or ord(c) == 127 for c in message_selector)):
         raise ValueError('HUMAN_GATE_MESSAGE_CONTRACT_UNVERIFIED')
-    value = page.locator('html').evaluate(HUMAN_GATE_UI_JS,
-        {'message_selector': message_selector}, timeout=UI_OBSERVATION_TIMEOUT_MS)
-    if type(value) is not bool:
-        raise ValueError('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
-    return value
+    started = time.monotonic()
+    deadline = started + UI_OBSERVATION_TIMEOUT_MS / 1000
+    errors = []
+    attempts = 0
+
+    def unavailable(reason, cause=None):
+        observation = dict(reason=reason, attempts=attempts,
+            elapsed_ms=max(0, int((time.monotonic() - started) * 1000)), errors=list(errors))
+        raise HumanGateObservationUnavailable(reason, observation) from cause
+
+    try:
+        initial_url = _page_url(page)
+    except ValueError as error:
+        unavailable(str(error), error)
+    while attempts < UI_OBSERVATION_ATTEMPTS:
+        remaining = int((deadline - time.monotonic()) * 1000)
+        if remaining <= 0:
+            unavailable('HUMAN_GATE_UI_OBSERVATION_DEADLINE')
+        try:
+            _page_url(page, initial_url)
+        except ValueError as error:
+            unavailable(str(error), error)
+        attempts += 1
+        try:
+            value = page.locator('html').evaluate(HUMAN_GATE_UI_JS,
+                {'message_selector': message_selector}, timeout=remaining)
+        except Exception as error:
+            detail = _read_error(error)
+            errors.append(detail)
+            try:
+                _page_url(page, initial_url)
+            except ValueError as changed:
+                unavailable(str(changed), changed)
+            if not detail['retryable'] or attempts >= UI_OBSERVATION_ATTEMPTS:
+                unavailable(detail['reason'], error)
+            remaining_seconds = deadline - time.monotonic()
+            if remaining_seconds <= 0:
+                unavailable('HUMAN_GATE_UI_OBSERVATION_DEADLINE', error)
+            time.sleep(min(.025, remaining_seconds))
+            continue
+        try:
+            _page_url(page, initial_url)
+        except ValueError as error:
+            unavailable(str(error), error)
+        if time.monotonic() > deadline:
+            unavailable('HUMAN_GATE_UI_OBSERVATION_DEADLINE')
+        if type(value) is not bool:
+            unavailable('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
+        return value
+    unavailable('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
 
 
 KNOWN_MAINTENANCE_BODY = (

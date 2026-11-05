@@ -168,6 +168,8 @@ class Coordinator:
         # Only local RR failures or a recorded request-body rejection may
         # select another coin. An unknown outcome never qualifies.
         if row['failure_code'] in ('RISK_REWARD_BELOW_2','NET_RISK_REWARD_BELOW_2','NET_RISK_REWARD_NOT_TARGET_2'):return True
+        from .analysis_response_recovery import received_nonexecuted
+        if received_nonexecuted(self.db,row):return True
         if row['failure_code']!='HTTP_422':return False
         return bool(self.db.execute('''SELECT 1 FROM api_requests a JOIN robot_jobs j ON j.operation=a.operation
             WHERE a.operation=? AND a.state='REJECTED_REQUEST_VALIDATION' AND a.failure_code='HTTP_422'
@@ -496,6 +498,10 @@ class Coordinator:
         if settled is not None:return settled
         available=self.execution_slots(account,today)
         if not available:return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        # Reconcile the already posted reply without another provider Send.
+        from .analysis_response_recovery import resume_uncertain_analysis
+        recovered_analysis=resume_uncertain_analysis(self,today,account)
+        if recovered_analysis is not None:return recovered_analysis
         # An interrupted paid request cannot be automatically replayed under a new ID.
         if self.unresolved_research():
             return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
@@ -553,7 +559,9 @@ class Coordinator:
         if not initial and not replaceable:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')
-        return self.screen(cycle,data,remaining if initial else min(remaining,replaceable),account,today,initial)
+        # A proved replacement trigger searches the actual remaining capacity;
+        # a prior temporarily unknown answer does not hide another free slot.
+        return self.screen(cycle,data,remaining,account,today,initial)
     def claim(self,operation,cycle,kind,symbol,today,target=None,*,data=None,context=None):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -696,7 +704,8 @@ class Coordinator:
         data['queue'].pop(0);data['seen'].append(symbol)
         self.db.execute('BEGIN IMMEDIATE')
         try:
-            self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',(operation,cycle,symbol,state,json.dumps(plan) if plan else None,reason))
+            from .analysis_response_recovery import record_analysis_candidate
+            record_analysis_candidate(self.db,(operation,cycle,symbol,state,json.dumps(plan) if plan else None,reason))
             self.save_cycle(cycle,data,'NEEDS_REVIEW' if unknown else 'ACTIVE')
             job_state='NEEDS_REVIEW' if unknown else 'REQUEST_REJECTED' if state=='REJECTED' and reason in ('HTTP_422','NEUROAPI_REQUEST_LIMIT_EXCEEDED') else 'COMPLETE'
             self.db.execute('UPDATE robot_jobs SET state=? WHERE operation=?',(job_state,operation))

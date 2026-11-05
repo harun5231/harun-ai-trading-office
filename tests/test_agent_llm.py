@@ -255,6 +255,21 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(result.action,"CLARIFY")
         self.assertEqual(result.question,"Mohon lengkapi keputusan saat ini?")
 
+    def test_actual_analysis_payload_distinguishes_clear_market_hold_from_completion(self):
+        reply=(Path(__file__).parent/'fixtures/neurobro_doge_clear_hold_20261105.txt').read_text()
+        answer=self.model({'action':'HOLD','symbols':['DOGEUSDT'],'question':''}).plan(
+            [],reply,phase='ANALYSIS',jakarta_day='2026-11-05')
+        instructions=self.calls[-1]['instructions']
+        self.assertEqual(answer.action,'HOLD')
+        self.assertIn('pilih action HOLD dan question kosong',instructions)
+        self.assertIn('COMPLETE hanya untuk setup aktif LONG atau SHORT',instructions)
+        self.assertIn('jangan menyamarkan masalah input sebagai HOLD pasar',instructions)
+        self.assertEqual(self.calls[-1]['text']['format']['schema']['properties']['action']['enum'],['CLARIFY','HOLD','COMPLETE'])
+        # This analysis clarification does not change the agreed screening prompt.
+        self.model({'action':'SCREENING','symbols':['DOGEUSDT'],'question':''}).plan(
+            [],'COIN: DOGEUSDT',phase='SCREENING',jakarta_day='2026-11-05')
+        self.assertNotIn('KHUSUS ANALYSIS:',self.calls[-1]['instructions'])
+
     def test_unvalidated_raw_output_is_retained_before_field_rejection(self):
         raw={"action":"CLARIFY","symbols":[],"question":"ENTRY: 100 tepat?","entry":100}
         with self.assertRaisesRegex(AgentError,"MODEL_RESPONSE_INVALID"):

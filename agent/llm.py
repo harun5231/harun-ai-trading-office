@@ -406,6 +406,13 @@ class OpenAIDialogue:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         schema = dialogue_schema(phase, reply, context=context)
         instructions = INSTRUCTIONS + ("\nUntuk COMPOSE, susun pesan awal yang akan dikirim ke Neurobro berdasarkan tugas dan fakta ini. Gunakan action PROMPT, symbols [], dan tulis pesan bahasa Indonesia di question. Jangan mengulang schema teknis atau marker; integrasi menambah ringkasan/identitasnya. Jangan menentukan setup sendiri.\n" if composition else '')
+        if phase == 'ANALYSIS':
+            instructions += ('\nKHUSUS ANALYSIS: jika keputusan akhir Neurobro untuk coin saat ini '
+                'jelas HOLD berdasarkan pasar, pilih action HOLD dan question kosong. '
+                'Selesai membaca atau menyetujui keputusan HOLD bukan action COMPLETE. '
+                'COMPLETE hanya untuk setup aktif LONG atau SHORT dengan ENTRY, SL, dan TP yang lengkap. '
+                'Jika bahan belum terbaca, keputusan bertentangan, atau setup belum jelas, gunakan CLARIFY; '
+                'jangan menyamarkan masalah input sebagai HOLD pasar.\n')
         if phase == 'COMPOSE_SCREENING':
             instructions += ('\nKHUSUS SCREENING: question harus menyalin persis teks tugas pemilik, '
                 'dengan jumlah coin yang diminta. Jangan menambahkan permintaan arah, ENTRY, SL, TP, '

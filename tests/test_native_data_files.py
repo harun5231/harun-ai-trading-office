@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import json
+from datetime import datetime, timezone
 import sys
 import unittest
 from pathlib import Path
@@ -80,6 +81,17 @@ class NativeDataFileTests(unittest.TestCase):
         self.assertIn(files[0]['name'], rendered)
         self.assertIn(files[1]['name'], rendered)
         self.assertLess(len(rendered), 2200)
+        projected = convert_native_market_context(payload['context'], now=NOW)
+        for frame,label in (('15m','15M'),('1h','1H')):
+            window=projected['candle_windows'][frame]
+            for field in ('first_open_time_ms','last_close_time_ms'):
+                exact=datetime.fromtimestamp(window[field]/1000,timezone.utc).isoformat(
+                    timespec='milliseconds').replace('+00:00','Z')
+                self.assertIn(exact,rendered)
+            self.assertIn(label+' tertutup:',rendered)
+        self.assertIn('-15m- berarti chart 15M',rendered)
+        self.assertIn('-1h- berarti chart 1H',rendered)
+        self.assertEqual(deliver_market_data_files(payload['context'],now=NOW),files)
         # The integration may ask the pinned native formatter to format null
         # context so the old large-context renderer never runs at all.
         null_formatted = payload['prompt'] + CONTEXT_SEPARATOR + 'null' + SCHEMA_SEPARATOR + suffix

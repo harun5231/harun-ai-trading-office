@@ -2,9 +2,11 @@ import json
 from pathlib import Path
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from agent.native_human_gate_status import (HUMAN_GATE_UI_JS,
-    UI_OBSERVATION_TIMEOUT_MS, visible_human_gate)
+    UI_OBSERVATION_TIMEOUT_MS, UI_OBSERVATION_ATTEMPTS, HumanGateObservationUnavailable,
+    visible_human_gate)
 
 
 NODE_DOM = r'''
@@ -144,6 +146,8 @@ class PageContractTests(unittest.TestCase):
                 self.values=script,arg,timeout
                 return True
         class Page:
+            url='https://app.neurobro.ai/'
+            def is_closed(self):return False
             def __init__(self):self.target=Locator()
             def locator(self,selector):
                 self.selector=selector
@@ -151,8 +155,10 @@ class PageContractTests(unittest.TestCase):
         p=Page()
         self.assertTrue(visible_human_gate(p,message_selector='[data-message-id]'))
         self.assertEqual(p.selector,'html')
-        self.assertEqual(p.target.values,(HUMAN_GATE_UI_JS,
-            {'message_selector':'[data-message-id]'},UI_OBSERVATION_TIMEOUT_MS))
+        self.assertEqual(p.target.values[:2],(HUMAN_GATE_UI_JS,
+            {'message_selector':'[data-message-id]'}))
+        self.assertGreater(p.target.values[2],0)
+        self.assertLessEqual(p.target.values[2],UI_OBSERVATION_TIMEOUT_MS)
         for value in ('true',1,None,{}):
             p.target.evaluate=lambda *a,**k:value
             with self.assertRaisesRegex(ValueError,'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED'):
@@ -162,6 +168,102 @@ class PageContractTests(unittest.TestCase):
         for value in ('',None,'x\nbody','x'*1025):
             with self.assertRaisesRegex(ValueError,'HUMAN_GATE_MESSAGE_CONTRACT_UNVERIFIED'):
                 visible_human_gate(None,message_selector=value)
+
+
+class Error(Exception):
+    __module__='playwright._impl._errors'
+
+
+class ObservationPage:
+    def __init__(self, outcomes, clock):
+        self.url='https://app.neurobro.ai/'
+        self.closed=False;self.outcomes=list(outcomes);self.clock=clock;self.calls=[]
+    def is_closed(self):return self.closed
+    def locator(self,selector):
+        if selector!='html':raise AssertionError('Unexpected locator')
+        return self
+    def evaluate(self,script,arg,*,timeout):
+        self.calls.append(dict(script=script,arg=arg,timeout=timeout))
+        outcome=self.outcomes.pop(0)
+        if callable(outcome):outcome=outcome(self)
+        if isinstance(outcome,Exception):raise outcome
+        return outcome
+
+
+class PureObservationRetryTests(unittest.TestCase):
+    def observe(self,outcomes):
+        self.current=0.
+        page=ObservationPage(outcomes,lambda:self.current)
+        return page
+    def sleep(self,seconds):self.current+=seconds
+    def call(self,page):
+        with patch('agent.native_human_gate_status.time.monotonic',side_effect=lambda:self.current), \
+                patch('agent.native_human_gate_status.time.sleep',side_effect=self.sleep):
+            return visible_human_gate(page,message_selector='[data-message-id]')
+
+    def test_known_transient_read_can_recover_only_a_fresh_successful_boolean(self):
+        for message in ('Locator.evaluate: Error: HUMAN_GATE_UI_OBSERVATION_UNVERIFIED',
+                'Execution context was destroyed, most likely because of a navigation',
+                'Element is not attached to the DOM', 'Frame was detached'):
+            with self.subTest(message=message):
+                page=self.observe([Error(message),False])
+                self.assertIs(self.call(page),False)
+                self.assertEqual(len(page.calls),2)
+                self.assertEqual([row['script'] for row in page.calls],[HUMAN_GATE_UI_JS]*2)
+                self.assertLess(page.calls[1]['timeout'],page.calls[0]['timeout'])
+
+    def test_actual_human_gate_true_returns_immediately_without_another_attempt(self):
+        page=self.observe([True,Error('Must not be observed')])
+        self.assertIs(self.call(page),True)
+        self.assertEqual(len(page.calls),1)
+
+    def test_all_transient_errors_remain_unavailable_with_safe_reason_hashes(self):
+        message='Locator.evaluate: Error: HUMAN_GATE_UI_OBSERVATION_UNVERIFIED token=private-secret'
+        page=self.observe([Error(message)]*UI_OBSERVATION_ATTEMPTS)
+        with self.assertRaises(HumanGateObservationUnavailable)as caught:self.call(page)
+        self.assertEqual(caught.exception.observation['attempts'],UI_OBSERVATION_ATTEMPTS)
+        self.assertEqual(str(caught.exception),'HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
+        self.assertNotIn('private-secret',json.dumps(caught.exception.observation))
+        self.assertTrue(all(len(row['message_sha256'])==64 for row in caught.exception.observation['errors']))
+
+    def test_retries_share_one_total_timeout_instead_of_resetting_1500ms(self):
+        def slow(page):
+            self.current+=1.2
+            return Error('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
+        page=self.observe([slow,False])
+        self.assertIs(self.call(page),False)
+        self.assertEqual(len(page.calls),2)
+        self.assertLessEqual(page.calls[1]['timeout'],275)
+        self.assertLess(self.current,UI_OBSERVATION_TIMEOUT_MS/1000)
+        def exhausted(page):
+            self.current+=1.5
+            return Error('HUMAN_GATE_UI_OBSERVATION_UNVERIFIED')
+        page=self.observe([exhausted,False])
+        with self.assertRaisesRegex(HumanGateObservationUnavailable,'OBSERVATION_DEADLINE'):self.call(page)
+        self.assertEqual(len(page.calls),1)
+
+    def test_unknown_errors_and_nonboolean_values_do_not_become_false_or_retry(self):
+        for outcome in (Error('Unclassified browser failure'),ValueError('Execution context was destroyed'),
+                None,1,'false',{}):
+            with self.subTest(outcome=repr(outcome)):
+                page=self.observe([outcome,False])
+                with self.assertRaises(HumanGateObservationUnavailable):self.call(page)
+                self.assertEqual(len(page.calls),1)
+
+    def test_page_navigation_closed_and_wrong_origin_refuse_without_false_success(self):
+        for update in (lambda page:setattr(page,'url','https://app.neurobro.ai/other'),
+                lambda page:setattr(page,'url','https://unapproved.invalid/'),
+                lambda page:setattr(page,'closed',True)):
+            with self.subTest(update=update):
+                def changed(page):
+                    update(page)
+                    return Error('Execution context was destroyed')
+                page=self.observe([changed,False])
+                with self.assertRaises(HumanGateObservationUnavailable):self.call(page)
+                self.assertEqual(len(page.calls),1)
+        page=self.observe([False]);page.url='http://app.neurobro.ai/'
+        with self.assertRaises(HumanGateObservationUnavailable):self.call(page)
+        self.assertEqual(page.calls,[])
 
 
 if __name__=='__main__':unittest.main()

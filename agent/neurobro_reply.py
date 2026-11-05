@@ -18,7 +18,8 @@ class ReplyIncomplete(ValueError):
 
 PAIR = r'[A-Z0-9]{2,20}(?:[/ -]?USDT)'
 _PAIR = re.compile(r'(?<![A-Z0-9])(' + PAIR + r')(?![A-Z0-9])', re.I)
-_COIN = re.compile(r'^\s*(?:COIN|KOIN|SYMBOL|SIMBOL)\s*[:=]\s*(' + PAIR + r')\b', re.I | re.M)
+_COIN_LABEL = r'(?:COIN|KOIN|SYMBOL|SIMBOL)(?:\s*[:=]\s*|[ \t]+)'
+_COIN = re.compile(r'^\s*' + _COIN_LABEL + '(' + PAIR + r')\b', re.I | re.M)
 _COIN_HEADING = re.compile(r'^\s*(' + PAIR + r')\s*(?:[-—:|]\s*|\s+)'
     r'(?:LONG|SHORT|HOLD)\s*[.!]?\s*$', re.I | re.M)
 _FINAL = re.compile(r'^\s*(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b[^\n]*', re.I | re.M)
@@ -55,7 +56,7 @@ def attributed_symbols(reply):
     values = {symbol(match.group(1)) for match in _PAIR.finditer(reply)
         if not symbol(match.group(1))[:-4].isdigit()}
     values.update(symbol(value) for value in re.findall(
-        r'\b(?:COIN|KOIN|SYMBOL|SIMBOL)\s*[:=]\s*\$?(' + PAIR + r')\b', reply, re.I))
+        r'\b' + _COIN_LABEL + r'\$?(' + PAIR + r')\b', reply, re.I))
     return values
 
 
@@ -66,6 +67,10 @@ def coin_block(reply, requested):
     headers = sorted([(match.start(), symbol(match.group(1)))
         for pattern in (_COIN, _COIN_HEADING) for match in pattern.finditer(text)])
     if headers:
+        # A general input complaint before any coin header applies to the
+        # material as a whole; a new whitespace header must not hide it.
+        if _TECHNICAL.search(text[:headers[0][0]]):
+            raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
         choices = [(start, text[start:headers[index + 1][0]
             if index + 1 < len(headers) else len(text)])
             for index, (start, selected) in enumerate(headers) if selected == requested]
@@ -100,7 +105,7 @@ def _decision(block, allowed):
     summary = []
     if set(allowed) == {'LONG', 'SHORT', 'HOLD'}:
         lines = re.findall(r'^\s*(?:Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*)?'
-            r'(?:COIN|KOIN|SYMBOL|SIMBOL)\s*[:=]\s*\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M)
+            + _COIN_LABEL + r'\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M)
         for line in lines:
             for field in line.split('|'):
                 match = re.fullmatch(expression, field.strip(), re.I)
@@ -136,10 +141,33 @@ def _level(block, names):
     return format(value, 'f')
 
 
+def _inline_summary_fields(block):
+    # Native textContent may flatten a structured COIN/ARAH/ENTRY/TP/SL
+    # summary into one line. Restore field boundaries only for that explicit
+    # coin-qualified form; ordinary prose keeps its original interpretation.
+    direction = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)'
+        r'(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?[ \t]*[:=][ \t]*(?:LONG|SHORT|HOLD)\b')
+    prefix = re.compile(r'^[ \t]*' + _COIN_LABEL + r'\$?(' + PAIR + r')'
+        r'(?:[ \t]+Perpetual)?[ \t]+' + direction, re.I)
+    labels = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?'
+        r'|LIMIT ENTRY|ENTRY LIMIT|ENTRY_PRICE|ENTRY|STOP LOSS|STOP_LOSS|SL'
+        r'|TAKE PROFIT|TAKE_PROFIT|TP')
+    lines = []
+    for line in block.split('\n'):
+        match = prefix.match(line)
+        if match:
+            if attributed_symbols(line) != {symbol(match.group(1))}:
+                raise ReplyIncomplete('NEUROBRO_COIN_UNVERIFIED')
+            line = re.sub(r'[ \t]+(?=(?:' + labels + r')[ \t]*[:=])', '\n', line, flags=re.I)
+        lines.append(line)
+    return '\n'.join(lines)
+
+
 def parse_analysis_reply(reply, requested):
     block = coin_block(reply, requested)
     if _TECHNICAL.search(block):
         raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
+    block = _inline_summary_fields(block)
     decision = _decision(block, ('LONG', 'SHORT', 'HOLD'))
     fields = {'symbol': requested, 'side': decision, 'entry_price': None,
         'limit_entry': None, 'stop_loss': None, 'take_profit': None, 'risk_reward': None}

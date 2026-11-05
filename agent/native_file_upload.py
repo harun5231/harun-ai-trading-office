@@ -150,9 +150,10 @@ class NativeFileTurnReader:
 
 
 class NativeDataFileDelivery:
-    def __init__(self, bridge, native, gate, *, wall_clock=time.time):
+    def __init__(self, bridge, native, gate, *, wall_clock=time.time, archive_root=None):
         self.bridge, self.native, self.gate = bridge, native, gate
         self.wall_clock = wall_clock
+        self.archive_root = archive_root
         self.original_upload = bridge._upload
         self.original_answer = bridge._answer
         reader = getattr(bridge, '_harun_file_turn_reader', None)
@@ -322,6 +323,12 @@ class NativeDataFileDelivery:
             self.reader.turn_files[tuple(self.bridge.uploaded_names)] = (
                 tuple(png_names), tuple(names), self._witness)
             record.update(stage='COMPLETE', preview_verified=True)
+            if self.archive_root is not None:
+                from .native_analysis_material import is_analysis, retain_prepared
+                if is_analysis(payload):
+                    record['prepared_material_receipt'] = retain_prepared(self.archive_root, payload,
+                        bound, list(self.bridge.uploaded_names), files, self.native.user_prompt(payload),
+                        observed_at=self.wall_clock())
             return bound
         finally:
             try:

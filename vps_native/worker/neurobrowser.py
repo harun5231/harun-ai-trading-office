@@ -44,13 +44,18 @@ def helper_token():
 
 def browser_request(method, url, headers=None, body=None, timeout=15):
     """Fixed internal service; no proxies, redirects, secrets in URL or logs."""
-    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask'), ('POST', BASE + '/v1/historical-evidence')):
+    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask'), ('POST', BASE + '/v1/historical-evidence'), ('POST', BASE + '/v1/screening-recovery')):
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     if method == 'GET' and body is not None:
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
+    observation = url == BASE + '/v1/screening-recovery'
+    if observation and (type(body) is not dict
+            or body.get('action') not in ('ANALYSIS_RECEIVED_OBSERVE','ANALYSIS_RECEIVED_CONTINUE')
+            or set(body) != ({'action','payload','grant'} if body.get('action')=='ANALYSIS_RECEIVED_CONTINUE' else {'action','payload'})):
+        raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     try:
         raw = None if body is None else encode(body).encode('utf-8')
-        if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + 128):
+        if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + (4096 if observation else 128)):
             raise Review('NEUROBRO_BROWSER_REQUEST_TOO_LARGE')
         request = Request(url, data=raw, method=method, headers=headers or {})
         opener = build_opener(ProxyHandler({}), NoRedirect())
@@ -67,7 +72,7 @@ def browser_request(method, url, headers=None, body=None, timeout=15):
             if len(raw) > maximum:
                 raise Review('INVALID_RESPONSE_ENVELOPE')
             try:
-                value = json.loads(raw, parse_float=(float if url.endswith('/v1/historical-evidence') else D), object_pairs_hook=unique,
+                value = json.loads(raw, parse_float=(float if observation or url.endswith('/v1/historical-evidence') else D), object_pairs_hook=unique,
                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
             except (ValueError, TypeError):
                 raise Review('INVALID_RESPONSE_ENVELOPE') from None
@@ -120,7 +125,12 @@ function never grants a replay, initializes tables, changes state, or reads keys
             return False
         owner_material = owner_material_request(body)
         if now - created > (NEW_OPERATION_SECONDS if owner_material else max_age):
-            return False
+            # An observed incomplete answer may continue its original native
+            # conversation under a fresh sealed followup grant. This does not
+            # alter the original request clock or permit its first Send again.
+            from .analysis_continuation import verify_dispatch_grant
+            if not owner_material or not verify_dispatch_grant(db,operation,request_sha256,today,now):
+                return False
         validation_at = created if owner_material else now
         cycle = db.execute('SELECT * FROM robot_cycles WHERE id=?', (job['cycle'],)).fetchone()
         if (not cycle or cycle['state'] != 'ACTIVE' or cycle['day'] != today
@@ -254,6 +264,61 @@ class NeuroBrowser:
     def health(self):
         self.require_key()
         return 'NEUROBRO_BROWSER_CONNECTED'
+
+    def observe_received_analysis(self, operation):
+        """Observe the same operation through the existing authenticated actor.
+
+        The maintenance action cannot Send, upload, call a model, or create a
+        room. A BUSY native actor retains exclusive ownership; absence of an
+        observation is never permission to replay the original request.
+        """
+        self.require_key()
+        row = self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
+        current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if row is None or current is None:
+            raise Review('ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED')
+        body = json.loads(row['request_body'], object_pairs_hook=unique)
+        rebuilt, serialized, wire = request_body(operation,body['prompt'],body['output_schema'],body['context'])
+        if (body != rebuilt or serialized != row['request_body'] or wire != row['request_sha256']
+                or current['body_hash'] != wire or body['output_schema'] != SETUP_SCHEMA_V4
+                or current['state'] not in ('PENDING','NEEDS_REVIEW') or current['attempts'] != 1
+                or current['output'] is not None or current['idempotency'] is not None):
+            raise Review('ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED')
+        code, _, result = self.transport('POST', BASE + '/v1/screening-recovery', self.headers(),
+            {'action':'ANALYSIS_RECEIVED_OBSERVE','payload':{**body,'request_sha256':wire}}, timeout=45)
+        if code == 409:
+            reason = result.get('reason') if isinstance(result,dict) else None
+            error = result.get('error') if isinstance(result,dict) else None
+            if isinstance(error,str) and error.startswith('SCREENING_RECOVERY_'):
+                reason = error[len('SCREENING_RECOVERY_'):]
+            if reason in ('BUSY','LOGIN_REQUIRED','CHALLENGE_REQUIRED','UNAVAILABLE','LOGIN_IN_PROGRESS'):
+                raise Review('NEUROBRO_' + reason)
+            raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
+        if code != 200 or not isinstance(result,dict):
+            raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
+        return result
+
+    def continue_received_analysis(self, operation, grant):
+        """Continue a received turn through the same actor's followup hook.
+
+        This fixed action never enters ordinary ask(), whose UNKNOWN receipt
+        still prohibits re-sending the initial prompt.
+        """
+        self.require_key()
+        from .analysis_continuation import active_grant
+        current=active_grant(self.db,operation)
+        if current is None or current['grant'] != json.dumps(grant,sort_keys=True,separators=(',',':'),ensure_ascii=False,allow_nan=False):
+            raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
+        request=self.db.execute('SELECT request_body,request_sha256 FROM research_browser_requests WHERE operation=?',(operation,)).fetchone()
+        if request is None:raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
+        payload={**json.loads(request['request_body']), 'request_sha256':request['request_sha256']}
+        code,_,result=self.transport('POST',BASE+'/v1/screening-recovery',self.headers(),
+            dict(action='ANALYSIS_RECEIVED_CONTINUE',payload=payload,grant=grant),timeout=930)
+        if code!=200 or not isinstance(result,dict):
+            raise Review('ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN')
+        if result.get('grant_id')!=grant['grant_id'] or result.get('operation')!=operation or result.get('request_sha256')!=request['request_sha256']:
+            raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
+        return result
 
     def record_validation(self, operation, error):
         self.db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",
