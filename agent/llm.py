@@ -94,13 +94,14 @@ WEB_FACT_KEYS = frozenset({'symbol', 'side', 'quantity', 'filled_quantity',
     'entry_price', 'stop_loss', 'take_profit', 'execution_tp', 'neurobro_tp',
     'accepted_at', 'age_seconds', 'order_ref', 'entry_client_order_id', 'entry_order_id',
     'observed_at', 'last_review_at', 'next_review_at'})
-POSITION_SIZE = (r'(?:quantity|kuantitas|qty|(?:ukuran|besar(?:nya)?)\s+posisi(?:nya)?|'
+POSITION_SIZE = (r'(?:quantity|kuantitas|qty|(?:ukuran|besar(?:an)?(?:nya)?)\s+posisi(?:nya)?|'
     r'(?:jumlah|banyak(?:nya)?)\s+(?:kontrak|unit|coin|koin)|position[ _-]*siz(?:e|ing)|sizing|lot)')
 PRIVATE_BUDGET = re.compile(
     r'\b(?:risk_(?:usdt|budget|amount|target\w*)|target_loss_at_sl_usdt|'
-    r'(?:anggaran|budget|nominal|target|batas)\s+(?:risiko|risk|kerugian)|'
-    r'(?:risiko|risk|kerugian)\s+(?:Office|akun|pribadi|budget|anggaran)|'
-    r'(?:personal\s+)?risk\s+(?:budget|per\s+trade)|loss\s+budget|'
+    r'(?:anggaran|budget|nominal|target|batas)\s+(?:risiko|risk|kerugian|rugi|loss)|'
+    r'(?:risiko|risk|kerugian)\s+(?:Office|akun|pribadi|budget|anggaran|nominal)|'
+    r'(?:personal\s+)?risk\s+(?:budget|per\s+trade)|loss\s+(?:budget|limit)|'
+    r'(?:max|maximum)\s+loss|'
     r'(?:saldo|modal)\s+(?:akun|Office)|(?:account|personal)\s+(?:balance|capital))\b|'
     r'\b(?:saldo|modal)\s*(?::|=|sebesar|senilai|adalah)?\s*\$?\d|'
     r'\b(?:risk|risiko)(?:\s+(?:per|tiap|setiap)\s+(?:transaksi|trade|order|entry))?'

@@ -44,7 +44,8 @@ class PrivateRiskPromptContractTests(unittest.TestCase):
             'Rekomendasikan position size hanya sebagai bahan diskusi.',
             'Berapa qty yang ideal dari risiko ini?',
             'Quantity berapa yang cocok?', 'Berikan saran lot untuk entry ini.',
-            'Berapa ukuran posisinya?', 'Berapa banyak kontrak untuk entry?')
+            'Berapa ukuran posisinya?', 'Berapa banyak kontrak untuk entry?',
+            'Rekomendasikan besaran posisi untuk setup LINKUSDT.')
         for phase in service.PHASES:
             for text in messages:
                 with self.subTest(phase=phase, text=text), self.assertRaises(service.DialogueError):
@@ -68,7 +69,8 @@ class PrivateRiskPromptContractTests(unittest.TestCase):
         messages = ('Risiko Office 17.25 USDT.', 'Anggaran risiko 17.25 USDT.',
             'risk_usdt=17.25 dari Risk Manager.', 'Risk budget: 17.25 USDT.',
             'Risiko per transaksi sebesar 17.25 USDT.', 'Modal akun 17.25 USDT.',
-            'Saldo akun sebesar 17.25 USDT.', 'Risiko: 17.25 USDT.')
+            'Saldo akun sebesar 17.25 USDT.', 'Risiko: 17.25 USDT.',
+            'Batas rugi 17.25 USDT per transaksi.', 'Risk nominal 17.25 USDT.')
         for phase in ('COMPOSE_ANALYSIS', 'ANALYSIS', 'COMPOSE_PENDING_REVIEW', 'PENDING_REVIEW'):
             for text in messages:
                 with self.subTest(phase=phase, text=text), self.assertRaisesRegex(
