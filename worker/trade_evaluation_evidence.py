@@ -216,13 +216,16 @@ def bind_closed_trade(coordinator, closed, *, history, archive_reader, source_re
             intent_id=row['id'],client_order_id=intent['client_order_id'],entry_order_id=result['order_id'],
             exit_order_ids=sorted({str(r['orderId'])for r in fills if r['side']==intent['protection']['exit_side']}),
             financial_receipt_sha256=digest(financial_receipt(result)),fills_sha256=digest(fills),research_operation=operation,
+            fills=deepcopy(fills),
             source_evidence={k:source[k]for k in('source_type','contract_version','provider_evidence_sha256')if k in source},original_decision=decision,original_reply=response['assistant_text'],
             original_reply_sha256=response['assistant_sha256'],materials=materials,
             execution=dict(entry_limit=plan['entry'],entry=closed['entry_price'],sl=plan['sl'],tp=plan['tp'],
                 quantity=result['filled_quantity'],planned_quantity=plan['quantity'],exit_average=closed['exit_price'],
                 closure_source=result.get('closure_source','NATIVE_CLOSED_RECEIPT_TRIGGER_NOT_IDENTIFIED'),
                 original_neurobro_tp=plan.get('neurobro_tp',decision.get('take_profit'))),
-            outcome=dict(pnl_usdt=closed['pnl_usdt'],calculation_method=closed['calculation_method']))
+            outcome={key:deepcopy(closed[key]) for key in ('opened_at','closed_at','pnl_usdt',
+                'realized_pnl_usdt','commission_usdt','funding_usdt','insurance_usdt','calculation_method')
+                if key in closed})
         # No long financial transaction spans archive access. Recheck the
         # immutable source/economics after that external internal-reader seam.
         current=coordinator.db.execute('SELECT * FROM order_intents WHERE id=?',(row['id'],)).fetchone()
@@ -242,11 +245,19 @@ def evaluation_request(job, bindings, room_id):
     need(job.get('evidence_complete')is True and all(t in bindings for t in job['trade_ids']),
         'EVALUATION_EVIDENCE_INCOMPLETE')
     records=[bindings[t]for t in job['trade_ids']]
+    from .trade_evaluation_metrics import actual_reward_risk
     evidence_sha=digest(dict(job_id=job['id'],trade_ids=job['trade_ids'],bindings=[r['binding_sha256']for r in records]))
     prompt=('Mari evaluasi transaksi historis ini dari bukti aslinya, bukan membuat setup atau order baru. '
         'Neurobro tetap analis utama; Hermes menyiapkan konteks dan mencatat evaluasi. '
         'Bedakan kualitas analisis awal, pelaksanaan entry/exit, biaya dan kondisi pasar. '
         'Jangan menilai keputusan lampau memakai chart terbaru seolah tersedia saat itu.\n\n')
+    if job['id'].startswith('losing-streak:'):
+        prompt+=('Pemicu faktual: rentetan kerugian bersih berturut-turut pada transaksi tertutup yang teramati. '
+            'Ini pemicu evaluasi, bukan perubahan batas trading atau alasan otomatis menghentikan robot.\n')
+    elif job['id'].startswith('performance-decline:'):
+        prompt+=('Pemicu faktual: tiga penutupan terakhir memiliki lebih sedikit kemenangan dan rata-rata PNL bersih '
+            'lebih rendah daripada tiga penutupan sebelumnya. Ini sampel kecil transaksi teramati, '
+            'bukan bukti sebab, perubahan strategi atau keseluruhan kinerja akun.\n')
     for item in records:
         original=item['original_decision'];executed=item['execution'];outcome=item['outcome']
         prompt+=(f"Transaksi {item['trade_id']}: {original['symbol']} {original['side']}. "
@@ -259,9 +270,25 @@ def evaluation_request(job, bindings, room_id):
                'Gateway mengonfirmasi penutupan, tetapi receipt ini tidak menetapkan apakah pemicunya SL atau TP. ')
             + 
             f"PNL bersih tercatat {outcome['pnl_usdt']} USDT; biaya trading sudah diperhitungkan sekali. "
+            f"R terealisasi bersih terhadap jarak SL awal dan quantity yang benar-benar terisi: "
+            f"{actual_reward_risk(item) or 'belum diketahui'}. "
+            f"Realized PNL sebelum biaya {outcome.get('realized_pnl_usdt', 'belum diketahui')}; "
+            f"komisi {outcome.get('commission_usdt', 'belum diketahui')}; "
+            f"funding bertanda {outcome.get('funding_usdt', 'belum diketahui')}; "
+            f"insurance bertanda {outcome.get('insurance_usdt', 'belum diketahui')} USDT. "
+            'Jangan kurangi komisi atau tambahkan funding lagi dari PNL bersih tersebut. '
             f"Bahan historis diambil {datetime.fromtimestamp(item['materials']['observed_at'],timezone.utc).isoformat()} UTC.\n")
+        if item.get('fills') is not None:
+            need(digest(item['fills'])==item['fills_sha256'],'EVALUATION_FILL_HISTORY_MISMATCH')
+            prompt+='Fills riil dari cache history terautentikasi: '+canonical(item['fills'])+'\n'
     prompt+=('\nTolong jelaskan temuan yang benar-benar didukung bahan, keterbatasan bukti, dan hipotesis '
-        'pengujian yang layak bila ada. Jangan mengklaim eksperimen atau peningkatan win rate sudah terjadi. '
+        'pengujian yang layak bila ada. Pisahkan pelajaran yang didukung bukti dari hipotesis; '
+        'status pengujian tetap NOT_RUN sampai ada hasil pengujian nyata. '
+        'Biaya operasional kantor dan net sesudah biaya itu belum terikat bukti di pekerjaan ini; jangan anggap nol '
+        'atau kurangi pembayaran/top-up prepaid sebagai biaya kedua. '
+        'Jangan mengklaim eksperimen atau peningkatan win rate sudah terjadi. '
+        'Jika bukti tambahan memang tidak tersedia, nyatakan keterbatasannya dan selesaikan sebagai '
+        'BELUM CUKUP BUKTI; jangan mengulang diskusi tanpa pertanyaan yang bisa dijawab oleh bahan terikat. '
         'Akhiri PENILAIAN SETUP: SESUAI BUKTI, TIDAK SESUAI BUKTI, atau BELUM CUKUP BUKTI. '
         'Ini penilaian historis, bukan LONG/SHORT/HOLD untuk transaksi baru.')
     operation='post-trade-evaluation:'+evidence_sha[:32]

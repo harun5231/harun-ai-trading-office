@@ -166,8 +166,13 @@ No autonomous evaluation or win-rate experiment is claimed from these helpers.
 `trade_evaluation_runtime` joins the already authenticated account-history cache
 and owned CLOSED intent to original research and historical material custody.
 The existing native account actor binds evidence; the existing coordinator only
-starts `POST_TRADE_EVALUATION` after normal work returns idle/capacity-full and
-there is no unresolved trading work or financial transaction. Owner ON/readiness
+starts `POST_TRADE_EVALUATION` after normal work returns idle/capacity-full, a
+completed cycle (including a final technical rejection), or a verified completed
+market HOLD. Every opportunity requires no unresolved research or financial
+transaction. The HOLD boundary requires a matching final HOLD candidate and no
+failure/wait; mid-analysis and uncertain provider outcomes never qualify. This
+prevents unlimited HOLD replacement rounds from starving an evidenced evaluation
+while keeping the same coordinator and DailyRoom. Owner ON/readiness
 controls remain in force. Protection and account actors stay independent. The
 one DailyRoom serializes historical discussion with trading; no daemon is added.
 
@@ -203,3 +208,68 @@ snapshot helper, and the changed provider/dialogue/actor hooks together. Do not
 apply this source to the already staged df80 worker-only artifact or relabel that
 receipt. Runtime archive access, new-phase dialogue and analyst response still
 require deployment evidence; offline tests/fixtures do not establish them.
+
+## Performance observations and evaluation scheduling
+
+The same journal also derives a `performance-decline:<closing-trade-id>` job when
+the last three observed complete closes have **both** fewer net winners and lower
+average net PNL than the preceding three closes. This six-close comparison is an
+evaluation observation, not a causal finding, risk limit, pause or strategy
+change. An unknown close prevents that comparison. Stable IDs, evidence gating,
+replay and backfill supersession are identical to losing-streak jobs; all six
+original decisions and historical material groups must bind before discussion.
+Ready aggregate jobs precede older singleton jobs, and the newest aggregate
+precedes older ones. Unknown native outcomes still prevent a new shared-room
+Send. Read-only recovery rotates among unknown operations so one missing receipt
+cannot indefinitely hide another operation's actual completion; no blind replay
+is introduced. `unresolved_evaluations` derives directly from durable once-intents
+and actual result operations, independently of whether their jobs remain current.
+Backfill/supersession cannot hide a possibly in-flight Send. An actual receipt for
+the original input can be retained to resolve that unknown outcome, while its
+superseded or mismatched findings remain ineligible for current projection and
+its stale claim remains ineligible for dispatch.
+
+`monthly_performance` groups exact recorded closing instants in Asia/Jakarta.
+Its scope is explicitly `OBSERVED_CLOSED_POSITIONS`, never a full account-month
+claim. `complete` means all **those observed positions** have complete net PNL;
+the journal's separate history completeness/missing reasons remain authoritative
+for history coverage. Win rate includes breakeven in the denominator. Drawdown
+is peak-to-trough cumulative **closed net PNL** for the observed month, starting
+from zero; it is not account equity or mark-to-market drawdown. Consistency is
+the proportion of observed closing days whose net PNL is positive. Any unknown
+close makes the observed net total, win rate, drawdown and day consistency null;
+the complete-row subtotal is separately labelled. Replayed IDs are counted once.
+
+Actual realized net R uses the bound initial SL, actual filled entry average and
+actually filled quantity, including partial fills. Its monthly mean reports the
+number of positions with that evidence and missing-denominator limitations;
+history revisions invalidate stale bindings. This is distinct from the initial
+recommended TP or requested strategy RR. No SL, TP, sizing or trading policy is
+changed by any metric. Account equity drawdown percentage, operating costs and
+net after operating costs remain null because this journal does not establish
+them. Existing net position PNL already includes trading costs once; it is never
+charged again for commission/funding, and prepaid payments/top-ups are never
+invented as operating expenses.
+
+New bindings retain the authenticated signed fills and the calendar's realized
+PNL, commission, funding and insurance components. Historical evaluation sends
+those facts and actual net R to Neurobro with the original decision and archived
+1H/15M PNG/CSV evidence. Older valid bindings continue to work with unavailable
+details labelled unknown. Analyst findings, lessons and hypotheses remain the
+actual source-bound native reply; proposed tests remain `NOT_RUN` until real
+test evidence is recorded. A terminal `BELUM CUKUP BUKTI` is a valid inconclusive
+evaluation when required historical facts are unavailable, not a reason for an
+unending clarification loop.
+
+Historical reply excerpts use `agent.llm.web_display_text` for WEB display only.
+Old private Office budget/advisory-sizing clauses are omitted from that excerpt,
+which identifies the original source SHA-256. The original analyst text and hash
+remain unchanged in the request, archive witness and journal; actual signed PNL,
+fees and filled quantity remain facts even when their value happens to equal a
+private budget. The complete projected material text is checked by the existing
+outbound WEB guard before an initial or follow-up attachment upload.
+
+Native packaging must also include `worker/trade_evaluation_metrics.py` alongside
+the existing journal/evidence/runtime modules. These source and offline tests do
+not prove a production archive join, analyst discussion, experiment, complete
+account-month accounting or improved performance.
