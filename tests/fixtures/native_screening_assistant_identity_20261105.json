@@ -1,0 +1,229 @@
+{
+  "custody_digest_scope": "Controlled test digests; runtime root helper attests actual private-file hashes.",
+  "payload": {
+    "operation": "2026-11-05:robot-v9:0:screening:0:2",
+    "marker": "HARUN_d7c273b11c94b685754797534111d378",
+    "provider": "NEUROBRO_WEB",
+    "contract_version": "neurobro-browser-decision-v2",
+    "prompt": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance",
+    "output_schema": {
+      "type": "object",
+      "properties": {
+        "symbols": {
+          "type": "array",
+          "description": "Exactly two distinct active Binance USD-M Futures trading symbols.",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z0-9]{2,18}USDT$",
+            "description": "Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation."
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "symbols"
+      ],
+      "additionalProperties": false
+    },
+    "context": null,
+    "request_sha256": "452afd50e7c30bf069fe8362724d45ac6dfac04d85585daa7ffaf2654e20ec1d"
+  },
+  "room": {
+    "anchors": [
+      "62e47a3840ddb68dd836ea4ce5fa112e281a2fb6dd56994889c886edd62ab734",
+      "45ec9aaa23a6af63a6bb49a12bf29ac5f226bcb854696b49cf28f062d49659d7",
+      "f9716230873dc9a58d5efb762d164c5e1494362776885704bf6bfec44c8f00a8",
+      "4bd74b5701efc823d8a044cc9b46f778a7df8c6c86beb657f85d82f633f58fbd"
+    ],
+    "day": "2026-11-05",
+    "first_prompt_sha256": "989da6dc08c18f2903f6b97be2fd8c4221fd288b0d88eaf2a9e7691e85640898",
+    "history_titles": [
+      "Pilih 2 Coin Binance Futures",
+      "Analisis Entry BTCUSDT Binance Futures",
+      "Entry Limit Belum Terjemput",
+      "Pilih Dua Coin Profit Tinggi",
+      "Coin Pilihan Binance Futures",
+      "Rekomendasi coin futures binance"
+    ],
+    "marker": "HARUN_d7c273b11c94b685754797534111d378",
+    "room_id": "ac3205926378478c8268412b2ce30555",
+    "updated_at": 1793864410.627018,
+    "url": "https://app.neurobro.ai/",
+    "identifier_reconciliation": null
+  },
+  "rows": [
+    {
+      "attachments": [],
+      "role": "user",
+      "text": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_d7c273b11c94b685754797534111d378"
+    },
+    {
+      "complete": true,
+      "id": "af38d740-2fb5-45e4-bebe-428989fe5384",
+      "role": "assistant",
+      "text": "Dari hasil scan alpha + futures, dua nama mid-cap yang paling layak buat scalping di Binance USDⓈ-M sekarang: $RUNE dan $TIA. Dua-duanya segar (belum ada di radar lo), likuid, dan punya katalis/struktur yang beda dari mayoritas pasar.\n\nRUNE - KATALIS NYATA, SHORTS MASIH BAYAR\n\nTHORChain baru buka ulang 7 rute swap (BTC, ETH, Tron) dan daily fee melonjak dari $3.7K ke $140K - itu fundamental, bukan sekadar rumor. Funding Binance masih negatif (-0.09%) artinya posisi short yang nanggung bayar, sementara price naik +2% di volume $24M.\n\nTIA - SHORT SQUEEZE BARU MULAI\n\nOI Binance naik +4.46% dan likuidasi short ($122.8K) jauh di atas likuidasi long ($39.5K) - shorts lagi terpojok, funding masih moderat (+0.27%) jadi belum overcrowded. Ini kondisi ideal buat scalping long mengikuti 1h structure.\n\nBottom line: Entry long di area pullback, TP1 dulu 60-70% posisi, sisanya lanjut ke TP2 - dua-duanya kasih R:R sekitar 1:2 net setelah fee, sesuai standar lo. Kedua setup bisa langsung dicek - dan kalau mau, lo juga bisa trading keduanya langsung di NeuroWallet.\n\n⚖️ Neurobro adalah alat riset dan bukan financial advice! Kami terus improve, tapi tetap bisa salah - yang trading dan risiko yang lo ambil, tetap keputusan lo.\n\nCOIN PILIHAN (2):\n\nCoin\tAlasan Singkat\n$RUNE (RUNEUSDT)\tKatalis fundamental: THORChain aktif lagi, swap fee naik 38x; funding negatif = shorts bayar; entry ~0.630, SL 0.615, TP 0.655/0.685, confidence 7\n$TIA (TIAUSDT)\tOI naik +4.5%, likuidasi short 3x long = squeeze; funding sehat; entry ~0.450, SL 0.438, TP 0.470/0.490, confidence 6"
+    },
+    {
+      "attachments": [],
+      "role": "user",
+      "text": "Mohon ringkas 2 coin pilihanmu sesuai kapasitas yang diminta dalam bentuk COIN: simbol USDT Perpetual. Jangan sertakan coin pembanding sebagai pilihan."
+    },
+    {
+      "complete": true,
+      "id": "80293b48-6430-4b0b-ab74-0fc86f265a8d",
+      "role": "assistant",
+      "text": "2 coin pilihan final buat Binance USDⓈ-M futures - tanpa coin pembanding:\n\nCOIN: RUNEUSDT Perpetual - katalis THORChain, funding negatif, long bias.\n\nCOIN: TIAUSDT Perpetual - short squeeze, OI naik, funding sehat.\n\nEntry, SL, dan TP-nya masih sama seperti setup sebelumnya ($RUNE 0.630 / TP 0.655-0.685; $TIA 0.450 / TP 0.470-0.490)."
+    }
+  ],
+  "rendered_prompt": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_d7c273b11c94b685754797534111d378",
+  "evidence": {
+    "schema_version": 1,
+    "protocol": "SCREENING_ASSISTANT_IDENTITY_EVIDENCE_V1",
+    "operation": "2026-11-05:robot-v9:0:screening:0:2",
+    "request_sha256": "452afd50e7c30bf069fe8362724d45ac6dfac04d85585daa7ffaf2654e20ec1d",
+    "room_id": "ac3205926378478c8268412b2ce30555",
+    "original_anchors": [
+      "62e47a3840ddb68dd836ea4ce5fa112e281a2fb6dd56994889c886edd62ab734",
+      "45ec9aaa23a6af63a6bb49a12bf29ac5f226bcb854696b49cf28f062d49659d7",
+      "f9716230873dc9a58d5efb762d164c5e1494362776885704bf6bfec44c8f00a8",
+      "4bd74b5701efc823d8a044cc9b46f778a7df8c6c86beb657f85d82f633f58fbd"
+    ],
+    "retained_agent": {
+      "first_mini_done": {
+        "kind": "DELEGATED_MODEL_DIALOGUE",
+        "operation_id": "delegated-model:72a5a5eba8004b41f4132f8a9eb8b559c440f37704efaca5b8ca8b36a5f20d64",
+        "request_hash": "1c13aa350628b9eaeca9be07b2da219e4089c13432421eb7be62162cfc37bcbe",
+        "result": "{\"authority\":\"DIALOGUE_CONTROL_ONLY\",\"conversation_id\":\"neurobro:2026-11-05:ac3205926378478c8268412b2ce30555\",\"decision\":{\"action\":\"SCREENING\",\"question\":\"\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"]},\"needs_followup\":false,\"ok\":true,\"phase\":\"SCREENING\",\"reason\":\"DIALOGUE_DECISION\",\"reply_sha256\":\"7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067\",\"request_id\":\"72a5a5eba8004b41f4132f8a9eb8b559c440f37704efaca5b8ca8b36a5f20d64\",\"schema_version\":1,\"trading_authority\":false}",
+        "state": "DONE",
+        "updated_at": 1793864398.9029393
+      },
+      "final_mini_unknown": {
+        "kind": "DELEGATED_MODEL_DIALOGUE",
+        "operation_id": "delegated-model:5e269699289a2a0b2aeadb5fb006edf2c97128a0ab82625da3f7574d8685ca4d",
+        "request_hash": "b9bc80a0f611987c430226e98681879f09e12418c445681ab99f504dc28d88a6",
+        "result": null,
+        "state": "UNKNOWN",
+        "updated_at": 1793864410.5863976
+      },
+      "raw_receipts": [
+        {
+          "key": "dialogue-model-raw:3e85acf85a30cf2432ea6a85f087aa86c780e046f46c7c4a04893a60b43300a0",
+          "value": {
+            "authority": "UNVALIDATED_MODEL_OUTPUT",
+            "json_decoded": true,
+            "model_input_sha256": "399c2bee6e944a90eea19003b739d82a81516804cbffa09e3285c8b6a21e5824",
+            "model_response_id": "resp_0b341908221df09e016aec32c9a83487d290f807264b192df9",
+            "native_reply_sha256": "7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067",
+            "observed_at": 1793864398.8926175,
+            "phase": "SCREENING",
+            "raw_decision": {
+              "action": "SCREENING",
+              "question": "Minta rekomendasi ukuran posisi dari Neurobro untuk masing‑masing coin di atas (mis. % risiko akun atau % ekuitas, atau risk per trade dalam R) sebagai bahan diskusi saja. Tegaskan juga timeframe yang direkomendasikan untuk eksekusi scalping (mis. 15M atau 1H). Risk Manager akan tetap menghitung quantity final berdasarkan risiko Office termasuk fee dan estimasi slippage; rekomendasi Neurobro bukan instruksi order.",
+              "symbols": [
+                "RUNEUSDT",
+                "TIAUSDT"
+              ]
+            },
+            "raw_output_text": "{\"action\":\"SCREENING\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"],\"question\":\"Minta rekomendasi ukuran posisi dari Neurobro untuk masing‑masing coin di atas (mis. % risiko akun atau % ekuitas, atau risk per trade dalam R) sebagai bahan diskusi saja. Tegaskan juga timeframe yang direkomendasikan untuk eksekusi scalping (mis. 15M atau 1H). Risk Manager akan tetap menghitung quantity final berdasarkan risiko Office termasuk fee dan estimasi slippage; rekomendasi Neurobro bukan instruksi order.\"}",
+            "schema_version": 1
+          }
+        },
+        {
+          "key": "dialogue-model-raw:ce9972ed454c9ce412eb51115665661f94db2b78ab10f62c9668870889500000",
+          "value": {
+            "authority": "UNVALIDATED_MODEL_OUTPUT",
+            "json_decoded": true,
+            "model_input_sha256": "5e3cb6e47440dd0b8050c23cdbb51c4aabf2e1d467a2ce581e469affdd83af5b",
+            "model_response_id": "resp_0f54103a82c435f8016aec32d4914487d28c1a02c87deed96c",
+            "native_reply_sha256": "d7e7f7608ad9d4dfcb55ec5ae14ebb031e90732dd0212907988e89484b542048",
+            "observed_at": 1793864410.5187407,
+            "phase": "SCREENING",
+            "raw_decision": {
+              "action": "CLARIFY",
+              "question": "Minta rekomendasi ukuran posisi dari Neurobro untuk setiap coin sebagai bahan diskusi (contoh: % risiko akun atau R yang disarankan). Tegaskan bahwa rekomendasi ukuran hanya bahan diskusi — quantity eksekusi final dihitung Risk Manager berdasarkan risiko Office termasuk fee dan estimasi slippage. Konfirmasi juga: timeframe trading yang dipakai untuk setup ini (15M atau 1H?), tipe entry (LIMIT di area pullback seperti level yang sudah disebut, atau MARKET?), dan pembagian TP (TP1 = 60–70% posisi, sisa ke TP2) sudah benar?",
+              "symbols": [
+                "RUNEUSDT",
+                "TIAUSDT"
+              ]
+            },
+            "raw_output_text": "{\"action\":\"CLARIFY\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"],\"question\":\"Minta rekomendasi ukuran posisi dari Neurobro untuk setiap coin sebagai bahan diskusi (contoh: % risiko akun atau R yang disarankan). Tegaskan bahwa rekomendasi ukuran hanya bahan diskusi — quantity eksekusi final dihitung Risk Manager berdasarkan risiko Office termasuk fee dan estimasi slippage. Konfirmasi juga: timeframe trading yang dipakai untuk setup ini (15M atau 1H?), tipe entry (LIMIT di area pullback seperti level yang sudah disebut, atau MARKET?), dan pembagian TP (TP1 = 60–70% posisi, sisa ke TP2) sudah benar?\"}",
+            "schema_version": 1
+          }
+        }
+      ]
+    },
+    "current_agent": {
+      "first_mini_done": {
+        "kind": "DELEGATED_MODEL_DIALOGUE",
+        "operation_id": "delegated-model:72a5a5eba8004b41f4132f8a9eb8b559c440f37704efaca5b8ca8b36a5f20d64",
+        "request_hash": "1c13aa350628b9eaeca9be07b2da219e4089c13432421eb7be62162cfc37bcbe",
+        "result": "{\"authority\":\"DIALOGUE_CONTROL_ONLY\",\"conversation_id\":\"neurobro:2026-11-05:ac3205926378478c8268412b2ce30555\",\"decision\":{\"action\":\"SCREENING\",\"question\":\"\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"]},\"needs_followup\":false,\"ok\":true,\"phase\":\"SCREENING\",\"reason\":\"DIALOGUE_DECISION\",\"reply_sha256\":\"7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067\",\"request_id\":\"72a5a5eba8004b41f4132f8a9eb8b559c440f37704efaca5b8ca8b36a5f20d64\",\"schema_version\":1,\"trading_authority\":false}",
+        "state": "DONE",
+        "updated_at": 1793864398.9029393
+      },
+      "final_mini_unknown": {
+        "kind": "DELEGATED_MODEL_DIALOGUE",
+        "operation_id": "delegated-model:5e269699289a2a0b2aeadb5fb006edf2c97128a0ab82625da3f7574d8685ca4d",
+        "request_hash": "b9bc80a0f611987c430226e98681879f09e12418c445681ab99f504dc28d88a6",
+        "result": null,
+        "state": "UNKNOWN",
+        "updated_at": 1793864410.5863976
+      },
+      "raw_receipts": [
+        {
+          "key": "dialogue-model-raw:3e85acf85a30cf2432ea6a85f087aa86c780e046f46c7c4a04893a60b43300a0",
+          "value": {
+            "authority": "UNVALIDATED_MODEL_OUTPUT",
+            "json_decoded": true,
+            "model_input_sha256": "399c2bee6e944a90eea19003b739d82a81516804cbffa09e3285c8b6a21e5824",
+            "model_response_id": "resp_0b341908221df09e016aec32c9a83487d290f807264b192df9",
+            "native_reply_sha256": "7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067",
+            "observed_at": 1793864398.8926175,
+            "phase": "SCREENING",
+            "raw_decision": {
+              "action": "SCREENING",
+              "question": "Minta rekomendasi ukuran posisi dari Neurobro untuk masing‑masing coin di atas (mis. % risiko akun atau % ekuitas, atau risk per trade dalam R) sebagai bahan diskusi saja. Tegaskan juga timeframe yang direkomendasikan untuk eksekusi scalping (mis. 15M atau 1H). Risk Manager akan tetap menghitung quantity final berdasarkan risiko Office termasuk fee dan estimasi slippage; rekomendasi Neurobro bukan instruksi order.",
+              "symbols": [
+                "RUNEUSDT",
+                "TIAUSDT"
+              ]
+            },
+            "raw_output_text": "{\"action\":\"SCREENING\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"],\"question\":\"Minta rekomendasi ukuran posisi dari Neurobro untuk masing‑masing coin di atas (mis. % risiko akun atau % ekuitas, atau risk per trade dalam R) sebagai bahan diskusi saja. Tegaskan juga timeframe yang direkomendasikan untuk eksekusi scalping (mis. 15M atau 1H). Risk Manager akan tetap menghitung quantity final berdasarkan risiko Office termasuk fee dan estimasi slippage; rekomendasi Neurobro bukan instruksi order.\"}",
+            "schema_version": 1
+          }
+        },
+        {
+          "key": "dialogue-model-raw:ce9972ed454c9ce412eb51115665661f94db2b78ab10f62c9668870889500000",
+          "value": {
+            "authority": "UNVALIDATED_MODEL_OUTPUT",
+            "json_decoded": true,
+            "model_input_sha256": "5e3cb6e47440dd0b8050c23cdbb51c4aabf2e1d467a2ce581e469affdd83af5b",
+            "model_response_id": "resp_0f54103a82c435f8016aec32d4914487d28c1a02c87deed96c",
+            "native_reply_sha256": "d7e7f7608ad9d4dfcb55ec5ae14ebb031e90732dd0212907988e89484b542048",
+            "observed_at": 1793864410.5187407,
+            "phase": "SCREENING",
+            "raw_decision": {
+              "action": "CLARIFY",
+              "question": "Minta rekomendasi ukuran posisi dari Neurobro untuk setiap coin sebagai bahan diskusi (contoh: % risiko akun atau R yang disarankan). Tegaskan bahwa rekomendasi ukuran hanya bahan diskusi — quantity eksekusi final dihitung Risk Manager berdasarkan risiko Office termasuk fee dan estimasi slippage. Konfirmasi juga: timeframe trading yang dipakai untuk setup ini (15M atau 1H?), tipe entry (LIMIT di area pullback seperti level yang sudah disebut, atau MARKET?), dan pembagian TP (TP1 = 60–70% posisi, sisa ke TP2) sudah benar?",
+              "symbols": [
+                "RUNEUSDT",
+                "TIAUSDT"
+              ]
+            },
+            "raw_output_text": "{\"action\":\"CLARIFY\",\"symbols\":[\"RUNEUSDT\",\"TIAUSDT\"],\"question\":\"Minta rekomendasi ukuran posisi dari Neurobro untuk setiap coin sebagai bahan diskusi (contoh: % risiko akun atau R yang disarankan). Tegaskan bahwa rekomendasi ukuran hanya bahan diskusi — quantity eksekusi final dihitung Risk Manager berdasarkan risiko Office termasuk fee dan estimasi slippage. Konfirmasi juga: timeframe trading yang dipakai untuk setup ini (15M atau 1H?), tipe entry (LIMIT di area pullback seperti level yang sudah disebut, atau MARKET?), dan pembagian TP (TP1 = 60–70% posisi, sisa ke TP2) sudah benar?\"}",
+            "schema_version": 1
+          }
+        }
+      ]
+    },
+    "custody": {
+      "request_id": "41990068843-1",
+      "source_commit": "3043947e9dc5cc76f20b00826af6d676298de2ae",
+      "source_sha256": "536f925ed363f3a93cf0045eda033d05219d1c7a71e27b113ee684ddd2531738",
+      "browser_capture_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "agent_capture_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  }
+}

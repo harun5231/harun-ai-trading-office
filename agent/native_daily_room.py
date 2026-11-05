@@ -308,7 +308,17 @@ class DailyRoom:
             'journal': JOURNAL_NAME}
 
     @staticmethod
-    def matches(rows, anchors, binding, state):
+    def matches(rows, anchors, binding, state, *, archive_root=None):
+        reconciliation = binding.get('identifier_reconciliation')
+        if reconciliation is not None:
+            if archive_root is None or not isinstance(reconciliation, dict):
+                return False
+            from .native_screening_recovery import (matches_identifier_binding,
+                identifier_checkpoint_verified)
+            if anchors == reconciliation.get('original_anchors'):
+                return matches_identifier_binding(rows, anchors, binding, archive_root)
+            if not identifier_checkpoint_verified(anchors, binding, archive_root):
+                return False
         if anchors and len(rows) >= len(anchors) and identities(rows[:len(anchors)]) == anchors:
             return True
         # A reloaded history page may contain only its already anchored tail.
@@ -385,7 +395,7 @@ class DailyRoom:
                     continue
                 need(status == 'CONNECTED')
                 rows = self.full_turns()
-                if self.matches(rows, anchors, binding, state):
+                if self.matches(rows, anchors, binding, state, archive_root=self.store.root):
                     return rows
                 # A saved title is only a navigation hint. Load its older UI
                 # history, then require the exact unchanged identity contract.
@@ -467,7 +477,7 @@ class DailyRoom:
                 need(status in ('CONNECTED', 'UNAVAILABLE'))
                 if status == 'CONNECTED':
                     current = self.full_turns()
-                    if self.matches(current, anchors, binding, state):
+                    if self.matches(current, anchors, binding, state, archive_root=self.store.root):
                         return current
                     if (len(current) > previous_count and current[-1].get('role') == 'assistant'
                             and current[-1].get('complete') is True):
@@ -581,7 +591,7 @@ class DailyRoom:
                     need(not rows)
                 state = 'PREPARED' if not rows else 'BOUND'
                 anchors = identities(rows)
-            if not self.matches(rows, anchors, self._binding, state):
+            if not self.matches(rows, anchors, self._binding, state, archive_root=self.store.root):
                 rows = self.restore(anchors, self._binding, state)
             self.mode = 'REUSED'
             composer = self.composer()
