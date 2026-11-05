@@ -462,6 +462,8 @@ class DelegatedDOMBridge:
             return rendered
 
         def send_followup(question, market, observed_turns, answer, phase):
+            if _received is not None and _received.get('review_only')is True:
+                raise ValueError('SCREENING_RECOVERY_RECEIVED_REPLY_INCOMPLETE')
             _require_web_prompt(question)
             prefix = copy.deepcopy(observed_turns)
             if (len(prefix) != 2 * len(state['turn_names'])
@@ -564,17 +566,29 @@ class DelegatedDOMBridge:
             # no foreign symbols, prices or trading authority from the model.
             from .dialogue_service import validate_request, validate_result
             validate_request(request, now=self.wall_clock())
-            response = validate_result(self.client.request(request), request)
+            model_operation=None
+            lookup=(phase=='SCREENING' and getattr(self.client,'supports_screening_receipt_lookup',False)is True)
+            stored=self.client.completed_screening(request)if lookup else None
+            if stored is not None:
+                response=validate_result(stored['result'],request);model_operation=stored['operation']
+            else:
+                response = validate_result(self.client.request(request), request)
+                if lookup:
+                    stored=self.client.completed_screening(request)
+                    if stored is None or stored['result']!=response:
+                        raise ValueError('NATIVE_SCREENING_MODEL_RECEIPT_MISSING')
+                    model_operation=stored['operation']
             gate()
             if transcript() != observed_turns:
                 unknown()
-            if phase == 'ANALYSIS' and self.daily_room is not None:
+            if phase in ('ANALYSIS','SCREENING') and self.daily_room is not None:
                 # Persist the actual accepted dialogue result before native
                 # final polling can be interrupted. Never synthesize approval
                 # while later recovering an uncertain browser outcome.
                 from .native_analysis_receipt import persist_review
                 persist_review(self.daily_room.store.root, payload, request, response,
-                    observed_turns, context=active_context, observed_at=self.wall_clock())
+                    observed_turns, context=active_context, observed_at=self.wall_clock(),
+                    model_operation=model_operation)
             if evaluation is not None:
                 if not response['needs_followup']:
                     question = evaluation.next_material_question()
