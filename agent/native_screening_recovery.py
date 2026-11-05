@@ -610,7 +610,7 @@ def enqueue(actor, value):
         if 'error' in task: raise task['error']
         result = task['result']
         if observation:
-            need(type(result) is dict and result.get('kind') == 'NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1'
+            need(type(result) is dict and result.get('kind') in ('NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1','NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V2')
                  and result.get('operation') == payload['operation']
                  and result.get('request_sha256') == payload['request_sha256']
                  and result.get('operation_completed') is False)

@@ -684,7 +684,8 @@ class DelegatedDOMBridge:
                 raise
         elif file_mode:
             delivery = NativeDataFileDelivery(self.bridge, self.native, gate,
-                wall_clock=self.wall_clock).install()
+                wall_clock=self.wall_clock,
+                archive_root=self.daily_room.store.root if self.daily_room is not None else None).install()
         self.bridge._answer = delegated_answer
         self.native.exact_json = operation_exact_json
         try:
