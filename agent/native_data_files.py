@@ -6,6 +6,7 @@ provenance, schema, prices and risk calculations remain with their owners.
 from __future__ import annotations
 
 import csv
+from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -92,11 +93,22 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
           and suffix.count(payload['marker']) == 1)
     symbol = expected[0]['symbol']
     projected = convert_native_market_context(payload['context'], now=now)
+    def utc(milliseconds):
+        return datetime.fromtimestamp(milliseconds / 1000, timezone.utc).isoformat(
+            timespec='milliseconds').replace('+00:00', 'Z')
+    windows = projected['candle_windows']
+    periods = '\n'.join(f"{label} tertutup: {utc(windows[frame]['first_open_time_ms'])} s.d. "
+        f"{utc(windows[frame]['last_close_time_ms'])}."
+        for frame,label in (('15m','15M'),('1h','1H')))
     instructions = (
         f"Bahan Binance Futures USDT Perpetual untuk {symbol}, diambil {projected['observed_at_utc']}. "
         'Dua CSV terlampir masing-masing berisi 200 candle tertutup 15M dan 1H dengan OHLCV asli. '
         'Waktu CSV adalah Unix millisecond UTC; candle berjalan dipisahkan dari 200 candle itu.\n'
         f"15M: {expected[0]['name']}\n1H: {expected[1]['name']}\n"
+        f'{periods}\n'
+        'Pada nama PNG, -15m- berarti chart 15M dan -1h- berarti chart 1H. '
+        'Data dan kedua gambar diambil berurutan; harga dapat bergerak di antaranya, '
+        'jadi perhatikan waktu pengambilannya. '
         f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
         'Periksa juga dua gambar chart terlampir: simbol, timeframe, rentang waktu, dan harga harus terbaca. '
         'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '

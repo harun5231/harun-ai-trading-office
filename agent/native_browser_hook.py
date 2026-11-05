@@ -126,7 +126,7 @@ class DelegatedDOMBridge:
             receipt_callback=receipt_callback)
 
     def _ask(self, payload, dispatch_check, *, chart_images=(), chart_evidence=(),
-            deadline=None, receipt_callback=None):
+            deadline=None, receipt_callback=None, _received=None):
         # Explicit native probe/evidence callbacks retain their existing path.
         # Normal BrowserActor._research has no callback and owns this transaction.
         if receipt_callback is not None:
@@ -168,6 +168,23 @@ class DelegatedDOMBridge:
                  'followup_intents': [], 'initial_url': None, 'turn_names': [],
                  'accepted_reply_sha256': None, 'accepted_output': None,
                  'asked_questions': []}
+        if _received is not None:
+            # Only the actor's received-turn adapter supplies this private seed.
+            # It has just observed the same BOUND room and every posted intent;
+            # it does not grant dispatch or manufacture a completion.
+            rows = copy.deepcopy(_received['rows'])
+            names = copy.deepcopy(_received['turn_names'])
+            if (receipt_callback is not None or not rows or len(rows) != 2 * len(names)
+                    or rows[-1].get('complete') is not True
+                    or rows[0]['text'] != _received['prompt']):
+                raise ValueError('NATIVE_RECEIVED_SEED_UNVERIFIED')
+            state.update(phase='RECEIVED', prompt=_received['prompt'],
+                attachments=names[0], turn_names=names,
+                prefix=rows[:-2] if len(rows)>2 else None,
+                question=rows[-2]['text'], url=self.bridge.page.url,
+                initial_url=self.bridge.page.url,
+                followup_intents=copy.deepcopy(_received['followup_intents']),
+                bound_charts=copy.deepcopy(_received['bound_charts']))
         payload_digest = _digest(payload)
         from .native_evaluation_protocol import is_evaluation_schema
         historical = is_evaluation_schema(payload.get('output_schema'))
@@ -379,6 +396,8 @@ class DelegatedDOMBridge:
             if len(composers) != 1 or composers[0].input_value():
                 unknown()
             gate()  # A PNG upload is an external browser action as well.
+            if _received is not None:
+                _received['before_upload']()
             bound = self.bridge._upload(composers[0], followup_payload, artifacts)
             names = list(self.bridge.uploaded_names)
             if (type(bound) is not list or len(bound) != 2 or len(names) != (4 if file_mode else 2)
@@ -456,6 +475,10 @@ class DelegatedDOMBridge:
             if len(buttons) != 1 or not buttons[0].is_enabled():
                 unknown()
             gate(check_material=True)  # Actual Send boundary owns current material freshness.
+            if _received is not None:
+                # Durable admission precedes the single irreversible UI click.
+                # A crash after this callback is UNKNOWN, never a replay grant.
+                _received['before_send']()
             state.update(phase='FOLLOWUP_SENT', prefix=prefix, question=question,
                          url=self.bridge.page.url, previous=None, stable=0)
             state['turn_names'].append(list(state['fresh_names']))
@@ -480,16 +503,23 @@ class DelegatedDOMBridge:
             active_context = state['fresh']['context'] if state['fresh'] is not None else payload.get('context')
             if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 observed = active_context.get('fetched_at') if isinstance(active_context, dict) else None
-                if (type(observed) in (int, float) and math.isfinite(observed)
+                received_refresh = (_received is not None and state['fresh'] is None)
+                if (received_refresh or type(observed) in (int, float) and math.isfinite(observed)
                         and self.wall_clock() - observed > 180):
                     # The reply is known, not an uncertain Send. Refresh before
                     # accepting a market decision from old charts; timestamps
                     # remain their real production values throughout.
                     reference = {'symbol': active_context.get('symbol'),
                         'observed_at': observed, 'server_time_ms': active_context.get('server_time')}
-                    send_followup('Materi pasar sebelumnya sudah berusia lebih lama. '
+                    question = ('Kita lanjutkan pembahasan yang sudah ada dengan chart dan data terbaru. '
+                        'Periksa kembali kedua gambar 15M dan 1H serta batas waktu candle tertutup '
+                        'UTC yang dijelaskan bersama CSV. Jika bahan terbaca dan konsisten, '
+                        'berikan keputusan pasar terbaru; jika belum, jelaskan bagian yang bermasalah.'
+                        if received_refresh else
+                        'Materi pasar sebelumnya sudah berusia lebih lama. '
                         'Berikut chart dan data terbaru untuk coin yang sama; mohon perbarui '
-                        'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.',
+                        'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.')
+                    send_followup(question,
                         reference, observed_turns, answer, phase)
                     return
             market = None if phase in ('SCREENING', 'POST_TRADE_EVALUATION') else self.converter(active_context, now=self.wall_clock())
@@ -696,7 +726,7 @@ class DelegatedDOMBridge:
         self.bridge._answer = delegated_answer
         self.native.exact_json = operation_exact_json
         try:
-            if self.prompt_cache is not None and self.prompt_cache.read(payload) is None:
+            if _received is None and self.prompt_cache is not None and self.prompt_cache.read(payload) is None:
                 # Draft once before the native Send. The durable render receipt
                 # makes DailyRoom and native receipt checks see identical bytes.
                 try:
@@ -729,7 +759,7 @@ class DelegatedDOMBridge:
             # The original native implementation still sends the first prompt,
             # waits for stable completion and creates the FINAL receipt/hash/ID.
             try:
-                gate(check_material=True)
+                gate(check_material=_received is None)
             except Exception:
                 status = self.bridge.status()
                 raise self.native.NotSubmitted(status if status in
@@ -741,8 +771,19 @@ class DelegatedDOMBridge:
                         transcript=self.daily_room.full_turns())
                     return dispatch_check() is True
                 return True
-            result = self.bridge.ask(payload, final_dispatch, chart_images=chart_images,
-                chart_evidence=chart_evidence, deadline=deadline, receipt_callback=None)
+            if _received is None:
+                result = self.bridge.ask(payload, final_dispatch, chart_images=chart_images,
+                    chart_evidence=chart_evidence, deadline=deadline, receipt_callback=None)
+            else:
+                # Resume only the already received owned turn. The unchanged
+                # delegated review/fresh-material/followup closures above own
+                # every subsequent discussion and Send. Never call DOM.ask:
+                # its initial fresh/fill/upload/click has already happened.
+                from .native_received_continuation import poll_received
+                if transcript() != _received['rows']:
+                    unknown()
+                result = poll_received(self.bridge, self.native, payload,
+                    state['prompt'], state['attachments'], until=until)
             if state['accepted_output'] is not None:
                 if (type(result) is not dict or type(result.get('assistant_text')) is not str
                         or hashlib.sha256(result['assistant_text'].encode()).hexdigest()
@@ -759,6 +800,9 @@ class DelegatedDOMBridge:
                             or result['assistant_text'] != final_answer()):
                         unknown()
                     for intent in state['followup_intents']:
+                        if (_received is not None and _digest(intent)
+                                in _received['completed_intents']):
+                            continue
                         complete = {**intent, 'intent_sha256': _digest(intent),
                             'response_id': result['response_id'],
                             'final_reply_sha256': hashlib.sha256(result['assistant_text'].encode()).hexdigest()}

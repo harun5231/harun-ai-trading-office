@@ -469,6 +469,9 @@ def identifier_checkpoint_verified(anchors, binding, archive_root):
 
 def recover(actor, delegated_bridge, value):
     """Existing actor-thread entry. Returns the native four-field result."""
+    from .native_received_continuation import is_continuation, continue_received
+    if is_continuation(value):
+        return continue_received(actor, delegated_bridge, value)
     from .native_received_analysis import is_observation, observe
     if is_observation(value):
         return observe(actor, delegated_bridge, value)
@@ -590,9 +593,12 @@ def recover(actor, delegated_bridge, value):
 def enqueue(actor, value):
     """Authenticated service calls this; only the existing actor touches DOM."""
     from .native_received_analysis import is_observation, validate as validate_observation
+    from .native_received_continuation import is_continuation, validate as validate_continuation
+    continuation = is_continuation(value)
     observation = is_observation(value)
-    generic_observation = type(value) is dict and value.get('action') == 'ANALYSIS_RECEIVED_OBSERVE'
-    payload = validate_observation(value) if observation else _unpack(value)[0]
+    generic_observation = (type(value) is dict and value.get('action') == 'ANALYSIS_RECEIVED_OBSERVE') or continuation
+    payload = (validate_continuation(value)[0] if continuation else
+        validate_observation(value) if observation else _unpack(value)[0])
     native = actor._bridge.native
     def unavailable(reason):
         if generic_observation:
@@ -607,17 +613,27 @@ def enqueue(actor, value):
             if actor.mode != 'AUTOMATION': unavailable('BUSY')
             status, ready = actor.current_status, actor.ready
         if not observation and status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
+            if continuation: unavailable(status)
             raise native.NotSubmitted(status)
         if not ready or (not observation and status != 'CONNECTED'): unavailable('UNAVAILABLE')
         task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
         actor.queue.put_nowait(task); queued = True; actor._wake.set()
-        if not task['done'].wait(45): raise native.OutcomeUnknown()
+        wait_seconds = (max(0.0, min(900.0, value['grant']['expires_at']-time.time()))
+            if continuation else 45)
+        if not task['done'].wait(wait_seconds): raise native.OutcomeUnknown()
         if 'error' in task:
             if generic_observation and str(task['error']) in {
                     'BUSY','UNAVAILABLE','LOGIN_REQUIRED','CHALLENGE_REQUIRED','LOGIN_IN_PROGRESS'}:
                 unavailable(str(task['error']))
             raise task['error']
         result = task['result']
+        if continuation:
+            need(type(result) is dict and result.get('kind') in (
+                'NATIVE_ANALYSIS_CONTINUATION_RESULT_V1','NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_V1')
+                and result.get('operation') == payload['operation']
+                and result.get('request_sha256') == payload['request_sha256']
+                and result.get('grant_id') == value['grant']['grant_id'])
+            return result
         if observation:
             need(type(result) is dict and result.get('kind') in ('NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1','NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V2')
                  and result.get('operation') == payload['operation']
