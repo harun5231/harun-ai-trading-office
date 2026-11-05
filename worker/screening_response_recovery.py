@@ -399,11 +399,17 @@ def _screening_review(proof, payload, rows):
     return None
 
 
+def _received_coin_summary(count):
+    _require(type(count)is int and count in(1,2))
+    return ('Mohon ringkas '+str(count)+' coin pilihanmu sesuai kapasitas '
+        'yang diminta dalam bentuk COIN: simbol USDT Perpetual. '
+        'Jangan sertakan coin pembanding sebagai pilihan.')
+
+
 def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
         retained=False, require_approval=True):
     """Check a no-send observation before admitting any native recorder write."""
     from agent.neurobro_reply import parse_reply_for_payload, _TECHNICAL
-    from agent.native_screening_recovery import clarification
     from .neuroapi import screening_count
     _require(type(envelope) is dict and envelope.get('kind') == RECEIVED_KIND
         and envelope.get('operation_completed') is False and envelope.get('operation') == payload['operation']
@@ -468,7 +474,7 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
         if prior is not None and prior['decision']['action'] == 'CLARIFY':
             _require(rows[index]['text'].strip() == prior['decision']['question'].strip())
         else:
-            _require(rows[index]['text'].replace('\r\n', '\n').strip() == clarification(count)
+            _require(rows[index]['text'].replace('\r\n', '\n').strip() == _received_coin_summary(count)
                 and parse_reply_for_payload(rows[index - 1]['text'], payload) == output)
     review = _screening_review(proof, payload, rows)
     if require_approval:

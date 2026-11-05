@@ -408,6 +408,9 @@ class ComposedPromptServiceTests(unittest.TestCase):
             module = native()
             module.user_prompt = lambda p: p['prompt'] + '\n\nOUTPUT_JSON_SCHEMA:\n{}\n' + p['marker']
             class ComposedBridge(Bridge):
+                def _turns(self):
+                    return [{**row,'role':{'native_user_role':'user','native_assistant_role':'assistant'}[row['role']]}
+                        for row in super()._turns()]
                 def ask(self, payload, *args, **kwargs):
                     copied = copy.deepcopy(payload); copied['prompt'] = module.user_prompt(payload)
                     return super().ask(copied, *args, **kwargs)
