@@ -1,0 +1,108 @@
+"""Exercise resumed turns through the REAL file delivery and native reader."""
+import copy
+from types import SimpleNamespace
+import unittest
+from unittest.mock import Mock
+
+from agent.native_browser_hook import DelegatedDOMBridge
+from agent.native_file_upload import NativeFileTurnReader, FILE_WITNESS
+from tests import test_native_file_upload as fixtures
+from tests.test_agent_closed_candles_200 import NOW, native_context_200
+from tests.test_native_browser_hook import OutcomeUnknown
+
+
+class RefreshReached(Exception): pass
+
+
+class Image:
+    def __init__(self,row,name): self.row,self.name=row,name
+    def is_visible(self): return True
+    def get_attribute(self,name):
+        assert name=='alt';return self.name
+    def evaluate(self,script):
+        return dict(complete=True,width=1314 if self.row['decoded'] else 0,
+                    height=738 if self.row['decoded'] else 0)
+
+
+class Node:
+    def __init__(self,row):self.row=row
+    def locator(self,selector):
+        assert selector=='img'
+        return fixtures.Items([Image(self.row,name)for name in self.row.get('files',[])[:2]])
+    def evaluate(self,script,args):
+        assert script==FILE_WITNESS
+        return [dict(name=name,ready=name in self.row.get('files',[]) and self.row['csv_ready'],
+                     matches=int(name in self.row.get('files',[])))for name in args['names']]
+
+
+class ActualFourFileBridge(fixtures.Fixture):
+    def native_turns(self):
+        rows=copy.deepcopy(self.rows)
+        for row in rows:
+            files=row.pop('files',[]);decoded=row.pop('decoded',True);row.pop('csv_ready',None)
+            if row['role']=='user':
+                # Exact native image contract: four expected names fail against
+                # two actual PNGs. The file reader must deliberately split them.
+                row['attachments']=list(self.uploaded_names)if self.uploaded_names==files[:2] and decoded else['UNCONFIRMED']
+        return rows
+    def _visible(self,selector):
+        if selector=='messages':return [Node(row)for row in self.rows]
+        raise AssertionError('No composer or Send access expected: '+selector)
+
+
+class ReceivedNativeFileReaderTests(unittest.TestCase):
+    def harness(self,*,followup=False,wrong_csv=False,bad_decode=False):
+        raw=ActualFourFileBridge();raw.current=.5
+        raw.url='https://app.neurobro.ai/';raw.operation_deadline=2;raw._operation_contract=raw._dom_contract
+        raw.ask=Mock(side_effect=AssertionError('Never repeat initial Send'))
+        def formatted(payload):return payload['prompt']
+        formatted.__harun_data_files_v1__=True
+        native=SimpleNamespace(NotSubmitted=fixtures.NotSubmitted,OutcomeUnknown=OutcomeUnknown,
+            MESSAGE='messages',USER_BODY='native-user-body',MAX_ANSWER=65536,user_prompt=formatted,
+            image_artifacts=Mock(return_value=[]),exact_json=Mock(return_value=None))
+        payload=dict(operation='2026-11-05:robot-v9:0:analysis-v9:DOGEUSDT',marker='HARUN_fixture',
+            request_sha256='a'*64,prompt='Analisis yang sudah terkirim.',context=native_context_200(),
+            output_schema=dict(required=['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']))
+        names=[['first-15m.png','first-1h.png','first-15m.csv','first-1h.csv']]
+        if followup:names.append(['last-15m.png','last-1h.png','last-15m.csv','last-1h.csv'])
+        raw.rows=[]
+        for index,files in enumerate(names):
+            raw.rows.extend([dict(role='user',text=payload['prompt']if index==0 else'Klarifikasi yang sudah dikirim.',
+                files=files,decoded=not bad_decode,csv_ready=not wrong_csv),
+                dict(role='assistant',text='Lampiran belum dapat dipahami.',id='reply-'+str(index),complete=True)])
+        raw.uploaded_names=names[-1]
+        owned=raw.native_turns()
+        for index,files in enumerate(names):owned[2*index]['attachments']=list(files)
+        reasoner=Mock(request=Mock(side_effect=AssertionError('No replayed Mini')))
+        refresh=Mock(side_effect=RefreshReached)
+        hook=DelegatedDOMBridge(raw,reasoner,native=native,monotonic=raw.clock,wall_clock=lambda:NOW+10,
+            fresh_charts=refresh,followup_receipt=Mock())
+        seed=dict(rows=owned,turn_names=names,prompt=payload['prompt'],followup_intents=[],
+            bound_charts=[],completed_intents=[],before_upload=Mock(),before_send=Mock())
+        return raw,hook,payload,seed,refresh,reasoner
+
+    def test_real_delivery_registers_received_initial_and_followup_without_bypassing_native_witnesses(self):
+        for followup in (False,True):
+            with self.subTest(followup=followup):
+                raw,hook,payload,seed,refresh,reasoner=self.harness(followup=followup)
+                with self.assertRaises(RefreshReached):hook._ask(payload,lambda:True,deadline=2,_received=seed)
+                self.assertIsInstance(raw._harun_file_turn_reader,NativeFileTurnReader)
+                registry=raw._harun_file_turn_reader.turn_files
+                self.assertEqual(set(registry),{tuple(names)for names in seed['turn_names']})
+                for names in seed['turn_names']:
+                    self.assertEqual(registry[tuple(names)][:2],(tuple(names[:2]),tuple(names[2:])))
+                refresh.assert_called_once();reasoner.request.assert_not_called();raw.ask.assert_not_called()
+                self.assertEqual(raw.actions,[]);seed['before_upload'].assert_not_called();seed['before_send'].assert_not_called()
+                self.assertLess(raw.current,1)
+
+    def test_registered_names_do_not_accept_missing_csv_or_undecoded_native_png(self):
+        for failure in ('csv','decode'):
+            with self.subTest(failure=failure):
+                raw,hook,payload,seed,refresh,reasoner=self.harness(followup=True,
+                    wrong_csv=failure=='csv',bad_decode=failure=='decode')
+                with self.assertRaises(OutcomeUnknown):hook._ask(payload,lambda:True,deadline=1,_received=seed)
+                refresh.assert_not_called();reasoner.request.assert_not_called();raw.ask.assert_not_called()
+                self.assertEqual(raw.actions,[]);seed['before_upload'].assert_not_called();seed['before_send'].assert_not_called()
+
+
+if __name__=='__main__':unittest.main()

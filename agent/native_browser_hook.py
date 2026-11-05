@@ -724,6 +724,16 @@ class DelegatedDOMBridge:
             delivery = NativeDataFileDelivery(self.bridge, self.native, gate,
                 wall_clock=self.wall_clock,
                 archive_root=self.daily_room.store.root if self.daily_room is not None else None).install()
+            if _received is not None:
+                # install() clears this operation's registry. Re-register the
+                # already observed turns so the native reader checks their two
+                # real PNGs and the live CSV tiles separately; four filenames
+                # must never be passed to its two-PNG parser as an unknown set.
+                for names in state['turn_names']:
+                    if len(names) != 4 or len(set(names)) != 4:
+                        unknown()
+                    delivery.reader.turn_files[tuple(names)] = (
+                        tuple(names[:2]), tuple(names[2:]), delivery._witness)
         self.bridge._answer = delegated_answer
         self.native.exact_json = operation_exact_json
         try:
