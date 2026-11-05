@@ -591,23 +591,32 @@ def enqueue(actor, value):
     """Authenticated service calls this; only the existing actor touches DOM."""
     from .native_received_analysis import is_observation, validate as validate_observation
     observation = is_observation(value)
+    generic_observation = type(value) is dict and value.get('action') == 'ANALYSIS_RECEIVED_OBSERVE'
     payload = validate_observation(value) if observation else _unpack(value)[0]
     native = actor._bridge.native
-    if actor.stopping.is_set(): raise native.NotSubmitted('UNAVAILABLE')
-    if not actor.claim.acquire(blocking=False): raise native.NotSubmitted('BUSY')
+    def unavailable(reason):
+        if generic_observation:
+            raise ScreeningRecoveryUnavailable('SCREENING_RECOVERY_' + reason)
+        raise native.NotSubmitted(reason)
+    if actor.stopping.is_set(): unavailable('UNAVAILABLE')
+    if not actor.claim.acquire(blocking=False): unavailable('BUSY')
     queued = False
     try:
-        if actor.sessions.active(): raise native.NotSubmitted('BUSY')
+        if actor.sessions.active(): unavailable('BUSY')
         with actor.lock:
-            if actor.mode != 'AUTOMATION': raise native.NotSubmitted('BUSY')
+            if actor.mode != 'AUTOMATION': unavailable('BUSY')
             status, ready = actor.current_status, actor.ready
         if not observation and status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
             raise native.NotSubmitted(status)
-        if not ready or (not observation and status != 'CONNECTED'): raise native.NotSubmitted('UNAVAILABLE')
+        if not ready or (not observation and status != 'CONNECTED'): unavailable('UNAVAILABLE')
         task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
         actor.queue.put_nowait(task); queued = True; actor._wake.set()
         if not task['done'].wait(45): raise native.OutcomeUnknown()
-        if 'error' in task: raise task['error']
+        if 'error' in task:
+            if generic_observation and str(task['error']) in {
+                    'BUSY','UNAVAILABLE','LOGIN_REQUIRED','CHALLENGE_REQUIRED','LOGIN_IN_PROGRESS'}:
+                unavailable(str(task['error']))
+            raise task['error']
         result = task['result']
         if observation:
             need(type(result) is dict and result.get('kind') in ('NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1','NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V2')

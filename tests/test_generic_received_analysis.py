@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from agent import native_received_analysis as observer
 from agent.native_daily_room import identities, JOURNAL_NAME
-from agent.native_screening_recovery import recover
+from agent.native_screening_recovery import recover,enqueue
 from tests import test_native_received_analysis as legacy
 
 
@@ -98,6 +98,12 @@ class GenericReceivedAnalysisTests(unittest.TestCase):
         self.assertEqual(proof['review_receipts'],[])
         self.assertEqual(proof['rows'][0]['attachments'],['UNCONFIRMED'])
         self.assertTrue(proof['file_tiles'][0]['file_tile_witnesses'])
+
+    def test_generic_busy_reason_survives_existing_sanitized_service_contract(self):
+        c=self.case;c.actor.mode='MANUAL'
+        with self.assertRaisesRegex(ValueError,'SCREENING_RECOVERY_BUSY'):
+            enqueue(c.actor,self.request)
+        self.assertFalse(c.actor.claim.locked())
 
     def test_more_followups_preserve_context_without_fixed_discussion_count(self):
         c=self.case;directory=c.root/'dialogue-200-followup'

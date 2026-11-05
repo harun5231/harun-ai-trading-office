@@ -36,6 +36,9 @@ def canonical(value):
 
 
 def digest(value): return hashlib.sha256(canonical(value)).hexdigest()
+def native_digest(value):
+    return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),
+        ensure_ascii=True,allow_nan=False).encode('ascii')).hexdigest()
 def text_sha(value): return hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -246,7 +249,7 @@ def observe(actor, delegated, value):
     need(room is not None and room.bridge is raw and room.native is native
          and _native_source_digest(native) == NATIVE_DOM_SHA256)
     capture = dict(schema_version=2 if generic else 1, kind=kind, operation=operation,
-        request_sha256=request, payload_sha256=digest(payload), observed_at=time.time(),
+        request_sha256=request, payload_sha256=native_digest(payload) if generic else digest(payload), observed_at=time.time(),
         native_source_sha256=NATIVE_DOM_SHA256, operation_completed=False,
         orders_sent=0, model_calls=0, provider_messages=0, uploads=0,
         history_restore_attempted=False, history_restored=False, status=None,
