@@ -618,7 +618,10 @@ def enqueue(actor, value):
         if not ready or (not observation and status != 'CONNECTED'): unavailable('UNAVAILABLE')
         task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
         actor.queue.put_nowait(task); queued = True; actor._wake.set()
-        wait_seconds = (max(0.0, min(900.0, value['grant']['expires_at']-time.time()))
+        # Allow the actor to retain/return its actual terminal disposition after
+        # the hard Send deadline. This response-only grace grants no browser
+        # action time: dispatch and the native deadline still expire unchanged.
+        wait_seconds = (max(0.0, min(900.0, value['grant']['expires_at']-time.time())) + 2.0
             if continuation else 45)
         if not task['done'].wait(wait_seconds): raise native.OutcomeUnknown()
         if 'error' in task:
