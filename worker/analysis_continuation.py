@@ -300,15 +300,24 @@ def restore_received_checkpoint(provider,envelope,*,now=None,permitted=lambda:Tr
     if row is None:return False
     payload,api=_body(provider,operation);before=json.loads(row['preimage']);grant=json.loads(row['grant'])
     # Same strict native UI/material proof, but no fabricated market decision.
+    accepted_same_turn=False
     try:basis=validate_observation(provider,envelope,payload,api['created'],now=current,repair=True)
     except Review as error:
         if str(error)!='ANALYSIS_CONTINUATION_NOT_REQUIRED':raise
         result,received,stale=validate_observation(provider,envelope,payload,api['created'],now=current)
         proof=envelope['observation'];basis=dict(reply_sha256=sha(proof['rows'][-1]['text']),
             latest_user_prompt_sha256=sha(proof['rows'][-2]['text']),next_followup_sequence=len(proof['rows'])//2)
-    if row['state']=='NOT_SENT' and basis['latest_user_prompt_sha256']==grant['latest_user_prompt_sha256']:
+        # The native hook may finish only its missing Mini review of this
+        # already received turn. Accept that without requiring another WEB
+        # message, provided actual retained approval and materials are fresh.
+        accepted_same_turn=(not stale and all(basis[key]==grant[key] for key in
+            ('reply_sha256','latest_user_prompt_sha256','next_followup_sequence'))
+            and datetime.fromtimestamp(current,ZoneInfo('Asia/Jakarta')).date().isoformat()==operation[:10]
+            and all(0<=current-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()
+                <=min(180,provider.chart_max_age) for chart in result['chart_evidence']))
+    if row['state']=='NOT_SENT' and not accepted_same_turn and basis['latest_user_prompt_sha256']==grant['latest_user_prompt_sha256']:
         return False
-    need(basis['latest_user_prompt_sha256']!=grant['latest_user_prompt_sha256']
+    need(accepted_same_turn or basis['latest_user_prompt_sha256']!=grant['latest_user_prompt_sha256']
         and basis['next_followup_sequence']>grant['next_followup_sequence'],
         'ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN')
     need(api['state']=='PENDING' and api['output'] is None and permitted() is True)

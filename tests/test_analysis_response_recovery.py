@@ -77,7 +77,7 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         proof=envelope['observation'];raw=wire(proof)
         envelope.update(observation_sha256=sha(raw),observation_bytes=len(raw.encode()))
         return envelope
-    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True):
+    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None):
         check=NOW-60;observed=NOW+300 if stale else NOW-10
         url='https://app.neurobro.ai/chat/'+'a'*32
         initial=[dict(source='BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT',symbol='BTCUSDT',timeframe=tf,
@@ -128,7 +128,7 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
                 reply_sha256=reply_sha,authority='DIALOGUE_CONTROL_ONLY',trading_authority=False,
                 decision=dict(action='HOLD' if 'ARAH: HOLD' in reply else 'COMPLETE',symbols=['BTCUSDT'],question=''),
                 needs_followup=False,reason='DIALOGUE_DECISION')
-            persist_review(self.root.name,self.payload,request,response,rows,context=self.context,observed_at=NOW-20)
+            persist_review(self.root.name,self.payload,request,response,rows,context=self.context,observed_at=NOW-20 if reviewed_at is None else reviewed_at)
             proof['review_receipts']=read_reviews(self.root.name,self.payload)
         return self.seal(dict(kind=KIND,operation=OP,request_sha256=self.request_hash,
             operation_completed=False,observation=proof,capture_name='received-analysis-observation-'+'a'*16+'-'+'b'*64+'.json',

@@ -150,6 +150,21 @@ class AnalysisContinuationTests(unittest.TestCase):
             with self.subTest(key=key),self.assertRaises(Review):record_return(self.provider,grant,result,now=NOW+1)
         self.assertEqual(active_grant(self.db,OP)['state'],'GRANTED')
 
+    def test_same_fresh_received_reply_with_actual_mini_receipt_needs_no_new_web_message(self):
+        envelope=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=False)
+        grant=admit(self.provider,envelope,now=NOW);record_return(self.provider,grant,now=NOW+1)
+        # The same real native author turn is subsequently reviewed by Mini;
+        # no user row, attachment or Neurobro response is sent again.
+        reviewed=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=True,reviewed_at=NOW+1)
+        reviewed['observation'].update(observed_at=NOW+1,finished_at=NOW+2);self.f.seal(reviewed)
+        self.assertEqual(reviewed['observation']['rows'],envelope['observation']['rows'])
+        self.assertTrue(restore_received_checkpoint(self.provider,reviewed,now=NOW+3))
+        self.assertEqual(recover_received_analysis(self.provider,reviewed,now=NOW+3),'RESUME_CACHED')
+        self.assertEqual(self.f.row('api_requests')['state'],'COMPLETE')
+        self.assertEqual(self.f.row('api_requests')['created'],NOW-2000)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT state FROM analysis_continuation_grants').fetchone()[0],'OBSERVED_NEW_REPLY')
+
     def test_owner_off_and_incomplete_followup_never_admit(self):
         self.db.execute('UPDATE robot_settings SET enabled=0')
         with self.assertRaises(Review):admit(self.provider,self.envelope,now=NOW)
