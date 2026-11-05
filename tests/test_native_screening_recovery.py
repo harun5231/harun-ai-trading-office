@@ -31,7 +31,8 @@ def parse(text):return json.loads(re.findall(r'```json\n(.*?)```',text,re.S)[0])
 def coordinator_class():
     tree=ast.parse(SOURCE.read_text())
     cls=next(n for n in tree.body if isinstance(n,ast.ClassDef)and n.name=='Coordinator')
-    scope=dict(json=json,hashlib=hashlib,re=re,math=math,time=time,D=D,Review=Review,
+    scope=dict(__name__='worker.native_screening_fixture',__package__='worker',
+        json=json,hashlib=hashlib,re=re,math=math,time=time,D=D,Review=Review,
         ResearchReadPaused=ResearchReadPaused,parse_assistant_text=parse,response_output_text=encode,
         BROWSER_PROVIDER=PROVIDER,BROWSER_CONTRACT=CONTRACT,
         screening_contract=screening_contract,REPLACEMENT_SCREENING=REPLACEMENT_SCREENING,

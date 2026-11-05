@@ -33,6 +33,8 @@ def utc(epoch):return datetime.fromtimestamp(epoch,timezone.utc).isoformat()
 
 class AnalysisResponseRecoveryTests(unittest.TestCase):
     def setUp(self):
+        from worker import neuroapi
+        self.old_canonical=neuroapi.canonical_output
         self.old={name:sys.modules.get(name) for name in ('worker.research_provider','worker.neurobrowser')}
         with patch('worker.owner_source_protocol.load_owner_release_cutoff',return_value='2026-11-04T00:00:00Z'):
             self.source=native_module('worker.research_provider',ROOT/'vps_native/worker/research_provider.py')
@@ -64,6 +66,8 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.envelope=self.fixture()
 
     def restore(self):
+        from worker import neuroapi
+        neuroapi.canonical_output=self.old_canonical
         for name,value in self.old.items():
             if value is None:sys.modules.pop(name,None)
             else:sys.modules[name]=value

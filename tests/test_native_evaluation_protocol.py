@@ -2,6 +2,7 @@
 import copy
 from datetime import datetime
 import hashlib
+import inspect
 import json
 from pathlib import Path
 import sqlite3
@@ -57,7 +58,9 @@ class EvaluationProtocolTests(unittest.TestCase):
     def test_exact_schema_rejects_setup_and_order_authority(self):
         bad=copy.deepcopy(evidence.EVALUATION_SCHEMA);bad['properties']['side']={'type':'string'}
         self.assertFalse(protocol.is_evaluation_schema(bad))
-        patcher=patch.object(neuroapi,'canonical_output',neuroapi.canonical_output);patcher.start();self.addCleanup(patcher.stop)
+        # Install this fixture's own exception contract independently of any
+        # native provider adapter another test may already have installed.
+        patcher=patch.object(neuroapi,'canonical_output',inspect.unwrap(neuroapi.canonical_output));patcher.start();self.addCleanup(patcher.stop)
         namespace={'__name__':'worker.research_provider','Review':ValueError,
             'validate_chart_evidence':Mock(return_value='legacy')}
         protocol.install_source_protocol(namespace)
