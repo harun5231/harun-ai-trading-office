@@ -24,6 +24,7 @@ from zoneinfo import ZoneInfo
 from .native_daily_room import JOURNAL_NAME, identities
 from .native_chart_followup import _directory, _private_file, pairs
 from .neurobro_reply import parse_reply_for_payload
+from . import native_screening_identity as identity
 
 KIND = 'SCREENING_RECOVERY'
 PROTOCOL = 'NATIVE_SCREENING_COMPLETION_RECOVERY_V1'
@@ -105,11 +106,11 @@ def _name(payload):
         ('operation', 'request_sha256')}) + '.json'
 
 
-def _verified_rows(payload, room, rows, rendered):
+def _verified_rows(payload, room, rows, rendered, *, observed_anchors=None):
     """Bind the exact native IDs, footer completion, text and stored anchors."""
     count = validate(payload)
     need(type(room) is dict and set(room) == {'day', 'room_id', 'url', 'updated_at',
-         'anchors', 'first_prompt_sha256', 'marker', 'history_titles'})
+         'anchors', 'first_prompt_sha256', 'marker', 'history_titles', 'identifier_reconciliation'})
     need(room['day'] == payload['operation'][:10]
          and type(room['room_id']) is str and re.fullmatch('[a-f0-9]{32}', room['room_id'])
          and type(room['url']) is str and room['url'].startswith('https://app.neurobro.ai/')
@@ -121,7 +122,7 @@ def _verified_rows(payload, room, rows, rendered):
          and room['first_prompt_sha256'] == text_sha(normal(rendered)))
     need(type(rows) is list and len(rows) == 4
          and all(type(row) is dict and row.get('attachments', []) == [] for row in rows)
-         and identities(rows) == room['anchors'])
+         and identities(rows) == (room['anchors'] if observed_anchors is None else observed_anchors))
     for index, row in enumerate(rows):
         need(row.get('role') == ('user' if index % 2 == 0 else 'assistant')
              and type(row.get('text')) is str and row['text'])
@@ -144,7 +145,7 @@ def validate_receipt(value, payload):
     fields = {'schema_version', 'kind', 'payload_sha256', 'room', 'rows',
               'rendered_prompt', 'initial_reply_sha256', 'final_reply_sha256',
               'native_source_sha256', 'native_received_at', 'stable_reads', 'native_poll_reads', 'native_result',
-              'history_restore_attempted', 'history_restored'}
+              'history_restore_attempted', 'history_restored', 'identity_reconciliation'}
     need(type(value) is dict and set(value) == fields
          and value['schema_version'] == 1 and value['kind'] == PROTOCOL
          and value['payload_sha256'] == digest(payload)
@@ -154,7 +155,21 @@ def validate_receipt(value, payload):
          and type(value['history_restore_attempted']) is bool
          and type(value['history_restored']) is bool
          and value['history_restore_attempted'] == value['history_restored'])
-    output = _verified_rows(payload, value['room'], value['rows'], value['rendered_prompt'])
+    reconciliation = value['identity_reconciliation']
+    if reconciliation is None:
+        need(value['room']['identifier_reconciliation'] is None)
+        observed = None
+    else:
+        need(type(reconciliation) is dict and set(reconciliation) == {'alias', 'receipt'})
+        alias = identity.validate_identity_receipt(reconciliation['receipt'], payload,
+            value['room'], value['rows'])
+        need(alias == reconciliation['alias'] == value['room']['identifier_reconciliation'])
+        observed = alias['observed_anchors']
+    output = _verified_rows(payload, value['room'], value['rows'], value['rendered_prompt'],
+        observed_anchors=observed)
+    if reconciliation is not None:
+        need(output['symbols'] == json.loads(reconciliation['receipt']['identity_evidence'][
+            'retained_agent']['first_mini_done']['result'])['decision']['symbols'])
     answer = value['rows'][-1]['text']
     result = value['native_result']
     need(type(result) is dict and set(result) == _RESULT | {'operation', 'marker', 'request_sha256'}
@@ -236,7 +251,8 @@ def _room_record(root, day):
         return dict(day=row['day'], room_id=row['room_id'], url=row['url'],
                     updated_at=row['updated_at'], anchors=json.loads(row['anchors']),
                     first_prompt_sha256=binding['first_prompt_sha256'], marker=binding['marker'],
-                    history_titles=binding.get('history_titles', []))
+                    history_titles=binding.get('history_titles', []),
+                    identifier_reconciliation=binding.get('identifier_reconciliation'))
     finally:
         if db is not None: db.close()
         if fd is not None: os.close(fd)
@@ -298,9 +314,162 @@ def _retain_observation(root, payload, record, rows, rendered, stage, *,
         os.close(directory)
 
 
-def recover(actor, delegated_bridge, payload):
+def _unpack(value):
+    if type(value) is dict and set(value) == {'payload', 'identity_evidence'}:
+        validate(value['payload'])
+        need(type(value['identity_evidence']) is dict)
+        return value['payload'], value['identity_evidence']
+    validate(value)
+    return value, None
+
+
+def _identity_file(root, name):
+    need(type(name) is str and re.fullmatch(
+        r'screening-identifier-reconciliation-[a-f0-9]{64}\.json', name))
+    directory = _directory(root)
+    try:
+        return json.loads(_private_file(directory, name, MAX_RECEIPT), object_pairs_hook=pairs)
+    finally:
+        os.close(directory)
+
+
+def _identity_candidate(root, payload, record, rows, evidence):
+    alias = record['identifier_reconciliation']
+    if alias is not None:
+        receipt = _identity_file(root, alias['receipt_name'])
+        verified = identity.validate_identity_receipt(receipt, payload, record, rows)
+        need(verified == alias and (evidence is None or evidence == receipt['identity_evidence']))
+        return receipt['identity_evidence']
+    need(evidence is not None)
+    identity.validate_evidence(payload, record, rows, evidence)
+    return evidence
+
+
+def _candidate_output(root, payload, record, rows, rendered, evidence):
+    if identities(rows) == record['anchors'] and record['identifier_reconciliation'] is None:
+        return _verified_rows(payload, record, rows, rendered), None
+    checked = _identity_candidate(root, payload, record, rows, evidence)
+    core = identity.validate_evidence(payload, record, rows, checked)
+    output = _verified_rows(payload, record, rows, rendered,
+                            observed_anchors=core['observed_anchors'])
+    need(output['symbols'] == json.loads(checked['retained_agent']['first_mini_done'][
+        'result'], object_pairs_hook=pairs)['decision']['symbols'])
+    return output, checked
+
+
+def _persist_identity(root, payload, record, rows, evidence):
+    candidate = identity.build_receipt(payload, record, rows, evidence, time.time())
+    name = identity.receipt_name(candidate['alias'])
+    directory = _directory(root)
+    temporary = '.screening-identifier-' + os.urandom(16).hex() + '.tmp'
+    try:
+        try:
+            receipt = json.loads(_private_file(directory, name, MAX_RECEIPT), object_pairs_hook=pairs)
+        except FileNotFoundError:
+            raw = canonical(candidate)
+            need(0 < len(raw) <= MAX_RECEIPT)
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                         0o600, dir_fd=directory)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            try:
+                os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory,
+                        follow_symlinks=False)
+                os.fsync(directory)
+            except FileExistsError:
+                pass
+            os.unlink(temporary, dir_fd=directory)
+            receipt = json.loads(_private_file(directory, name, MAX_RECEIPT), object_pairs_hook=pairs)
+        alias = identity.validate_identity_receipt(receipt, payload, record, rows)
+        need(receipt['identity_evidence'] == evidence and alias['receipt_name'] == name)
+        return dict(alias=alias, receipt=receipt)
+    finally:
+        try: os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError: pass
+        os.close(directory)
+
+
+def _bind_identity(root, record, reconciliation):
+    # The immutable original anchors and message timestamp are not rewritten.
+    # Only an explicit, receipt-backed identifier annotation is appended.
+    alias = reconciliation['alias']
+    if record['identifier_reconciliation'] is not None:
+        need(record['identifier_reconciliation'] == alias)
+        return record
+    directory = _directory(root); fd = None; db = None
+    try:
+        fd = os.open(JOURNAL_NAME, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        info = os.fstat(fd)
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.geteuid()
+             and info.st_nlink == 1 and stat.S_IMODE(info.st_mode) == 0o600)
+        db = sqlite3.connect('file:/proc/self/fd/' + str(directory) + '/' + JOURNAL_NAME + '?mode=rw',
+            uri=True, timeout=3, isolation_level=None)
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA trusted_schema=OFF'); db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT * FROM daily_rooms WHERE day=?', (record['day'],)).fetchone()
+        need(row is not None and row['state'] == 'BOUND' and row['room_id'] == record['room_id']
+             and row['url'] == record['url'] and row['updated_at'] == record['updated_at']
+             and json.loads(row['anchors']) == record['anchors'])
+        binding = json.loads(row['binding'], object_pairs_hook=pairs)
+        need(binding.get('first_prompt_sha256') == record['first_prompt_sha256']
+             and binding.get('marker') == record['marker']
+             and binding.get('history_titles', []) == record['history_titles']
+             and binding.get('identifier_reconciliation') is None)
+        named = os.stat(JOURNAL_NAME, dir_fd=directory, follow_symlinks=False)
+        need((info.st_dev, info.st_ino) == (named.st_dev, named.st_ino))
+        updated = dict(binding, identifier_reconciliation=alias)
+        changed = db.execute('UPDATE daily_rooms SET binding=? WHERE day=? AND room_id=? '
+            'AND state=? AND anchors=? AND binding=? AND updated_at=?',
+            (json.dumps(updated, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+                        allow_nan=False), record['day'], record['room_id'], 'BOUND',
+             row['anchors'], row['binding'], record['updated_at'])).rowcount
+        need(changed == 1)
+        db.execute('COMMIT')
+    except BaseException:
+        if db is not None and db.in_transaction: db.execute('ROLLBACK')
+        raise
+    finally:
+        if db is not None: db.close()
+        if fd is not None: os.close(fd)
+        os.close(directory)
+    current = _room_record(root, record['day'])
+    need(current == dict(record, identifier_reconciliation=alias))
+    return current
+
+
+def _validated_identifier_binding(binding, archive_root):
+    alias = binding['identifier_reconciliation']
+    need(type(alias) is dict)
+    receipt = _identity_file(archive_root, alias['receipt_name'])
+    verified = identity.validate_identity_receipt(receipt, receipt['payload'],
+        dict(receipt['original_room'], identifier_reconciliation=alias), receipt['observed_rows'])
+    need(verified == alias and binding.get('first_prompt_sha256') == receipt['original_room'][
+        'first_prompt_sha256'] and binding.get('marker') == receipt['payload']['marker'])
+    return alias, receipt
+
+
+def matches_identifier_binding(rows, anchors, binding, archive_root):
+    """DailyRoom's narrow reader for an explicitly admitted identity migration."""
+    try:
+        alias, receipt = _validated_identifier_binding(binding, archive_root)
+        need(anchors == alias['original_anchors'])
+        return identity.matches_reconciled_rows(receipt, alias, anchors, binding, rows)
+    except (ValueError, TypeError, KeyError, OSError, AttributeError):
+        return False
+
+
+def identifier_checkpoint_verified(anchors, binding, archive_root):
+    """Ordinary checkpoint may later advance anchors; its original alias survives."""
+    try:
+        alias, _ = _validated_identifier_binding(binding, archive_root)
+        return len(anchors) >= 4 and anchors[:4] == alias['observed_anchors']
+    except (ValueError, TypeError, KeyError, OSError, AttributeError):
+        return False
+
+
+def recover(actor, delegated_bridge, value):
     """Existing actor-thread entry. Returns the native four-field result."""
-    validate(payload); _actor_gate(actor)
+    payload, evidence = _unpack(value); _actor_gate(actor)
     need(actor.claim.locked(), 'SCREENING_RECOVERY_ACTOR_CLAIM_REQUIRED')
     need(actor.thread.ident == threading.get_ident(),
          'SCREENING_RECOVERY_ACTOR_THREAD_REQUIRED')
@@ -320,24 +489,39 @@ def recover(actor, delegated_bridge, payload):
         need(cached is not None)
         old = (room.offset, room.prefix, raw._turns, raw.operation_deadline,
                raw._operation_contract, room.day, room.room_id, room._binding, room._payload)
+        sentinel = object(); old_matches = room.__dict__.get('matches', sentinel)
         until = raw.clock() + min(35.0, raw.timeout)
         need(math.isfinite(until) and until > raw.clock())
         attempted = restored = False; rows = None; stage = 'BOUND_ROOM_OBSERVATION'
         try:
-            # Existing restore uses the native timeout and its original room
-            # identity. These attributes are restored without a journal write.
             raw.operation_deadline, raw._operation_contract = until, raw._dom_contract
             room.day, room.room_id, room._payload = day, record['room_id'], payload
             room._binding = {key: record[key] for key in
                 ('first_prompt_sha256', 'marker', 'history_titles')}
+            if record['identifier_reconciliation'] is not None:
+                room._binding['identifier_reconciliation'] = record['identifier_reconciliation']
             rows = room.full_turns()
             _retain_observation(room.store.root, payload, record, rows,
                 cached['rendered_prompt'], stage)
-            if identities(rows) != record['anchors']:
-                stage = 'BOUND_ROOM_RESTORE'
-                attempted = True
+            try:
+                if identities(rows) == record['anchors'] and record['identifier_reconciliation'] is None:
+                    checked_evidence = None
+                else:
+                    checked_evidence = _identity_candidate(room.store.root, payload, record, rows, evidence)
+            except (ValueError, TypeError, KeyError):
+                stage = 'BOUND_ROOM_RESTORE'; attempted = True
+                def exact_candidate(candidate, anchors, binding, state, **kwargs):
+                    try:
+                        need(state == 'BOUND' and anchors == record['anchors'])
+                        _candidate_output(room.store.root, payload, record, candidate,
+                            cached['rendered_prompt'], evidence)
+                        return True
+                    except (ValueError, TypeError, KeyError):
+                        return False
+                room.matches = exact_candidate
                 rows = room.restore(record['anchors'], room._binding, 'BOUND')
-                need(identities(rows) == record['anchors'])
+                output, checked_evidence = _candidate_output(room.store.root, payload, record,
+                    rows, cached['rendered_prompt'], evidence)
                 restored = True
                 _retain_observation(room.store.root, payload, record, rows,
                     cached['rendered_prompt'], 'BOUND_ROOM_RESTORED',
@@ -347,13 +531,10 @@ def recover(actor, delegated_bridge, payload):
             _retain_observation(room.store.root, payload, record, rows,
                 cached['rendered_prompt'], 'OBSERVED_BEFORE_SCREENING_PARSE',
                 attempted=attempted, restored=restored)
-            output = _verified_rows(payload, record, rows, cached['rendered_prompt'])
-            room.offset, room.prefix = 2, identities(rows[:2])
-            # Reuse the native reader through its existing DailyRoom scoping;
-            # the optimized batch reader must not expose all four rows here.
-            raw._turns = room.turns
-            previous, stable, reads = None, 0, 0
-            stage = 'NATIVE_STABLE_READ'
+            output, checked_evidence = _candidate_output(room.store.root, payload, record,
+                rows, cached['rendered_prompt'], evidence)
+            room.offset, room.prefix = 2, identities(rows[:2]); raw._turns = room.turns
+            previous, stable, reads = None, 0, 0; stage = 'NATIVE_STABLE_READ'
             while raw.clock() < until:
                 _actor_gate(actor)
                 need(raw.status() == 'CONNECTED' and raw.page.url == record['url'])
@@ -366,6 +547,11 @@ def recover(actor, delegated_bridge, payload):
                 if answer is not None and stable >= 3:
                     need(answer == rows[-1]['text'] and room.full_turns() == rows)
                     _actor_gate(actor)
+                    reconciliation = None
+                    if checked_evidence is not None:
+                        stage = 'ASSISTANT_IDENTIFIER_RECONCILIATION'
+                        reconciliation = _persist_identity(room.store.root, payload, record, rows, checked_evidence)
+                        record = _bind_identity(room.store.root, record, reconciliation)
                     result = {**{key: payload[key] for key in ('operation', 'marker', 'request_sha256')},
                         'output': output, 'assistant_text': answer,
                         'response_id': 'dom-' + text_sha(raw.page.url + '\n' + payload['marker'] + '\n' + answer),
@@ -375,31 +561,32 @@ def recover(actor, delegated_bridge, payload):
                         initial_reply_sha256=text_sha(rows[1]['text']), final_reply_sha256=text_sha(answer),
                         native_source_sha256=NATIVE_DOM_SHA256, native_received_at=time.time(),
                         stable_reads=4, native_poll_reads=reads, native_result=result,
-                        history_restore_attempted=attempted, history_restored=restored)
+                        history_restore_attempted=attempted, history_restored=restored,
+                        identity_reconciliation=reconciliation)
                     receipt = _save_receipt(room.store.root, payload, receipt)
                     return {key: copy.deepcopy(receipt['native_result'][key]) for key in _RESULT}
                 raw.page.wait_for_timeout(250)
             need(False, 'SCREENING_RECOVERY_REPLY_NOT_STABLE')
         except BaseException as error:
-            try:
-                observed = room.full_turns()
-            except BaseException:
-                observed = rows
+            try: observed = room.full_turns()
+            except BaseException: observed = rows
             try:
                 _retain_observation(room.store.root, payload, record, observed,
                     cached['rendered_prompt'], stage + '_FAILED', attempted=attempted,
                     restored=restored, error=error)
             except BaseException:
-                pass  # Retain the original error; prior immutable observations survive.
+                pass
             raise
         finally:
             (room.offset, room.prefix, raw._turns, raw.operation_deadline,
              raw._operation_contract, room.day, room.room_id, room._binding, room._payload) = old
+            if old_matches is sentinel: room.__dict__.pop('matches', None)
+            else: room.matches = old_matches
 
 
-def enqueue(actor, payload):
+def enqueue(actor, value):
     """Authenticated service calls this; only the existing actor touches DOM."""
-    validate(payload)
+    payload, _ = _unpack(value)
     native = actor._bridge.native
     if actor.stopping.is_set(): raise native.NotSubmitted('UNAVAILABLE')
     if not actor.claim.acquire(blocking=False): raise native.NotSubmitted('BUSY')
@@ -412,7 +599,7 @@ def enqueue(actor, payload):
         if status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
             raise native.NotSubmitted(status)
         if not ready or status != 'CONNECTED': raise native.NotSubmitted('UNAVAILABLE')
-        task = dict(request=copy.deepcopy(payload), kind=KIND, done=threading.Event())
+        task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
         actor.queue.put_nowait(task); queued = True; actor._wake.set()
         if not task['done'].wait(45): raise native.OutcomeUnknown()
         if 'error' in task: raise task['error']
