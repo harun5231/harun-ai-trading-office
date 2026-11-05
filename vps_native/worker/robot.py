@@ -260,9 +260,15 @@ class Coordinator:
             AND a.output IS NULL AND a.idempotency IS NULL AND a.attempts=1
             AND j.cycle=? AND j.symbol=? AND j.kind='ANALYSIS' AND j.state='REQUEST_REJECTED' ''',
             (row['id'],row['cycle'],row['symbol'])).fetchone())
-    def replacement_count(self,data,results):
+    def replacement_count(self,data,results,cycle=None):
         hold=sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
-        return max(hold,data.get('replacement_due',0))
+        due=data.get('replacement_due',0)
+        if cycle is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_response_recoveries'").fetchone():
+            operation=cycle+':screening:'+str(data.get('screen'))+':'+str(due)
+            if self.db.execute('SELECT 1 FROM screening_response_recoveries WHERE operation=?',(operation,)).fetchone():
+                from .screening_response_recovery import received_screening_replacement_due
+                due=received_screening_replacement_due(self.db,cycle,data)
+        return max(hold,due)
     def research_budget(self,data,results):
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED') for r in results)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
@@ -272,7 +278,7 @@ class Coordinator:
         if self.research_budget(data,results)<=0:return False
         if data['queue']:return True
         if row['state']=='ACTIVE' and data['screen']==-1:return True
-        return self.replacement_count(data,results)>0
+        return self.replacement_count(data,results,row['id'])>0
     def reject_queued_symbol(self,cycle,data,symbol,account,reason):
         self.db.execute('BEGIN IMMEDIATE')
         try:
@@ -667,6 +673,9 @@ class Coordinator:
         if settled is not None:return settled
         available=self.execution_slots(account,today)
         if not available:return blocked or self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        from .screening_response_recovery import resume_uncertain_screening
+        recovered_screening=resume_uncertain_screening(self,today,account)
+        if recovered_screening is not None:return recovered_screening
         recovered=self.recover_invalid_screening(today,account)
         if recovered is not None:return recovered
         # Reconcile the already posted reply without another provider Send.
@@ -726,7 +735,7 @@ class Coordinator:
         initial=data['screen']==-1
         # HOLD and replaceable local rejections request other unseen coins while capacity remains.
         # Only the latest round triggers screening; other failures consume budget.
-        replaceable=self.replacement_count(data,results)
+        replaceable=self.replacement_count(data,results,cycle)
         if not initial and not replaceable:
             self.save_cycle(cycle,data,'COMPLETE')
             return blocked or self.store.report('REJECTED' if technical else 'INSUFFICIENT_ACTIONABLE_SETUPS',account,wait_reason='ROBOT_CYCLE_COMPLETE')

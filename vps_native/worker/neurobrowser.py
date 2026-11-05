@@ -49,10 +49,16 @@ def browser_request(method, url, headers=None, body=None, timeout=15):
     if method == 'GET' and body is not None:
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     observation = url == BASE + '/v1/screening-recovery'
-    if observation and (type(body) is not dict
-            or body.get('action') not in ('ANALYSIS_RECEIVED_OBSERVE','ANALYSIS_RECEIVED_CONTINUE')
-            or set(body) != ({'action','payload','grant'} if body.get('action')=='ANALYSIS_RECEIVED_CONTINUE' else {'action','payload'})):
-        raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
+    if observation:
+        action_fields = {
+            'ANALYSIS_RECEIVED_OBSERVE': {'action', 'payload'},
+            'ANALYSIS_RECEIVED_CONTINUE': {'action', 'payload', 'grant'},
+            'SCREENING_RECEIVED_OBSERVE': {'action', 'payload'},
+            'SCREENING_RECEIVED_REVIEW': {'action', 'payload', 'source_capture_name',
+                'source_capture_sha256', 'source_capture_bytes', 'source_observation_sha256'},
+        }
+        if type(body) is not dict or body.get('action') not in action_fields or set(body) != action_fields[body['action']]:
+            raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     try:
         raw = None if body is None else encode(body).encode('utf-8')
         if raw is not None and len(raw) > (1_000_000 if url.endswith('/v1/historical-evidence') else MAX_REQUEST_BYTES + (4096 if observation else 128)):
@@ -319,6 +325,56 @@ class NeuroBrowser:
         if result.get('grant_id')!=grant['grant_id'] or result.get('operation')!=operation or result.get('request_sha256')!=request['request_sha256']:
             raise Review('ANALYSIS_CONTINUATION_UNVERIFIED')
         return result
+
+    def _received_screening_payload(self, operation):
+        from .screening_response_recovery import stored_screening_request
+        self.require_key()
+        body, request_hash, _ = stored_screening_request(self.db, operation)
+        current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if (current['state'] not in ('PENDING', 'NEEDS_REVIEW') or type(current['attempts']) is not int
+                or current['attempts'] != 1 or current['output'] is not None or current['idempotency'] is not None):
+            raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
+        return {**body, 'request_sha256': request_hash}
+
+    def _received_screening_rpc(self, value, *, review=False):
+        code, _, result = self.transport('POST', BASE + '/v1/screening-recovery', self.headers(),
+            value, timeout=120 if review else 45)
+        if code == 409:
+            reason = result.get('reason') if isinstance(result, dict) else None
+            error = result.get('error') if isinstance(result, dict) else None
+            if isinstance(error, str) and error.startswith('SCREENING_RECOVERY_'):
+                reason = error[len('SCREENING_RECOVERY_'):]
+            if reason in ('BUSY', 'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED', 'UNAVAILABLE', 'LOGIN_IN_PROGRESS'):
+                raise Review('NEUROBRO_' + reason)
+        if code != 200 or not isinstance(result, dict):
+            raise Review('SCREENING_REVIEW_OUTCOME_UNKNOWN' if review else 'SCREENING_RESPONSE_OBSERVATION_PENDING')
+        payload = value['payload']
+        if result.get('operation') != payload['operation'] or result.get('request_sha256') != payload['request_sha256']:
+            raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
+        return result
+
+    def observe_received_screening(self, operation):
+        """Observe an existing screening; this fixed RPC cannot enter ask()."""
+        return self._received_screening_rpc(dict(action='SCREENING_RECEIVED_OBSERVE',
+            payload=self._received_screening_payload(operation)))
+
+    def review_received_screening(self, operation, envelope):
+        """Review the retained native reply with no browser Send or upload."""
+        from .screening_response_recovery import RECEIVED_KIND, _wire, _sha
+        payload = self._received_screening_payload(operation)
+        if (type(envelope) is not dict or envelope.get('kind') != RECEIVED_KIND
+                or envelope.get('operation') != operation or envelope.get('request_sha256') != payload['request_sha256']
+                or envelope.get('operation_completed') is not False
+                or envelope.get('observation_sha256') != _sha(_wire(envelope.get('observation')))
+                or type(envelope.get('capture_sha256')) is not str
+                or re.fullmatch('[a-f0-9]{64}', envelope['capture_sha256']) is None
+                or type(envelope.get('capture_name')) is not str
+                or re.fullmatch(r'received-analysis-observation-[a-f0-9]{16}-' + envelope['capture_sha256'] + r'\.json', envelope['capture_name']) is None
+                or type(envelope.get('capture_bytes')) is not int or not 0 < envelope['capture_bytes'] <= 8 * 1024 * 1024):
+            raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
+        return self._received_screening_rpc(dict(action='SCREENING_RECEIVED_REVIEW', payload=payload,
+            source_capture_name=envelope['capture_name'], source_capture_sha256=envelope['capture_sha256'],
+            source_capture_bytes=envelope['capture_bytes'], source_observation_sha256=envelope['observation_sha256']), review=True)
 
     def record_validation(self, operation, error):
         self.db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",
