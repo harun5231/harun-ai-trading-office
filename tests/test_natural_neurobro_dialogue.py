@@ -92,6 +92,45 @@ class PerCoinReplyTests(unittest.TestCase):
         with self.assertRaisesRegex(ReplyIncomplete, 'COUNT_MISMATCH'):
             parse_reply_for_payload('COIN: LINKUSDT, AAVEUSDT', payload)
 
+    def test_actual_native_screening_table_preserves_the_received_choices(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_screening_table_20261105.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067')
+        self.assertEqual(parse_screening_reply(reply), {'symbols': ['RUNEUSDT', 'TIAUSDT']})
+        payload = {'output_schema': {'required': ['symbols'], 'properties': {
+            'symbols': {'minItems': 2, 'maxItems': 2}}}}
+        self.assertEqual(parse_reply_for_payload(reply, payload), {'symbols': ['RUNEUSDT', 'TIAUSDT']})
+
+    def test_screening_table_reads_only_explicit_coin_column(self):
+        reply = ('Bandingkan BTCUSDT dan ETHUSDT; nilai pasar $7M.\n'
+            'COIN PILIHAN (1):\n\nCoin\tAlasan Singkat\n'
+            '$RUNE (RUNEUSDT)\tLebih kuat dibanding TIAUSDT pada 1H.\n\n'
+            'Coin pembanding: BTCUSDT, bukan pilihan.')
+        self.assertEqual(parse_screening_reply(reply), {'symbols': ['RUNEUSDT']})
+
+    def test_markdown_screening_table_and_final_summary_keep_current_choices(self):
+        reply = ('COIN: BTCUSDT\nRingkasan akhir\n'
+            'COIN PILIHAN (2):\n\n| Coin | Alasan |\n| --- | --- |\n'
+            '| RUNE/USDT | Likuid |\n| $TIA (TIAUSDT) | Struktur |')
+        self.assertEqual(parse_screening_reply(reply), {'symbols': ['RUNEUSDT', 'TIAUSDT']})
+
+    def test_screening_table_rejects_mismatched_ambiguous_or_unlabelled_choices(self):
+        header = 'COIN PILIHAN (2):\nCoin\tAlasan\n'
+        for reply in (header + '$RUNE (TIAUSDT)\tStruktur\nTIAUSDT\tLikuid',
+                      header + 'RUNEUSDT atau BTCUSDT\tBelum jelas\nTIAUSDT\tLikuid',
+                      header + 'RUNEUSDT\tStruktur\nRUNEUSDT\tDuplikat',
+                      'Coin\tAlasan\nRUNEUSDT\tStruktur\nTIAUSDT\tLikuid',
+                      header + 'RUNEUSDT\tStruktur'):
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_screening_reply(reply)
+
+    def test_screening_table_cannot_satisfy_another_capacity(self):
+        payload = {'output_schema': {'required': ['symbols'], 'properties': {
+            'symbols': {'minItems': 1, 'maxItems': 1}}}}
+        with self.assertRaisesRegex(ReplyIncomplete, 'COUNT_MISMATCH'):
+            parse_reply_for_payload('COIN PILIHAN (2):\nCoin\tAlasan\n'
+                'RUNEUSDT\tStruktur\nTIAUSDT\tLikuid', payload)
+
     def test_pending_decision_is_scoped_and_cannot_be_conditional(self):
         reply = ('COIN: LINKUSDT\nKEPUTUSAN: TAHAN\nStruktur order masih valid.\n'
             'COIN: AAVEUSDT\nKEPUTUSAN: BATALKAN\nSetup invalid.')
