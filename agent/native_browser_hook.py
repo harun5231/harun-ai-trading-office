@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
-from .neurobro_reply import ReplyIncomplete, parse_reply_for_payload
+from .neurobro_reply import ReplyIncomplete, coin_block, parse_reply_for_payload
 
 
 # A technical budget for one native browser RPC, not a discussion-round or
@@ -587,7 +587,14 @@ class DelegatedDOMBridge:
                        'Pertahankan level yang memang sudah menjadi keputusanmu.'))
             legacy_complete = complete and self.prompt_cache is None and not natural_parsed and parse_error not in {
                 'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_SETUP_CONDITIONAL'}
-            if required_question is None and (not response['needs_followup'] or legacy_complete):
+            clear_market_hold = (phase == 'ANALYSIS' and natural_parsed and complete
+                and parse_error is None and output.get('side') == 'HOLD'
+                and not re.search(r'\b(?:jika|apabila|bersyarat|alternatif|skenario)\b',
+                    coin_block(answer, expected_symbol), re.I))
+            # A clear author market HOLD ends this coin's analysis. Keep the
+            # actual Mini CLARIFY receipt intact; future setup/size questions
+            # cannot turn Neurobro's present no-entry decision into a debate.
+            if required_question is None and (not response['needs_followup'] or legacy_complete or clear_market_hold):
                 state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha,
                     accepted_output=copy.deepcopy(output) if complete else None)
                 return

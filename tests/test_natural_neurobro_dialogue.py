@@ -363,6 +363,81 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.refresh.assert_called_once()
         self.assertNotIn('OUTPUT_JSON_SCHEMA', fixture.bridge.messages[2]['text'])
 
+    def test_actual_clear_rune_market_hold_ends_without_rewriting_mini_clarify_receipt(self):
+        saved = json.loads((Path(__file__).parent / 'fixtures/neurobro_market_hold_20261105.json').read_text())
+        fixture = self.fixture()
+        fixture.bridge.initial = saved['reply']
+        fixture.value['context']['symbol'] = 'RUNEUSDT'
+        fixture.value['context']['risk_manager_facts'] = {'symbol': 'RUNEUSDT', 'risk_usdt': '5'}
+        for frame in fixture.value['context']['timeframes'].values(): frame['symbol'] = 'RUNEUSDT'
+        for row in fixture.initial: row['symbol'] = 'RUNEUSDT'
+        responses = []
+        def reason(value):
+            result = {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                'decision': copy.deepcopy(saved['mini_decision']), 'needs_followup': True,
+                'reason': 'DIALOGUE_DECISION'}
+            responses.append(result)
+            return result
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        self.assertEqual(result['output']['symbol'], 'RUNEUSDT')
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertTrue(all(value is None for key, value in result['output'].items()
+            if key not in ('symbol', 'side')))
+        self.assertEqual(result['assistant_text'], saved['reply'])
+        self.assertEqual(fixture.bridge.clicks, 1)
+        self.assertEqual(len(fixture.bridge.messages), 2)
+        fixture.refresh.assert_not_called(); fixture.receipt.assert_not_called()
+        fixture.hook.client.request.assert_called_once()
+        self.assertEqual(responses[0]['decision'], saved['mini_decision'])
+        self.assertIs(responses[0]['needs_followup'], True)
+
+    def test_complete_short_setup_still_allows_mini_clarification_with_new_charts(self):
+        fixture = self.fixture()
+        fixture.bridge.initial = 'COIN: BTCUSDT\nARAH: SHORT\nENTRY: 100\nTP: 98\nSL: 101'
+        fixture.bridge.final = 'COIN: BTCUSDT\nARAH: HOLD\nBelum ada setup aktif.'
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        def reason(value):
+            first = value['reply'] == fixture.bridge.initial
+            return {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                'decision': {'action': 'CLARIFY' if first else 'HOLD', 'symbols': ['BTCUSDT'],
+                    'question': 'Apakah wick membatalkan struktur setup ini?' if first else ''},
+                'needs_followup': first, 'reason': 'DIALOGUE_DECISION'}
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertEqual(fixture.bridge.clicks, 2)
+        fixture.refresh.assert_called_once()
+
+    def test_technical_ambiguous_and_conditional_replies_still_get_fresh_chart_clarification(self):
+        replies = ('COIN: BTCUSDT\nARAH: HOLD\nScreenshot belum terbaca.',
+            'COIN: BTCUSDT\nKEPUTUSAN: HOLD\nKEPUTUSAN: LONG\nENTRY: 100\nTP: 102\nSL: 99',
+            'COIN: BTCUSDT\nARAH: LONG\nENTRY: 100\nTP: 102\nSL: 99\nJika breakout terkonfirmasi.',
+            'COIN: BTCUSDT\nKEPUTUSAN: HOLD jika harga gagal reclaim.')
+        for initial in replies:
+            with self.subTest(initial=initial):
+                fixture = self.fixture(); fixture.bridge.initial = initial
+                fixture.bridge.final = 'COIN: BTCUSDT\nARAH: HOLD\nBelum ada setup aktif.'
+                fixture.module.exact_json.side_effect = lambda text, marker: None
+                def reason(value):
+                    first = value['reply'] == initial
+                    return {'schema_version': 1, 'ok': True,
+                        **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                        'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                        'decision': {'action': 'CLARIFY' if first else 'HOLD', 'symbols': ['BTCUSDT'],
+                            'question': 'Mohon perjelas keputusan dan bahan yang dipakai.' if first else ''},
+                        'needs_followup': first, 'reason': 'DIALOGUE_DECISION'}
+                fixture.hook.client = Mock(request=Mock(side_effect=reason))
+                result = fixture.ask()
+                self.assertEqual(result['output']['side'], 'HOLD')
+                self.assertEqual(fixture.bridge.clicks, 2)
+                fixture.refresh.assert_called_once()
+
 
 class ActualNativeParserBoundaryTests(unittest.TestCase):
     def run_bridge(self, *, tamper=False):
