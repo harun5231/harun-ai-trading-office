@@ -2,7 +2,8 @@
 
 The existing actor owns the page and claim. Recovery recognizes only the
 observed initial-screening + exact coin-summary clarification shape; it never
-fills, uploads, clicks, navigates, calls Mini, or changes the daily-room journal.
+fills, uploads, sends, creates a room, calls Mini, or changes the daily-room
+journal. It may reopen that already BOUND room through the existing history UI.
 The ordinary worker still validates the receipt, catalog and research state.
 """
 from __future__ import annotations
@@ -108,12 +109,14 @@ def _verified_rows(payload, room, rows, rendered):
     """Bind the exact native IDs, footer completion, text and stored anchors."""
     count = validate(payload)
     need(type(room) is dict and set(room) == {'day', 'room_id', 'url', 'updated_at',
-         'anchors', 'first_prompt_sha256', 'marker'})
+         'anchors', 'first_prompt_sha256', 'marker', 'history_titles'})
     need(room['day'] == payload['operation'][:10]
          and type(room['room_id']) is str and re.fullmatch('[a-f0-9]{32}', room['room_id'])
          and type(room['url']) is str and room['url'].startswith('https://app.neurobro.ai/')
          and type(room['updated_at']) in (int, float) and math.isfinite(room['updated_at'])
          and room['updated_at'] > 0 and room['marker'] == payload['marker']
+         and type(room['history_titles']) is list
+         and all(type(title) is str for title in room['history_titles'])
          and type(rendered) is str and rendered.count(payload['marker']) == 1
          and room['first_prompt_sha256'] == text_sha(normal(rendered)))
     need(type(rows) is list and len(rows) == 4
@@ -140,13 +143,17 @@ def validate_receipt(value, payload):
     validate(payload)
     fields = {'schema_version', 'kind', 'payload_sha256', 'room', 'rows',
               'rendered_prompt', 'initial_reply_sha256', 'final_reply_sha256',
-              'native_source_sha256', 'native_received_at', 'stable_reads', 'native_poll_reads', 'native_result'}
+              'native_source_sha256', 'native_received_at', 'stable_reads', 'native_poll_reads', 'native_result',
+              'history_restore_attempted', 'history_restored'}
     need(type(value) is dict and set(value) == fields
          and value['schema_version'] == 1 and value['kind'] == PROTOCOL
          and value['payload_sha256'] == digest(payload)
          and value['native_source_sha256'] == NATIVE_DOM_SHA256
          and value['stable_reads'] == 4 and type(value['native_poll_reads']) is int
-         and value['native_poll_reads'] >= 4)
+         and value['native_poll_reads'] >= 4
+         and type(value['history_restore_attempted']) is bool
+         and type(value['history_restored']) is bool
+         and value['history_restore_attempted'] == value['history_restored'])
     output = _verified_rows(payload, value['room'], value['rows'], value['rendered_prompt'])
     answer = value['rows'][-1]['text']
     result = value['native_result']
@@ -228,7 +235,8 @@ def _room_record(root, day):
         binding = json.loads(row['binding'], object_pairs_hook=pairs)
         return dict(day=row['day'], room_id=row['room_id'], url=row['url'],
                     updated_at=row['updated_at'], anchors=json.loads(row['anchors']),
-                    first_prompt_sha256=binding['first_prompt_sha256'], marker=binding['marker'])
+                    first_prompt_sha256=binding['first_prompt_sha256'], marker=binding['marker'],
+                    history_titles=binding.get('history_titles', []))
     finally:
         if db is not None: db.close()
         if fd is not None: os.close(fd)
@@ -247,6 +255,49 @@ def _actor_gate(actor):
          and not actor.sessions.active(), 'SCREENING_RECOVERY_BROWSER_NOT_AUTOMATIC')
 
 
+def observation_prefix(payload):
+    """Fixed operation-bound private capture prefix, never supplied as a path."""
+    validate(payload)
+    return 'screening-recovery-observation-' + digest({key: payload[key] for key in
+        ('operation', 'request_sha256')})[:16] + '-'
+
+
+def _retain_observation(root, payload, record, rows, rendered, stage, *,
+                        attempted=False, restored=False, error=None):
+    # This is failure evidence, never a completion or authority to trade.
+    reason = str(error) if error is not None else None
+    value = dict(schema_version=1, kind='NATIVE_SCREENING_RECOVERY_OBSERVATION_V1',
+        operation=payload['operation'], request_sha256=payload['request_sha256'],
+        payload_sha256=digest(payload), observed_at=time.time(), stage=stage,
+        room=record, rows=rows, rendered_prompt=rendered,
+        native_source_sha256=NATIVE_DOM_SHA256,
+        history_restore_attempted=attempted, history_restored=restored,
+        completion_verified=False, error=None if error is None else dict(
+            exception_class=type(error).__name__, reason=reason if re.fullmatch(
+                '[A-Z][A-Z0-9_]{0,119}', reason or '') else None))
+    raw = canonical(value)
+    need(0 < len(raw) <= MAX_RECEIPT, 'SCREENING_RECOVERY_OBSERVATION_TOO_LARGE')
+    name = observation_prefix(payload) + digest(value) + '.json'
+    directory = _directory(root)
+    temporary = '.screening-observation-' + os.urandom(16).hex() + '.tmp'
+    try:
+        fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600, dir_fd=directory)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        try:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory,
+                    follow_symlinks=False)
+            os.fsync(directory)
+        except FileExistsError:
+            need(_private_file(directory, name, MAX_RECEIPT) == raw)
+        return name
+    finally:
+        try: os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError: pass
+        os.close(directory)
+
+
 def recover(actor, delegated_bridge, payload):
     """Existing actor-thread entry. Returns the native four-field result."""
     validate(payload); _actor_gate(actor)
@@ -260,26 +311,49 @@ def recover(actor, delegated_bridge, payload):
         retained = read_receipt(room.store.root, payload)
         if retained is not None:
             return {key: copy.deepcopy(retained['native_result'][key]) for key in _RESULT}
-        now = time.time()
-        day = datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        day = datetime.fromtimestamp(time.time(), ZoneInfo('Asia/Jakarta')).date().isoformat()
         need(day == payload['operation'][:10])
         record = _room_record(room.store.root, day)
         need(raw.status() == 'CONNECTED')
         need(delegated_bridge.prompt_cache is not None)
         cached = delegated_bridge.prompt_cache.read(payload)
-        need(cached is not None and record['url'] == raw.page.url)
-        rows = room.full_turns()
-        output = _verified_rows(payload, record, rows, cached['rendered_prompt'])
-        old = (room.offset, room.prefix, raw._turns, raw.operation_deadline, raw._operation_contract)
-        until = raw.clock() + min(30.0, raw.timeout)
+        need(cached is not None)
+        old = (room.offset, room.prefix, raw._turns, raw.operation_deadline,
+               raw._operation_contract, room.day, room.room_id, room._binding, room._payload)
+        until = raw.clock() + min(35.0, raw.timeout)
         need(math.isfinite(until) and until > raw.clock())
+        attempted = restored = False; rows = None; stage = 'BOUND_ROOM_OBSERVATION'
         try:
+            # Existing restore uses the native timeout and its original room
+            # identity. These attributes are restored without a journal write.
+            raw.operation_deadline, raw._operation_contract = until, raw._dom_contract
+            room.day, room.room_id, room._payload = day, record['room_id'], payload
+            room._binding = {key: record[key] for key in
+                ('first_prompt_sha256', 'marker', 'history_titles')}
+            rows = room.full_turns()
+            _retain_observation(room.store.root, payload, record, rows,
+                cached['rendered_prompt'], stage)
+            if identities(rows) != record['anchors']:
+                stage = 'BOUND_ROOM_RESTORE'
+                attempted = True
+                rows = room.restore(record['anchors'], room._binding, 'BOUND')
+                need(identities(rows) == record['anchors'])
+                restored = True
+                _retain_observation(room.store.root, payload, record, rows,
+                    cached['rendered_prompt'], 'BOUND_ROOM_RESTORED',
+                    attempted=attempted, restored=restored)
+            stage = 'SCREENING_PARSE'
+            need(raw.page.url == record['url'])
+            _retain_observation(room.store.root, payload, record, rows,
+                cached['rendered_prompt'], 'OBSERVED_BEFORE_SCREENING_PARSE',
+                attempted=attempted, restored=restored)
+            output = _verified_rows(payload, record, rows, cached['rendered_prompt'])
             room.offset, room.prefix = 2, identities(rows[:2])
             # Reuse the native reader through its existing DailyRoom scoping;
             # the optimized batch reader must not expose all four rows here.
             raw._turns = room.turns
-            raw.operation_deadline, raw._operation_contract = until, raw._dom_contract
             previous, stable, reads = None, 0, 0
+            stage = 'NATIVE_STABLE_READ'
             while raw.clock() < until:
                 _actor_gate(actor)
                 need(raw.status() == 'CONNECTED' and raw.page.url == record['url'])
@@ -300,13 +374,27 @@ def recover(actor, delegated_bridge, payload):
                         room=record, rows=rows, rendered_prompt=cached['rendered_prompt'],
                         initial_reply_sha256=text_sha(rows[1]['text']), final_reply_sha256=text_sha(answer),
                         native_source_sha256=NATIVE_DOM_SHA256, native_received_at=time.time(),
-                        stable_reads=4, native_poll_reads=reads, native_result=result)
+                        stable_reads=4, native_poll_reads=reads, native_result=result,
+                        history_restore_attempted=attempted, history_restored=restored)
                     receipt = _save_receipt(room.store.root, payload, receipt)
                     return {key: copy.deepcopy(receipt['native_result'][key]) for key in _RESULT}
                 raw.page.wait_for_timeout(250)
             need(False, 'SCREENING_RECOVERY_REPLY_NOT_STABLE')
+        except BaseException as error:
+            try:
+                observed = room.full_turns()
+            except BaseException:
+                observed = rows
+            try:
+                _retain_observation(room.store.root, payload, record, observed,
+                    cached['rendered_prompt'], stage + '_FAILED', attempted=attempted,
+                    restored=restored, error=error)
+            except BaseException:
+                pass  # Retain the original error; prior immutable observations survive.
+            raise
         finally:
-            room.offset, room.prefix, raw._turns, raw.operation_deadline, raw._operation_contract = old
+            (room.offset, room.prefix, raw._turns, raw.operation_deadline,
+             raw._operation_contract, room.day, room.room_id, room._binding, room._payload) = old
 
 
 def enqueue(actor, payload):

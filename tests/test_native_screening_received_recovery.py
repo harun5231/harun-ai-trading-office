@@ -16,7 +16,7 @@ from agent.native_daily_room import DailyRoom, identities, JOURNAL_NAME
 from agent.native_prompt_composition import PromptCompositionCache
 from agent.native_screening_recovery import (KIND, NATIVE_DOM_SHA256,
     ScreeningRecoveryUnavailable, canonical, clarification, digest, enqueue,
-    read_receipt, recover, text_sha, validate, validate_receipt)
+    observation_prefix, read_receipt, recover, text_sha, validate, validate_receipt)
 from tests.test_native_daily_room import Bridge, History, native
 from worker.account_state import screening_contract
 
@@ -110,7 +110,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
         self.assertEqual(proof['rows'], self.raw.messages)
         self.assertEqual(proof['initial_reply_sha256'], text_sha(self.raw.messages[1]['text']))
         self.assertEqual(validate_receipt(copy.deepcopy(proof), self.payload), proof)
-        receipt_path = next(self.root.glob('screening-recovery-*.json'))
+        receipt_path = next(self.root.glob('screening-recovery-[0-9a-f]*.json'))
         receipt_before = receipt_path.read_bytes()
         self.raw._answer = self.forbid
         self.assertEqual(self.invoke(), result)
@@ -139,7 +139,55 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
         self.actor.thread = SimpleNamespace(ident=threading.get_ident() + 1)
         with self.assertRaisesRegex(ScreeningRecoveryUnavailable, 'ACTOR_THREAD_REQUIRED'):
             self.invoke()
-        self.assertFalse(list(self.root.glob('screening-recovery-*.json')))
+        self.assertFalse(list(self.root.glob('screening-recovery-[0-9a-f]*.json')))
+
+    def test_reopens_only_existing_bound_history_after_browser_restart(self):
+        saved_rows = copy.deepcopy(self.raw.messages)
+        self.room.history.rooms = [('Pilih 2 Coin Binance Futures', saved_rows)]
+        self.raw.messages = []
+        result = self.invoke()
+        self.assertEqual(result['output'], {'symbols': ['RUNEUSDT', 'TIAUSDT']})
+        proof = read_receipt(self.root, self.payload)
+        self.assertTrue(proof['history_restore_attempted'])
+        self.assertTrue(proof['history_restored'])
+        self.assertEqual(proof['rows'], saved_rows)
+        self.assertEqual(self.room.history.selected, ['Pilih 2 Coin Binance Futures'])
+        self.assertEqual((self.root / JOURNAL_NAME).read_bytes(), self.journal_before)
+        observations = [json.loads(path.read_text()) for path in self.root.glob(
+            observation_prefix(self.payload) + '*.json')]
+        self.assertTrue(any(value['rows'] == [] for value in observations))
+        self.assertTrue(any(value['stage'] == 'BOUND_ROOM_RESTORED' and
+                            value['rows'] == saved_rows for value in observations))
+        self.assertTrue(all(value['completion_verified'] is False for value in observations))
+
+    def test_bad_final_parse_retains_current_full_rows_and_fresh_failure_not_completion(self):
+        self.raw.messages[-1]['text'] = 'Aku belum dapat memastikan coin pilihan saat ini.'
+        self.bind_room()
+        before = (self.root / JOURNAL_NAME).read_bytes()
+        with self.assertRaises(ValueError): self.invoke()
+        self.assertIsNone(read_receipt(self.root, self.payload))
+        captures = {path.name: path.read_bytes() for path in self.root.glob(
+            observation_prefix(self.payload) + '*.json')}
+        values = [json.loads(raw) for raw in captures.values()]
+        failed = [value for value in values if value['stage'] == 'SCREENING_PARSE_FAILED']
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]['rows'], self.raw.messages)
+        self.assertEqual(failed[0]['rows'][-1]['id'], 'reply-summary')
+        self.assertFalse(failed[0]['completion_verified'])
+        self.assertEqual(failed[0]['observed_at'], NOW)
+        self.assertEqual(failed[0]['error']['reason'], 'NEUROBRO_SCREENING_INCOMPLETE')
+        with patch('agent.native_screening_recovery.time.time', return_value=NOW+1):
+            with self.assertRaises(ValueError): self.invoke()
+        self.assertIsNone(read_receipt(self.root, self.payload))
+        for name, raw in captures.items():
+            self.assertEqual((self.root / name).read_bytes(), raw)
+        values = [json.loads(path.read_text()) for path in self.root.glob(
+            observation_prefix(self.payload) + '*.json')]
+        self.assertEqual({value['observed_at'] for value in values
+                          if value['stage'] == 'SCREENING_PARSE_FAILED'}, {NOW, NOW+1})
+        self.assertEqual((self.root / JOURNAL_NAME).read_bytes(), before)
+        self.assertTrue(all((path.stat().st_mode & 0o777) == 0o600
+            for path in self.root.glob(observation_prefix(self.payload) + '*.json')))
 
     def test_transient_none_does_not_invent_fixed_poll_limit(self):
         answer = self.raw._answer
@@ -157,7 +205,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
         self.native_digest.stop()
         with patch('agent.native_screening_recovery._native_source_digest', return_value='0'*64):
             with self.assertRaises(ScreeningRecoveryUnavailable): self.invoke()
-        self.assertFalse(list(self.root.glob('screening-recovery-*.json')))
+        self.assertFalse(list(self.root.glob('screening-recovery-[0-9a-f]*.json')))
 
     def test_wrong_room_state_day_cache_or_actual_row_does_not_write_receipt(self):
         original = copy.deepcopy(self.raw.messages)
@@ -179,7 +227,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
                 if mutation == 'different-coins': self.raw.messages[-1]['text'] = 'COIN: BTCUSDT, ETHUSDT'; self.bind_room()
                 with self.assertRaises((ScreeningRecoveryUnavailable, ValueError, TypeError)):
                     self.invoke()
-                self.assertFalse(list(self.root.glob('screening-recovery-*.json')))
+                self.assertFalse(list(self.root.glob('screening-recovery-[0-9a-f]*.json')))
 
     def test_manual_login_challenge_stopping_and_mid_read_change_refuse(self):
         for state in ('MANUAL', 'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED', 'UNAVAILABLE', 'STOPPING'):
@@ -197,7 +245,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
             return value
         self.raw._answer = changed
         with self.assertRaises(ScreeningRecoveryUnavailable): self.invoke()
-        self.assertFalse(list(self.root.glob('screening-recovery-*.json')))
+        self.assertFalse(list(self.root.glob('screening-recovery-[0-9a-f]*.json')))
 
     def test_cached_proof_tamper_or_request_reuse_is_rejected(self):
         self.invoke()
