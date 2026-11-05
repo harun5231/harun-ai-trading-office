@@ -21,6 +21,7 @@ from .native_daily_room import identities
 ACTION = 'ANALYSIS_RECEIVED_CONTINUE'
 KIND = 'NATIVE_ANALYSIS_CONTINUATION_RESULT_V1'
 NOT_SENT = 'NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_V1'
+NOT_SENT_CUSTODY = 'NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_CUSTODY_V1'
 GRANT_FIELDS = {'schema_version','grant_id','operation','request_sha256','marker',
     'source_capture_name','source_capture_sha256','source_capture_bytes',
     'source_observation_sha256','reply_sha256','latest_user_prompt_sha256',
@@ -85,6 +86,82 @@ def _semantic(capture):
         room={key:capture['room'][key]for key in('day','room_id','url')},
         rows=identities(projected['rows']),row_offset=projected['row_offset'],
         rendered_prompt_receipt=capture['rendered_prompt_receipt'],receipt_files=capture['receipt_files'])
+
+
+def read_not_sent(root,payload,capture):
+    """Recover only the latest positively closed native attempt, without Send.
+
+    A previous closed attempt cannot certify a later unclosed attempt. Private
+    capture/receipt bytes and the whole current owned transcript remain bound;
+    this reader never grants dispatch, writes a journal, or renews a clock.
+    """
+    scope=capture.get('operation_scope',{})
+    if (capture.get('stage')!='OBSERVED_WITHOUT_COMPLETION' or capture.get('errors')!=[]
+            or capture.get('stable_snapshot_reads')!=4 or capture.get('status')!='CONNECTED'
+            or scope.get('verified')is not True or scope.get('reply_complete')is not True
+            or scope.get('unmatched_intents')!=[]):return None
+    projected=observer._project_operation(capture);rows=projected['rows']
+    if (not rows or len(rows)%2 or rows[-1].get('role')!='assistant'
+            or rows[-1].get('complete')is not True):return None
+    sequence=1+sum(name.endswith('.intent.json')for name in capture['receipt_files'])
+    basis=dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
+        reply_sha256=sha(rows[-1]['text'].encode()),
+        latest_user_prompt_sha256=sha(rows[-2]['text'].encode()),next_followup_sequence=sequence)
+    grant_id=observer.native_digest(basis);base='analysis-continuation-'+grant_id
+    directory=_directory(root)
+    try:
+        pattern=re.compile(re.escape(base)+r'(?:\.([2-9]|[1-9][0-9]+))?\.(admitted|closed-not-sent|upload-started|send-attempted|completed)\.json')
+        artifacts=[(int(match[1]or 1),match[2],name)for name in os.listdir(directory)
+            if(match:=pattern.fullmatch(name))]
+        attempts=sorted((number,name)for number,kind,name in artifacts if kind=='admitted')
+        if not attempts:return None
+        number,admission_name=attempts[-1]
+        if any(item[0]>number for item in artifacts):return None
+        prefix=base+(''if number==1 else'.'+str(number))
+        # Positive NOT_SENT is necessary; absence of a Send marker alone never
+        # establishes it. Any mutation/completion marker wins conservatively.
+        for suffix in ('upload-started','send-attempted','completed'):
+            if any(item[0]==number and item[1]==suffix for item in artifacts):return None
+        closed_name=prefix+'.closed-not-sent.json'
+        if not any(item[2]==closed_name for item in artifacts):return None
+        def entry(name):
+            raw=_private_file(directory,name,262144)
+            return dict(name=name,sha256=sha(raw),bytes=len(raw),value=json.loads(raw,object_pairs_hook=pairs))
+        admission=entry(admission_name);disposition=entry(closed_name)
+        admitted=admission['value'];closed=disposition['value'];grant=admitted['grant']
+        need(admitted['attempt']==number and grant['grant_id']==grant_id
+            and all(grant[key]==value for key,value in basis.items()))
+        # Validate the immutable historical record at its recorded admission
+        # epoch only. This does not alter production time or authorize Send.
+        validate(dict(action=ACTION,payload=payload,grant=grant),now=grant['started_at'])
+        need(closed['kind']==NOT_SENT and closed['grant_id']==grant_id
+            and closed['operation']==payload['operation'] and closed['request_sha256']==payload['request_sha256']
+            and closed['admission']=={key:admission[key]for key in('name','sha256','bytes')}
+            and all(closed.get(key)is False for key in('send_attempted','new_intent_written','upload_started'))
+            and finite(admitted.get('admitted_at')) and finite(closed.get('closed_at'))
+            and grant['started_at']<=admitted['admitted_at']<=closed['closed_at']<=capture['finished_at'])
+        source=_read_source(root,payload,grant)
+        current_name=admitted['current_capture']
+        key=observer.digest({key:payload[key]for key in('operation','request_sha256')})[:16]
+        match=re.fullmatch('received-analysis-observation-'+key+'-([a-f0-9]{64})'+r'\.json',current_name)
+        need(match is not None)
+        current_raw=_private_file(directory,current_name,observer.MAX_CAPTURE)
+        need(sha(current_raw)==match[1])
+        admitted_capture=json.loads(current_raw,object_pairs_hook=pairs)
+        need(admitted_capture.get('stage')=='OBSERVED_WITHOUT_COMPLETION' and admitted_capture.get('errors')==[]
+            and admitted_capture.get('stable_snapshot_reads')==4 and admitted_capture.get('status')=='CONNECTED'
+            and admitted_capture['operation']==payload['operation']
+            and admitted_capture['request_sha256']==payload['request_sha256']
+            and admitted_capture['finished_at']<=admitted['admitted_at']
+            and _semantic(source)==_semantic(admitted_capture)==_semantic(capture))
+        semantics_sha=observer.native_digest(_semantic(capture))
+        return dict(kind=NOT_SENT_CUSTODY,grant_id=grant_id,latest_attempt=number,
+            admission=admission,disposition=disposition,
+            admitted_capture=dict(name=current_name,sha256=sha(current_raw),bytes=len(current_raw),semantics_sha256=semantics_sha),
+            source_semantics_sha256=semantics_sha,current_semantics_sha256=semantics_sha,
+            intent_chain_sha256=observer.native_digest(capture['receipt_files']),
+            mutation_markers=dict(upload_started=False,send_attempted=False,completed=False))
+    finally:os.close(directory)
 
 
 def _seed(capture,payload,grant):

@@ -428,6 +428,18 @@ def observe(actor, delegated, value):
         finally:
             raw.operation_deadline, raw._visible = old_deadline, old_visible
         capture['finished_at'] = time.time()
+        if generic:
+            # A lost HTTP return may hide a positive native NOT_SENT receipt.
+            # Expose only the latest independently verified private custody;
+            # this passive read cannot admit, replay or complete an operation.
+            capture['continuation_not_sent'] = None
+            try:
+                from .native_received_continuation import read_not_sent
+                capture['continuation_not_sent'] = read_not_sent(room.store.root,payload,capture)
+            except Exception as error:
+                code=str(error)
+                capture['continuation_not_sent_error'] = dict(exception_class=type(error).__name__,
+                    reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code) else None)
         saved = _save(room.store.root, capture)
     rows = capture.get('rows', []); last = rows[-1] if rows else {}
     result = dict(kind=kind, operation=operation, request_sha256=request,
