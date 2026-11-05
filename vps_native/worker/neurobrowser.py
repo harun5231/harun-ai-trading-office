@@ -44,9 +44,13 @@ def helper_token():
 
 def browser_request(method, url, headers=None, body=None, timeout=15):
     """Fixed internal service; no proxies, redirects, secrets in URL or logs."""
-    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask'), ('POST', BASE + '/v1/historical-evidence')):
+    if (method, url) not in (('GET', BASE + '/v1/status'), ('POST', BASE + '/v1/ask'), ('POST', BASE + '/v1/historical-evidence'), ('POST', BASE + '/v1/screening-recovery')):
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     if method == 'GET' and body is not None:
+        raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
+    observation = url == BASE + '/v1/screening-recovery'
+    if observation and (type(body) is not dict or set(body) != {'action','payload'}
+            or body['action'] != 'ANALYSIS_RECEIVED_OBSERVE'):
         raise Review('NEUROBRO_BROWSER_ENDPOINT_DENIED')
     try:
         raw = None if body is None else encode(body).encode('utf-8')
@@ -67,7 +71,7 @@ def browser_request(method, url, headers=None, body=None, timeout=15):
             if len(raw) > maximum:
                 raise Review('INVALID_RESPONSE_ENVELOPE')
             try:
-                value = json.loads(raw, parse_float=(float if url.endswith('/v1/historical-evidence') else D), object_pairs_hook=unique,
+                value = json.loads(raw, parse_float=(float if observation or url.endswith('/v1/historical-evidence') else D), object_pairs_hook=unique,
                     parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
             except (ValueError, TypeError):
                 raise Review('INVALID_RESPONSE_ENVELOPE') from None
@@ -254,6 +258,39 @@ class NeuroBrowser:
     def health(self):
         self.require_key()
         return 'NEUROBRO_BROWSER_CONNECTED'
+
+    def observe_received_analysis(self, operation):
+        """Observe the same operation through the existing authenticated actor.
+
+        The maintenance action cannot Send, upload, call a model, or create a
+        room. A BUSY native actor retains exclusive ownership; absence of an
+        observation is never permission to replay the original request.
+        """
+        self.require_key()
+        row = self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
+        current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if row is None or current is None:
+            raise Review('ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED')
+        body = json.loads(row['request_body'], object_pairs_hook=unique)
+        rebuilt, serialized, wire = request_body(operation,body['prompt'],body['output_schema'],body['context'])
+        if (body != rebuilt or serialized != row['request_body'] or wire != row['request_sha256']
+                or current['body_hash'] != wire or body['output_schema'] != SETUP_SCHEMA_V4
+                or current['state'] not in ('PENDING','NEEDS_REVIEW') or current['attempts'] != 1
+                or current['output'] is not None or current['idempotency'] is not None):
+            raise Review('ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED')
+        code, _, result = self.transport('POST', BASE + '/v1/screening-recovery', self.headers(),
+            {'action':'ANALYSIS_RECEIVED_OBSERVE','payload':{**body,'request_sha256':wire}}, timeout=45)
+        if code == 409:
+            reason = result.get('reason') if isinstance(result,dict) else None
+            error = result.get('error') if isinstance(result,dict) else None
+            if isinstance(error,str) and error.startswith('SCREENING_RECOVERY_'):
+                reason = error[len('SCREENING_RECOVERY_'):]
+            if reason in ('BUSY','LOGIN_REQUIRED','CHALLENGE_REQUIRED','UNAVAILABLE','LOGIN_IN_PROGRESS'):
+                raise Review('NEUROBRO_' + reason)
+            raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
+        if code != 200 or not isinstance(result,dict):
+            raise Review('ANALYSIS_RESPONSE_OBSERVATION_PENDING')
+        return result
 
     def record_validation(self, operation, error):
         self.db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",

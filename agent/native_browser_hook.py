@@ -519,6 +519,13 @@ class DelegatedDOMBridge:
             gate()
             if transcript() != observed_turns:
                 unknown()
+            if phase == 'ANALYSIS' and self.daily_room is not None:
+                # Persist the actual accepted dialogue result before native
+                # final polling can be interrupted. Never synthesize approval
+                # while later recovering an uncertain browser outcome.
+                from .native_analysis_receipt import persist_review
+                persist_review(self.daily_room.store.root, payload, request, response,
+                    observed_turns, context=active_context, observed_at=self.wall_clock())
             if evaluation is not None:
                 if not response['needs_followup']:
                     question = evaluation.next_material_question()
