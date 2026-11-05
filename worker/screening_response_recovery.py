@@ -49,7 +49,7 @@ def _proof(proof, payload):
     fields = {'schema_version', 'kind', 'payload_sha256', 'room', 'rows',
         'rendered_prompt', 'initial_reply_sha256', 'final_reply_sha256',
         'native_source_sha256', 'native_received_at', 'stable_reads', 'native_poll_reads', 'native_result',
-        'history_restore_attempted', 'history_restored'}
+        'history_restore_attempted', 'history_restored', 'identity_reconciliation'}
     encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
     _need(type(proof) is dict and set(proof) == fields and type(proof['schema_version']) is int
         and proof['schema_version'] == 1 and proof['kind'] == 'NATIVE_SCREENING_COMPLETION_RECOVERY_V1'
@@ -61,7 +61,8 @@ def _proof(proof, payload):
         and proof['history_restored'] is proof['history_restore_attempted'])
     room, rows, rendered, result = (proof[key] for key in ('room', 'rows', 'rendered_prompt', 'native_result'))
     _need(type(room) is dict and set(room) == {'day', 'room_id', 'url', 'updated_at',
-        'anchors', 'first_prompt_sha256', 'marker', 'history_titles'} and room['day'] == payload['operation'][:10]
+        'anchors', 'first_prompt_sha256', 'marker', 'history_titles', 'identifier_reconciliation'}
+        and room['day'] == payload['operation'][:10]
         and type(room['room_id']) is str and re.fullmatch('[a-f0-9]{32}', room['room_id'])
         and type(room['url']) is str and room['url'].startswith('https://app.neurobro.ai/')
         and room['marker'] == payload['marker'] and type(rendered) is str
@@ -82,7 +83,7 @@ def _proof(proof, payload):
     clarification = ('Mohon ringkas ' + str(count) + ' coin pilihanmu sesuai kapasitas '
         'yang diminta dalam bentuk COIN: simbol USDT Perpetual. '
         'Jangan sertakan coin pembanding sebagai pilihan.')
-    _need(room['anchors'] == anchors and rows[1]['id'] != rows[3]['id']
+    _need(rows[1]['id'] != rows[3]['id']
         and rows[0]['text'].replace('\r\n', '\n').strip() == rendered.replace('\r\n', '\n').strip()
         and rows[2]['text'].replace('\r\n', '\n').strip() == clarification
         and proof['initial_reply_sha256'] == _sha(rows[1]['text'])
@@ -98,9 +99,18 @@ def _proof(proof, payload):
         and result['output'] == output and result['assistant_text'] == rows[3]['text']
         and result['chart_evidence'] == []
         and result['response_id'] == 'dom-' + _sha(room['url'] + '\n' + payload['marker'] + '\n' + rows[3]['text']))
+    reconciled = proof['identity_reconciliation']
+    if reconciled is None:
+        _need(room['identifier_reconciliation'] is None and room['anchors'] == anchors)
+        return None
+    from agent.native_screening_identity import validate_identity_receipt
+    _need(type(reconciled) is dict and set(reconciled) == {'alias', 'receipt'})
+    alias = validate_identity_receipt(reconciled['receipt'], payload, room, rows)
+    _need(alias == reconciled['alias'] == room['identifier_reconciliation'])
+    return alias
 
 
-def _mini_selection(done, proof, payload):
+def _mini_selection(done, proof, payload, identity_alias=None):
     _need(type(done) is dict and set(done) == {'operation_id', 'kind', 'request_hash',
         'state', 'result', 'updated_at'} and done['kind'] == 'DELEGATED_MODEL_DIALOGUE'
         and done['state'] == 'DONE' and type(done['result']) is str
@@ -113,6 +123,14 @@ def _mini_selection(done, proof, payload):
     request_id = _sha(json.dumps(dict(operation=payload['operation'],
         request_sha256=payload['request_sha256'], reply_sha256=proof['initial_reply_sha256'],
         phase='SCREENING', transcript_sha256=transcript), sort_keys=True, separators=(',', ':')))
+    if identity_alias is not None:
+        # Reloaded UI IDs are accepted only through the authenticated, durable
+        # old-to-current identity receipt. The original DONE request identity
+        # and full Mini row stay intact, including its original request hash.
+        _need(identity_alias['current_request_id'] == request_id
+            and identity_alias['mini_done_sha256'] == _sha(json.dumps(done,
+                sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)))
+        request_id = identity_alias['original_request_id']
     request = dict(request_id=request_id, conversation_id='neurobro:' + proof['room']['day']
         + ':' + proof['room']['room_id'], phase='SCREENING', reply=turns[1]['text'],
         reply_sha256=proof['initial_reply_sha256'], market_context=None)
@@ -161,8 +179,8 @@ def recover_screening_response(provider, proof, mini_done, *, catalog, max_age, 
     prompt, schema = screening_contract(count)
     body, serialized, wire = request_body(operation, prompt, schema, None)
     payload = {**body, 'request_sha256': wire}
-    _proof(proof, payload)
-    _mini_selection(mini_done, proof, payload)
+    identity_alias = _proof(proof, payload)
+    _mini_selection(mini_done, proof, payload, identity_alias)
     output = proof['native_result']['output']
     selections(output, catalog, count=count)
     cached = canonical_output(output, schema, catalog)

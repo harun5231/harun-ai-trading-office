@@ -90,7 +90,8 @@ class ScreeningResponseRecoveryTests(unittest.TestCase):
                 id='native-summary', attachments=[])]
         room = dict(day=DAY, room_id='a' * 32, url='https://app.neurobro.ai/chat/' + 'a' * 32,
             updated_at=NOW - 20, anchors=identities(rows), first_prompt_sha256=sha(rendered),
-            marker=self.body['marker'], history_titles=['Rekomendasi coin futures binance'])
+            marker=self.body['marker'], history_titles=['Rekomendasi coin futures binance'],
+            identifier_reconciliation=None)
         output = {'symbols': ['RUNEUSDT', 'TIAUSDT']}
         result = {key: self.payload[key] for key in ('operation', 'marker', 'request_sha256')}
         result.update(output=output, assistant_text=rows[3]['text'], chart_evidence=[],
@@ -100,7 +101,7 @@ class ScreeningResponseRecoveryTests(unittest.TestCase):
             rendered_prompt=rendered, initial_reply_sha256=sha(first), final_reply_sha256=sha(rows[3]['text']),
             native_source_sha256=NATIVE_DOM_SHA256, native_received_at=NOW - 10,
             stable_reads=4, native_poll_reads=4, native_result=result,
-            history_restore_attempted=False, history_restored=False)
+            history_restore_attempted=False, history_restored=False, identity_reconciliation=None)
         request_id = sha(json.dumps(dict(operation=OP, request_sha256=wire,
             reply_sha256=sha(first), phase='SCREENING', transcript_sha256=_digest(rows[:2])),
             sort_keys=True, separators=(',', ':')))
@@ -255,6 +256,82 @@ class ScreeningResponseRecoveryTests(unittest.TestCase):
             with self.subTest(column=column), self.assertRaises(Review): self.recover()
             self.assertEqual(self.snapshot(), before)
             self.db.execute('UPDATE api_requests SET ' + column + '=?', (original,))
+
+    def reloaded_identity(self):
+        from agent.native_screening_identity import (CAPTURE, EVIDENCE, build_receipt,
+            validate_identity_receipt)
+        saved = json.loads((ROOT / 'tests/fixtures/screening_reloaded_identity_20261105.json').read_text())
+        rows = saved['observed_rows']; room = dict(saved['original_room'], identifier_reconciliation=None)
+        evidence = dict(schema_version=1, protocol=EVIDENCE, operation=OP,
+            request_sha256=self.payload['request_sha256'], room_id=room['room_id'],
+            original_anchors=room['anchors'], retained_agent=saved['identity_evidence'],
+            current_agent=copy.deepcopy(saved['identity_evidence']), custody=dict(CAPTURE,
+                browser_capture_sha256='1' * 64, agent_capture_sha256='2' * 64))
+        receipt = build_receipt(self.payload, room, rows, evidence, NOW - 15)
+        alias = validate_identity_receipt(receipt, self.payload, room, rows)
+        room['identifier_reconciliation'] = alias
+        self.proof.update(room=room, rows=rows, rendered_prompt=saved['rendered_prompt'],
+            initial_reply_sha256=sha(rows[1]['text']), final_reply_sha256=sha(rows[3]['text']),
+            identity_reconciliation={'alias': alias, 'receipt': receipt})
+        self.proof['native_result'].update(assistant_text=rows[3]['text'],
+            response_id='dom-' + sha(room['url'] + '\n' + self.body['marker'] + '\n' + rows[3]['text']))
+        self.done = saved['identity_evidence']['first_mini_done']
+        self.db.execute('UPDATE api_requests SET created=?', (1793864323.9876754,))
+        return saved, evidence, receipt, alias
+
+    def test_actual_reloaded_assistant_ids_retain_original_mini_identity_and_journals(self):
+        from agent.native_screening_identity import current_request_id
+        saved, evidence, receipt, alias = self.reloaded_identity()
+        self.assertEqual(alias['original_request_id'],
+            '72a5a5eba8004b41f4132f8a9eb8b559c440f37704efaca5b8ca8b36a5f20d64')
+        self.assertNotEqual(alias['current_request_id'], alias['original_request_id'])
+        self.assertEqual(alias['current_request_id'], current_request_id(self.payload, saved['observed_rows']))
+        self.assertEqual(self.proof['room']['anchors'], alias['original_anchors'])
+        self.assertNotEqual(alias['original_anchors'][1], alias['observed_anchors'][1])
+        self.assertNotEqual(alias['original_anchors'][3], alias['observed_anchors'][3])
+        self.assertEqual(alias['original_anchors'][::2], alias['observed_anchors'][::2])
+        before = self.snapshot(); unknown = copy.deepcopy(evidence['retained_agent']['final_mini_unknown'])
+        done = copy.deepcopy(self.done)
+        result = self.recover()
+        self.assertEqual(result['continuation'], 'CURRENT_REPLACEMENT_PENDING')
+        self.assertEqual(self.row('api_requests')['created'], 1793864323.9876754)
+        self.assertEqual(self.row('api_requests')['attempts'], 1)
+        self.assertEqual(self.row('robot_jobs')['state'], 'COMPLETE')
+        self.assertEqual(self.done, done)
+        self.assertEqual(evidence['retained_agent']['final_mini_unknown'], unknown)
+        self.assertEqual(unknown['state'], 'UNKNOWN')
+        self.assertEqual(evidence['retained_agent']['raw_receipts'][1]['value']['authority'],
+            'UNVALIDATED_MODEL_OUTPUT')
+        for table in ('order_intents', 'pending_review', 'robot_settings', 'research_browser_requests'):
+            self.assertEqual(self.snapshot()[table], before[table])
+
+    def test_reloaded_id_without_explicit_alias_still_refuses_original_mini_request(self):
+        from agent.native_daily_room import identities
+        self.reloaded_identity()
+        self.proof['identity_reconciliation'] = None
+        self.proof['room']['identifier_reconciliation'] = None
+        self.proof['room']['anchors'] = identities(self.proof['rows'])
+        before = self.snapshot()
+        with self.assertRaises(Review): self.recover()
+        self.assertEqual(self.snapshot(), before)
+
+    def test_reloaded_raw_or_original_identity_mismatch_preserves_blocked_journal(self):
+        self.reloaded_identity(); before = self.snapshot()
+        original = copy.deepcopy(self.proof)
+        for target, field, value in (('alias', 'original_request_id', 'f' * 64),
+                                    ('alias', 'current_request_id', 'f' * 64),
+                                    ('alias', 'mini_done_sha256', 'f' * 64)):
+            self.proof = copy.deepcopy(original)
+            self.proof['identity_reconciliation'][target][field] = value
+            with self.subTest(field=field), self.assertRaises((Review, ValueError)): self.recover()
+            self.assertEqual(self.snapshot(), before)
+        self.proof = copy.deepcopy(original)
+        evidence = self.proof['identity_reconciliation']['receipt']['identity_evidence']
+        for collection in ('retained_agent', 'current_agent'):
+            raw = evidence[collection]['raw_receipts'][1]['value']
+            raw['native_reply_sha256'] = 'f' * 64
+        with self.assertRaises(ValueError): self.recover()
+        self.assertEqual(self.snapshot(), before)
 
 
 if __name__ == '__main__':
