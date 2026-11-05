@@ -13,7 +13,7 @@ import math
 from pathlib import Path
 import re
 
-from worker.trade_evaluation_evidence import (EVALUATION_SCHEMA, PROTOCOL,
+from worker.trade_evaluation_evidence import (EVALUATION_SCHEMA, PROTOCOL, INITIAL_CUSTODY,
     digest, need, parse_evaluation_reply)
 
 PHASE = 'POST_TRADE_EVALUATION'
@@ -245,7 +245,10 @@ def validate_material_access_chain(request, chain, chart_evidence, *, final_resp
         for witness in intent.get('reused_materials',[]):
             key=witness.get('material_sha256');material=expected.get(key)
             need(material is not None and key not in covered
-                and witness.get('native_completion_sha256')==material['delivery_custody']['native_completion_sha256']
+                and (witness.get('native_review_sha256')==material['delivery_custody'].get('native_review_sha256')
+                    and type(witness.get('native_review_sha256'))is str
+                    if material['delivery_custody'].get('kind')==INITIAL_CUSTODY else
+                    witness.get('native_completion_sha256')==material['delivery_custody']['native_completion_sha256'])
                 and witness.get('assistant_sha256')==material['delivery_custody']['assistant_sha256']
                 and type(witness.get('attachment_names')) is list and len(witness['attachment_names'])==4
                 and len(set(witness['attachment_names']))==4,

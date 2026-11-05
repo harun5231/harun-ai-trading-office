@@ -4,7 +4,8 @@ This module never captures charts, contacts a provider, or creates receipts.
 It accepts only the actor's owned capture lookup and verifies historical
 bytes with the existing website-capture validator. There is intentionally no scan of Chromium/profile roots
 and no fallback from a missing four-file receipt to a claim of upload success.
-Initial turns which lack the existing follow-up custody remain unbound.
+Initial turns join actual prepared files, native transcript/Mini review and the
+authenticated worker completion; none is relabelled as a follow-up Send receipt.
 """
 from copy import deepcopy
 import hashlib
@@ -14,7 +15,7 @@ from pathlib import Path
 import re
 import stat
 
-from .trade_evaluation_evidence import digest, need, project_native_archive
+from .trade_evaluation_evidence import digest, need, project_native_archive, INITIAL_CUSTODY
 
 CAPTURE_INDEX = 'historical-capture-index'
 CAPTURE_INDEX_PROTOCOL = 'NATIVE_OWNED_HISTORICAL_CAPTURE_LOOKUP_V1'
@@ -183,6 +184,238 @@ def _context(sidecar, payload):
     return context
 
 
+def _has_followup(root, operation, request_sha):
+    """Any owned leaf, including malformed/unknown leaves, selects strict legacy validation."""
+    from agent.native_chart_followup import _directory, sha
+    parent=_directory(root);directory=None
+    try:
+        try:directory=_subdirectory(parent,'dialogue-200-followup')
+        except FileNotFoundError:return False
+        key=sha(dict(operation=operation,request_sha256=request_sha))
+        return any(name.startswith(key)for name in os.listdir(directory))
+    finally:
+        if directory is not None:os.close(directory)
+        os.close(parent)
+
+
+def _initial_review(value, operation, wire_sha, *, public, reply_sha, received_at=None):
+    """Validate an actual persist_review attestation, not invented transcript rows."""
+    import math
+    from agent.native_analysis_receipt import KIND
+    from agent.native_chart_followup import sha
+    from agent.dialogue_service import validate_result
+    fields={'schema_version','kind','operation','request_sha256','payload_sha256','request_id',
+        'reply_sha256','context_sha256','conversation_id','phase','request','response',
+        'transcript_sha256','observed_at'}
+    need(type(value)is dict and set(value)==fields and type(value['schema_version'])is int and value['schema_version']==1
+        and value['kind']==KIND and value['operation']==operation and value['request_sha256']==wire_sha
+        and value['phase']=='ANALYSIS' and value['reply_sha256']==reply_sha
+        and all(type(value[k])is str and re.fullmatch('[a-f0-9]{64}',value[k])
+            for k in('payload_sha256','request_id','reply_sha256','context_sha256','transcript_sha256'))
+        and type(value['observed_at'])in(int,float)and math.isfinite(value['observed_at'])and value['observed_at']>0,
+        'EVALUATION_INITIAL_REVIEW_INVALID')
+    request,response=value['request'],value['response']
+    need(type(request)is dict and request.get('phase')=='ANALYSIS'
+        and request.get('request_id')==value['request_id']
+        and request.get('conversation_id')==value['conversation_id']
+        and request.get('reply_sha256')==reply_sha and type(request.get('reply'))is str
+        and hashlib.sha256(request['reply'].encode()).hexdigest()==reply_sha
+        and request.get('market_context')==public
+        and request.get('gate')==dict(robot_on=True,native_dispatch_verified=True)
+        and sha(dict(operation=operation,request_sha256=wire_sha,reply_sha256=reply_sha,
+            phase='ANALYSIS',transcript_sha256=value['transcript_sha256']))==value['request_id'],
+        'EVALUATION_INITIAL_REVIEW_INVALID')
+    try:validate_result(response,request)
+    except Exception:raise ValueError('EVALUATION_INITIAL_REVIEW_INVALID')from None
+    need(response.get('needs_followup')is False and response.get('decision',{}).get('action')=='COMPLETE',
+        'EVALUATION_INITIAL_REVIEW_NOT_TERMINAL')
+    if received_at is not None:
+        need(type(received_at)in(int,float)and math.isfinite(received_at)
+            and value['observed_at']<=received_at,'EVALUATION_INITIAL_RECEIVE_TIME_MISMATCH')
+    return value
+
+
+def _initial_material(prepared, review, prompt, *, context_sha, public, observed_at):
+    from agent.native_chart_followup import sha
+    need(prepared['context_sha256']==review['context_sha256']==context_sha
+        and prepared['material_payload_sha256']==review['payload_sha256']==prompt['payload_sha256']
+        and prepared['rendered_prompt_sha256']==prompt['rendered_sha256']
+        and prepared['observed_at']<=review['observed_at'], 'EVALUATION_INITIAL_MATERIAL_MISMATCH')
+    return dict(kind=INITIAL_CUSTODY,operation=prepared['operation'],request_sha256=prepared['request_sha256'],
+        marker=prepared['marker'],chart_evidence=deepcopy(prepared['chart_evidence']),
+        attachment_names=list(prepared['attachment_names']),
+        prompt_sha256=hashlib.sha256(prompt['rendered_prompt'].replace('\r\n','\n').strip().encode()).hexdigest(),
+        context_sha256=context_sha,projected_context_sha256=sha(public),observed_at=observed_at)
+
+
+def read_initial_custody(root, operation, request, response, *, context, sidecar, csv_files, png_names):
+    """Initial transport completion + actual four-tile native review, all read-only.
+
+    BrowserActor returns bridge.ask directly; the authenticated worker's genuine
+    response is the completion authority. PREPARED_NOT_SUBMITTED alone is never
+    treated as Send. The persisted review attests the native transcript checked
+    before and after Mini, through the decoded-PNG/CSV user-tile reader.
+    """
+    from agent.native_analysis_material import read_prepared, prefix as prepared_prefix
+    from agent.native_analysis_receipt import read_reviews
+    from agent.native_prompt_composition import PromptCompositionCache, canonical
+    from agent.native_chart_followup import _directory, _private_file, sha
+    payload=json.loads(request['request_body']);payload['request_sha256']=request['request_sha256']
+    need(payload.get('operation')==operation and request.get('operation')==response.get('operation')==operation
+        and request.get('provider')==payload.get('provider')=='NEUROBRO_WEB'
+        and request.get('contract_version')==payload.get('contract_version')=='neurobro-browser-decision-v2'
+        and request.get('marker')==payload.get('marker')
+        and hashlib.sha256(request['request_body'].encode()).hexdigest()==request['request_sha256']
+        and type(response.get('assistant_text'))is str
+        and hashlib.sha256(response['assistant_text'].encode()).hexdigest()==response.get('assistant_sha256'),
+        'EVALUATION_INITIAL_PROVIDER_RECEIPT_MISMATCH')
+    material_payload=deepcopy(payload);material_payload['context']=deepcopy(context)
+    charts=json.loads(response['chart_evidence']);public=sidecar['public_market_context']
+    expected_names=png_names+[row['name']for row in csv_files]
+    receipts=[{**{key:value for key,value in row.items()if key!='buffer'},'bytes':len(row['buffer'])}for row in csv_files]
+    prepared=[row for row in read_prepared(root,material_payload)
+        if row['value']['chart_evidence']==charts and row['value']['attachment_names']==expected_names
+        and row['value']['csv_receipts']==receipts and row['value']['context_sha256']==sha(context)]
+    need(len(prepared)==1,'EVALUATION_INITIAL_PREPARED_NOT_UNIQUELY_LINKED');prepared=prepared[0]
+    need(prepared['name']==prepared_prefix(material_payload)+prepared['sha256']+'.json',
+        'EVALUATION_INITIAL_PREPARED_NOT_UNIQUELY_LINKED')
+    from .trade_evaluation_evidence import utc_epoch
+    need(context['fetched_at']<=prepared['value']['observed_at']
+        and all(float(utc_epoch(row['captured_at']))<=prepared['value']['observed_at']for row in charts),
+        'EVALUATION_INITIAL_PREPARED_TIME_MISMATCH')
+    reviews=[row for row in read_reviews(root,material_payload)
+        if row['value']['reply_sha256']==response['assistant_sha256']]
+    need(len(reviews)==1,'EVALUATION_INITIAL_REVIEW_NOT_UNIQUELY_LINKED');review=reviews[0]
+    _initial_review(review['value'],operation,request['request_sha256'],public=public,
+        reply_sha=response['assistant_sha256'],received_at=response['received_at'])
+    need(review['value']['request']['reply']==response['assistant_text'],
+        'EVALUATION_INITIAL_PROVIDER_RECEIPT_MISMATCH')
+    cache=PromptCompositionCache.__new__(PromptCompositionCache);cache.root=Path(root)
+    prompt=cache.read(material_payload)
+    need(prompt is not None,'EVALUATION_INITIAL_RENDERED_PROMPT_MISSING')
+    _initial_material(prepared['value'],review['value'],prompt,context_sha=sha(context),
+        public=public,observed_at=context['fetched_at'])
+    directory=_directory(root)
+    try:
+        retained=[]
+        for row in(prepared,review):
+            raw=_private_file(directory,row['name'],1024*1024)
+            need(raw==canonical(row['value'])and hashlib.sha256(raw).hexdigest()==row['sha256']
+                and len(raw)==row['bytes'],'EVALUATION_INITIAL_RECEIPT_CHANGED')
+            retained.append((row['name'],raw))
+        prompt_name=cache._name(material_payload);raw_prompt=_private_file(directory,prompt_name,384*1024)
+        need(raw_prompt==canonical(prompt),'EVALUATION_INITIAL_RENDERED_PROMPT_MISMATCH')
+        need(all(_private_file(directory,name,1024*1024)==raw for name,raw in retained)
+            and not _has_followup(root,operation,request['request_sha256']),
+            'EVALUATION_NATIVE_RECEIPT_CHANGED_DURING_READ')
+        return dict(kind=INITIAL_CUSTODY,operation=operation,request_sha256=request['request_sha256'],
+            response_id=response['response_id'],assistant_sha256=response['assistant_sha256'],
+            initial_request_record_sha256=digest(request),initial_response_record_sha256=digest(response),
+            prepared_material_sha256=prepared['sha256'],native_review_sha256=review['sha256'],
+            prompt_cache_sha256=hashlib.sha256(raw_prompt).hexdigest(),context_sha256=digest(context),
+            png_evidence_sha256=digest(charts),csv_sha256={r['timeframe']:r['sha256']for r in csv_files})
+    finally:os.close(directory)
+
+
+def material_view(turn):
+    """Shared material semantics; original initial/follow-up receipts stay unchanged."""
+    if type(turn.get('material'))is dict:return turn['material']
+    intent=turn['intent']
+    return dict(kind='NATIVE_200_CHART_FOLLOWUP',operation=intent.get('operation'),
+        request_sha256=intent.get('request_sha256'),marker=intent.get('marker'),
+        chart_evidence=intent.get('followup_chart_evidence',[]),attachment_names=intent['followup_attachment_names'],
+        prompt_sha256=intent['followup_prompt_sha256'],context_sha256=intent.get('followup_context_sha256'),
+        projected_context_sha256=intent.get('projected_context_sha256'),observed_at=intent.get('observed_at'))
+
+
+def _read_initial_bound_turn(root, manifest):
+    from agent.native_chart_followup import _directory, _private_file, pairs, canonical, sha, MAX_BYTES
+    from agent.native_analysis_material import KIND
+    from agent.native_chart_capture import WEBSITE_SIDECAR
+    custody=manifest['delivery_custody'];operation=custody['operation'];wire_sha=custody['request_sha256']
+    need(not _has_followup(root,operation,wire_sha),'EVALUATION_NATIVE_RECEIPT_CHAIN_INCOMPLETE')
+    hashes=('prepared_material_sha256','native_review_sha256','prompt_cache_sha256',
+        'initial_request_record_sha256','initial_response_record_sha256')
+    need(all(type(custody.get(key))is str and re.fullmatch('[a-f0-9]{64}',custody[key])for key in hashes),
+        'EVALUATION_BOUND_MATERIAL_MISMATCH')
+    key=sha(dict(operation=operation,request_sha256=wire_sha));parent=_directory(root)
+    index=directory=None;retained=[]
+    try:
+        prepared_name='analysis-prepared-'+key+'-'+custody['prepared_material_sha256']+'.json'
+        raw=_private_file(parent,prepared_name,262144);prepared=json.loads(raw,object_pairs_hook=pairs)
+        need(raw==canonical(prepared)and hashlib.sha256(raw).hexdigest()==custody['prepared_material_sha256']
+            and prepared.get('schema_version')==1 and prepared.get('kind')==KIND
+            and prepared.get('state')=='PREPARED_NOT_SUBMITTED'and prepared.get('send_attempted')is False
+            and prepared.get('operation')==operation and prepared.get('request_sha256')==wire_sha
+            and type(prepared.get('material_payload_sha256'))is str
+            and re.fullmatch('[a-f0-9]{64}',prepared['material_payload_sha256']),
+            'EVALUATION_BOUND_MATERIAL_MISMATCH')
+        retained.append((prepared_name,raw))
+        prefix='analysis-review-'+key+'-';reviews=[];scanned=0
+        for name in os.listdir(parent):
+            if not name.startswith(prefix):continue
+            need(re.fullmatch(re.escape(prefix)+'[a-f0-9]{64}\\.json',name)is not None,
+                'EVALUATION_INITIAL_REVIEW_INVALID')
+            scanned+=1;need(scanned<=64,'EVALUATION_INITIAL_REVIEW_INVALID')
+            value=_private_file(parent,name,512*1024)
+            if hashlib.sha256(value).hexdigest()==custody['native_review_sha256']:
+                reviews.append((name,value,json.loads(value,object_pairs_hook=pairs)))
+        need(len(reviews)==1,'EVALUATION_INITIAL_REVIEW_NOT_UNIQUELY_LINKED')
+        review_name,raw,review=reviews[0]
+        need(raw==canonical(review)and review_name==prefix+review.get('request_id','')+'.json',
+            'EVALUATION_INITIAL_REVIEW_INVALID');retained.append((review_name,raw))
+        prompt_name='mini-prompt-'+prepared['material_payload_sha256']+'.json'
+        raw=_private_file(parent,prompt_name,384*1024);prompt=json.loads(raw,object_pairs_hook=pairs)
+        need(raw==canonical(prompt)and hashlib.sha256(raw).hexdigest()==custody['prompt_cache_sha256']
+            and set(prompt)=={'schema_version','operation','payload_sha256','model_request_id','rendered_prompt','rendered_sha256'}
+            and prompt.get('schema_version')==1 and prompt.get('operation')==operation
+            and type(prompt.get('rendered_prompt'))is str
+            and hashlib.sha256(prompt['rendered_prompt'].encode()).hexdigest()==prompt.get('rendered_sha256'),
+            'EVALUATION_INITIAL_RENDERED_PROMPT_MISMATCH');retained.append((prompt_name,raw))
+        charts=prepared['chart_evidence'];identity,filename=_index_identity(prepared,charts)
+        index=_subdirectory(parent,CAPTURE_INDEX);raw_index=_private_file(index,filename,MAX_BYTES)
+        capture=json.loads(raw_index,object_pairs_hook=pairs)
+        need(raw_index==canonical(capture)and capture.get('protocol')==CAPTURE_INDEX_PROTOCOL
+            and capture.get('identity')==identity and capture.get('native_context_sha256')==prepared['context_sha256']
+            and capture.get('sidecar_sha256')==manifest.get('archive_sidecar_sha256'),
+            'EVALUATION_ARCHIVE_INDEX_CHANGED')
+        paths=[Path(path)for path in capture['paths']]
+        need(len(paths)==2 and all(not path.is_absolute()and '..'not in path.parts and path.parts for path in paths)
+            and paths[0]!=paths[1]and paths[0].parent==paths[1].parent,'EVALUATION_ARCHIVE_PATH_INVALID')
+        directory=os.dup(parent)
+        for component in paths[0].parent.parts:
+            child=_subdirectory(directory,component);os.close(directory);directory=child
+        raw_sidecar=_private_file(directory,WEBSITE_SIDECAR,MAX_BYTES);sidecar=json.loads(raw_sidecar,object_pairs_hook=pairs)
+        need(hashlib.sha256(raw_sidecar).hexdigest()==manifest['archive_sidecar_sha256']
+            and sidecar.get('native_context_canonical_sha256')==prepared['context_sha256']
+            and sidecar.get('marker')==prepared['marker']and sidecar.get('request_sha256')==wire_sha,
+            'EVALUATION_ARCHIVE_SIDECAR_MISMATCH')
+        public=sidecar['public_market_context']
+        _initial_review(review,operation,wire_sha,public=public,reply_sha=custody['assistant_sha256'])
+        material=_initial_material(prepared,review,prompt,context_sha=prepared['context_sha256'],
+            public=public,observed_at=public['observed_at'])
+        files=manifest['files'];csvs=sorted((row for row in files if row['kind']=='CSV'),key=lambda row:row['timeframe'])
+        pngs={row['timeframe']:row for row in files if row['kind']=='PNG'}
+        need(len(files)==4 and len(csvs)==len(pngs)==2 and set(pngs)=={'15m','1h'}
+            and len(material['attachment_names'])==len(set(material['attachment_names']))==4
+            and material['attachment_names'][2:]==[row['name']for row in csvs]
+            and custody['csv_sha256']=={row['timeframe']:row['sha256']for row in csvs}
+            and all(prepared['csv_receipts'][i]['sha256']==row['sha256']
+                and prepared['csv_receipts'][i]['bytes']==row['bytes']for i,row in enumerate(csvs))
+            and digest(charts)==custody['png_evidence_sha256']
+            and all(all(row[field]==pngs[row['timeframe']][field]for field in
+                ('source','captured_at','sha256','bytes'))for row in charts)
+            and material['observed_at']==manifest['observed_at'], 'EVALUATION_BOUND_MATERIAL_MISMATCH')
+        need(all(_private_file(parent,name,1024*1024)==value for name,value in retained)
+            and _private_file(index,filename,MAX_BYTES)==raw_index
+            and _private_file(directory,WEBSITE_SIDECAR,MAX_BYTES)==raw_sidecar
+            and not _has_followup(root,operation,wire_sha), 'EVALUATION_NATIVE_RECEIPT_CHANGED_DURING_READ')
+        return dict(material=material,prepared=deepcopy(prepared),review=deepcopy(review),prompt_cache=deepcopy(prompt))
+    finally:
+        for descriptor in(directory,index,parent):
+            if descriptor is not None:os.close(descriptor)
+
+
 def read_followup_custody(archive_root, operation, request, response, *, context,
                          sidecar, sidecar_sha256, csv_files, png_names):
     """Verify an actual ReceiptStore chain against the final native response.
@@ -317,6 +550,8 @@ def read_bound_material_turn(archive_root, material_manifest):
         re.fullmatch(r'[a-f0-9]{64}', request_sha) is not None and
         custody.get('context_sha256') == manifest.get('context_sha256'),
         'EVALUATION_BOUND_MATERIAL_MISMATCH')
+    if custody.get('kind')==INITIAL_CUSTODY:
+        return _read_initial_bound_turn(archive_root,manifest)
     key = sha(dict(operation=operation, request_sha256=request_sha))
     parent = _directory(archive_root)
     directory = index = None
@@ -411,8 +646,8 @@ def read_bound_material_files(archive_root, material_manifest, *, charts):
         and callable(charts.png_pixels), 'EVALUATION_NATIVE_PNG_READER_REQUIRED')
     manifest = material_manifest
     turn = read_bound_material_turn(archive_root, manifest)
-    intent = turn['intent']
-    core = [{k: r[k] for k in _PNG_FIELDS} for r in intent['followup_chart_evidence']]
+    intent = material_view(turn)
+    core = [{k: r[k] for k in _PNG_FIELDS} for r in intent['chart_evidence']]
     identity, filename = _index_identity(intent, core)
     root = Path(archive_root)
     parent = _directory(root)
@@ -423,7 +658,7 @@ def read_bound_material_files(archive_root, material_manifest, *, charts):
         capture = json.loads(raw_index, object_pairs_hook=pairs)
         need(raw_index == canonical(capture) and capture.get('protocol') == CAPTURE_INDEX_PROTOCOL
             and capture.get('identity') == identity
-            and capture.get('native_context_sha256') == intent['followup_context_sha256']
+            and capture.get('native_context_sha256') == intent['context_sha256']
             and capture.get('sidecar_sha256') == manifest['archive_sidecar_sha256']
             and type(capture.get('paths')) is list and len(capture['paths']) == 2,
             'EVALUATION_ARCHIVE_INDEX_CHANGED')
@@ -466,12 +701,12 @@ def read_bound_material_files(archive_root, material_manifest, *, charts):
                 and row['sha256'] == manifest['delivery_custody']['csv_sha256'][row['timeframe']]
                 and len(row['buffer']) == saved['bytes'] and row['closed_count'] == saved['closed_count'] == 200,
                 'EVALUATION_HISTORICAL_CSV_MISMATCH')
-        need(intent['followup_attachment_names'][2:] == [r['name'] for r in csvs],
+        need(intent['attachment_names'][2:] == [r['name'] for r in csvs],
             'EVALUATION_HISTORICAL_CSV_MISMATCH')
         pngs = []
         latest_capture = max(utc_epoch(r['captured_at']) for r in core)
         for tf, path, receipt, submitted_name in zip(('15m', '1h'), relative, core,
-                intent['followup_attachment_names'][:2]):
+                intent['attachment_names'][:2]):
             saved = files['PNG', tf]
             captured = utc_epoch(receipt['captured_at'])
             need(receipt['source'] == SOURCE and receipt['symbol'] == public['symbol']
@@ -595,7 +830,10 @@ class NativeHistoricalArchiveReader:
         def delivery(op, req, res, sidecar_sha, csvs):
             need(sidecar_sha == hashlib.sha256(raw_sidecar).hexdigest(),
                 'EVALUATION_ARCHIVE_CHANGED_DURING_READ')
-            return read_followup_custody(self.root, op, req, res, context=context, sidecar=sidecar,
-                sidecar_sha256=sidecar_sha, csv_files=csvs, png_names=png_names)
+            if _has_followup(self.root,op,req['request_sha256']):
+                return read_followup_custody(self.root, op, req, res, context=context, sidecar=sidecar,
+                    sidecar_sha256=sidecar_sha, csv_files=csvs, png_names=png_names)
+            return read_initial_custody(self.root,op,req,res,context=context,sidecar=sidecar,
+                csv_files=csvs,png_names=png_names)
         return project_native_archive(self.charts, self.root, request, response,
             paths=paths, delivery_reader=delivery)

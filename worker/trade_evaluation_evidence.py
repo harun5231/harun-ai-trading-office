@@ -16,6 +16,7 @@ import re
 
 PROTOCOL = 'NEUROBRO_POST_TRADE_EVALUATION_V1'
 MATERIAL_PROTOCOL = 'NATIVE_HISTORICAL_MATERIAL_CUSTODY_V1'
+INITIAL_CUSTODY = 'NATIVE_INITIAL_ANALYSIS_REVIEW_CUSTODY_V1'
 WEBSITE_SOURCE = 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT'
 EVALUATION_SCHEMA = {
     'type':'object', 'additionalProperties':False,
@@ -116,14 +117,20 @@ def _materials(operation, request, response, loader):
     need(type(value)is dict and value.get('protocol')==MATERIAL_PROTOCOL,
         'HISTORICAL_CHART_ARCHIVE_NOT_LINKED')
     witness=value.get('delivery')
-    need(type(witness)is dict and set(witness)=={'operation','request_sha256','response_id','assistant_sha256',
-        'native_intent_sha256','native_completion_sha256','context_sha256','png_evidence_sha256','csv_sha256'}
+    common={'operation','request_sha256','response_id','assistant_sha256',
+        'context_sha256','png_evidence_sha256','csv_sha256'}
+    initial_hashes=('initial_request_record_sha256','initial_response_record_sha256',
+        'prepared_material_sha256','native_review_sha256','prompt_cache_sha256')
+    initial=(type(witness)is dict and witness.get('kind')==INITIAL_CUSTODY)
+    hashes=initial_hashes if initial else ('native_intent_sha256','native_completion_sha256')
+    need(type(witness)is dict and set(witness)==common|set(hashes)|({'kind'}if initial else set())
         and witness.get('operation')==operation
         and witness.get('request_sha256')==request['request_sha256']
         and witness.get('response_id')==response['response_id']
         and witness.get('assistant_sha256')==response['assistant_sha256']
-        and all(type(witness.get(k))is str and re.fullmatch('[a-f0-9]{64}',witness[k])
-            for k in ('native_intent_sha256','native_completion_sha256')),
+        and all(type(witness.get(k))is str and re.fullmatch('[a-f0-9]{64}',witness[k])for k in hashes)
+        and (not initial or (witness['initial_request_record_sha256']==digest(request)
+            and witness['initial_response_record_sha256']==digest(response))),
         'EVALUATION_ARCHIVE_CUSTODY_MISMATCH')
     need(type(value.get('sidecar_sha256'))is str and re.fullmatch('[a-f0-9]{64}',value['sidecar_sha256']),
         'EVALUATION_NATIVE_SIDECAR_REQUIRED')

@@ -15,7 +15,7 @@ from pathlib import Path
 from .native_evaluation_protocol import envelope, PHASE, native_sha, validate_material_access_chain
 from .native_file_upload import NativeDataFileDelivery, FILE_WITNESS
 from .llm import web_display_text, web_prompt_allowed
-from worker.trade_evaluation_evidence import digest, need
+from worker.trade_evaluation_evidence import digest, need, INITIAL_CUSTODY
 
 
 def _text_sha(value):
@@ -62,28 +62,30 @@ class HistoricalEvaluation:
 
     def _turn_witness(self,index):
         """Actual old user turn, decoded PNGs, CSV tiles and original reply."""
-        from worker.trade_evaluation_archive import read_bound_material_turn
+        from worker.trade_evaluation_archive import read_bound_material_turn, material_view
         material=self.request['historical_materials'][index]
         reply=self.request['source_neurobro_replies'][index]
         room=self.owner.daily_room;bridge=self.owner.bridge;native=self.owner.native
-        receipt=read_bound_material_turn(room.store.root,material);leaf=receipt['intent']
-        names=leaf['followup_attachment_names'];pngs=names[:2];csvs=names[2:]
+        receipt=read_bound_material_turn(room.store.root,material);leaf=material_view(receipt)
+        names=leaf['attachment_names'];pngs=names[:2];csvs=names[2:]
         previous_names=bridge.uploaded_names
         try:
             bridge.uploaded_names=list(pngs);rows=room.full_turns();turns=room.original_visible(native.MESSAGE)
             need(len(turns)==len(rows),'EVALUATION_HISTORY_VIEW_CHANGED')
             matches=[i for i,row in enumerate(rows[:-1]) if row.get('role')=='user'
-                and type(row.get('text')) is str and _text_sha(row['text'])==leaf['followup_prompt_sha256']
+                and type(row.get('text')) is str and _text_sha(row['text'])==leaf['prompt_sha256']
                 and row.get('attachments')==pngs and rows[i+1].get('role')=='assistant'
                 and rows[i+1].get('complete') is True and rows[i+1].get('text')==reply['text']]
             need(len(matches)==1,'EVALUATION_HISTORICAL_TURN_NOT_READABLE_IN_ROOM')
             values=turns[matches[0]].evaluate(FILE_WITNESS,{'names':csvs,'bodySelector':native.USER_BODY})
             need(NativeDataFileDelivery._witness_ready(values,csvs),
                 'EVALUATION_HISTORICAL_FILES_NOT_READABLE_IN_ROOM')
-            return dict(material_sha256=digest(material),
-                native_completion_sha256=material['delivery_custody']['native_completion_sha256'],
-                user_prompt_sha256=leaf['followup_prompt_sha256'],assistant_sha256=reply['sha256'],
-                attachment_names=names,bound_charts=copy.deepcopy(leaf['followup_chart_evidence']))
+            witness=dict(material_sha256=digest(material),
+                user_prompt_sha256=leaf['prompt_sha256'],assistant_sha256=reply['sha256'],
+                attachment_names=names,bound_charts=copy.deepcopy(leaf['chart_evidence']))
+            key='native_review_sha256'if material['delivery_custody'].get('kind')==INITIAL_CUSTODY else'native_completion_sha256'
+            witness[key]=material['delivery_custody'][key]
+            return witness
         finally:
             bridge.uploaded_names=previous_names
 
