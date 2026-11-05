@@ -503,7 +503,9 @@ def resume_uncertain_analysis(coordinator,today,account):
             need(journal is not None and journal['phase']=='PREPARED' and journal['proof_sha256']==sha(journal['proof']))
             envelope=json.loads(journal['proof'])
         else:envelope=observe(operation)
-        from .analysis_continuation import restore_received_checkpoint,admit,record_return,active_grant,retry_not_sent
+        from .analysis_continuation import restore_received_checkpoint,admit,record_return,active_grant,retry_not_sent,recover_lost_not_sent
+        recover_lost_not_sent(coordinator.neuro,envelope,
+            permitted=lambda:coordinator.allowed(today))
         restore_received_checkpoint(coordinator.neuro,envelope,
             permitted=lambda:coordinator.allowed(today))
         def continue_grant(grant):

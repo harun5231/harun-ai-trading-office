@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from .core import Review
 from .neuroapi import SETUP_SCHEMA_V4
-from .analysis_response_recovery import (need,wire,sha,digest,_row,_snapshot,validate_observation)
+from .analysis_response_recovery import (need,wire,sha,digest,finite,_row,_snapshot,validate_observation)
 
 SCHEMA='''CREATE TABLE IF NOT EXISTS analysis_continuation_grants(
  grant_id TEXT PRIMARY KEY,operation TEXT NOT NULL,request_sha256 TEXT NOT NULL,
@@ -137,11 +137,92 @@ def _not_sent(result,grant,now):
     return True
 
 
-def record_return(provider,grant,result=None,*,now=None):
+def _observation_semantics(proof):
+    """The native reader's stable identities, without browser/file imports."""
+    return dict(payload_sha256=proof['payload_sha256'],page_url=proof['page_url'],
+        native_source_sha256=proof['native_source_sha256'],
+        room={key:proof['room'][key] for key in ('day','room_id','url')},
+        rows=[digest({key:value for key,value in row.items() if key!='attachments'}) for row in proof['rows']],
+        row_offset=proof['row_offset'],rendered_prompt_receipt=proof['rendered_prompt_receipt'],
+        receipt_files=proof['receipt_files'])
+
+
+def _lost_not_sent(provider,row,envelope,now):
+    """An actual latest native closure can recover a lost HTTP disposition."""
+    import re
+    grant=json.loads(row['grant']);payload,api=_body(provider,row['operation'])
+    basis=validate_observation(provider,envelope,payload,api['created'],now=now,repair=True)
+    need(all(basis[key]==grant[key] for key in ('reply_sha256','latest_user_prompt_sha256','next_followup_sequence')),
+        'ANALYSIS_CONTINUATION_SOURCE_CHANGED')
+    proof=envelope['observation'];custody=proof.get('continuation_not_sent')
+    need(type(custody) is dict and custody.get('kind')=='NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_CUSTODY_V1'
+        and custody.get('grant_id')==grant['grant_id']
+        and type(custody.get('latest_attempt')) is int and custody['latest_attempt']>=1)
+    semantics=digest(_observation_semantics(proof))
+    need(custody.get('source_semantics_sha256')==custody.get('current_semantics_sha256')==semantics
+        and custody.get('intent_chain_sha256')==digest(proof['receipt_files'])
+        and custody.get('mutation_markers')==dict(upload_started=False,send_attempted=False,completed=False))
+    admission=custody.get('admission');disposition=custody.get('disposition')
+    def file_value(entry):
+        need(type(entry) is dict and type(entry.get('value')) is dict)
+        raw=wire(entry['value'])
+        need(entry.get('sha256')==sha(raw) and entry.get('bytes')==len(raw.encode()))
+        return entry['value']
+    admitted=file_value(admission);closed=file_value(disposition)
+    need(admitted.get('grant')==grant and type(admitted.get('attempt')) is int
+        and admitted['attempt']==custody['latest_attempt']
+        and finite(admitted.get('admitted_at')) and finite(closed.get('closed_at'))
+        and grant['started_at']<=admitted['admitted_at']<=closed['closed_at']<=proof['finished_at'])
+    suffix='' if custody['latest_attempt']==1 else '.'+str(custody['latest_attempt'])
+    base='analysis-continuation-'+grant['grant_id']+suffix
+    need(admission.get('name')==base+'.admitted.json'
+        and disposition.get('name')==base+'.closed-not-sent.json'
+        and closed.get('admission')=={key:admission[key] for key in ('name','sha256','bytes')})
+    capture=custody.get('admitted_capture');need(type(capture) is dict)
+    prefix=sha(wire({key:payload[key] for key in ('operation','request_sha256')}))[:16]
+    need(capture.get('name')==admitted.get('current_capture')
+        and type(capture.get('sha256')) is str and re.fullmatch('[a-f0-9]{64}',capture['sha256'])
+        and capture.get('name')=='received-analysis-observation-'+prefix+'-'+capture['sha256']+'.json'
+        and type(capture.get('bytes')) is int and 0<capture['bytes']<=8*1024*1024
+        and capture.get('semantics_sha256')==semantics)
+    result={**closed,'disposition':disposition};_not_sent(result,grant,now)
+    # An earlier closure already consumed for a retry cannot settle a later
+    # uncertain native attempt, even if its grant ID and clock did not change.
+    if provider.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_continuation_returns'").fetchone():
+        for old in provider.db.execute("SELECT response FROM analysis_continuation_returns WHERE grant_id=? AND state='NOT_SENT'",(grant['grant_id'],)):
+            previous=json.loads(old[0]) if old[0] is not None else None
+            need(type(previous) is dict and previous.get('disposition',{}).get('sha256')!=disposition['sha256'],
+                'ANALYSIS_CONTINUATION_CLOSURE_ALREADY_CONSUMED')
+    before=json.loads(row['preimage'])
+    need(_row(provider.db,'robot_cycles','id',before['robot_cycles']['id'])==json.loads(row['admitted_cycle'])
+        and _row(provider.db,'robot_candidates','id',row['operation'])==before['robot_candidates']
+        and _row(provider.db,'api_requests','operation',row['operation'])==dict(before['api_requests'],state='PENDING')
+        and _row(provider.db,'robot_jobs','operation',row['operation'])==dict(before['robot_jobs'],state='PENDING')
+        and not provider.db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?',(row['operation'],)).fetchone())
+    return result
+
+
+def recover_lost_not_sent(provider,envelope,*,now=None,permitted=lambda:True):
+    """NO-SEND reconciliation; no receipt or incomplete latest attempt waits."""
+    current=time.time() if now is None else now;row=active_grant(provider.db,envelope.get('operation'))
+    if row is None or row['state'] not in ('UNKNOWN','GRANTED'):return False
+    if envelope.get('observation',{}).get('continuation_not_sent') is None:return False
+    need(permitted() is True,'RESEARCH_PAUSED')
+    result=_lost_not_sent(provider,row,envelope,current)
+    record_return(provider,json.loads(row['grant']),result,now=current,
+        observed=envelope,permitted=permitted)
+    return True
+
+
+def record_return(provider,grant,result=None,*,now=None,observed=None,permitted=lambda:True):
     """Retain every transport outcome; absence is never a safe retry receipt."""
     current=time.time() if now is None else now;db=provider.db
     row=_row(db,'analysis_continuation_grants','grant_id',grant['grant_id'])
-    need(row is not None and row['grant']==wire(grant) and row['state']=='GRANTED')
+    need(row is not None and row['grant']==wire(grant)
+        and row['state'] in (('GRANTED','UNKNOWN') if observed is not None else ('GRANTED',)))
+    if observed is not None:
+        need(permitted() is True,'RESEARCH_PAUSED')
+        need(result==_lost_not_sent(provider,row,observed,current))
     state='RETURNED' if result is not None else 'UNKNOWN'
     if type(result) is dict and result.get('kind')=='NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_V1':
         _not_sent(result,grant,current);state='NOT_SENT'
@@ -152,10 +233,17 @@ def record_return(provider,grant,result=None,*,now=None):
     try:
         need(_row(db,'analysis_continuation_grants','grant_id',grant['grant_id'])==row)
         sequence=db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM analysis_continuation_returns WHERE grant_id=?',(grant['grant_id'],)).fetchone()[0]
+        if observed is not None:
+            need(permitted() is True and _row(db,'robot_settings','id',1)['enabled']==1,'RESEARCH_PAUSED')
+            need(result==_lost_not_sent(provider,row,observed,current))
+            audit=dict(grant_preimage=row,actual_not_sent=result,fresh_observation=observed)
+            db.execute('INSERT INTO analysis_continuation_returns VALUES(?,?,?,?,?)',
+                (grant['grant_id'],sequence,'NATIVE_NOT_SENT_RECEIPT_RECONCILED',wire(audit),current))
+            sequence+=1
         db.execute('INSERT INTO analysis_continuation_returns VALUES(?,?,?,?,?)',
             (grant['grant_id'],sequence,state,wire(result) if result is not None else None,current))
-        need(db.execute('UPDATE analysis_continuation_grants SET state=?,result=?,updated=? WHERE grant_id=? AND state=\'GRANTED\'',
-            (state,wire(result) if result is not None else None,current,grant['grant_id'])).rowcount==1)
+        need(db.execute('UPDATE analysis_continuation_grants SET state=?,result=?,updated=? WHERE grant_id=? AND state=?',
+            (state,wire(result) if result is not None else None,current,grant['grant_id'],row['state'])).rowcount==1)
         db.execute('COMMIT')
     except BaseException:db.execute('ROLLBACK');raise
 
