@@ -127,6 +127,9 @@ class ComposedMaterialGateTests(unittest.TestCase):
    @contextmanager
    def operation(self,value):yield self
   class ComposedBridge(Bridge):
+   def _turns(self):
+    return [{**row,'role':{'native_user_role':'user','native_assistant_role':'assistant'}[row['role']]}
+     for row in super()._turns()]
    def ask(self,value,*args,**kwargs):
     copied=copy.deepcopy(value);copied['prompt']=module.user_prompt(value)
     return super().ask(copied,*args,**kwargs)
@@ -763,7 +766,9 @@ class NativeFreshFollowupTests(unittest.TestCase):
    if point=='formatter':
     original=self.module.user_prompt
     def render(payload):
-     result=original(payload);self.enabled=False;return result
+     result=original(payload)
+     if self.bridge.clicks:self.enabled=False
+     return result
     self.module.user_prompt=render
    else:
     original=self.bridge._visible;calls=[]

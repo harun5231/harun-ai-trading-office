@@ -65,7 +65,8 @@ def _legacy_analysis_context(market,symbol,risk_target=RISK,account_client=None)
         'target_loss_at_sl_usdt':str(risk_target),'position_sizing_contract':SIZING_CONTRACT.replace('5 USDT',str(risk_target)+' USDT')}},rules
 
 
-def analysis_context(market,symbol,risk_target=RISK,account_client=None,*,policy=None,db=None):
+def analysis_context(market,symbol,risk_target=RISK,account_client=None,*,policy=None,db=None,
+        margin_sizing=True):
     """Select an explicit new-setup policy; never reinterpret an old plan."""
     context,rules=_legacy_analysis_context(market,symbol,risk_target,account_client)
     if policy is None:
@@ -73,7 +74,8 @@ def analysis_context(market,symbol,risk_target=RISK,account_client=None,*,policy
     from .core import DYNAMIC_RISK_MODEL,DYNAMIC_REWARD_RISK_POLICY
     if policy!=DYNAMIC_RISK_MODEL:raise Review('INVALID_COST_MODEL')
     from .dynamic_market import dynamic_rules
-    rules=dynamic_rules(market,symbol,rules,context,account_client,db=db)
+    rules=dynamic_rules(market,symbol,rules,context,account_client,db=db,
+        margin_sizing=margin_sizing)
     target=validated_risk_target(risk_target)
     context['risk_constraints']={
         'quantity_unit':'base_asset','margin_mode_target':'CROSS','leverage_ceiling':75,

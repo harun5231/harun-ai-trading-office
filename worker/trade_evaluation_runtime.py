@@ -63,19 +63,36 @@ class EvaluationConsumer:
         """
         if coordinator.neuro is None or coordinator.allowed(today) is not True: return None
         snapshot = journal.read_status(self.directory)
-        unknown = [j for j in snapshot['jobs'] if j['status'] == 'EVALUATION_OUTCOME_UNKNOWN']
-        for job in unknown:
-            operation = job.get('evaluation_operation')
-            if not operation:
-                operation = journal.evaluation_operation(self.directory, job['id'])
+        # Once-intents outlive job qualification and current history bindings.
+        # A superseded streak can still have an unknown in-flight native Send.
+        unknown = snapshot['unresolved_evaluations']
+        if unknown:
+            # An older missing receipt must not starve recovery of a different
+            # completed operation. No new Send is allowed while any outcome is
+            # unknown in the shared room; rotate read-only receipt attempts.
+            cursor = getattr(self, 'recovery_cursor', 0) % len(unknown)
+            intent = unknown[cursor]
+            self.recovery_cursor = cursor + 1
+            operation = intent['operation']
             try:
-                journal.complete_evaluation(self.directory, operation, native_receipt_reader=self.receipt_reader)
-                self.status = dict(state='EVALUATED', operation=operation, recovered=True)
+                completed = journal.complete_evaluation(self.directory, operation,
+                    native_receipt_reader=self.receipt_reader)
+                current = any(job.get('analyst_evaluation', {}).get('operation') == operation
+                    for job in completed['jobs'])
+                self.status = dict(state='EVALUATED' if current else 'RECEIPT_RETAINED_SUPERSEDED_EVIDENCE',
+                    operation=operation, recovered=True)
             except Exception:
                 self.status = dict(state='EVALUATION_OUTCOME_UNKNOWN', operation=operation, replayed=False)
             return self.status
         ready = [j for j in snapshot['jobs'] if j['status'] == 'REQUIRES_NEUROBRO_EVALUATION']
         if not ready: return None
+        # Aggregate regressions are the user's evaluation trigger. Old single
+        # closes must not postpone a newly evidenced streak behind the backlog.
+        trades = {row['id']: row for job in snapshot['jobs']
+            for row in job.get('evidence', {}).get('closed_positions',
+                [job.get('evidence', {}).get('closed_position', {})]) if row.get('id')}
+        ready.sort(key=lambda job: (int(job['id'].startswith(('losing-streak:', 'performance-decline:'))),
+            max(trades.get(t, {}).get('closed_at', '') for t in job['trade_ids']), job['id']), reverse=True)
         # Existing native browser readiness is checked BEFORE a durable claim.
         # Failure does not change owner ON/OFF or hold the trading pipeline.
         coordinator.neuro.require_key()
@@ -104,13 +121,19 @@ def after_trading_tick(coordinator, today, result):
     a second dispatcher or declaring an unbound evaluation complete. The normal
     trading result is retained by the caller regardless of evaluation failure.
     """
-    # Analysis, pending review, fills and protection always go first. Historical
-    # dialogue only uses an existing idle/saturated/completed opportunity. The
-    # one shared room necessarily serializes an already-sent discussion.
-    if (type(result) is not dict or result.get('bot_status') not in
-            {'WAITING', 'INSUFFICIENT_ACTIONABLE_SETUPS'}
-            or result.get('wait_reason') not in {'ROBOT_CAPACITY_FULL', 'ROBOT_CYCLE_COMPLETE'}
-            or coordinator.db.in_transaction or coordinator.unresolved_research()):
+    # A completed, received market HOLD is a real transaction boundary too.
+    # Unlimited replacement screening may otherwise never produce an idle
+    # cycle, indefinitely starving a mandatory evidenced losing-streak review.
+    # Never interrupt an analysis, pending review or uncertain browser Send.
+    if type(result) is not dict:
+        return
+    decision = result.get('last_decision')
+    completed_hold = (result.get('bot_status') == 'HOLD' and not result.get('failure_code')
+        and result.get('wait_reason') is None and type(decision) is dict
+        and decision.get('status') == 'HOLD' and not decision.get('failure_code'))
+    idle = (result.get('bot_status') in {'WAITING', 'INSUFFICIENT_ACTIONABLE_SETUPS', 'REJECTED'}
+        and result.get('wait_reason') in {'ROBOT_CAPACITY_FULL', 'ROBOT_CYCLE_COMPLETE'})
+    if (not (completed_hold or idle) or coordinator.db.in_transaction or coordinator.unresolved_research()):
         return
     consumer = getattr(coordinator, 'evaluation_consumer', None)
     if consumer is None:

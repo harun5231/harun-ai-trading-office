@@ -186,6 +186,9 @@ def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_
     e, s, target = F(number(entry)), F(number(sl)), F(validated_risk_target(risk_target))
     _need(side in ('LONG', 'SHORT') and (s < e if side == 'LONG' else s > e), 'INVALID_ENTRY_TP_SL')
     step, minimum, maximum = (F(number(v)) for v in (rules.step, rules.minimum, rules.maximum))
+    account_limits = _account_limits(rules, symbol, check_fresh=check_fresh)
+    if account_limits is not None:
+        maximum = _maximum_account_quantity(maximum, step, e, fee, account_limits)
     levels = evidence['book']['bids' if side == 'LONG' else 'asks']
     depth = sum(amount for _, amount in levels)
     high = int(min(maximum, depth) // step)
@@ -199,25 +202,36 @@ def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_
             low = middle
         else:
             high = middle - 1
-    q = low * step
+    searched_quantity = low * step
+    q = searched_quantity
+    if account_limits is not None:
+        q = _maximum_account_quantity(q, step, e, fee, account_limits)
     _need(q >= minimum and q > 0 and q * e >= F(rules.min_notional), 'NO_LEGAL_MAX_RISK_QUANTITY')
     # Missing depth is missing evidence, never a justification to silently
     # downsize an otherwise larger within-budget order.
-    if q + step <= maximum and q + step > depth:
-        _need(_cost_values(e, e, s, q, fee, side, evidence)['total'] >= target,
-            'SLIPPAGE_DEPTH_INSUFFICIENT')
+    if searched_quantity + step <= maximum and searched_quantity + step > depth:
+        known_loss = _cost_values(e, e, s, searched_quantity, fee, side, evidence)['total']
+        if account_limits is None:
+            _need(known_loss >= target, 'SLIPPAGE_DEPTH_INSUFFICIENT')
+        else:
+            # Deeper book impact cannot improve the observed unit loss. A tier
+            # gap can leave no larger margin-legal lot within even this lower
+            # bound, so absent depth need not block the proven maximum.
+            upper = min(maximum, target * searched_quantity / known_loss)
+            possible = _maximum_account_quantity(upper, step, e, fee, account_limits)
+            _need(possible <= q, 'SLIPPAGE_DEPTH_INSUFFICIENT')
     return _exact_decimal(q)
 
 
-def leverage_for(notional, rules, symbol, *, check_fresh=True):
+def _bracket_data(rules, symbol, *, check_fresh=True):
     data = copy.deepcopy(getattr(rules, 'leverage_brackets', None))
-    _need(type(data) is dict and type(data.get('schema_version')) is int and data.get('schema_version') == 1
+    _need(type(data) is dict and type(data.get('schema_version')) is int and data.get('schema_version') in (1, 2)
         and data.get('symbol') == symbol and data.get('source') == BRACKET_SOURCE,
         'LEVERAGE_EVIDENCE_UNAVAILABLE')
     _fresh(data.get('observed_at'), check_fresh, 'STALE_LEVERAGE_EVIDENCE')
     rows = data.get('brackets')
     _need(type(rows) is list and rows, 'INVALID_LEVERAGE_EVIDENCE')
-    selected = None; previous_cap = F(0)
+    parsed = []; previous_cap = F(0)
     for index, row in enumerate(rows):
         _need(type(row) is dict, 'INVALID_LEVERAGE_EVIDENCE')
         try:
@@ -228,12 +242,55 @@ def leverage_for(notional, rules, symbol, *, check_fresh=True):
         _need(floor >= 0 and floor < cap and floor == previous_cap
             and type(maximum) is int and 1 <= maximum and len(str(maximum)) <= 6, 'INVALID_LEVERAGE_EVIDENCE')
         previous_cap = cap
+        parsed.append((index, floor, cap, maximum))
+    account_max = data.get('account_max_leverage', max(row['max_leverage'] for row in rows))
+    _need(type(account_max) is int and 1 <= account_max and len(str(account_max)) <= 6, 'INVALID_LEVERAGE_EVIDENCE')
+    return data, parsed, account_max
+
+
+def _account_limits(rules, symbol, *, check_fresh=True):
+    """Schema 1 keeps its original sizing; schema 2 binds frozen margin evidence."""
+    raw = getattr(rules, 'leverage_brackets', None)
+    if type(raw) is not dict or raw.get('schema_version') != 2:
+        return None
+    data, brackets, account_max = _bracket_data(rules, symbol, check_fresh=check_fresh)
+    _need(data['schema_version'] == 2, 'INVALID_MARGIN_EVIDENCE')
+    margin = data.get('margin')
+    _need(type(margin) is dict and margin.get('source') == 'BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE'
+        and margin.get('asset') == 'USDT', 'MARGIN_EVIDENCE_UNAVAILABLE')
+    _fresh(margin.get('observed_at'), check_fresh, 'STALE_MARGIN_EVIDENCE')
+    try:
+        available = F(_zero_number(margin['available_balance_usdt']))
+    except Exception:
+        raise Review('INVALID_MARGIN_EVIDENCE') from None
+    return brackets, account_max, available
+
+
+def _maximum_account_quantity(maximum, step, entry, fee, limits):
+    """Largest legal lot across every tier, including exclusive notional caps."""
+    brackets, account_max, available = limits
+    ceiling = maximum // step
+    best = F(0)
+    for _, floor, cap, max_leverage in brackets:
+        leverage = min(75, max_leverage, account_max)
+        # Match the existing native gateway: initial margin plus entry taker fee.
+        margin_steps = available // (entry * step * (F(1, leverage) + fee))
+        cap_ratio = cap / (entry * step)
+        cap_steps = -(-cap_ratio.numerator // cap_ratio.denominator) - 1
+        steps = min(ceiling, margin_steps, cap_steps)
+        if steps > 0 and steps * step * entry >= floor:
+            best = max(best, steps * step)
+    return best
+
+
+def leverage_for(notional, rules, symbol, *, check_fresh=True):
+    data, rows, account_max = _bracket_data(rules, symbol, check_fresh=check_fresh)
+    selected = None
+    for index, floor, cap, maximum in rows:
         if floor <= notional < cap:
             selected = dict(index=index, notional_floor=str(_exact_decimal(floor)),
                 notional_cap=str(_exact_decimal(cap)), max_leverage=maximum)
     _need(selected is not None, 'LEVERAGE_NOTIONAL_UNSUPPORTED')
-    account_max = data.get('account_max_leverage', max(row['max_leverage'] for row in rows))
-    _need(type(account_max) is int and 1 <= account_max and len(str(account_max)) <= 6, 'INVALID_LEVERAGE_EVIDENCE')
     value = min(75, selected['max_leverage'], account_max)
     return value, dict(snapshot=copy.deepcopy(data), selected_bracket=selected,
         account_max_leverage=account_max, selected_leverage=value)

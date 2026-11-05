@@ -15,6 +15,7 @@ from .native_chart_followup import _directory, _private_file, canonical
 MAX_REVIEW_BYTES = 512 * 1024
 MAX_REVIEWS_BYTES = 16 * 1024 * 1024
 KIND = 'NATIVE_ANALYSIS_MINI_REVIEW_V1'
+SCREENING_KIND = 'NATIVE_SCREENING_MINI_REVIEW_V1'
 
 
 def digest(value):
@@ -22,7 +23,8 @@ def digest(value):
 
 
 def prefix(payload):
-    return 'analysis-review-' + digest({key: payload[key] for key in ('operation', 'request_sha256')}) + '-'
+    label='screening'if payload.get('output_schema',{}).get('required')==['symbols']else'analysis'
+    return label+'-review-' + digest({key: payload[key] for key in ('operation', 'request_sha256')}) + '-'
 
 
 def _need(value):
@@ -30,9 +32,11 @@ def _need(value):
         raise ValueError('NATIVE_ANALYSIS_REVIEW_UNVERIFIED')
 
 
-def persist_review(root, payload, request, response, turns, *, context, observed_at):
+def persist_review(root, payload, request, response, turns, *, context, observed_at,model_operation=None):
     from .dialogue_service import validate_result
-    _need(request.get('phase') == 'ANALYSIS' and type(context) is dict
+    screening=payload.get('output_schema',{}).get('required')==['symbols']
+    phase='SCREENING'if screening else'ANALYSIS';kind=SCREENING_KIND if screening else KIND
+    _need(request.get('phase') == phase and (context==payload.get('context') if screening else type(context) is dict)
         and type(observed_at) in (int, float) and math.isfinite(observed_at) and observed_at > 0
         and type(request.get('request_id')) is str
         and re.fullmatch('[a-f0-9]{64}', request['request_id']) is not None)
@@ -42,13 +46,22 @@ def persist_review(root, payload, request, response, turns, *, context, observed
         and hashlib.sha256(request['reply'].encode()).hexdigest() == request['reply_sha256'])
     transcript = digest(turns)
     expected = digest(dict(operation=payload['operation'], request_sha256=payload['request_sha256'],
-        reply_sha256=request['reply_sha256'], phase='ANALYSIS', transcript_sha256=transcript))
+        reply_sha256=request['reply_sha256'], phase=phase, transcript_sha256=transcript))
     _need(expected == request['request_id'])
-    value = dict(schema_version=1, kind=KIND, operation=payload['operation'],
+    value = dict(schema_version=1, kind=kind, operation=payload['operation'],
         request_sha256=payload['request_sha256'], payload_sha256=digest(payload),
         request_id=request['request_id'], reply_sha256=request['reply_sha256'],
-        context_sha256=digest(context), conversation_id=request['conversation_id'], phase='ANALYSIS',
+        context_sha256=digest(context), conversation_id=request['conversation_id'], phase=phase,
         request=copy.deepcopy(request), response=copy.deepcopy(response), transcript_sha256=transcript, observed_at=observed_at)
+    if screening:
+        if model_operation is not None:
+            _need(set(model_operation)=={'operation_id','kind','request_hash','state','result','updated_at'}
+                and model_operation['operation_id']=='delegated-model:'+request['request_id']
+                and model_operation['kind']=='DELEGATED_MODEL_DIALOGUE' and model_operation['state']=='DONE'
+                and type(model_operation['request_hash'])is str and re.fullmatch('[a-f0-9]{64}',model_operation['request_hash'])
+                and json.loads(model_operation['result'])==response
+                and type(model_operation['updated_at'])in(int,float)and 0<model_operation['updated_at']<=observed_at)
+        value['model_operation']=copy.deepcopy(model_operation)
     name = prefix(payload) + request['request_id'] + '.json'
     raw = canonical(value)
     _need(len(raw) <= MAX_REVIEW_BYTES)
@@ -90,7 +103,8 @@ def read_reviews(root, payload):
             raw = _private_file(directory, name, MAX_REVIEW_BYTES)
             total += len(raw); _need(total <= MAX_REVIEWS_BYTES)
             value = json.loads(raw)
-            _need(value.get('kind') == KIND and value.get('schema_version') == 1
+            expected=SCREENING_KIND if payload.get('output_schema',{}).get('required')==['symbols']else KIND
+            _need(value.get('kind') == expected and value.get('schema_version') == 1
                 and value.get('operation') == payload['operation']
                 and value.get('request_sha256') == payload['request_sha256']
                 and value.get('payload_sha256') == digest(payload)

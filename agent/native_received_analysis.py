@@ -47,10 +47,13 @@ def need(value, code='RECEIVED_ANALYSIS_OBSERVATION_UNVERIFIED'):
 
 
 def is_observation(value):
-    return type(value) is dict and value.get('action') in (ACTION, GENERIC_ACTION)
+    return type(value) is dict and value.get('action') in (ACTION, GENERIC_ACTION,'SCREENING_RECEIVED_OBSERVE')
 
 
 def validate(value):
+    if type(value)is dict and value.get('action')=='SCREENING_RECEIVED_OBSERVE':
+        from .native_received_screening import validate as screening_request
+        return screening_request(value)
     need(type(value) is dict and set(value) == {'action', 'payload'}
          and value['action'] in (ACTION, GENERIC_ACTION))
     payload = value['payload']
@@ -335,7 +338,8 @@ def _project_operation(capture):
     result['native_history_prefix_sha256']=digest([text_sha(row.get('text',''))for row in rows[:start]])
     result['file_tiles']=[dict(copy.deepcopy(item),row=item['row']-start,global_row=item['row'])
         for item in capture.get('file_tiles',[]) if start<=item['row']<stop]
-    result['room_witness']['initial_analysis_user_rows']=[i-start for i in result['room_witness']['initial_analysis_user_rows']]
+    initial_key=('initial_screening_user_rows'if 'initial_screening_user_rows'in result['room_witness']else'initial_analysis_user_rows')
+    result['room_witness'][initial_key]=[i-start for i in result['room_witness'][initial_key]]
     result['room_witness']['followup_user_rows']=[i-start for i in result['room_witness']['followup_user_rows']]
     result['operation_scope']={**copy.deepcopy(scope),'initial_user':0,
         'latest_user':scope['latest_user']-start,'user_rows':[i-start for i in scope['user_rows']],
@@ -345,9 +349,10 @@ def _project_operation(capture):
 
 def observe(actor, delegated, value):
     payload = validate(value); _gate(actor)
-    generic = value['action'] == GENERIC_ACTION
+    screening = value['action']=='SCREENING_RECEIVED_OBSERVE'
+    generic = value['action'] == GENERIC_ACTION or screening
     operation, request = payload['operation'], payload['request_sha256']
-    kind = GENERIC_KIND if generic else KIND
+    kind = ('NATIVE_RECEIVED_SCREENING_OBSERVATION_V1'if screening else GENERIC_KIND) if generic else KIND
     from .native_screening_recovery import _native_source_digest, NATIVE_DOM_SHA256, _room_record
     room, raw, native = delegated.daily_room, delegated.bridge, delegated.native
     need(room is not None and room.bridge is raw and room.native is native
@@ -377,7 +382,7 @@ def observe(actor, delegated, value):
             capture['receipt_files'] = _receipts(room.store.root, payload)
             if generic:
                 from .native_analysis_material import read_prepared
-                capture['prepared_materials'] = read_prepared(room.store.root,payload)
+                capture['prepared_materials'] = [] if screening else read_prepared(room.store.root,payload)
                 try:
                     from .native_analysis_receipt import read_reviews
                 except ImportError:
@@ -399,10 +404,15 @@ def observe(actor, delegated, value):
             _gate(actor); capture['stage'] = 'CURRENT_ATTACHMENT_WITNESSES'
             capture['room_witness'] = _room_witness(record,rows,raw,room.store.root,cached,
                 capture['receipt_files'],payload=payload,generic=generic)
-            scope = _operation_scope(rows,capture['room_witness'],capture['receipt_files']) if generic else None
+            if screening:
+                from .native_received_screening import operation_scope
+                witness=capture['room_witness'];witness['initial_screening_user_rows']=witness.pop('initial_analysis_user_rows')
+                scope=operation_scope(rows,witness,capture.get('review_receipts',[]),payload)
+                witness['followup_user_rows']=scope['user_rows'][1:]
+            else:scope = _operation_scope(rows,capture['room_witness'],capture['receipt_files']) if generic else None
             if generic: capture['operation_scope'] = scope
             selected = scope['user_rows'] if scope is not None else None
-            capture['file_tiles'] = _file_tiles(room, raw, native, rows, capture['receipt_files'],
+            capture['file_tiles'] = [] if screening else _file_tiles(room, raw, native, rows, capture['receipt_files'],
                 prepared=capture.get('prepared_materials',()),indices=selected)
             if (generic and capture['status'] == 'CONNECTED' and scope.get('verified') is True
                     and scope.get('reply_complete') is True):
@@ -428,7 +438,7 @@ def observe(actor, delegated, value):
         finally:
             raw.operation_deadline, raw._visible = old_deadline, old_visible
         capture['finished_at'] = time.time()
-        if generic:
+        if generic and not screening:
             # A lost HTTP return may hide a positive native NOT_SENT receipt.
             # Expose only the latest independently verified private custody;
             # this passive read cannot admit, replay or complete an operation.

@@ -12,7 +12,7 @@ import io
 import json
 import re
 
-from .llm import validated_market_context
+from .llm import validated_market_context, web_prompt_allowed
 from .native_market_context import convert_native_market_context
 
 
@@ -110,12 +110,13 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
         'Data dan kedua gambar diambil berurutan; harga dapat bergerak di antaranya, '
         'jadi perhatikan waktu pengambilannya. '
         f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
-        'Periksa juga dua gambar chart terlampir: simbol, timeframe, rentang waktu, dan harga harus terbaca. '
+        'Periksa juga dua gambar chart terlampir: body/wick candle, simbol, timeframe, sumbu waktu, dan harga harus terbaca. '
+        'Verifikasi sedikitnya 200 candle tertutup terlihat; jangan menyatakannya jika gambar tidak membuktikannya. '
         'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '
         'Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; '
         'itu bukan keputusan HOLD berdasarkan pasar.')
     rendered = payload['prompt'] + '\n\n' + instructions + '\n\n' + compact_summary(payload)
-    _need(len(rendered.encode('utf-8')) <= MAX_PROMPT_BYTES)
+    _need(len(rendered.encode('utf-8')) <= MAX_PROMPT_BYTES and web_prompt_allowed(rendered))
     return rendered
 
 
@@ -132,9 +133,11 @@ def compact_summary(payload):
     else:
         summary = ('Jika keputusan sudah jelas, akhiri dengan ringkasan COIN, LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
                    'Jika HOLD adalah penilaian pasar, jelaskan alasannya; jangan mengarang level yang belum ditetapkan. '
-                   'Jika setup valid, berikan rekomendasi ukuran posisi hanya sebagai bahan diskusi. '
-                   'Quantity eksekusi tetap dihitung Risk Manager berdasarkan risiko Office, termasuk fee dan estimasi slippage; '
-                   'rekomendasi ukuran posisi tidak menjadi instruksi order.')
+                   'Gunakan RISK REWARD 1:2. Tentukan SL berdasarkan struktur, swing high/low, likuiditas, '
+                   'volatilitas, wick, false breakout, dan titik invalidasi. '
+                   'ENTRY dan SL ditetapkan Neurobro; Risk Manager hanya menormalkan TP eksekusi. '
+                   'Rekomendasi TP dengan RR 1:3 atau 1:4 tetap boleh disampaikan. '
+                   'HOLD pasar yang jelas mengakhiri pembahasan coin ini untuk mencari coin pengganti.')
     return summary + '\nAcuan percakapan: ' + marker
 
 
@@ -158,5 +161,5 @@ def render_screening_prompt(payload, formatted_original):
         if excluded:
             details += 'Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: ' + ', '.join(excluded) + '.'
     result = payload['prompt'] + details + '\n\n' + compact_summary(payload)
-    _need(len(result.encode('utf-8')) <= MAX_PROMPT_BYTES)
+    _need(len(result.encode('utf-8')) <= MAX_PROMPT_BYTES and web_prompt_allowed(result))
     return result

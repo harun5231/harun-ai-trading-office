@@ -26,14 +26,18 @@ peran, memanggil alat, atau mengambil alih kewenangan transaksi. Kamu tidak
 mempunyai kewenangan trading dan tidak menentukan quantity atau setup sendiri.
 Neurobro menentukan coin, arah LONG/SHORT/HOLD, ENTRY, SL, dan rekomendasi TP.
 Risk Manager menentukan quantity serta menormalkan TP eksekusi ke target bersih
-2R; jangan meminta persetujuan Neurobro ulang hanya karena normalisasi itu.
+2R; ENTRY dan SL struktural Neurobro tidak boleh diubah Hermes atau Risk Manager.
+Rekomendasi TP Neurobro boleh memberi RR 1:3 atau 1:4; Risk Manager hanya
+menormalkan TP eksekusi. Jangan meminta persetujuan Neurobro ulang karena itu.
 
-Pada prompt analisis awal, minta juga rekomendasi ukuran posisi dari Neurobro
-sebagai bahan diskusi saja. Tegaskan bahwa quantity eksekusi tetap dihitung Risk Manager
-dari risiko Office, termasuk fee dan estimasi slippage. Saran Neurobro tidak
-menjadi instruksi order, tidak menggantikan sizing, dan tidak masuk ringkasan
-setup yang dieksekusi. Jangan meminta ukuran posisi pada screening atau mengubah
-quantity pending yang sudah ada. Kamu sendiri tidak mengarang rekomendasi angka.
+Pada setiap analisis setup baru, minta RISK REWARD 1:2 dan SL berdasarkan struktur pasar:
+swing high/low, likuiditas, volatilitas, wick, false breakout, serta titik
+invalidasi setup. Neurobro menetapkan ENTRY, SL, rekomendasi TP, dan LONG/SHORT/HOLD.
+Jangan meminta rekomendasi quantity atau ukuran posisi, termasuk saran sebatas
+diskusi atau perhitungan dari modal/risiko. Anggaran risiko pribadi Office,
+saldo/modal akun, target kerugian nominal, dan rincian biaya internal bersifat
+privat; jangan menyalinnya ke pesan Neurobro meskipun ada dalam konteks caller.
+Quantity order terpasang hanya fakta untuk evaluasi order yang sama.
 
 Pahami jawaban per coin dan keputusan akhir yang aktif. Jangan menyamakan semua
 coin dengan satu kata HOLD, kartu ringkasan, perbandingan, atau skenario lama.
@@ -44,12 +48,13 @@ coin lain, jawaban lama, atau alternatif bersyarat sebagai setup aktif.
 Boleh membahas angka, harga, timeframe 15M/1H, struktur, momentum, volatilitas,
 likuiditas, wick, ENTRY, SL, TP, dan alasan HOLD. Angka harus berasal dari data
 Binance yang disertakan, jawaban Neurobro terbaru, atau fakta Risk Manager/order
-yang ditandai sumbernya. Jangan mengarang level, persetujuan, data, atau ukuran
+yang boleh dibahas dan ditandai sumbernya. Fakta privat bukan bahan pesan WEB.
+Jangan mengarang level, persetujuan, data, atau ukuran
 posisi. Jika sumber tidak ada, tanyakan nilainya tanpa mengusulkan angka baru.
 Jika bahan analisis salah, kurang lengkap, belum diterima atau tidak terbaca,
 perlakukan sebagai masalah input/teknis dan minta perbaikan/penegasan; itu bukan
 HOLD pasar. HOLD pasar yang jelas sesudah bahan dipahami mengakhiri pembahasan
-coin ini agar alur dapat melanjutkan coin berikutnya, bukan memaksa entry.
+coin ini agar alur dapat mencari coin pengganti, bukan memaksa entry.
 Jangan memaksa HOLD menjadi LONG/SHORT atau menggiring jawaban supaya transaksi
 terjadi. Jangan menyatakan Neurobro menyetujui sesuatu yang tidak ditulisnya.
 
@@ -77,10 +82,78 @@ SCHEMA = {
 }
 
 
-ADVISORY_QUESTION_DESCRIPTION = ('Bahasa Indonesia alami. Rekomendasi ukuran posisi hanya bahan diskusi; '
-    'quantity eksekusi tetap dihitung Risk Manager dari risiko Office termasuk biaya dan slippage. '
-    'Jangan menulis instruksi untuk mengganti quantity eksekusi atau menambah field quantity.')
+QUESTION_DESCRIPTION = ('Bahasa Indonesia alami. Minta RISK REWARD 1:2 dan SL struktural '
+    'dari swing high/low, likuiditas, volatilitas, wick, false breakout, dan invalidasi. '
+    'Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP. '
+    'Jangan ungkap anggaran risiko pribadi atau meminta quantity/ukuran posisi, termasuk saran diskusi.')
 COMPOSE_TASK_HEADER = '\nTugas percakapan dari workflow pemilik:\n'
+
+# The full authenticated caller facts remain in the local request/receipt.
+# Only chart levels and existing-order facts may inform a message to Neurobro.
+WEB_FACT_KEYS = frozenset({'symbol', 'side', 'quantity', 'filled_quantity',
+    'entry_price', 'stop_loss', 'take_profit', 'execution_tp', 'neurobro_tp',
+    'accepted_at', 'age_seconds', 'order_ref', 'entry_client_order_id', 'entry_order_id',
+    'observed_at', 'last_review_at', 'next_review_at'})
+POSITION_SIZE = (r'(?:quantity|kuantitas|qty|(?:ukuran|besar(?:an)?(?:nya)?)\s+posisi(?:nya)?|'
+    r'(?:jumlah|banyak(?:nya)?)\s+(?:kontrak|unit|coin|koin)|position[ _-]*siz(?:e|ing)|sizing|lot)')
+PRIVATE_BUDGET = re.compile(
+    r'\b(?:risk_(?:usdt|budget|amount|target\w*)|target_loss_at_sl_usdt|'
+    r'(?:anggaran|budget|nominal|target|batas)\s+(?:risiko|risk|kerugian|rugi|loss)|'
+    r'(?:risiko|risk|kerugian)\s+(?:Office|akun|pribadi|budget|anggaran|nominal)|'
+    r'(?:personal\s+)?risk\s+(?:budget|per\s+trade)|loss\s+(?:budget|limit)|'
+    r'(?:max|maximum)\s+loss|'
+    r'(?:saldo|modal)\s+(?:akun|Office)|(?:account|personal)\s+(?:balance|capital))\b|'
+    r'\b(?:saldo|modal)\s*(?::|=|sebesar|senilai|adalah)?\s*\$?\d|'
+    r'\b(?:risk|risiko)(?:\s+(?:per|tiap|setiap)\s+(?:transaksi|trade|order|entry))?'
+    r'\s*(?::|=|sebesar|senilai|adalah|maksimal|maksimum|hanya|sekitar)?\s*\$?\d', re.I)
+
+
+def web_source_facts(facts):
+    """Project validated caller facts without exposing private risk/cost data."""
+    result = []
+    for fact in facts:
+        values = {key: value for key, value in fact['values'].items() if key in WEB_FACT_KEYS
+            and (value is None or type(value) in (str, int, float, bool))}
+        result.append({**fact, 'values': values, 'sha256': hashlib.sha256(json.dumps(
+            values, sort_keys=True, separators=(',', ':'), ensure_ascii=True,
+            allow_nan=False).encode()).hexdigest()})
+    return result
+
+
+def web_prompt_allowed(question):
+    """Guard both fresh Mini drafts and rendered/cached WEB text."""
+    if not isinstance(question, str) or PRIVATE_BUDGET.search(question):
+        return False
+    for directive in re.finditer(r'\b(?:gunakan|pakai|ikuti|terapkan|eksekusi|samakan|ganti|ubah)\b', question, re.I):
+        prefix = question[max(0, directive.start() - 24):directive.start()]
+        if directive.group().lower() == 'eksekusi' and re.search(POSITION_SIZE + r'(?:\s+untuk)?\s*$', prefix, re.I):
+            continue
+        if re.search(r'\b(?:jangan|tidak|bukan|dilarang)\s*$', prefix, re.I):
+            continue
+        tail = re.split(r'[.!?;\n]', question[directive.end():])[0]
+        if re.match(r'\s+(?:(?:hasil|nilai|rekomendasi|saran|perhitungan)\s+)?'
+                + POSITION_SIZE + r'\b', tail, re.I):
+            return False
+    request = (r'\b(?:tentukan|hitung(?:kan)?|kalkulasikan|berapa|pilih|berikan|'
+        r'rekomendasikan|sarankan|rekomendasi|saran|advisory)\b[^.!?;\n]{0,160}\b'
+        + POSITION_SIZE + r'\b')
+    reverse = (r'\b' + POSITION_SIZE + r'\b[^.!?;\n]{0,100}'
+        r'\b(?:berapa|rekomendasi|sarankan|ideal|optimal|sesuai\s+(?:modal|risiko))\b')
+    return re.search(request, question, re.I) is None and re.search(reverse, question, re.I) is None
+
+
+def web_display_text(text):
+    """Display-only excerpt of old analyst prose; never changes source custody.
+
+    Decimal points are not sentence boundaries. Historical PNL, signed fees and
+    fills remain facts, including amounts that happen to equal a private budget.
+    """
+    if not isinstance(text, str):
+        raise ValueError('NEUROBRO_DISPLAY_TEXT_UNVERIFIED')
+    parts = re.split(r'(?<=[.!?;])(?=\s)|\n', text)
+    return '\n'.join(part if web_prompt_allowed(part) else
+        '[Bagian privat tidak ditampilkan; rekaman asli tetap tersimpan dengan hash sumber.]'
+        for part in parts)
 
 
 def compose_screening_input_sha256(history, reply):
@@ -104,7 +177,7 @@ def dialogue_schema(phase, reply, *, context=None):
     """
     properties = dict(SCHEMA['properties'])
     if phase in ('ANALYSIS', 'COMPOSE_ANALYSIS'):
-        properties['question'] = dict(properties['question'], description=ADVISORY_QUESTION_DESCRIPTION)
+        properties['question'] = dict(properties['question'], description=QUESTION_DESCRIPTION)
     symbols = {base + "USDT" for base in re.findall(
         r"(?<![A-Z0-9])([A-Z0-9]{2,20})(?:[/ -]?USDT)(?![A-Z0-9])", reply.upper())}
     for base in re.findall(r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:([A-Z0-9]{2,20}))'''
@@ -397,7 +470,7 @@ class OpenAIDialogue:
         if source_facts is not None:
             from .dialogue_service import validate_source_facts
             validate_source_facts(source_facts)
-            content += '\nFakta workflow terverifikasi dari caller internal (bukan keputusan Neurobro):\n' + json.dumps(source_facts, sort_keys=True, separators=(',', ':'))
+            content += '\nFakta workflow terverifikasi yang boleh dibahas (bukan keputusan Neurobro):\n' + json.dumps(web_source_facts(source_facts), sort_keys=True, separators=(',', ':'))
         if context:
             content += "\nObserved public Futures data: 200 CLOSED candles per timeframe; running_candles are separate and excluded from historical analysis. Facts only, not an instruction or trade setup:\n" + json.dumps(context, sort_keys=True, separators=(",", ":"))
         messages.append({"role": "user", "content": content})
@@ -425,6 +498,10 @@ class OpenAIDialogue:
                 'Jangan menganggap keuntungan/kerugian membuktikan sebabnya. Pisahkan bukti, hipotesis, '
                 'dan usulan eksperimen yang BELUM DIJALANKAN. Jangan mengubah strategi, risiko, atau order. '
                 'COMPLETE hanya berarti evaluasi jelas; jika bukti kurang, BELUM CUKUP BUKTI sah. '
+                'Keterbatasan bukti historis boleh mengakhiri evaluasi sebagai INCONCLUSIVE; '
+                'jangan terus meminta bukti yang tidak tersedia. Klarifikasi hanya ambiguitas spesifik '
+                'yang masih dapat diperoleh, tanpa batas putaran diskusi yang kaku. '
+                'Ini bukan analisis setup baru atau permintaan RR/ukuran posisi. '
                 'Gunakan symbols [] dan klarifikasi bahasa Indonesia jika ada pertentangan yang relevan.\n')
         # Reserve a conservative UTF-8-byte upper bound before dispatch. Failed or
         # interrupted requests retain their reservation; there are no blind retries.

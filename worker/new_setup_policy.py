@@ -8,7 +8,7 @@ import json
 import time
 
 from .analysis import analysis_context
-from .core import D, Review, RISK_MODEL, DYNAMIC_RISK_MODEL, DYNAMIC_REWARD_RISK_POLICY, risk_check, preflight
+from .core import D, Review, RISK_MODEL, DYNAMIC_RISK_MODEL, DYNAMIC_REWARD_RISK_POLICY, risk_check, preflight, deserialize_sizing_rules
 from .robot_provenance import source_signal, stamp, verify
 
 
@@ -55,8 +55,12 @@ def refresh_unsubmitted(coordinator, row, plan, *, build_intent, clock=time.time
     if row['status'] not in allowed or not 0<=clock()-plan['rules_checked_at']<=300:
         raise Review('STALE_ORDER_INTENT')
     target=plan['risk_target_usdt']
+    # A pre-existing V4 candidate retains its frozen sizing arithmetic. Only
+    # newly analyzed candidates opt into schema 2 account-margin sizing.
+    frozen_rules=deserialize_sizing_rules(plan)
+    margin_sizing=frozen_rules.leverage_brackets.get('schema_version')==2
     context,rules=analysis_context(coordinator.market,row['symbol'],target,
-        coordinator.account_factory(),policy=DYNAMIC_RISK_MODEL,db=db)
+        coordinator.account_factory(),policy=DYNAMIC_RISK_MODEL,db=db,margin_sizing=margin_sizing)
     coordinator.market.fresh(context,row['symbol'])
     signal=source_signal(db,row['id'],row['symbol'],normalized=True,risk_model=DYNAMIC_RISK_MODEL)
     fresh=risk_check(signal,rules,target,risk_model=DYNAMIC_RISK_MODEL,

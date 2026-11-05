@@ -8,7 +8,7 @@ only an actual source-bound native receipt can project an analyst evaluation.
 """
 import hashlib
 import json
-from decimal import Decimal, InvalidOperation
+from .trade_evaluation_metrics import net_pnl, decline_windows, monthly_metrics
 
 from . import secure_sqlite_snapshot as snapshot_storage
 
@@ -40,11 +40,16 @@ def _append(db, kind, key, value):
 def _snapshot(db):
     trades = _latest(db, 'trade')
     scope = _latest(db, 'scope').get('calendar', {})
+    completed = {row['operation'] for row in _latest(db, 'analyst_evaluation').values()}
+    unresolved = [{key:row[key] for key in ('job_id','operation','input_evidence_sha256','reserved_at')}
+        for row in _latest(db, 'evaluation_intent').values() if row['operation'] not in completed]
     return dict(status='OBSERVATION_ONLY', processed_trade_ids=sorted(trades),
                 consecutive_losses=scope.get('consecutive_losses', 0),
                 streak_complete=scope.get('streak_complete', False),
                 streak_scope='OBSERVED_CLOSED_POSITIONS',
                 history_missing_reasons=scope.get('history_missing_reasons', []),
+                monthly_performance=monthly_metrics(trades, _latest(db, 'binding')),
+                unresolved_evaluations=unresolved,
                 jobs=_project_evaluations(db, list(_latest(db, 'job').values())))
 
 
@@ -54,7 +59,8 @@ def read_status(directory):
         if db is None:
             return dict(status='NOT_OBSERVED', processed_trade_ids=[], consecutive_losses=0,
                         streak_complete=False, streak_scope='OBSERVED_CLOSED_POSITIONS',
-                        history_missing_reasons=['HISTORY_NOT_OBSERVED'], jobs=[])
+                        history_missing_reasons=['HISTORY_NOT_OBSERVED'], monthly_performance=[],
+                        unresolved_evaluations=[], jobs=[])
         return _snapshot(db)
 
 
@@ -86,18 +92,9 @@ def _observe(db, calendar):
         losses = 0
         loss_ids = []
         active_streaks = set()
-        for row in sorted(trades.values(), key=lambda row: (row['closed_at'], row['id'])):
-            pnl = None
-            if row.get('complete') is True and row.get('pnl_usdt') is not None:
-                try:
-                    raw = row['pnl_usdt']
-                    if not isinstance(raw, str) or len(raw) > 64:
-                        raise ValueError
-                    pnl = Decimal(raw)
-                    if not pnl.is_finite():
-                        raise ValueError
-                except (ValueError, InvalidOperation):
-                    raise ValueError('CLOSED_NET_PNL_INVALID') from None
+        ordered = sorted(trades.values(), key=lambda row: (row['closed_at'], row['id']))
+        for row in ordered:
+            pnl = net_pnl(row)
             losses = losses + 1 if pnl is not None and pnl < 0 else 0
             missing = ['HISTORICAL_CHART_ARCHIVE_NOT_LINKED', 'ORIGINAL_NEUROBRO_DECISION_NOT_LINKED',
                        'REQUIRES_NEUROBRO_EVALUATION']
@@ -120,8 +117,18 @@ def _observe(db, calendar):
                               findings=dict(consecutive_losses=losses))
                 _append(db, 'job', streak['id'], streak)
                 active_streaks.add(streak['id'])
+        for rows, findings in decline_windows(ordered):
+            key = 'performance-decline:' + rows[-1]['id']
+            job = dict(id=key, trade_ids=[row['id'] for row in rows],
+                status='BLOCKED_MISSING_EVIDENCE', evidence_complete=False,
+                missing_reasons=['HISTORICAL_CHART_ARCHIVE_NOT_LINKED',
+                    'ORIGINAL_NEUROBRO_DECISION_NOT_LINKED', 'REQUIRES_NEUROBRO_EVALUATION'],
+                evidence=dict(closed_positions=rows), findings=findings,
+                experiment_outcome=dict(status='NOT_RUN', reason='REQUIRES_NEUROBRO_EVALUATION'))
+            _append(db, 'job', key, job)
+            active_streaks.add(key)
         for key, job in _latest(db, 'job').items():
-            if key.startswith('losing-streak:') and key not in active_streaks:
+            if key.startswith(('losing-streak:', 'performance-decline:')) and key not in active_streaks:
                 _append(db, 'job', key, dict(job, status='SUPERSEDED_HISTORY_REVISION'))
         history_missing = list(calendar.get('incomplete_reasons', []))
         if any(row.get('complete') is not True or row.get('pnl_usdt') is None for row in trades.values()):
@@ -274,8 +281,11 @@ def complete_evaluation(directory, operation, *, native_receipt_reader):
         experiment_outcome=dict(status='NOT_RUN',reason='ANALYST_PROPOSALS_ARE_NOT_EXPERIMENT_RESULTS'))
     with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
         need(_latest(db,'evaluation_intent').get(intent['job_id'])==intent,'EVALUATION_INTENT_CHANGED')
-        job=next(j for j in _snapshot(db)['jobs']if j['id']==intent['job_id'])
-        need(job.get('input_evidence_sha256')==intent['input_evidence_sha256'],'EVALUATION_HISTORY_REVISION_CHANGED')
+        # Native completion belongs to the exact original once-request even if
+        # backfill later superseded its trigger or changed the source rows.
+        # Retain that actual receipt and clear the room's unknown outcome; the
+        # projection still requires current matching evidence before displaying
+        # an assessment. A stale claim can NEVER authorize another Send.
         old=_latest(db,'analyst_evaluation').get(intent['job_id'])
         if old is not None and old.get('operation')==operation:
             need(old==record,'EVALUATION_RECEIPT_REPLAY_CHANGED');return _snapshot(db)

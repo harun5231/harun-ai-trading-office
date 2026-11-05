@@ -1,0 +1,49 @@
+{
+  "description": "Observed INJ V4 scalar summary. Candle arrays and deeper book were summarized upstream; this fixture tests arithmetic from the observed derived reserve, not raw-market evidence validation.",
+  "source_sha256": {
+    "worker/core.py": "74071b59e5ff891e0e5ca39c3a4ee065ffed7ee708f136dc876fba1d6a7c4781",
+    "worker/dynamic_risk.py": "bfec544f70679a658d2ec4694fedf2a538a702488a0b8afbec2175b2fd4a3266",
+    "worker/dynamic_market.py": "9da9b3e8667d79e30857d6886362e89438dcedc96cd9d6b740bb14a2ad222dcb"
+  },
+  "signal": {"symbol": "INJUSDT", "side": "LONG", "entry": "8.26", "sl": "8.18", "neurobro_tp": "8.48"},
+  "risk_target_usdt": "5",
+  "lot_step": "0.1",
+  "tick_size": "0.001",
+  "taker_fee_rate": "0.0005",
+  "fee_observed_at": 1793886556.357,
+  "rules_observed_at": 1793886556.0114007,
+  "bracket_observed_at": 1793886556.908176,
+  "market_summary": {
+    "observed_at": 1793886556.6670485,
+    "bids_first_two": [["8.275", "46.1"], ["8.274", "529.2"]],
+    "asks_first_two": [["8.276", "45.1"], ["8.277", "58.7"]],
+    "expected_book_impact_rate": "0.000060419311",
+    "future_liquidity_uncertainty_rate": "0.011107213844",
+    "price_move_q95_rate": "0.011107213844",
+    "price_move_sample_count": 200,
+    "price_move_horizons_seconds": [900.0],
+    "execution_sample_count": 0,
+    "execution_excess_q95_rate": "0",
+    "full_bids_sha256": "92ebb7fa4251527b4b328266c2721abd077a165b6a83f53d1f3541bca19c20cc",
+    "full_asks_sha256": "78cd37f048dcb282e66677655a364d38982cc1c8ab39c7acdb519c248104d27b",
+    "full_price_moves_sha256": "69b948c3c664ccd341d2f3560013ff65eeea6364bf9fb99869528f70c5af395d"
+  },
+  "observed_plan": {
+    "quantity": "27.8",
+    "tp": "8.726",
+    "gross_risk": "2.224",
+    "entry_fee_usdt": "0.114814",
+    "sl_exit_fee_usdt": "0.1124322177750102",
+    "sl_book_impact_usdt": "0.013739592998644",
+    "sl_liquidity_uncertainty_usdt": "2.525824856980976",
+    "risk": "4.99081066775463",
+    "gross_reward": "12.9548",
+    "net_reward": "10.010973417747323"
+  },
+  "recomputed_exact": {
+    "risk": "4.99081066775463019",
+    "net_reward": "10.010973417747322367",
+    "next_lot_quantity": "27.9",
+    "next_lot_risk": "5.008763224113459795"
+  }
+}

@@ -593,4 +593,87 @@ class DialogueServiceTests(unittest.TestCase):
         self.assertEqual(d.OpenAIDialogue.endpoint,'https://api.openai.com/v1/responses')
 
 
+class CompletedScreeningReceiptTests(unittest.TestCase):
+    setUp = DialogueServiceTests.setUp
+    tearDown = DialogueServiceTests.tearDown
+    transport = DialogueServiceTests.transport
+
+    def seed(self, value, *, state='DONE', kind='DELEGATED_MODEL_DIALOGUE'):
+        old = copy.deepcopy(value); old['deadline_epoch'] = time.time() - 3600
+        result = {'schema_version': 1, 'ok': True,
+            **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+            'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+            'decision': {'action': 'SCREENING', 'symbols': ['BTCUSDT'], 'question': ''},
+            'needs_followup': False, 'reason': 'DIALOGUE_DECISION'}
+        stored = json.dumps(result, indent=2) if state == 'DONE' else None
+        row = ('delegated-model:' + value['request_id'], kind,
+            hashlib.sha256(d.canonical(old).encode()).hexdigest(), state, stored, time.time() - 3600)
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)', row)
+        return row, result
+
+    def lookup(self, value):
+        return self.engine.process({'kind': d.SCREENING_RECEIPT_LOOKUP, 'request': value})
+
+    def test_legacy_done_keeps_original_hash_json_and_reads_without_model_or_key_readiness(self):
+        value = request(); row, result = self.seed(value)
+        self.assertNotEqual(row[2], hashlib.sha256(d.canonical(value).encode()).hexdigest())
+        before = list(self.memory.db.iterdump()); changes = self.memory.db.total_changes
+        statements = []; self.memory.db.set_trace_callback(statements.append)
+        self.engine.configuration_check = Mock(side_effect=AssertionError('no config lookup'))
+        self.model.plan = Mock(side_effect=AssertionError('no model call'))
+        self.model.evidence = Mock(side_effect=AssertionError('no model evidence'))
+        self.key.unlink()
+        with patch.object(d, 'key_state', side_effect=AssertionError('no key readiness')):
+            response = self.lookup(value)
+        self.memory.db.set_trace_callback(None)
+        receipt = d.validate_screening_lookup_result(response, value)
+        self.assertEqual(receipt['result'], result)
+        self.assertEqual(receipt['operation'], dict(zip(
+            ('operation_id', 'kind', 'request_hash', 'state', 'result', 'updated_at'), row)))
+        self.assertEqual(receipt['operation']['result'], row[4])
+        self.assertEqual(self.memory.db.total_changes, changes)
+        self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertTrue(statements)
+        self.assertTrue(all(sql.startswith('SELECT ') for sql in statements), statements)
+        self.assertEqual(self.calls, [])
+
+    def test_missing_reads_no_model_and_does_not_create_any_state(self):
+        before = list(self.memory.db.iterdump()); changes = self.memory.db.total_changes
+        value = request()
+        self.key.unlink()
+        response = self.lookup(value)
+        self.assertEqual(response['state'], 'MISSING')
+        self.assertIsNone(d.validate_screening_lookup_result(response, value))
+        self.assertEqual(self.memory.db.total_changes, changes)
+        self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertEqual(self.calls, [])
+
+    def test_started_unknown_and_foreign_operation_kind_never_replay_or_change_rows(self):
+        for index, (state, kind) in enumerate((('STARTED', 'DELEGATED_MODEL_DIALOGUE'),
+                ('UNKNOWN', 'DELEGATED_MODEL_DIALOGUE'), ('DONE', 'FOREIGN_KIND'))):
+            value = request(index=index); self.seed(value, state=state, kind=kind)
+            before = list(self.memory.db.iterdump())
+            with self.subTest(state=state, kind=kind), self.assertRaisesRegex(
+                    d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+                self.lookup(value)
+            self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertEqual(self.calls, [])
+
+    def test_changed_reply_conversation_phase_gate_and_deadline_are_denied(self):
+        value = request(); self.seed(value); before = list(self.memory.db.iterdump())
+        changed_reply = copy.deepcopy(value)
+        changed_reply.update(reply='ETHUSDT', reply_sha256=hashlib.sha256(b'ETHUSDT').hexdigest())
+        variants = [changed_reply, dict(value, conversation_id='different:conversation'),
+            request(phase='ANALYSIS'), dict(value, deadline_epoch=time.time() - 1),
+            {**value, 'gate': {'robot_on': False, 'native_dispatch_verified': True}}]
+        for changed in variants:
+            with self.subTest(changed=changed['phase']), self.assertRaises(d.DialogueError):
+                self.lookup(changed)
+        for body in ({'kind': d.SCREENING_RECEIPT_LOOKUP, 'request': value, 'extra': True},
+                     {'kind': 'FOREIGN_LOOKUP', 'request': value}):
+            with self.assertRaises(d.DialogueError): self.engine.process(body)
+        self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertEqual(self.calls, [])
+
+
 if __name__=='__main__':unittest.main()

@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
 from .neurobro_reply import ReplyIncomplete, coin_block, parse_reply_for_payload
+from .llm import web_prompt_allowed
 
 
 # A technical budget for one native browser RPC, not a discussion-round or
@@ -37,6 +38,17 @@ def _canonical(value):
 
 def _digest(value):
     return hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _require_web_prompt(text):
+    if not web_prompt_allowed(text):
+        raise ValueError('NATIVE_WEB_PROMPT_POLICY_REFUSED')
+    return text
+
+
+def _render_web_prompt(native, payload):
+    formatter = getattr(native, 'user_prompt', None)
+    return _require_web_prompt(formatter(payload) if callable(formatter) else payload.get('prompt'))
 
 
 def _source_facts(payload):
@@ -130,6 +142,7 @@ class DelegatedDOMBridge:
         # Explicit native probe/evidence callbacks retain their existing path.
         # Normal BrowserActor._research has no callback and owns this transaction.
         if receipt_callback is not None:
+            _render_web_prompt(self.native, payload)  # Before native upload/Send.
             delivery = None
             if data_file_mode(self.native, payload):
                 def callback_gate():
@@ -336,6 +349,7 @@ class DelegatedDOMBridge:
             # Question-only analysis is no longer admitted. A pre-200 release
             # with no actor callbacks fails closed before filling or sending a
             # second message; ordinary screening still needs no symbol chart.
+            _require_web_prompt(question)  # Before collecting/uploading another material turn.
             if (not callable(self.fresh_charts) or not callable(self.followup_receipt)
                     or not callable(getattr(self.native, 'user_prompt', None))
                     or not callable(getattr(self.bridge, '_upload', None))):
@@ -387,6 +401,7 @@ class DelegatedDOMBridge:
             followup_payload = copy.deepcopy(payload)
             followup_payload['context'], followup_payload['prompt'] = fresh['context'], question
             rendered = self.native.user_prompt(followup_payload)
+            _require_web_prompt(rendered)
             if (type(rendered) is not str or not rendered.startswith(question)
                     or len(rendered.encode()) > 384*1024
                     or (not file_mode and json.dumps(projected, sort_keys=True, separators=(',', ':'),
@@ -447,6 +462,9 @@ class DelegatedDOMBridge:
             return rendered
 
         def send_followup(question, market, observed_turns, answer, phase):
+            if _received is not None and _received.get('review_only')is True:
+                raise ValueError('SCREENING_RECOVERY_RECEIVED_REPLY_INCOMPLETE')
+            _require_web_prompt(question)
             prefix = copy.deepcopy(observed_turns)
             if (len(prefix) != 2 * len(state['turn_names'])
                     or prefix[-1].get('text') != answer
@@ -462,6 +480,7 @@ class DelegatedDOMBridge:
                 if len(composers) != 1 or composers[0].input_value(): unknown()
                 question,names,_ = evaluation.prepare_followup(question,composers[0],delivery,payload)
                 state['fresh_names'] = names
+            _require_web_prompt(question)
             composers = self.bridge._visible(self.bridge._dom_contract.composer)
             if len(composers) != 1 or composers[0].input_value():
                 unknown()
@@ -486,6 +505,7 @@ class DelegatedDOMBridge:
             if evaluation is not None:
                 evaluation.before_send(question, transcript=prefix)
                 gate()
+            _require_web_prompt(question)  # Recheck the exact text at the click boundary.
             buttons[0].click(timeout=self.bridge._timeout(5000))
 
         def review(answer):
@@ -546,17 +566,29 @@ class DelegatedDOMBridge:
             # no foreign symbols, prices or trading authority from the model.
             from .dialogue_service import validate_request, validate_result
             validate_request(request, now=self.wall_clock())
-            response = validate_result(self.client.request(request), request)
+            model_operation=None
+            lookup=(phase=='SCREENING' and getattr(self.client,'supports_screening_receipt_lookup',False)is True)
+            stored=self.client.completed_screening(request)if lookup else None
+            if stored is not None:
+                response=validate_result(stored['result'],request);model_operation=stored['operation']
+            else:
+                response = validate_result(self.client.request(request), request)
+                if lookup:
+                    stored=self.client.completed_screening(request)
+                    if stored is None or stored['result']!=response:
+                        raise ValueError('NATIVE_SCREENING_MODEL_RECEIPT_MISSING')
+                    model_operation=stored['operation']
             gate()
             if transcript() != observed_turns:
                 unknown()
-            if phase == 'ANALYSIS' and self.daily_room is not None:
+            if phase in ('ANALYSIS','SCREENING') and self.daily_room is not None:
                 # Persist the actual accepted dialogue result before native
                 # final polling can be interrupted. Never synthesize approval
                 # while later recovering an uncertain browser outcome.
                 from .native_analysis_receipt import persist_review
                 persist_review(self.daily_room.store.root, payload, request, response,
-                    observed_turns, context=active_context, observed_at=self.wall_clock())
+                    observed_turns, context=active_context, observed_at=self.wall_clock(),
+                    model_operation=model_operation)
             if evaluation is not None:
                 if not response['needs_followup']:
                     question = evaluation.next_material_question()
@@ -644,6 +676,30 @@ class DelegatedDOMBridge:
                 question = response['decision']['question']
                 if response['decision']['action'] != 'CLARIFY' or not question:
                     unknown()
+                # Legacy Mini results remain immutable internal evidence. Apply
+                # today's WEB policy only after clear-market-HOLD suppression.
+                # Ask Neurobro to restate its own current decision rather than
+                # sending an old budget/sizing request or inventing any level.
+                from .dialogue_service import DialogueError, validate_web_question
+                try:
+                    validate_web_question(question, request)
+                except DialogueError:
+                    if phase == 'ANALYSIS':
+                        question = ('Mohon pertegas keputusan akhir untuk coin yang sedang dibahas. '
+                            'Ringkas COIN, ARAH LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
+                            'Pertahankan level yang memang sudah menjadi keputusanmu; '
+                            'jika bahan belum terbaca, jelaskan bagian yang perlu diperbaiki.')
+                    elif phase == 'PENDING_REVIEW':
+                        question = ('Mohon pertegas COIN dan KEPUTUSAN TAHAN/BATALKAN untuk '
+                            'order yang sama berdasarkan chart terbaru. Pertahankan parameter order; '
+                            'jika bahan belum terbaca, jelaskan bagian yang perlu diperbaiki.')
+                    elif phase == 'POST_TRADE_EVALUATION':
+                        question = ('Mohon pertegas penilaian historis berdasarkan bukti yang tersedia: '
+                            'PENILAIAN SETUP: SESUAI BUKTI, TIDAK SESUAI BUKTI, atau BELUM CUKUP BUKTI. '
+                            'Ini evaluasi historis, bukan setup atau transaksi baru.')
+                    else:
+                        question = ('Mohon ringkas coin pilihanmu sesuai kapasitas yang diminta '
+                            'dalam bentuk COIN: simbol USDT Perpetual.')
             if question in state['asked_questions']:
                 if complete:
                     state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha,
@@ -777,12 +833,19 @@ class DelegatedDOMBridge:
                     {'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED'} else 'UNAVAILABLE') from None
             def final_dispatch():
                 if dispatch_check() is not True: return False
+                _render_web_prompt(self.native, payload)
                 if evaluation is not None:
                     evaluation.before_send(self.native.user_prompt(payload),
                         transcript=self.daily_room.full_turns())
                     return dispatch_check() is True
                 return True
             if _received is None:
+                # A cached legacy draft is readable evidence but cannot become
+                # a new WEB upload/Send under the current privacy contract.
+                try:
+                    _render_web_prompt(self.native, payload)
+                except ValueError:
+                    raise self.native.NotSubmitted('UNAVAILABLE') from None
                 result = self.bridge.ask(payload, final_dispatch, chart_images=chart_images,
                     chart_evidence=chart_evidence, deadline=deadline, receipt_callback=None)
             else:

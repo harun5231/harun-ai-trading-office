@@ -30,8 +30,10 @@ class FakeAccount:
         return dict(source=FEE_SOURCE,symbol=symbol,maker='0.0002',taker=self.taker,
             checked_at=datetime.fromtimestamp(self.at,timezone.utc).isoformat(),
             checked_at_ms=self.at*1000)
-    def signed_get(self,path,symbol):
+    def signed_get(self,path,symbol=None):
         self.calls.append(('signed_get',path,symbol))
+        if path=='/fapi/v3/account':
+            return dict(availableBalance='1000')
         assert path=='/fapi/v1/leverageBracket'
         return [dict(symbol=symbol,brackets=[dict(notionalFloor='0',notionalCap='10000',
             initialLeverage=50),dict(notionalFloor='10000',notionalCap='10000000',initialLeverage=20)])]
@@ -71,9 +73,9 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         self.db=sqlite3.connect(':memory:',isolation_level=None);self.db.row_factory=sqlite3.Row
         self.addCleanup(self.db.close)
 
-    def prepare(self):
+    def prepare(self,**options):
         return analysis_context(self.market,'ETHUSDT','5',self.account,
-            policy=DYNAMIC_RISK_MODEL,db=self.db)
+            policy=DYNAMIC_RISK_MODEL,db=self.db,**options)
 
     def test_analysis_binds_fresh_account_fees_depth_brackets_and_closed_utc_values(self):
         original=copy.deepcopy(self.market.context)
@@ -86,7 +88,10 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         self.assertEqual(rules.dynamic_cost_evidence['observed_at'],self.at)
         self.assertEqual(rules.leverage_brackets['brackets'][0]['max_leverage'],50)
         self.assertEqual(self.account.calls,[('commission','ETHUSDT'),
-            ('signed_get','/fapi/v1/leverageBracket','ETHUSDT')])
+            ('signed_get','/fapi/v1/leverageBracket','ETHUSDT'),
+            ('signed_get','/fapi/v3/account',None)])
+        self.assertEqual(rules.leverage_brackets['schema_version'],2)
+        self.assertEqual(rules.leverage_brackets['margin']['available_balance_usdt'],'1000')
         constraint=context['risk_constraints']
         self.assertEqual(constraint['risk_budget_scope'],'PER_TRANSACTION')
         self.assertEqual(constraint['target_net_profit_at_tp_usdt'],'6')
@@ -144,7 +149,7 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         row=self.db.execute('SELECT fill_price,reference_price,actual_impact_rate FROM execution_cost_observations').fetchone()
         self.assertEqual(tuple(row),('3','1','2'))
 
-    def seed_candidate(self,state=None,result=None):
+    def seed_candidate(self,state=None,result=None,*,margin_sizing=True):
         self.db.executescript('''
         CREATE TABLE api_requests(operation TEXT PRIMARY KEY,output TEXT,state TEXT,body_hash TEXT);
         CREATE TABLE robot_candidates(id TEXT PRIMARY KEY,cycle TEXT,symbol TEXT,status TEXT,plan TEXT,failure_code TEXT);
@@ -158,7 +163,7 @@ class DynamicMarketPolicyTests(unittest.TestCase):
             (self.op,json.dumps(output),'COMPLETE',hashlib.sha256(b'fixture').hexdigest()))
         self.db.execute('INSERT INTO research_browser_requests VALUES(?,?)',(self.op,
             json.dumps(dict(context=dict(risk_constraints=dict(risk_model=DYNAMIC_RISK_MODEL))))))
-        _,rules=self.prepare()
+        _,rules=self.prepare(margin_sizing=margin_sizing)
         plan=risk_check(Signal('ETHUSDT','LONG',D('100'),D('100.5'),D('99')),rules,
             D('5'),risk_model=DYNAMIC_RISK_MODEL)
         plan['sizing_rules']=serialize_rules(rules)
@@ -234,6 +239,17 @@ class DynamicMarketPolicyTests(unittest.TestCase):
             refresh_unsubmitted(coordinator,row,plan,build_intent=build_intent,clock=lambda:self.at+301)
         self.assertEqual(self.frozen(),before)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0],0)
+
+    def test_unsent_legacy_v4_retains_original_bracket_schema_and_no_margin_read(self):
+        coordinator,row,old=self.seed_candidate('READY_FOR_EXECUTION',margin_sizing=False)
+        self.assertEqual(old['sizing_rules']['leverage_brackets']['schema_version'],1)
+        self.account.calls.clear()
+        fresh,rules=refresh_unsubmitted(coordinator,row,old,build_intent=build_intent)
+        self.assertEqual(rules.leverage_brackets['schema_version'],1)
+        self.assertNotIn('margin',rules.leverage_brackets)
+        self.assertNotIn(('signed_get','/fapi/v3/account',None),self.account.calls)
+        for key in('entry','sl','tp','quantity','risk','target_net_reward_usdt','leverage'):
+            self.assertEqual(fresh[key],old[key])
 
     def test_race_to_uncertain_during_refresh_is_detected_before_plan_write(self):
         coordinator,row,plan=self.seed_candidate('READY_FOR_EXECUTION');before_plan=row['plan']

@@ -15,6 +15,7 @@ import time
 
 from .native_market_context import convert_native_market_context
 from .native_data_files import prepare_data_files, render_short_prompt, render_screening_prompt
+from .llm import web_prompt_allowed
 
 
 MAX_NATIVE_CONTEXT = 2 * 1024 * 1024
@@ -48,7 +49,8 @@ def install(native_namespace, *, expected_prompt, context_key, wall_clock=time.t
         raise ValueError('NATIVE_200_PROMPT_CONFIGURATION_UNVERIFIED')
 
     def user_prompt(payload):
-        if type(payload) is not dict or context_key not in payload:
+        if (type(payload) is not dict or context_key not in payload
+                or not web_prompt_allowed(payload.get('prompt'))):
             raise ValueError('NATIVE_200_PROMPT_PAYLOAD_UNVERIFIED')
         # Replacement screening carries exclusions, without selected-coin
         # candles. The native formatter retains that context byte for byte;

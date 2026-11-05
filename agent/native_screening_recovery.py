@@ -470,6 +470,9 @@ def identifier_checkpoint_verified(anchors, binding, archive_root):
 def recover(actor, delegated_bridge, value):
     """Existing actor-thread entry. Returns the native four-field result."""
     from .native_received_continuation import is_continuation, continue_received
+    if type(value)is dict and value.get('action')=='SCREENING_RECEIVED_REVIEW':
+        from .native_received_screening import review_received
+        return review_received(actor,delegated_bridge,value)
     if is_continuation(value):
         return continue_received(actor, delegated_bridge, value)
     from .native_received_analysis import is_observation, observe
@@ -595,9 +598,12 @@ def enqueue(actor, value):
     from .native_received_analysis import is_observation, validate as validate_observation
     from .native_received_continuation import is_continuation, validate as validate_continuation
     continuation = is_continuation(value)
+    screening_review = type(value)is dict and value.get('action')=='SCREENING_RECEIVED_REVIEW'
     observation = is_observation(value)
-    generic_observation = (type(value) is dict and value.get('action') == 'ANALYSIS_RECEIVED_OBSERVE') or continuation
-    payload = (validate_continuation(value)[0] if continuation else
+    generic_observation = (type(value) is dict and value.get('action') in (
+        'ANALYSIS_RECEIVED_OBSERVE','SCREENING_RECEIVED_OBSERVE')) or continuation or screening_review
+    from .native_received_screening import validate as validate_screening
+    payload = (validate_screening(value)if screening_review else validate_continuation(value)[0] if continuation else
         validate_observation(value) if observation else _unpack(value)[0])
     native = actor._bridge.native
     def unavailable(reason):
@@ -613,7 +619,7 @@ def enqueue(actor, value):
             if actor.mode != 'AUTOMATION': unavailable('BUSY')
             status, ready = actor.current_status, actor.ready
         if not observation and status in ('CHALLENGE_REQUIRED', 'LOGIN_REQUIRED'):
-            if continuation: unavailable(status)
+            if continuation or screening_review: unavailable(status)
             raise native.NotSubmitted(status)
         if not ready or (not observation and status != 'CONNECTED'): unavailable('UNAVAILABLE')
         task = dict(request=copy.deepcopy(value), kind=KIND, done=threading.Event())
@@ -622,7 +628,7 @@ def enqueue(actor, value):
         # the hard Send deadline. This response-only grace grants no browser
         # action time: dispatch and the native deadline still expire unchanged.
         wait_seconds = (max(0.0, min(900.0, value['grant']['expires_at']-time.time())) + 2.0
-            if continuation else 45)
+            if continuation else 122 if screening_review else 45)
         if not task['done'].wait(wait_seconds): raise native.OutcomeUnknown()
         if 'error' in task:
             if generic_observation and str(task['error']) in {
@@ -630,6 +636,11 @@ def enqueue(actor, value):
                 unavailable(str(task['error']))
             raise task['error']
         result = task['result']
+        if screening_review:
+            need(type(result)is dict and result.get('kind')in('NATIVE_RECEIVED_SCREENING_REVIEW_V1',
+                'NATIVE_RECEIVED_SCREENING_REVIEW_INCOMPLETE_V1') and result.get('operation')==payload['operation']
+                and result.get('request_sha256')==payload['request_sha256'])
+            return result
         if continuation:
             need(type(result) is dict and result.get('kind') in (
                 'NATIVE_ANALYSIS_CONTINUATION_RESULT_V1','NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_V1')
@@ -638,7 +649,7 @@ def enqueue(actor, value):
                 and result.get('grant_id') == value['grant']['grant_id'])
             return result
         if observation:
-            need(type(result) is dict and result.get('kind') in ('NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1','NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V2')
+            need(type(result) is dict and result.get('kind') in ('NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V1','NATIVE_RECEIVED_ANALYSIS_OBSERVATION_V2','NATIVE_RECEIVED_SCREENING_OBSERVATION_V1')
                  and result.get('operation') == payload['operation']
                  and result.get('request_sha256') == payload['request_sha256']
                  and result.get('operation_completed') is False)

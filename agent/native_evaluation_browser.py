@@ -14,6 +14,7 @@ from pathlib import Path
 
 from .native_evaluation_protocol import envelope, PHASE, native_sha, validate_material_access_chain
 from .native_file_upload import NativeDataFileDelivery, FILE_WITNESS
+from .llm import web_display_text, web_prompt_allowed
 from worker.trade_evaluation_evidence import digest, need
 
 
@@ -103,7 +104,12 @@ class HistoricalEvaluation:
                 self.covered[index]=witness;self.reused.append(witness);self.reused_indices.add(index)
         missing=[i for i in range(len(self.request['historical_materials'])) if i not in self.covered]
         self.active=missing[0] if missing else None
-        if self.active is not None:self.active_group()
+        if self.active is not None:
+            self.active_group()
+            # Validate the final displayed historical excerpt before any
+            # attachment upload, not only the base caller prompt.
+            need(web_prompt_allowed(self.original_prompt(self.payload) + self.material_description(self.active)),
+                'EVALUATION_PRIVATE_WEB_PROMPT_REJECTED')
         used=[False]
         def fresh_once():
             need(not used[0] and room._prepared and not composer.input_value(),
@@ -143,8 +149,9 @@ class HistoricalEvaluation:
             'Ini rekaman bahan analisis semula, BUKAN kondisi pasar saat ini. '
             'Dua CSV masing-masing memuat 200 candle tertutup; dua PNG adalah screenshot asli saat itu. '
             'Waktu rekaman 15M: '+group['captured_at']['15m']+'; 1H: '+group['captured_at']['1h']+'. '
-            'Jangan memakai bahan ini untuk entry baru.\nJawaban Neurobro semula untuk transaksi ini:\n'
-            +source['text']+'\nTinjau bahan transaksi ini bersama hasil perdagangan yang sudah disertakan. '
+            'Jangan memakai bahan ini untuk entry baru.\nKutipan tampilan jawaban Neurobro semula '
+            '(hash SHA-256 rekaman asli '+source['sha256']+'):\n'
+            +web_display_text(source['text'])+'\nTinjau bahan transaksi ini bersama hasil perdagangan yang sudah disertakan. '
             'Pisahkan fakta, ketidakpastian dan hipotesis; jangan mengaku eksperimen sudah dijalankan.')
 
     def _persist(self,action,**fields):
@@ -242,9 +249,11 @@ class HistoricalEvaluation:
         if self.next_index is None:
             self.active=None;return question,[],None
         self.active=self.next_index;self.next_index=None;self.active_group()
+        rendered = question+self.material_description(self.active)
+        need(web_prompt_allowed(rendered), 'EVALUATION_PRIVATE_WEB_PROMPT_REJECTED')
         artifacts=self.owner.native.image_artifacts(self.active_group()['paths'],self.active_group()['chart_evidence'])
         bound=delivery._upload(composer,payload,artifacts)
-        return question+self.material_description(self.active),list(self.owner.bridge.uploaded_names),bound
+        return rendered,list(self.owner.bridge.uploaded_names),bound
 
     def complete(self,result):
         need(self.pending_send is None and len(self.covered)==len(self.request['historical_materials'])
