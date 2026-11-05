@@ -13,7 +13,7 @@ from unittest.mock import Mock
 from agent import dialogue_service as service
 from agent.native_prompt_composition import PromptCompositionCache
 from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
-    parse_pending_reply, parse_screening_reply, parse_reply_for_payload)
+    parse_pending_reply, parse_screening_reply, parse_reply_for_payload, attributed_symbols)
 
 
 class PerCoinReplyTests(unittest.TestCase):
@@ -29,6 +29,47 @@ class PerCoinReplyTests(unittest.TestCase):
         self.assertEqual(aave['side'], 'HOLD')
         self.assertTrue(all(aave[key] is None for key in
             ('entry_price', 'limit_entry', 'take_profit', 'stop_loss', 'risk_reward')))
+
+    def test_actual_rune_final_hold_ignores_usdt_amounts_and_future_discussion(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_rune_final_hold_20261105.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            'd3d14cedbb31628f3077c386b3b1bb61d5da0fd24cf68ce27fde93b52cf9799a')
+        self.assertEqual(attributed_symbols(reply), {'RUNEUSDT'})
+        result = parse_analysis_reply(reply, 'RUNEUSDT')
+        self.assertEqual(result['side'], 'HOLD')
+        self.assertTrue(all(value is None for key, value in result.items() if key not in ('symbol', 'side')))
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        parsed = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'RUNEUSDT'}})
+        self.assertEqual(parsed['side'], 'HOLD')
+        self.assertIsNone(parsed['limit_entry'])
+
+    def test_money_amounts_never_bind_a_coin_but_real_prefixed_symbols_and_coin_labels_do(self):
+        self.assertEqual(attributed_symbols('Risiko 2.50 USDT, notional 169 USDT.'), set())
+        self.assertEqual(attributed_symbols('1000PEPEUSDT dan 1INCHUSDT.'),
+            {'1000PEPEUSDT', '1INCHUSDT'})
+        self.assertEqual(parse_analysis_reply('COIN: 169USDT\nARAH: HOLD', '169USDT')['side'], 'HOLD')
+        self.assertEqual(parse_analysis_reply('Ringkasan: COIN: 169USDT | HOLD | ENTRY: —',
+            '169USDT')['side'], 'HOLD')
+        with self.assertRaisesRegex(ReplyIncomplete, 'COIN_UNVERIFIED'):
+            parse_analysis_reply('Risiko 2.50 USDT, notional 169 USDT.\nHOLD', '169USDT')
+
+    def test_bare_summary_direction_remains_coin_bound_unambiguous_and_input_checked(self):
+        base = 'Ringkasan: COIN: $RUNEUSDT | HOLD | ENTRY: — | TP: — | SL: —'
+        self.assertEqual(parse_analysis_reply(base, 'RUNEUSDT')['side'], 'HOLD')
+        for reply, reason in ((base.replace('RUNEUSDT', 'TIAUSDT'), 'COIN_UNVERIFIED'),
+                ('RUNEUSDT dibanding TIAUSDT.\n' + base, 'COIN_UNVERIFIED'),
+                ('Chart belum terbaca.\n' + base, 'INPUT_UNREADABLE'),
+                ('Keputusan: LONG\n' + base, 'DECISION_CONFLICT'),
+                ('Ringkasan: COIN: $RUNEUSDT | HOLD | LONG | ENTRY: —', 'DECISION_CONFLICT')):
+            with self.subTest(reply=reply), self.assertRaisesRegex(ReplyIncomplete, reason):
+                parse_analysis_reply(reply, 'RUNEUSDT')
+
+    def test_conditional_future_long_is_never_an_active_pipe_summary_entry(self):
+        reply = ('Jika breakout terkonfirmasi, pertimbangkan LONG.\n'
+            'Ringkasan: COIN: $RUNEUSDT | LONG | ENTRY: 1 | TP: 3 | SL: 0.5')
+        with self.assertRaisesRegex(ReplyIncomplete, 'SETUP_CONDITIONAL'):
+            parse_analysis_reply(reply, 'RUNEUSDT')
 
     def test_explicit_final_summary_supersedes_old_card_without_old_levels(self):
         reply = ('COIN: LINKUSDT\nARAH: HOLD\nKartu lama.\n\n'
@@ -362,6 +403,81 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         self.assertEqual(fixture.bridge.clicks, 2)
         fixture.refresh.assert_called_once()
         self.assertNotIn('OUTPUT_JSON_SCHEMA', fixture.bridge.messages[2]['text'])
+
+    def test_actual_clear_rune_market_hold_ends_without_rewriting_mini_clarify_receipt(self):
+        saved = json.loads((Path(__file__).parent / 'fixtures/neurobro_market_hold_20261105.json').read_text())
+        fixture = self.fixture()
+        fixture.bridge.initial = saved['reply']
+        fixture.value['context']['symbol'] = 'RUNEUSDT'
+        fixture.value['context']['risk_manager_facts'] = {'symbol': 'RUNEUSDT', 'risk_usdt': '5'}
+        for frame in fixture.value['context']['timeframes'].values(): frame['symbol'] = 'RUNEUSDT'
+        for row in fixture.initial: row['symbol'] = 'RUNEUSDT'
+        responses = []
+        def reason(value):
+            result = {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                'decision': copy.deepcopy(saved['mini_decision']), 'needs_followup': True,
+                'reason': 'DIALOGUE_DECISION'}
+            responses.append(result)
+            return result
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        self.assertEqual(result['output']['symbol'], 'RUNEUSDT')
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertTrue(all(value is None for key, value in result['output'].items()
+            if key not in ('symbol', 'side')))
+        self.assertEqual(result['assistant_text'], saved['reply'])
+        self.assertEqual(fixture.bridge.clicks, 1)
+        self.assertEqual(len(fixture.bridge.messages), 2)
+        fixture.refresh.assert_not_called(); fixture.receipt.assert_not_called()
+        fixture.hook.client.request.assert_called_once()
+        self.assertEqual(responses[0]['decision'], saved['mini_decision'])
+        self.assertIs(responses[0]['needs_followup'], True)
+
+    def test_complete_short_setup_still_allows_mini_clarification_with_new_charts(self):
+        fixture = self.fixture()
+        fixture.bridge.initial = 'COIN: BTCUSDT\nARAH: SHORT\nENTRY: 100\nTP: 98\nSL: 101'
+        fixture.bridge.final = 'COIN: BTCUSDT\nARAH: HOLD\nBelum ada setup aktif.'
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        def reason(value):
+            first = value['reply'] == fixture.bridge.initial
+            return {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                'decision': {'action': 'CLARIFY' if first else 'HOLD', 'symbols': ['BTCUSDT'],
+                    'question': 'Apakah wick membatalkan struktur setup ini?' if first else ''},
+                'needs_followup': first, 'reason': 'DIALOGUE_DECISION'}
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertEqual(fixture.bridge.clicks, 2)
+        fixture.refresh.assert_called_once()
+
+    def test_technical_ambiguous_and_conditional_replies_still_get_fresh_chart_clarification(self):
+        replies = ('COIN: BTCUSDT\nARAH: HOLD\nScreenshot belum terbaca.',
+            'COIN: BTCUSDT\nKEPUTUSAN: HOLD\nKEPUTUSAN: LONG\nENTRY: 100\nTP: 102\nSL: 99',
+            'COIN: BTCUSDT\nARAH: LONG\nENTRY: 100\nTP: 102\nSL: 99\nJika breakout terkonfirmasi.',
+            'COIN: BTCUSDT\nKEPUTUSAN: HOLD jika harga gagal reclaim.')
+        for initial in replies:
+            with self.subTest(initial=initial):
+                fixture = self.fixture(); fixture.bridge.initial = initial
+                fixture.bridge.final = 'COIN: BTCUSDT\nARAH: HOLD\nBelum ada setup aktif.'
+                fixture.module.exact_json.side_effect = lambda text, marker: None
+                def reason(value):
+                    first = value['reply'] == initial
+                    return {'schema_version': 1, 'ok': True,
+                        **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                        'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                        'decision': {'action': 'CLARIFY' if first else 'HOLD', 'symbols': ['BTCUSDT'],
+                            'question': 'Mohon perjelas keputusan dan bahan yang dipakai.' if first else ''},
+                        'needs_followup': first, 'reason': 'DIALOGUE_DECISION'}
+                fixture.hook.client = Mock(request=Mock(side_effect=reason))
+                result = fixture.ask()
+                self.assertEqual(result['output']['side'], 'HOLD')
+                self.assertEqual(fixture.bridge.clicks, 2)
+                fixture.refresh.assert_called_once()
 
 
 class ActualNativeParserBoundaryTests(unittest.TestCase):

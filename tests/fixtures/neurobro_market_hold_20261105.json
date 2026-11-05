@@ -1,0 +1,10 @@
+{
+  "reply": "Keputusan: HOLD untuk entry scalp 15m. Gambar menunjukkan $RUNEUSDT pada Binance Futures; screenshot 15m dan 1H terbaca, dan harga sekitar 0.6375 selaras dengan mark price 0.63753448. Candle 09:15 pada gambar masih berjalan, jadi tidak saya hitung sebagai candle tertutup.\n\nHarga berada di tengah kisaran pendek: support terbaru 0.6313-0.6333, resistance 0.6427-0.6435. Candle 15m tertutup terakhir sekitar 0.6366 dan candle 1H terakhir 0.6365 - belum ada penutupan yang mengonfirmasi breakout atau breakdown, jadi entry sekarang berisiko kena whipsaw. Tunggu konfirmasi penutupan 15m di luar kisaran itu; tanpa konfirmasi, tidak ada entry/TP/SL valid untuk memenuhi R/R minimum 1:2. Tidak ada rekomendasi ukuran posisi karena belum ada setup valid; SL juga tidak bisa dijamin bebas wick.\n\n⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisis ini bisa salah - keputusan trading dan risiko tetap tanggung jawab lo.\n\nRingkasan: COIN: $RUNEUSDT | HOLD | ENTRY: — | TP: — | SL: —",
+  "mini_decision": {
+    "action": "CLARIFY",
+    "question": "Konfirmasi: kamu menyatakan HOLD untuk scalp 15m — setuju tidak ada entry sekarang sampai ada penutupan 15m di luar range 0.6313–0.6435. Tolong sebutkan level konfirmasi yang jelas (mis. close 15m di atas X atau di bawah Y) yang kamu pakai agar setup valid. Jika konfirmasi terjadi, rekomendasikan juga (sebagai bahan diskusi saja) ukuran posisi relatif (%) terhadap risk_usdt=5 dari Risk Manager, serta entry/SL/TP yang akan dipakai setelah konfirmasi. Ingat: quantity eksekusi tetap dihitung Risk Manager dari risiko Office termasuk fee dan estimasi slippage; saran ukuranmu hanya bahan diskusi dan bukan instruksi order.",
+    "symbols": [
+      "RUNEUSDT"
+    ]
+  }
+}

@@ -1,7 +1,9 @@
 """Actual four-file batches remain strict while a React file witness settles."""
 import ast
 import copy
+import hashlib
 import inspect
+import re
 import textwrap
 from types import SimpleNamespace
 import unittest
@@ -72,10 +74,10 @@ class BatchBridge:
         payload = {'owned': 'immutable'}
         scope = {'self': SimpleNamespace(bridge=self, native=self.native, clock=self.clock),
             'state': {'prefix': prefix, 'turn_names': copy.deepcopy(self.batches),
-                'initial_url': self.page.url, 'fresh': None},
+                'initial_url': self.page.url, 'fresh': None, 'phase': 'FOLLOWUP_SENT'},
             'until': self.operation_deadline, 'payload': payload, 'payload_digest': _digest(payload),
             'chart_images': (), 'chart_evidence': (), 'dispatch_check': lambda: True,
-            'delivery': self.delivery, '_digest': _digest}
+            'delivery': self.delivery, '_digest': _digest, 'hashlib': hashlib, 're': re}
         def unknown(): raise Unknown()
         scope['unknown'] = unknown
         exec(compile(ast.Module(body=functions, type_ignores=[]), '<actual-production-transcript>', 'exec'), scope)

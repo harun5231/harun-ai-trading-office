@@ -252,6 +252,12 @@ def retain_return_failure(root, payload, state, clock, deadline, error):
             separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')).hexdigest()
             for item in state.get('followup_intents', [])],
         'clock': clock, 'deadline': deadline, 'at': time.time(), 'chain': chain}
+    gate = state.get('gate_failure')
+    if (type(gate) is dict and set(gate) == {'reason', 'clock', 'deadline', 'phase',
+            'check_material', 'site_status', 'dispatch', 'initial_url_sha256', 'current_url_sha256'}
+            and gate.get('reason') in {'DEADLINE', 'SITE_STATUS', 'DISPATCH_NOT_PERMITTED',
+                'CONVERSATION_URL_CHANGED'}):
+        value['gate_failure'] = gate.copy()
     if not all(type(item) in (int, float) and math.isfinite(item) for item in (clock, deadline)):
         return
     _write(root, 'native-return-failure-' + digest + '.json', value)

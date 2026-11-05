@@ -17,7 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
-from .neurobro_reply import ReplyIncomplete, parse_reply_for_payload
+from .neurobro_reply import ReplyIncomplete, coin_block, parse_reply_for_payload
 
 
 # A technical budget for one native browser RPC, not a discussion-round or
@@ -182,10 +182,35 @@ class DelegatedDOMBridge:
             raise self.native.OutcomeUnknown()
 
         def gate(*, check_material=False):
-            if (self.clock() >= until or self.bridge.status() != 'CONNECTED'
-                    or dispatch_check() is not True
-                    or state['initial_url'] is not None and self.bridge.page.url != state['initial_url']):
+            # Retain the failing predicate's actual observation. Evaluating the
+            # gate again after an UNKNOWN journal transition cannot explain why
+            # the original in-flight read stopped. Keep native short-circuit
+            # order and exactly one call to each reached predicate.
+            current = self.clock()
+            status = permission = current_url = None
+            def failed(reason):
+                state['gate_failure'] = {'reason': reason, 'clock': current,
+                    'deadline': until, 'phase': state['phase'], 'check_material': check_material,
+                    'site_status': status if isinstance(status, str) and re.fullmatch(
+                        '[A-Z][A-Z_]{0,39}', status) else None,
+                    'dispatch': None if permission is None else permission is True,
+                    'initial_url_sha256': (hashlib.sha256(state['initial_url'].encode()).hexdigest()
+                        if isinstance(state['initial_url'], str) else None),
+                    'current_url_sha256': (hashlib.sha256(current_url.encode()).hexdigest()
+                        if isinstance(current_url, str) else None)}
                 unknown()
+            if current >= until:
+                failed('DEADLINE')
+            status = self.bridge.status()
+            if status != 'CONNECTED':
+                failed('SITE_STATUS')
+            permission = dispatch_check()
+            if permission is not True:
+                failed('DISPATCH_NOT_PERMITTED')
+            if state['initial_url'] is not None:
+                current_url = self.bridge.page.url
+                if current_url != state['initial_url']:
+                    failed('CONVERSATION_URL_CHANGED')
             if check_material:
                 # Reuse the native PNG, timeframe, symbol, hash and age admission.
                 if state['fresh'] is not None:
@@ -562,7 +587,14 @@ class DelegatedDOMBridge:
                        'Pertahankan level yang memang sudah menjadi keputusanmu.'))
             legacy_complete = complete and self.prompt_cache is None and not natural_parsed and parse_error not in {
                 'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_SETUP_CONDITIONAL'}
-            if required_question is None and (not response['needs_followup'] or legacy_complete):
+            clear_market_hold = (phase == 'ANALYSIS' and natural_parsed and complete
+                and parse_error is None and output.get('side') == 'HOLD'
+                and not re.search(r'\b(?:jika|apabila|bersyarat|alternatif|skenario)\b',
+                    coin_block(answer, expected_symbol), re.I))
+            # A clear author market HOLD ends this coin's analysis. Keep the
+            # actual Mini CLARIFY receipt intact; future setup/size questions
+            # cannot turn Neurobro's present no-entry decision into a debate.
+            if required_question is None and (not response['needs_followup'] or legacy_complete or clear_market_hold):
                 state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha,
                     accepted_output=copy.deepcopy(output) if complete else None)
                 return
