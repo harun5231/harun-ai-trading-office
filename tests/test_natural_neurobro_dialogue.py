@@ -547,6 +547,16 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         self.assertNotIn('Quantity', sent)
         fixture.refresh.assert_called_once()
 
+    def test_unsafe_initial_render_is_refused_before_any_upload_or_send(self):
+        fixture = self.fixture()
+        fixture.module.user_prompt = lambda payload: payload['prompt'] + '\nAnggaran risiko 5 USDT.'
+        with self.assertRaises(fixture.module.NotSubmitted):
+            fixture.ask()
+        self.assertEqual(fixture.bridge.clicks, 0)
+        self.assertEqual(fixture.bridge.uploads, [])
+        fixture.refresh.assert_not_called()
+        fixture.hook.client.request.assert_not_called()
+
     def test_complete_short_setup_still_allows_mini_clarification_with_new_charts(self):
         fixture = self.fixture()
         fixture.bridge.initial = 'COIN: BTCUSDT\nARAH: SHORT\nENTRY: 100\nTP: 98\nSL: 101'

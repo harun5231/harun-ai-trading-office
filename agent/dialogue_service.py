@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 
 from .llm import (OpenAIDialogue, read_api_key, validated_market_context,
                   compose_screening_input_sha256, web_source_facts,
-                  web_prompt_allowed, POSITION_SIZE)
+                  web_prompt_allowed)
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
 
@@ -147,13 +147,16 @@ def validate_web_question(question, request):
     return question
 
 
-def validate_position_size_discussion(question, phase):
-    """Neurobro sizing advice stays prose, never executable quantity.
+POSITION_SIZE = r'(?:quantity|ukuran posisi|jumlah kontrak|position size)'
 
-    Existing order quantities may still be discussed in pending review. A new
-    recommendation is allowed only in analysis, explicitly advisory and with
-    Risk Manager retaining the final calculation. The numeric-source check is
-    independent and must still run for every question.
+
+def validate_position_size_discussion(question, phase):
+    """Read-compatible validation for immutable internal Mini decisions.
+
+    Legacy analysis receipts allowed explicitly advisory sizing. That historical
+    grammar remains readable; validate_web_question separately refuses any new
+    advisory sizing or private budget before an upload/Send. Existing-order
+    quantities remain discussion facts, never authority to change an order.
     """
     if not re.search(r'\b' + POSITION_SIZE + r'\b', question, re.I):
         return

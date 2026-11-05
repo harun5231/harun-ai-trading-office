@@ -43,7 +43,8 @@ class PrivateRiskPromptContractTests(unittest.TestCase):
             'Dengan modal akun 1000 USDT, hitungkan quantity.',
             'Rekomendasikan position size hanya sebagai bahan diskusi.',
             'Berapa qty yang ideal dari risiko ini?',
-            'Quantity berapa yang cocok?', 'Berikan saran lot untuk entry ini.')
+            'Quantity berapa yang cocok?', 'Berikan saran lot untuk entry ini.',
+            'Berapa ukuran posisinya?', 'Berapa banyak kontrak untuk entry?')
         for phase in service.PHASES:
             for text in messages:
                 with self.subTest(phase=phase, text=text), self.assertRaises(service.DialogueError):

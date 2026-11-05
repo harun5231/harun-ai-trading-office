@@ -94,7 +94,8 @@ WEB_FACT_KEYS = frozenset({'symbol', 'side', 'quantity', 'filled_quantity',
     'entry_price', 'stop_loss', 'take_profit', 'execution_tp', 'neurobro_tp',
     'accepted_at', 'age_seconds', 'order_ref', 'entry_client_order_id', 'entry_order_id',
     'observed_at', 'last_review_at', 'next_review_at'})
-POSITION_SIZE = r'(?:quantity|kuantitas|qty|ukuran posisi|jumlah kontrak|position[ _-]*siz(?:e|ing)|sizing|lot)'
+POSITION_SIZE = (r'(?:quantity|kuantitas|qty|(?:ukuran|besar(?:nya)?)\s+posisi(?:nya)?|'
+    r'(?:jumlah|banyak(?:nya)?)\s+(?:kontrak|unit|coin|koin)|position[ _-]*siz(?:e|ing)|sizing|lot)')
 PRIVATE_BUDGET = re.compile(
     r'\b(?:risk_(?:usdt|budget|amount|target\w*)|target_loss_at_sl_usdt|'
     r'(?:anggaran|budget|nominal|target|batas)\s+(?:risiko|risk|kerugian)|'
@@ -122,6 +123,16 @@ def web_prompt_allowed(question):
     """Guard both fresh Mini drafts and rendered/cached WEB text."""
     if not isinstance(question, str) or PRIVATE_BUDGET.search(question):
         return False
+    for directive in re.finditer(r'\b(?:gunakan|pakai|ikuti|terapkan|eksekusi|samakan|ganti|ubah)\b', question, re.I):
+        prefix = question[max(0, directive.start() - 24):directive.start()]
+        if directive.group().lower() == 'eksekusi' and re.search(POSITION_SIZE + r'(?:\s+untuk)?\s*$', prefix, re.I):
+            continue
+        if re.search(r'\b(?:jangan|tidak|bukan|dilarang)\s*$', prefix, re.I):
+            continue
+        tail = re.split(r'[.!?;\n]', question[directive.end():])[0]
+        if re.match(r'\s+(?:(?:hasil|nilai|rekomendasi|saran|perhitungan)\s+)?'
+                + POSITION_SIZE + r'\b', tail, re.I):
+            return False
     request = (r'\b(?:tentukan|hitung(?:kan)?|kalkulasikan|berapa|pilih|berikan|'
         r'rekomendasikan|sarankan|rekomendasi|saran|advisory)\b[^.!?;\n]{0,160}\b'
         + POSITION_SIZE + r'\b')

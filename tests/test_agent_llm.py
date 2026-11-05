@@ -355,6 +355,26 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(set(self.calls[0]["text"]["format"]["schema"]["properties"]), {"action", "symbols", "question"})
         self.assertFalse(model.evidence()["verified"])
 
+    def test_mini_input_projects_public_facts_without_mutating_private_caller_receipt(self):
+        import hashlib
+        from agent.memory import canonical
+        values = {'symbol': 'BTCUSDT', 'risk_usdt': '5', 'execution_tp': '103.21',
+            'estimated_loss': '5.234', 'fee_entry_rate': '0.0004',
+            'cost_components': {'private_cost_canary': '5.123'}}
+        facts = [{'producer': 'RISK_MANAGER', 'operation': 'owned:analysis:one', 'values': values,
+            'sha256': hashlib.sha256(canonical(values).encode()).hexdigest()}]
+        before = copy.deepcopy(facts)
+        model = self.model({'action': 'CLARIFY', 'symbols': [],
+            'question': 'Apakah TP 103.21 masih sesuai struktur 15M?'})
+        model.plan([], 'BTCUSDT setup belum lengkap', phase='ANALYSIS',
+            jakarta_day='2026-11-05', context=self.context(), source_facts=facts)
+        text = self.calls[0]['input'][-1]['content']
+        self.assertIn('103.21', text)
+        for private in ('risk_usdt', 'estimated_loss', 'fee_entry_rate',
+                        'private_cost_canary', '5.234', '5.123'):
+            self.assertNotIn(private, text)
+        self.assertEqual(facts, before)
+
     def test_market_context_rejects_stale_prices_untrusted_origin_and_extra_instructions(self):
         for mutation in (lambda x: x.update(observed_at=time.time()-181),
                          lambda x: x["provenance"].update(origin="https://attacker.invalid"),
