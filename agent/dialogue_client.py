@@ -9,10 +9,13 @@ import time
 
 from .dialogue_service import (DialogueError, MAX_BODY, MAX_RESPONSE, PUBLIC_ERRORS,
     canonical, decode_json, need, peer_uid, private_secret, receive,
-    validate_request, validate_result)
+    validate_request, validate_result, validate_screening_lookup_request,
+    validate_screening_lookup_result, SCREENING_RECEIPT_LOOKUP)
 
 
 class DialogueClient:
+    supports_screening_receipt_lookup = True
+
     def __init__(self, socket_path, token_file, *, caller_uid=10001, server_uid=10002):
         self.path,self.token_file = Path(socket_path),str(token_file)
         self.caller_uid,self.server_uid = caller_uid,server_uid
@@ -34,8 +37,19 @@ class DialogueClient:
              'DIALOGUE_MODEL_RESULT_INVALID')
         return result
 
-    def _request(self, value):
+    def completed_screening(self, value):
+        """Read a completed SCREENING memo without initiating any model work."""
+        try:
+            return self._request(value, screening_lookup=True)
+        except DialogueError:
+            raise
+        except (OSError,ValueError,UnicodeError,TypeError,RecursionError):
+            raise DialogueError('DIALOGUE_UNAVAILABLE') from None
+
+    def _request(self, value, *, screening_lookup=False):
         value = validate_request(decode_json(canonical(value).encode()))
+        if screening_lookup:
+            validate_screening_lookup_request(value)
         need(os.geteuid() == self.caller_uid, 'DIALOGUE_AUTHENTICATION_FAILED')
         path = self.path
         need(path.is_absolute(), 'DIALOGUE_AUTHENTICATION_FAILED')
@@ -45,7 +59,8 @@ class DialogueClient:
         need(stat.S_ISSOCK(info.st_mode) and info.st_uid == self.server_uid
              and stat.S_IMODE(info.st_mode) == 0o660, 'DIALOGUE_AUTHENTICATION_FAILED')
         token = private_secret(self.token_file,uid=self.caller_uid)
-        raw = canonical(value).encode()
+        body = {'kind': SCREENING_RECEIPT_LOOKUP, 'request': value} if screening_lookup else value
+        raw = canonical(body).encode()
         need(len(raw) <= MAX_BODY, 'DIALOGUE_BODY_LIMIT')
         deadline = time.monotonic()+min(50.0,value['deadline_epoch']-time.time())
         wire = ('POST /v1/dialogue HTTP/1.1\r\nHost: localhost\r\n'
@@ -88,7 +103,8 @@ class DialogueClient:
                          'DIALOGUE_HTTP_INVALID')
                     raise DialogueError(response['error'])
                 validate_request(value)
-                return validate_result(response,value)
+                return (validate_screening_lookup_result(response, value) if screening_lookup
+                        else validate_result(response,value))
         except DialogueError:
             raise
         except (OSError,ValueError,UnicodeError,TypeError):

@@ -61,6 +61,8 @@ PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'D
     'DIALOGUE_MODEL_RESULT_INVALID', 'DIALOGUE_FOREIGN_SYMBOL', 'DIALOGUE_PRICE_PROPOSAL_REFUSED',
     'DIALOGUE_SOURCE_FACTS_INVALID', 'DIALOGUE_RESPONSE_LIMIT', 'DIALOGUE_UNAVAILABLE'})
 SCREENING_RECOVERY_POLICY = 'ORIGINAL_SCREENING_KNOWN_REJECTION_V1'
+SCREENING_RECEIPT_LOOKUP = 'SCREENING_RECEIPT_LOOKUP'
+SCREENING_LOOKUP_BINDING = ('request_id', 'conversation_id', 'phase', 'reply_sha256')
 
 
 class DialogueError(AgentError):
@@ -327,6 +329,47 @@ def validate_result(value, request):
     return value
 
 
+def validate_screening_lookup_request(value, *, now=None):
+    value = validate_request(decode_json(canonical(value).encode()), now=now)
+    need(value['phase'] == 'SCREENING' and value['market_context'] is None,
+         'DIALOGUE_REQUEST_INVALID')
+    return value
+
+
+def validate_screening_lookup_result(value, request):
+    """Closed read-only envelope; original stored JSON/hash are custody data."""
+    need(type(value) is dict and set(value) == {'schema_version', 'ok', 'kind',
+            *SCREENING_LOOKUP_BINDING, 'state', 'receipt'}
+        and type(value['schema_version']) is int and value['schema_version'] == 1
+        and value['ok'] is True and value['kind'] == SCREENING_RECEIPT_LOOKUP
+        and all(value[key] == request[key] for key in SCREENING_LOOKUP_BINDING)
+        and type(value['state']) is str and value['state'] in {'MISSING', 'DONE'},
+        'DIALOGUE_MODEL_RESULT_INVALID')
+    if value['state'] == 'MISSING':
+        need(value['receipt'] is None, 'DIALOGUE_MODEL_RESULT_INVALID')
+        return None
+    receipt = value['receipt']
+    need(type(receipt) is dict and set(receipt) == {'result', 'operation'},
+         'DIALOGUE_MODEL_RESULT_INVALID')
+    row = receipt['operation']
+    need(type(row) is dict and set(row) == {'operation_id', 'kind', 'request_hash',
+            'state', 'result', 'updated_at'}
+        and row['operation_id'] == 'delegated-model:' + request['request_id']
+        and row['kind'] == 'DELEGATED_MODEL_DIALOGUE' and row['state'] == 'DONE'
+        and type(row['request_hash']) is str and SHA.fullmatch(row['request_hash'])
+        and type(row['updated_at']) in (int, float) and math.isfinite(row['updated_at'])
+        and 0 < row['updated_at'] <= 10**13
+        and type(row['result']) is str and 0 < len(row['result'].encode()) <= MAX_RESPONSE,
+        'DIALOGUE_MODEL_RESULT_INVALID')
+    decoded = decode_json(row['result'].encode())
+    validate_result(decoded, request)
+    validate_result(receipt['result'], request)
+    need(canonical(receipt['result']) == canonical(decoded)
+        and len(canonical(value).encode()) <= MAX_RESPONSE,
+         'DIALOGUE_MODEL_RESULT_INVALID')
+    return receipt
+
+
 def private_secret(path, *, uid=None):
     uid = os.geteuid() if uid is None else uid
     path = Path(path)
@@ -434,6 +477,33 @@ class DialogueEngine:
             and self._authenticated_key_identity is not None
             and key_identity(self.key_file) == self._authenticated_key_identity)
 
+    def completed_screening(self, request):
+        """Read an existing exact SCREENING receipt, independent of model readiness.
+
+        The authenticated caller's request_id already binds the native turn.
+        Its fresh transport deadline must not replace/compare the legacy memo
+        hash, and this path must never reserve, dispatch, or repair an operation.
+        """
+        request = validate_screening_lookup_request(request, now=self.clock())
+        with self.lock, self.memory.lock:
+            validate_screening_lookup_request(request, now=self.clock())
+            names = ('operation_id', 'kind', 'request_hash', 'state', 'result', 'updated_at')
+            row = self.memory.db.execute('SELECT operation_id,kind,request_hash,state,result,updated_at '
+                'FROM operations WHERE operation_id=?',
+                ('delegated-model:' + request['request_id'],)).fetchone()
+            receipt = None
+            if row is not None:
+                need(row[1] == 'DELEGATED_MODEL_DIALOGUE' and row[3] == 'DONE',
+                     'DIALOGUE_OPERATION_UNKNOWN')
+                operation = dict(zip(names, row))
+                need(type(operation['result']) is str, 'DIALOGUE_MODEL_RESULT_INVALID')
+                receipt = {'result': decode_json(operation['result'].encode()), 'operation': operation}
+            value = {'schema_version': 1, 'ok': True, 'kind': SCREENING_RECEIPT_LOOKUP,
+                **{key: request[key] for key in SCREENING_LOOKUP_BINDING},
+                'state': 'MISSING' if receipt is None else 'DONE', 'receipt': receipt}
+            validate_screening_lookup_result(value, request)
+            return value
+
     def _rejected_screening_child(self, request, parent_id, parent_payload, caller_payload):
         """A known rejected answer may get a new, once-only model operation.
 
@@ -518,8 +588,12 @@ class DialogueEngine:
         return child_id, child_payload
 
     def process(self, request):
+        request = decode_json(canonical(request).encode())
+        if type(request) is dict and request.get('kind') == SCREENING_RECEIPT_LOOKUP:
+            need(set(request) == {'kind', 'request'}, 'DIALOGUE_REQUEST_INVALID')
+            return self.completed_screening(request['request'])
         # This precedes Memory.operation: OFF/expired gates reject even DONE replays.
-        request = validate_request(decode_json(canonical(request).encode()), now=self.clock())
+        request = validate_request(request, now=self.clock())
         with self.lock:
             need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
             need(self.configuration_ready(),'DIALOGUE_UNAVAILABLE')

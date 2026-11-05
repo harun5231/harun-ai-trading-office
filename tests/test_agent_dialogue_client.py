@@ -76,6 +76,61 @@ class DialogueClientTests(unittest.TestCase):
         self.assertFalse(first['trading_authority'])
         self.assertEqual(stat.S_IMODE(self.socket.lstat().st_mode),0o660)
 
+    def test_readonly_lookup_missing_then_normal_model_request_and_done_lookup_over_same_uds(self):
+        value = request()
+        before = list(self.memory.db.iterdump())
+        self.assertIs(self.client.supports_screening_receipt_lookup, True)
+        self.assertIsNone(self.client.completed_screening(value))
+        self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertEqual(self.calls, [])
+        result = self.client.request(value)
+        original = tuple(self.memory.db.execute('SELECT * FROM operations').fetchone())
+        fresh = dict(value, deadline_epoch=time.time() + 85)
+        self.key.unlink()
+        self.engine.configuration_check = lambda: False
+        receipt = self.client.completed_screening(fresh)
+        self.assertEqual(receipt['result'], result)
+        self.assertEqual(receipt['operation']['request_hash'], original[2])
+        self.assertEqual(receipt['operation']['result'], original[4])
+        self.assertEqual(tuple(self.memory.db.execute('SELECT * FROM operations').fetchone()), original)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_lookup_rejects_unresolved_or_wrong_identity_without_any_model_dispatch(self):
+        for index, state in enumerate(('STARTED', 'UNKNOWN')):
+            value = request(index=index)
+            self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+                ('delegated-model:' + value['request_id'], 'DELEGATED_MODEL_DIALOGUE',
+                 'a' * 64, state, None, time.time() - 3600))
+            before = list(self.memory.db.iterdump())
+            with self.subTest(state=state), self.assertRaisesRegex(d.DialogueError, 'OPERATION_UNKNOWN'):
+                self.client.completed_screening(value)
+            self.assertEqual(list(self.memory.db.iterdump()), before)
+        self.assertEqual(self.calls, [])
+
+    def test_lookup_retains_existing_peer_and_bearer_authentication(self):
+        other = self.base / 'wrong-lookup-token'
+        other.write_text('wrong-dialogue-token-' + 'y' * 40); other.chmod(0o600)
+        client = c.DialogueClient(self.socket, other, caller_uid=os.geteuid(), server_uid=os.geteuid())
+        with self.assertRaisesRegex(d.DialogueError, 'AUTHENTICATION_FAILED'):
+            client.completed_screening(request())
+        with patch.object(c, 'peer_uid', return_value=os.geteuid() + 1):
+            with self.assertRaisesRegex(d.DialogueError, 'PEER_REFUSED'):
+                self.client.completed_screening(request())
+        self.assertEqual(self.calls, [])
+
+    def test_lookup_client_rejects_open_or_mismatched_response_envelopes(self):
+        value = request()
+        response = self.engine.process({'kind': d.SCREENING_RECEIPT_LOOKUP, 'request': value})
+        for change in (lambda v: v.update(extra=True),
+                       lambda v: v.update(conversation_id='foreign:room'),
+                       lambda v: v.update(state='STARTED'),
+                       lambda v: v.update(receipt={'forged': True})):
+            changed = json.loads(json.dumps(response)); change(changed)
+            with patch.object(self.engine, 'completed_screening', return_value=changed):
+                with self.assertRaisesRegex(d.DialogueError, 'MODEL_RESULT_INVALID'):
+                    self.client.completed_screening(value)
+        self.assertEqual(self.calls, [])
+
     def test_actual_linux_uds_delivers_full_400_candles_above_old_body_limit(self):
         from tests.test_agent_dialogue_service import request as market_request
         from agent.native_market_context import candle_digest
