@@ -479,6 +479,7 @@ class DelegatedDOMBridge:
                 # Durable admission precedes the single irreversible UI click.
                 # A crash after this callback is UNKNOWN, never a replay grant.
                 _received['before_send']()
+                gate(check_material=True)
             state.update(phase='FOLLOWUP_SENT', prefix=prefix, question=question,
                          url=self.bridge.page.url, previous=None, stable=0)
             state['turn_names'].append(list(state['fresh_names']))

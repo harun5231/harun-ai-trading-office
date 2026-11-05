@@ -78,6 +78,16 @@ class ReceivedHookTests(unittest.TestCase):
             self.assertEqual(case.bridge.clicks,1);self.assertEqual(calls,[])
             case.bridge.ask.assert_not_called();case.reasoner.request.assert_not_called()
 
+    def test_owner_off_during_durable_send_admission_is_rechecked_before_click(self):
+        case,seed,calls=self.harness(prior_followup=True)
+        def stop():
+            calls.append(('SEND',case.bridge.clicks));case.enabled=False
+        seed['before_send']=stop
+        with self.assertRaises(hook_fixtures.OutcomeUnknown):self.run_received(case,seed)
+        self.assertEqual(case.bridge.clicks,1)
+        self.assertEqual(calls,[('UPLOAD',1),('SEND',1)])
+        self.assertTrue(any(stage=='INTENT'for stage,_,_ in case.events))
+
 
 class ReceivedProofTests(unittest.TestCase):
     def setUp(self):
