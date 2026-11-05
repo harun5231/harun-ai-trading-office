@@ -1,0 +1,15 @@
+Input belum sepenuhnya konsisten, jadi saya tidak mengubah keputusan sebelumnya: HOLD, tanpa level entry/TP/SL.
+
+BAGIAN YANG PERLU DIPERBAIKI
+
+Kedua screenshot terbaca sebagai DOGEUSDT Perpetual pada 15M; tidak ada screenshot 1H untuk mencocokkan struktur timeframe tersebut. CSV 15M berakhir pada candle 10:00-10:14:59 UTC, yang merupakan candle tertutup dan sejalan dengan screenshot 15M.
+
+Namun CSV 1H terakhir dimulai 10:00 UTC dan berakhir 10:59:59 UTC - pada waktu pengambilan data 10:21:07 UTC, candle itu masih berjalan, sehingga tidak cocok disebut candle tertutup. Kirim ulang CSV 1H dengan candle terakhir yang benar-benar sudah tutup, atau pastikan waktu pengambilan datanya setelah 10:59:59 UTC. Harga mark 0.07702000 juga tidak sama persis dengan angka pada screenshot, jadi untuk pemeriksaan ketat mohon gunakan tangkapan layar dan data harga dari waktu yang sama.
+
+KEPUTUSAN DISETUJUI TETAP
+
+HOLD tetap keputusan pasar saya untuk data yang tersedia: close candle tertutup terakhir 15M adalah 0.07704, sementara harga pada screenshot sekitar 0.07705 - masih di dalam kisaran pendek 0.07624-0.07745, tanpa breakout candle tertutup. Level 0.07836 tetap menjadi swing high/resistansi yang terlihat; itu level pengamatan, bukan TP yang sudah ditetapkan.
+
+Ringkasan: COIN DOGEUSDT | HOLD | ENTRY - | TP - | SL -
+
+⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisis ini bisa salah - keputusan trading dan risiko tetap tanggung jawab Anda.

@@ -17,6 +17,44 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_actual_readable_doge_hold_uses_natural_coin_whitespace_summary(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_doge_clear_hold_20261105.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '2f867a746727a1fc370821e83dddfe1b86a4d657a041fad2fb4ad6be9ebb1250')
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        result = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'DOGEUSDT'}})
+        self.assertEqual((result['symbol'], result['side']), ('DOGEUSDT', 'HOLD'))
+        self.assertTrue(all(value is None for key, value in result.items() if key not in ('symbol', 'side')))
+
+    def test_actual_technical_doge_footer_cannot_hide_unreadable_material(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_doge_technical_hold_20261105.txt').read_text()
+        with self.assertRaisesRegex(ReplyIncomplete, 'INPUT_UNREADABLE'):
+            parse_analysis_reply(reply, 'DOGEUSDT')
+        with self.assertRaisesRegex(ReplyIncomplete, 'INPUT_UNREADABLE'):
+            parse_analysis_reply('Chart belum terbaca.\nCOIN DOGEUSDT\nARAH: HOLD', 'DOGEUSDT')
+
+    def test_whitespace_coin_headers_preserve_separate_long_and_hold_blocks(self):
+        reply = ('COIN LINKUSDT\nARAH: LONG\nENTRY: 17.25\nTP: 17.70\nSL: 17.00\n'
+            'COIN AAVEUSDT\nARAH: HOLD\nStruktur belum mendukung entry.')
+        self.assertEqual(parse_analysis_reply(reply, 'LINKUSDT')['limit_entry'], '17.25')
+        self.assertEqual(parse_analysis_reply(reply, 'AAVEUSDT')['side'], 'HOLD')
+        for delimiter in (':', '=', ' ', '\t'):
+            with self.subTest(delimiter=delimiter):
+                self.assertEqual(parse_analysis_reply('Ringkasan: COIN' + delimiter
+                    + 'DOGEUSDT | HOLD | ENTRY - | TP - | SL -', 'DOGEUSDT')['side'], 'HOLD')
+
+    def test_whitespace_summary_keeps_foreign_money_ambiguity_and_price_guards(self):
+        for reply in ('Ringkasan: COIN DOGEUSDT | HOLD | LONG | ENTRY -',
+                'Ringkasan: COIN AAVEUSDT | HOLD | ENTRY -',
+                'Risiko 2.50 USDT, notional 169 USDT.\nHOLD',
+                'Ringkasan: COIN DOGEUSDT | LONG | ENTRY - 1 | TP - 3 | SL - 0.5'):
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'DOGEUSDT')
+        conditional = 'Jika breakout terjadi, pertimbangkan setup.\nRingkasan: COIN DOGEUSDT | LONG | ENTRY: 1 | TP: 3 | SL: 0.5'
+        with self.assertRaisesRegex(ReplyIncomplete, 'SETUP_CONDITIONAL'):
+            parse_analysis_reply(conditional, 'DOGEUSDT')
+
     def test_link_long_and_aave_hold_are_separate_current_decisions(self):
         reply = ('Ringkasan akhir\nCOIN: LINKUSDT\nARAH: LONG\nENTRY: 17.25\n'
             'TP: 17.70\nSL: 17.00\n\nCOIN: AAVEUSDT\nARAH: HOLD\n'

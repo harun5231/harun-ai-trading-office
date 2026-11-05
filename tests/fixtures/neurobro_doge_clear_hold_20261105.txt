@@ -1,0 +1,13 @@
+Bahan terbaru terbaca dan batas candle tertutup konsisten. Keputusan pasar: HOLD - setup SHORT yang sempat dipertimbangkan tidak memenuhi syarat R:R minimal 1:2 setelah biaya.
+
+PEMERIKSAAN CHART DAN CSV
+
+Kedua gambar menunjukkan DOGEUSDT Perpetual pada Binance Futures. Gambar pertama adalah 15M, dengan candle paling kanan berlabel 12:15 yang masih berjalan; gambar kedua adalah 1H, dengan candle paling kanan berlabel 12:00 yang masih berjalan. Itu konsisten dengan CSV yang masing-masing berakhir pada 15M 12:14:59.999 UTC dan 1H 11:59:59.999 UTC - jadi candle berjalan tidak saya hitung sebagai tertutup.
+
+ARAH MASIH BELUM TERKONFIRMASI
+
+Screenshot memperlihatkan harga sekitar 0.07652, dan mark price pada CSV 0.07655126; harga Futures Binance terbaru yang saya periksa berada di sekitar 0.07653. Candle 15M terakhir yang tertutup turun ke low 0.07646, tetapi area target yang masuk akal untuk rencana SHORT memberi R:R sekitar 1.49:1, di bawah batas Anda. Jadi saya tidak mempertahankan SHORT sebagai keputusan - HOLD tanpa entry, TP, atau SL.
+
+Ringkasan: COIN DOGEUSDT | HOLD | ENTRY - | TP - | SL -
+
+⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisis ini bisa salah - keputusan trading dan risiko tetap tanggung jawab Anda.
