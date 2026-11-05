@@ -217,7 +217,7 @@ def _room_record(root, day):
         before = os.fstat(fd)
         need(stat.S_ISREG(before.st_mode) and before.st_uid == os.geteuid()
              and stat.S_IMODE(before.st_mode) == 0o600 and before.st_nlink == 1)
-        db = sqlite3.connect('file:/proc/self/fd/' + str(fd) + '?mode=ro', uri=True,
+        db = sqlite3.connect('file:/proc/self/fd/' + str(directory) + '/' + JOURNAL_NAME + '?mode=ro', uri=True,
                              timeout=1, isolation_level=None)
         db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
         db.row_factory = sqlite3.Row
@@ -251,6 +251,8 @@ def recover(actor, delegated_bridge, payload):
     """Existing actor-thread entry. Returns the native four-field result."""
     validate(payload); _actor_gate(actor)
     need(actor.claim.locked(), 'SCREENING_RECOVERY_ACTOR_CLAIM_REQUIRED')
+    need(actor.thread.ident == threading.get_ident(),
+         'SCREENING_RECOVERY_ACTOR_THREAD_REQUIRED')
     room, raw, native = delegated_bridge.daily_room, delegated_bridge.bridge, delegated_bridge.native
     need(room is not None and room.bridge is raw and room.native is native)
     need(_native_source_digest(native) == NATIVE_DOM_SHA256)

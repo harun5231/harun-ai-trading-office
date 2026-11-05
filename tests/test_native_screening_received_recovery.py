@@ -59,6 +59,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
             ready=True, current_status='CONNECTED', stopping=threading.Event(),
             sessions=SimpleNamespace(active=lambda: False), claim=threading.Lock(),
             lock=threading.RLock(), queue=queue.Queue(), _wake=threading.Event())
+        self.actor.thread = SimpleNamespace(ident=threading.get_ident())
         self.actor._mode = lambda: self.actor.mode
         self.clock = patch('agent.native_screening_recovery.time.time', return_value=NOW)
         self.clock.start(); self.addCleanup(self.clock.stop)
@@ -114,6 +115,31 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
         self.raw._answer = self.forbid
         self.assertEqual(self.invoke(), result)
         self.assertEqual(receipt_path.read_bytes(), receipt_before)
+
+    def test_real_saved_selection_table_and_exact_original_followup_are_recovered(self):
+        original = (Path(__file__).parent / 'fixtures' /
+                    'neurobro_screening_table_20261105.txt').read_text()
+        self.assertEqual(text_sha(original),
+            '7d71bac6e08494cb217cb1fdb9f141e66b006a8fbafe3dd2c81a6d4e63834067')
+        self.raw.messages[1]['text'] = original
+        # Exact existing hook clarification, not a newly authored request.
+        self.raw.messages[2]['text'] = ('Mohon ringkas 2 coin pilihanmu sesuai kapasitas '
+            'yang diminta dalam bentuk COIN: simbol USDT Perpetual. '
+            'Jangan sertakan coin pembanding sebagai pilihan.')
+        self.bind_room()
+        journal_before = (self.root / JOURNAL_NAME).read_bytes()
+        result = self.invoke()
+        self.assertEqual(result['output'], {'symbols': ['RUNEUSDT', 'TIAUSDT']})
+        proof = read_receipt(self.root, self.payload)
+        self.assertEqual(proof['rows'][1]['text'], original)
+        self.assertEqual(proof['initial_reply_sha256'], text_sha(original))
+        self.assertEqual((self.root / JOURNAL_NAME).read_bytes(), journal_before)
+
+    def test_recovery_requires_actual_actor_thread_even_when_claim_is_locked(self):
+        self.actor.thread = SimpleNamespace(ident=threading.get_ident() + 1)
+        with self.assertRaisesRegex(ScreeningRecoveryUnavailable, 'ACTOR_THREAD_REQUIRED'):
+            self.invoke()
+        self.assertFalse(list(self.root.glob('screening-recovery-*.json')))
 
     def test_transient_none_does_not_invent_fixed_poll_limit(self):
         answer = self.raw._answer
@@ -196,6 +222,7 @@ class ScreeningReceivedRecoveryTests(unittest.TestCase):
             return answer(*args)
         self.raw._answer = observed
         def actor_loop():
+            self.actor.thread = threading.current_thread()
             task = self.actor.queue.get(timeout=2)
             try:
                 self.assertEqual(task['kind'], KIND)
