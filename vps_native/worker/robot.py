@@ -247,6 +247,8 @@ class Coordinator:
         return value
     def replaceable_result(self,row):
         if row['status']=='HOLD':return True
+        from .new_setup_policy import confirmed_absent_result
+        if confirmed_absent_result(self,row,build_intent=build_intent):return True
         if stale_unsubmitted(self,row,build_intent=build_intent,retired=True):return True
         if row['status']!='REJECTED' or row['plan'] is not None or self.db.execute(
                 'SELECT 1 FROM order_intents WHERE candidate_id=? LIMIT 1',(row['id'],)).fetchone():return False
@@ -333,7 +335,10 @@ class Coordinator:
                     if not isinstance(result,dict) or result.get('state') not in ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED'):
                         return self.store.report('NEEDS_REVIEW',account,reason)
                     return self.record_gateway_observation(row['id'],row['candidate_id'],result,account,preserve_unknown=True)
-            except Exception:return self.store.report('NEEDS_REVIEW',account,reason)
+            except Exception as error:
+                from .new_setup_policy import retire_confirmed_absent
+                recovered=retire_confirmed_absent(self,row,account,error)
+                return recovered or self.store.report('NEEDS_REVIEW',account,reason)
         rows=list(self.db.execute("SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE') ORDER BY rowid LIMIT 2"))
         for row in rows:
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
