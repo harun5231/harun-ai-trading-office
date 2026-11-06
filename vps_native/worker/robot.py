@@ -16,7 +16,7 @@ from .order_gateway import OrderGateway,GatewayUnavailable,NOT_CONNECTED,build_i
 from .neuroapi import SETUP_SCHEMA,SETUP_SCHEMA_V4,ResearchPaused,selections,setup
 from .prompts import ANALYSIS,REPLACEMENT_SCREENING
 from .analysis import analysis_context
-from .new_setup_policy import request_policy,refresh_unsubmitted,serialize_rules
+from .new_setup_policy import request_policy,refresh_unsubmitted,serialize_rules,stale_unsubmitted,retire_stale_unsubmitted
 from .owner_source_protocol import completed_decision_fresh
 from .fill_priority import owned_intent_lock
 from .diagnostics import validation_code
@@ -247,6 +247,7 @@ class Coordinator:
         return value
     def replaceable_result(self,row):
         if row['status']=='HOLD':return True
+        if stale_unsubmitted(self,row,build_intent=build_intent,retired=True):return True
         if row['status']!='REJECTED' or row['plan'] is not None or self.db.execute(
                 'SELECT 1 FROM order_intents WHERE candidate_id=? LIMIT 1',(row['id'],)).fetchone():return False
         # Only local RR failures or a recorded request-body rejection may
@@ -350,6 +351,15 @@ class Coordinator:
             if observed['bot_status']=='NEEDS_REVIEW':return observed
             if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        # Recover only the old pre-submit stale-error misclassification. The
+        # native plan, unchanged command and absence of any entry receipt must
+        # still prove custody inside the same atomic rejection transaction.
+        orphans=list(self.db.execute("""SELECT c.* FROM robot_candidates c JOIN order_intents i ON i.candidate_id=c.id
+            WHERE c.status='REJECTED' AND c.failure_code='ORDER_EVIDENCE_UNVERIFIED'
+            AND i.state='READY_FOR_EXECUTION' AND i.result IS NULL AND i.failure_code IS NULL ORDER BY c.rowid"""))
+        for orphan in orphans:
+            retired=retire_stale_unsubmitted(self,orphan,account,build_intent=build_intent,orphan=True)
+            if retired is not None:return retired
         row=self.db.execute("SELECT * FROM robot_candidates WHERE status IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED') ORDER BY rowid LIMIT 1").fetchone()
         if not row:return None
         try:
@@ -357,6 +367,9 @@ class Coordinator:
             plan,prepared_rules=refresh_unsubmitted(self,row,plan,build_intent=build_intent)
             intent=build_intent(plan,row['id'])
         except Exception as error:
+            if str(error)=='STALE_ORDER_INTENT':
+                retired=retire_stale_unsubmitted(self,row,account,build_intent=build_intent)
+                return retired if retired is not None else self.store.report('WAITING',account,wait_reason='ORDER_STATE_CHANGED')
             if str(error)=='ACCEPTED_OR_UNCERTAIN_INTENT_IMMUTABLE':
                 # An intervening accepted/uncertain lifecycle belongs to
                 # reconciliation. Never reject or rewrite that saved order.
