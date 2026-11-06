@@ -802,6 +802,11 @@ class Coordinator:
                 self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),context,catalog=catalog,
                     continue_if=lambda:self.allowed(today)))
             coins=selections(value,catalog,count)
+            from .screening_response_recovery import completed_screening_market_hold
+            if completed_screening_market_hold(self.db,operation):
+                # Preserve accepted custody; the ordinary next tick performs
+                # NO-SEND Mini/receipt reconciliation before replacing HOLDs.
+                return self.store.report('WAITING',account,wait_reason='SCREENING_HOLD_RECONCILING')
             data['screen']=index
             if not initial:data['replacements']+=1
             exposed=self.exposed_symbols(account)

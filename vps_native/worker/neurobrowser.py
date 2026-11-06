@@ -327,12 +327,14 @@ class NeuroBrowser:
         return result
 
     def _received_screening_payload(self, operation):
-        from .screening_response_recovery import stored_screening_request
+        from .screening_response_recovery import stored_screening_request, completed_screening_market_hold
         self.require_key()
         body, request_hash, _ = stored_screening_request(self.db, operation)
         current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
-        if (current['state'] not in ('PENDING', 'NEEDS_REVIEW') or type(current['attempts']) is not int
-                or current['attempts'] != 1 or current['output'] is not None or current['idempotency'] is not None):
+        held = completed_screening_market_hold(self.db, operation)
+        if ((current['state'] not in ('PENDING', 'NEEDS_REVIEW') and not held)
+                or type(current['attempts']) is not int or current['attempts'] != 1
+                or (current['output'] is not None and not held) or current['idempotency'] is not None):
             raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
         return {**body, 'request_sha256': request_hash}
 
