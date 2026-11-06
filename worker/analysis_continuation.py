@@ -187,6 +187,10 @@ def _not_sent_for_capability(provider,row,result,now,*,observed=None):
     try:
         _not_sent(result,current,now);return current
     except Review:
+        # A direct response to a new dispatch must describe THAT admission.
+        # Only retrying an already reconciled NOT_SENT state may read its
+        # historical producer reference; UNKNOWN needs fresh observation.
+        need(row['state']=='NOT_SENT','ANALYSIS_CONTINUATION_NATIVE_GRANT_UNKNOWN')
         # A historical closure is usable only through the actual audit that
         # reconciled it for THIS capability. A bare old receipt grants nothing.
         if not provider.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_continuation_returns'").fetchone():raise

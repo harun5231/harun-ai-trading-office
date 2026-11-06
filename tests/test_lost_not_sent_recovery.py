@@ -222,6 +222,11 @@ class NativeAdmissionRenewedCapabilityRegression(unittest.TestCase):
         self.assertTrue(recover_lost_not_sent(provider,actual,now=NOW+1007))
         next_capability=retry_not_sent(provider,actual,now=NOW+1008)
         self.assertEqual(next_capability['grant_id'],original['grant_id'])
+        # A bare replayed old negative cannot settle a NEW dispatch. The
+        # historical reference is allowed only by fresh NO-SEND reconciliation.
+        replay={**closed,'disposition':current['continuation_not_sent']['disposition']}
+        with self.assertRaises(Review):record_return(provider,next_capability,replay,now=NOW+1009)
+        self.assertEqual(active_grant(provider.db,OP)['state'],'GRANTED')
         # The browser consumes its source through the actual immutable reader.
         native_source=native._read_source(root,payload,next_capability)
         current.update(observed_at=NOW+1009,finished_at=NOW+1010)
