@@ -578,6 +578,8 @@ def verify_website_capture(charts, result, context, payload, *, archive_root, no
                  and row.get('screenshot_rgb_sha256') == hashlib.sha256(pixels).hexdigest()
                  and row.get('exchange_website_screenshot') is True
                  and row.get('browser_screenshot_of_data_render') is False)
+            need(row.get('indicator_policy') == {'policy': 'CANDLES_AND_VOLUME_ONLY',
+                 'indicators': [{'id': '@VOL', 'visible': True}], 'volume_average_series': []})
             visible = row.get('visible_range')
             need(type(visible) is dict and visible.get('verification') == 'VISIBLE_CANDLE_HOVER_ENDPOINTS_UTC_V1')
             first, last = visible.get('first_visible_open_time_ms'), visible.get('last_visible_open_time_ms')
@@ -591,6 +593,15 @@ def verify_website_capture(charts, result, context, payload, *, archive_root, no
                  and visible.get('running_candle_in_closed_count') is False
                  and visible.get('covered_closed_count') ==
                      (min(last,projected['server_time_ms']//interval*interval-interval)-first)//interval+1)
+            need(visible.get('minimum_candle_spacing_css_px') == 5
+                 and type(visible.get('sampled_plot_width_css_px')) in (int,float)
+                 and math.isfinite(visible['sampled_plot_width_css_px'])
+                 and 700 <= visible['sampled_plot_width_css_px'] <= clip['width']
+                 and type(visible.get('observed_candle_spacing_css_px')) in (int,float)
+                 and math.isfinite(visible['observed_candle_spacing_css_px'])
+                 and visible['observed_candle_spacing_css_px'] >= 5
+                 and visible['observed_candle_spacing_css_px'] ==
+                     (visible['sampled_plot_width_css_px']-100)/max(1,(last-first)//interval))
         need(_identity(os.fstat(parent)) == _identity(os.stat(root,follow_symlinks=False))
              and _identity(os.fstat(directory)) == _identity(os.stat(attempt,follow_symlinks=False))
              and gate() is True)

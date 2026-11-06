@@ -172,7 +172,7 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
     Reuses the installed SDK and caller-owned isolated context. Its action set
     has no typing, financial endpoint, account login, storage or order control.
     """
-    from .binance_website_chart import (OBSERVE, SELECT, DISMISS_TOUR,
+    from .binance_website_chart import (OBSERVE, SELECT, DISMISS_TOUR, VOLUME_ONLY, VOLUME_SETTINGS,
         VIEWPORT as website_viewport, url_for)
     _need(type(expected_playwright_version) is str
           and version('playwright') == expected_playwright_version)
@@ -181,7 +181,7 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
     from playwright._impl._page import Page as ImplPage
     from playwright.sync_api._generated import mapping
     methods = {'new_page', 'set_viewport_size', 'goto', 'observe', 'select_timeframe',
-               'dismiss_tour', 'hover', 'zoom_out', 'screenshot'}
+               'dismiss_tour', 'configure_volume_only', 'hover', 'zoom_out', 'screenshot'}
 
     def rpc(resource, method, deadline, *args, **kwargs):
         now = monotonic()
@@ -206,9 +206,40 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
                 return await navigate_website(impl, url_for(args[0]),
                                               timeout_ms=max(1, int(remaining*1000)))
             _need(re.fullmatch(r'https://www\.binance\.com/en/futures/[A-Z0-9]{2,24}USDT', impl.url) is not None)
+            if method == 'configure_volume_only':
+                _need(not args)
+                state=await impl.eval_on_selector_all('html', VOLUME_ONLY)
+                _need(type(state) is dict and state.get('ma_rows') in (0,1)
+                      and state.get('volume_rows')==1)
+                timeout=max(1,int((deadline-monotonic())*1000))
+                if state['ma_rows']:
+                    selector='.chart-widget-root .chart-title-indicator-container[key="@MA"]'
+                    await impl.hover(selector,strict=True,timeout=timeout)
+                    await impl.click(selector+' .indicator-title-toolbox [tooltip="Close"]',strict=True,timeout=timeout)
+                observed=await impl.eval_on_selector_all('html',OBSERVE)
+                if observed.get('volume_average_series'):
+                    dialog='[role="dialog"][aria-label="modal"]'
+                    settings=await impl.eval_on_selector_all('html',VOLUME_SETTINGS)
+                    if settings is None:
+                        selector='.chart-widget-root .chart-title-indicator-container--sub:has([key="VOL[0]"])'
+                        await impl.hover(selector,strict=True,timeout=timeout)
+                        await impl.click(selector+' .indicator-title-toolbox [tooltip="Settings"]',strict=True,timeout=timeout)
+                        await impl.wait_for_selector(dialog+' [role="checkbox"]:text-is("MAVOL1")',
+                                                     strict=True,state='visible',timeout=timeout)
+                        settings=await impl.eval_on_selector_all('html',VOLUME_SETTINGS)
+                    _need(type(settings) is list and len(settings)==2
+                          and [row.get('label')for row in settings]==['MAVOL1','MAVOL2']
+                          and all(row.get('count')==1 and row.get('checked')in('true','false')for row in settings))
+                    for row in settings:
+                        if row['checked']=='true':
+                            await impl.click(dialog+' [role="checkbox"]:text-is("'+row['label']+'")',
+                                             strict=True,timeout=timeout)
+                    await impl.click(dialog+' button:text-is("Save")',strict=True,timeout=timeout)
+                return True
             if method in ('observe', 'dismiss_tour'):
                 _need(not args)
-                return await impl.eval_on_selector_all('html', OBSERVE if method == 'observe' else DISMISS_TOUR)
+                expression = {'observe': OBSERVE, 'dismiss_tour': DISMISS_TOUR}[method]
+                return await impl.eval_on_selector_all('html', expression)
             if method == 'select_timeframe':
                 _need(len(args) == 1 and args[0] in ('15m', '1h'))
                 return await impl.eval_on_selector_all('html', SELECT, args[0])

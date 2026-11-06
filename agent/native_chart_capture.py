@@ -380,7 +380,7 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
     admission in the reviewed image must explicitly name WEBSITE_SOURCE.
     """
     from .binance_website_chart import (SOURCE as website_source, CONTRACT,
-        VIEWPORT as viewport, PERIODS, observation, coverage, hover_open_time)
+        VIEWPORT as viewport, PERIODS, observation, coverage, hover_open_time, volume_only)
     native = native_namespace.__dict__ if isinstance(native_namespace, ModuleType) else native_namespace
     _need(type(native) is dict and expected_source == website_source
           and native.get('SOURCE') == website_source
@@ -436,7 +436,14 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
                 value = call('observe')
                 diagnostic['last_ui_observation'] = value
                 try:
-                    return observation(value, context_dict['symbol'], timeframe)
+                    observed=observation(value, context_dict['symbol'], timeframe)
+                    # Buttons/canvas can render before the selected series and
+                    # its indicator DOM finish hydration. Wait for the actual
+                    # volume row, never mistake that transient state for a
+                    # completed clean chart configuration.
+                    _need(any(row.get('id')=='@VOL' and row.get('visible')is True
+                              for row in observed.get('indicators',[])))
+                    return observed
                 except ValueError:
                     call('dismiss_tour')
                     call('select_timeframe', timeframe)
@@ -497,24 +504,30 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
             for timeframe, label in (('15m', '15M'), ('1h', '1H')):
                 step('RENDER_'+label)
                 ready(timeframe)
+                _need(call('configure_volume_only') is True)
+                volume_only(ready(timeframe))
                 while True:
                     left, right, actual_period = endpoints(timeframe)
                     try:
                         visible = coverage(public, timeframe, left, right)
                         break
-                    except ValueError:
+                    except ValueError as error:
+                        if str(error)=='BINANCE_WEBSITE_CANDLE_READABILITY_UNVERIFIED':
+                            raise
                         box = right['canvas']
                         call('zoom_out', box['x']+box['width']/2, box['y']+box['height']/2)
                         time.sleep(0.05)
                 box = right['canvas']
                 call('hover', box['x']+min(100, box['width']/2), max(1, box['y']-30))
                 before = ready(timeframe)
+                indicator_policy = volume_only(before)
                 step('SCREENSHOT_'+label)
                 clip = before['capture_clip']
                 png = call('screenshot', clip)
                 pixels = website_rgb(native, png, maximum, dimensions=(clip['width'],clip['height']))
                 captured = wall_clock()
                 after = ready(timeframe)
+                _need(volume_only(after) == indicator_policy)
                 # Prices can move during capture; the same actual symbol,
                 # contract, timeframe and chart must remain present throughout.
                 _need(before['url'] == after['url'] and before['timeframes'] == after['timeframes']
@@ -531,6 +544,7 @@ def install_website_capture(native_namespace, *, expected_source, expected_captu
                     'visible_price_before': before['visible_price'],
                     'visible_price_after': after['visible_price'],
                     'visible_range': visible, 'observed_bar_interval_ms': actual_period,
+                    'indicator_policy': indicator_policy,
                     'viewport': dict(viewport), 'capture_clip': clip,
                     'screenshot_png_sha256': _sha(png), 'screenshot_rgb_sha256': _sha(pixels),
                     'browser_screenshot_of_data_render': False,

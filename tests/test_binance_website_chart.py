@@ -14,7 +14,7 @@ import struct
 import zlib
 from tests.test_native_chart_capture import png_pixels
 from agent.binance_website_chart import (SOURCE, CONTRACT, VIEWPORT, PERIODS,
-    WebsiteChartUnavailable, observation, coverage, hover_open_time, url_for)
+    WebsiteChartUnavailable, observation, coverage, hover_open_time, url_for, volume_only)
 from agent.native_chart_capture import PHASES, WEBSITE_SIDECAR, install_website_capture
 from agent.native_chart_followup import (verify_website_capture, material_dispatch_provenance,
     FollowupUnavailable)
@@ -34,6 +34,8 @@ def observed(snapshot, tf, *, left=False, opened_override=None):
         'timezone':'UTC','chart_count':1,'canvas_count':1,
         'timeframes':{frame:{'count':1,'active':frame==tf}for frame in ('15m','1h')},
         'original_chart_visible':True,'visible_price':'101','price_visible':True,
+        'indicators':[{'id':'@VOL','visible':True}],
+        'volume_average_series':[],
         'header_rows':[label+'\nOpen\n100\nClose\n101'],
         'capture_clip':dict(x=0,y=0,width=1920,height=1080),
         'canvas':{'x':0,'y':200,'width':1250,'height':500,'sampled_color_count':20}}
@@ -68,6 +70,23 @@ class WebsiteChartContractTests(unittest.TestCase):
         left=observed(self.snapshot,'15m',left=True)
         left['header_rows']=observed(self.snapshot,'15m')['header_rows']
         with self.assertRaisesRegex(WebsiteChartUnavailable,'200_CLOSED_RANGE'):
+            coverage(self.snapshot,'15m',left,observed(self.snapshot,'15m'))
+
+    def test_only_visible_volume_allowed_not_price_overlays_or_hidden_volume(self):
+        value=observed(self.snapshot,'15m')
+        self.assertEqual(volume_only(value)['policy'],'CANDLES_AND_VOLUME_ONLY')
+        for rows in ([],[{'id':'@VOL','visible':False}],
+                     [{'id':'@MA','visible':True},*value['indicators']],
+                     [{'id':'@RSI','visible':True},*value['indicators']]):
+            with self.subTest(rows=rows),self.assertRaisesRegex(WebsiteChartUnavailable,'VOLUME_ONLY'):
+                volume_only({**value,'indicators':rows})
+        with self.assertRaisesRegex(WebsiteChartUnavailable,'VOLUME_ONLY'):
+            volume_only({**value,'volume_average_series':['VOL[2]Series']})
+
+    def test_dense_range_does_not_claim_bodies_and_wicks_readable(self):
+        left=observed(self.snapshot,'15m',left=True,
+            opened_override=self.snapshot['candles']['15m'][0]['open_time']-200*PERIODS['15m'])
+        with self.assertRaisesRegex(WebsiteChartUnavailable,'READABILITY'):
             coverage(self.snapshot,'15m',left,observed(self.snapshot,'15m'))
 
     def test_same_scope_dispatch_freshness_checked_at_send_not_file_creation(self):
@@ -116,6 +135,7 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
         self.root.mkdir(mode=0o700);self.native_context=native_context_200()
         self.snapshot=convert_native_market_context(self.native_context,now=NOW)
         self.context=SimpleNamespace(pages=[]);self.calls=[];self.frame='15m';self.hover_x=1200
+        self.empty_indicator_reads=0;self.configure_ok=True
         def chunk(kind,data):return struct.pack('>I',len(data))+kind+data+struct.pack('>I',binascii.crc32(kind+data)&0xffffffff)
         scan=(b'\0'+bytes((12,20,30))*1920)*1080
         self.png=(b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',1920,1080,8,2,0,0,0))+chunk(b'IDAT',zlib.compress(scan))+chunk(b'IEND',b''))
@@ -143,8 +163,12 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
                 opened=None
                 if self.hover_x<25:
                     opened=self.snapshot['candles'][self.frame][0]['open_time']+((int(self.hover_x)-5)//5-3)*PERIODS[self.frame]
-                return observed(self.snapshot,self.frame,opened_override=opened)
+                value=observed(self.snapshot,self.frame,opened_override=opened)
+                if self.empty_indicator_reads:
+                    self.empty_indicator_reads-=1;value['indicators']=[]
+                return value
             if method=='select_timeframe':self.frame=args[0];return True
+            if method=='configure_volume_only':return self.configure_ok
             if method=='hover':self.hover_x=args[0];return None
             if method=='screenshot':return self.png
             return None
@@ -158,11 +182,15 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
         with patch('agent.native_chart_capture.render_chart_png',side_effect=AssertionError('rendered image forbidden')):
             output=self.capture(self.context,self.native_context,'HARUN_TEST','a'*64,archive_root=self.root)
         self.assertIn('goto',self.calls);self.assertNotIn('set_content',self.calls)
+        self.assertEqual(self.calls.count('configure_volume_only'),2)
         self.assertFalse(self.context.pages)
         manifest=json.loads((Path(output['paths'][0]).parent/WEBSITE_SIDECAR).read_text())
         self.assertEqual(manifest['source'],SOURCE);self.assertTrue(manifest['network_navigation_performed'])
         self.assertTrue(all(r['exchange_website_screenshot'] for r in manifest['charts'].values()))
         self.assertTrue(all(not r['browser_screenshot_of_data_render'] for r in manifest['charts'].values()))
+        self.assertTrue(all(r['indicator_policy']['policy']=='CANDLES_AND_VOLUME_ONLY'
+                            and r['visible_range']['observed_candle_spacing_css_px']>=5
+                            for r in manifest['charts'].values()))
         verified=verify_website_capture(SimpleNamespace(**self.namespace),output,self.native_context,
             {'marker':'HARUN_TEST','request_sha256':'a'*64},archive_root=self.root,now=NOW+2,gate=lambda:True)
         self.assertEqual(verified,output)
@@ -188,6 +216,21 @@ class WebsiteCaptureFixtureTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.capture(self.context,self.native_context,'HARUN_TEST','a'*64,archive_root=self.root)
         self.assertEqual(self.context.pages,[owner]);self.assertNotIn('new_page',self.calls)
+
+    def test_chart_hydration_waits_for_volume_before_configuration(self):
+        self.empty_indicator_reads=2
+        result=self.capture(self.context,self.native_context,'HYDRATION_TEST','a'*64,archive_root=self.root)
+        self.assertEqual(len(result['paths']),2)
+        self.assertEqual(self.calls.count('new_page'),1)
+        self.assertEqual(self.calls.count('configure_volume_only'),2)
+        self.assertIn('dismiss_tour',self.calls)
+
+    def test_failed_official_indicator_configuration_never_archives_a_chart(self):
+        self.configure_ok=False
+        with self.assertRaises(ValueError):
+            self.capture(self.context,self.native_context,'CONFIG_FAIL','a'*64,archive_root=self.root)
+        self.assertNotIn('screenshot',self.calls)
+        self.assertFalse(self.context.pages)
 
 
 if __name__=='__main__':unittest.main()
