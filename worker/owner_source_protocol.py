@@ -94,7 +94,14 @@ def parse_bound_assistant_text(text, body, legacy_parser, *, max_assistant_bytes
             or max_assistant_bytes <= 0 or len(text.encode('utf-8')) > max_assistant_bytes):
         raise Review('INVALID_OUTPUT_SCHEMA')
     try:
-        return legacy_parser(text)
+        value=legacy_parser(text)
+        from .neuroapi import SETUP_SCHEMA_V4
+        human_setup_json=(type(body)is dict and body.get('output_schema')==SETUP_SCHEMA_V4
+            and type(value)is dict and any(type(key)is str and key.upper()in{'COIN','ARAH'}for key in value))
+        if not human_setup_json:return value
+        # A human final-summary JSON is a presentation of authored levels, not
+        # the native symbol/side wire schema. Use the SAME per-coin parser as
+        # the browser instead of handing untranslated keys to the recorder.
     except Exception:
         pass
     try:

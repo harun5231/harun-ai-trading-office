@@ -63,6 +63,24 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(result, self.read(json.dumps(dict(result), default=float), body))
         self.assertEqual(text, 'Ringkasan akhir\nCOIN: BTCUSDT\nARAH: LONG\nENTRY: 100.25\nSL: 99.25\nTP: 101.75')
 
+    def test_human_final_json_is_projected_only_for_v4_analysis_and_native_json_is_unchanged(self):
+        body=dict(output_schema=neuroapi.SETUP_SCHEMA_V4,context=dict(symbol='BTCUSDT'))
+        text='{"COIN":"BTCUSDT","ARAH":"HOLD","ENTRY":null,"TP":null,"SL":null}'
+        self.assertEqual(self.read(text,body),dict(symbol='BTCUSDT',side='HOLD',limit_entry=None,take_profit=None,stop_loss=None,risk_reward=None))
+        short='{"COIN":"BTCUSDT","ARAH":"SHORT","ENTRY":100,"TP":97,"SL":101}'
+        output=self.read(short,body)
+        self.assertEqual((output['limit_entry'],output['stop_loss'],output['take_profit']),
+            (Decimal('100'),Decimal('101'),Decimal('97')))
+        self.assertEqual(output['risk_reward'],Decimal('3'))
+        native='{"symbol":"BTCUSDT","side":"SHORT","limit_entry":100,"take_profit":97,"stop_loss":101,"risk_reward":3}'
+        self.assertEqual(self.read(native,body),self.legacy(native))
+        # Historical and screening schemas retain their original JSON parser;
+        # human field aliases cannot silently change those contracts.
+        for schema in(neuroapi.SETUP_SCHEMA,neuroapi.SCREEN_ONE_SCHEMA):
+            self.assertEqual(self.read(text,dict(output_schema=schema,context=dict(symbol='BTCUSDT'))),self.legacy(text))
+        for invalid in(text.replace('BTCUSDT','ETHUSDT'),short.replace('"SL":101','"SL":null')):
+            with self.assertRaisesRegex(Review,'INVALID_OUTPUT_SCHEMA'):self.read(invalid,body)
+
     def test_natural_screening_and_pending_bound_to_owned_symbol_reference(self):
         screen = dict(output_schema=neuroapi.SCREEN_ONE_SCHEMA)
         self.assertEqual(self.read('Coin: BTCUSDT', screen), dict(symbols=['BTCUSDT']))
