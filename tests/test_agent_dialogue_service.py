@@ -411,8 +411,11 @@ class DialogueServiceTests(unittest.TestCase):
         value['deadline_epoch'] = NOW + 80
         self.assertIs(d.validate_request(value, now=NOW), value)
         value['deadline_epoch'] = NOW + 200 + 80
+        self.assertIs(d.validate_request(value, now=NOW + 200), value)
+        next_bar = NOW + 900 - NOW % 900 + 1
+        value['deadline_epoch'] = next_bar + 80
         with self.assertRaisesRegex(d.DialogueError, 'MARKET_CONTEXT_INVALID'):
-            d.validate_request(value, now=NOW + 200)
+            d.validate_request(value, now=next_bar)
 
     def test_done_replay_does_not_call_model_or_append_history(self):
         value=request()

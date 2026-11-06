@@ -342,15 +342,16 @@ class NativeChartCaptureTests(unittest.TestCase):
         with self.assertRaises(CaptureUnavailable):self.run_capture()
         self.assertEqual(self.harness.closed,[])
         self.assertFalse(self.context.created[0].closed)
-    def test_context_age_is_revalidated_before_archive_independently_of_native_helper(self):
-        self.market=native_context_200(now=NOW-179)
+    def test_latest_closed_bar_is_revalidated_before_archive_independently_of_native_helper(self):
+        boundary_start=NOW + 900 - NOW % 900 - 1
+        self.market=native_context_200(now=boundary_start)
         self.harness=Harness()
         original=self.harness.rpc
         def delayed(resource,method,deadline,*args,**kwargs):
             result=original(resource,method,deadline,*args,**kwargs)
             self.harness.current+=.6
             return result
-        self.capture=self.harness.install(rpc=delayed)
+        self.capture=self.harness.install(rpc=delayed,wall_clock=lambda:boundary_start+self.harness.current)
         with self.assertRaises(CaptureUnavailable):self.run_capture()
         self.assertEqual(self.harness.archive_calls,0)
         self.assertTrue(self.context.created[0].closed)
