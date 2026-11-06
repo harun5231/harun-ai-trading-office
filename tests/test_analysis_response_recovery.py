@@ -14,7 +14,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from worker.core import Review,DYNAMIC_RISK_MODEL
+from worker.core import Review,D,DYNAMIC_RISK_MODEL
 from worker.neuroapi import SETUP_SCHEMA_V4
 from worker.analysis_response_recovery import (KIND,NATIVE_SOURCE,TERMINAL,REASON,
     wire,sha,digest,validate_observation,recover_received_analysis,record_analysis_candidate,
@@ -77,15 +77,15 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         proof=envelope['observation'];raw=wire(proof)
         envelope.update(observation_sha256=sha(raw),observation_bytes=len(raw.encode()))
         return envelope
-    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None,mini_decision=None):
+    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None,mini_decision=None,symbol='BTCUSDT'):
         check=NOW-60;observed=NOW+300 if stale else NOW-10
         url='https://app.neurobro.ai/chat/'+'a'*32
-        initial=[dict(source='BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT',symbol='BTCUSDT',timeframe=tf,
+        initial=[dict(source='BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT',symbol=symbol,timeframe=tf,
             captured_at=utc(NOW-80),sha256=char*64,bytes=2048) for tf,char in (('15m','a'),('1h','b'))]
         charts=[dict(row,captured_at=utc(NOW-65),attachment_id='file-'+row['timeframe']) for row in initial]
         names=[self.body['marker']+'-'+row['timeframe']+'-'+row['sha256'][:12]+'.png' for row in charts]
-        names+=['BTCUSDT_'+tf+'_200_closed_'+char*8+'.csv' for tf,char in (('15m','c'),('1h','d'))]
-        first='COIN: BTCUSDT\nScreenshot belum terbaca.\nARAH: HOLD'
+        names+=[symbol+'_'+tf+'_200_closed_'+char*8+'.csv' for tf,char in (('15m','c'),('1h','d'))]
+        first='COIN: '+symbol+'\nScreenshot belum terbaca.\nARAH: HOLD'
         prompt='Prompt asli\n'+self.body['marker'];question='Berikut lampiran terbaru, mohon nilai ulang.\n'+self.body['marker']
         rows=[dict(role='user',text=prompt,attachments=names),
             dict(role='assistant',text=first,complete=True,id='first'),
@@ -99,7 +99,7 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
             initial_chart_evidence=initial,initial_attachment_names=names,
             followup_chart_evidence=charts,followup_attachment_names=names,observed_at=check-10,
             closed_candles_per_timeframe=200,closed_candles_total=400,followup_sequence=1,
-            previous_followup_intent_sha256=None,material_send_check=dict(symbol='BTCUSDT',running_candles_separate=True,
+            previous_followup_intent_sha256=None,material_send_check=dict(symbol=symbol,running_candles_separate=True,
             closed_candles_per_timeframe=200,closed_candles_total=400,send_checked_at=check,
             data_age_at_send_check_seconds=40,data_observed_at=NOW-100,screenshots=[]))
         entry=dict(value=intent,sha256=digest(intent),bytes=len(wire(intent,ascii=True).encode()))
@@ -122,9 +122,9 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
             reply_sha=sha(reply);transcript=digest(rows)
             request_id=digest(dict(operation=OP,request_sha256=self.request_hash,reply_sha256=reply_sha,phase='ANALYSIS',transcript_sha256=transcript))
             request=dict(schema_version=1,request_id=request_id,conversation_id='neurobro:'+DAY+':'+'a'*32,
-                phase='ANALYSIS',reply=reply,reply_sha256=reply_sha,market_context={'symbol':'BTCUSDT'},
+                phase='ANALYSIS',reply=reply,reply_sha256=reply_sha,market_context={'symbol':symbol},
                 gate=dict(robot_on=True,native_dispatch_verified=True),deadline_epoch=NOW+50)
-            decision=mini_decision or dict(action='HOLD' if 'ARAH: HOLD' in reply else 'COMPLETE',symbols=['BTCUSDT'],question='')
+            decision=mini_decision or dict(action='HOLD' if 'ARAH: HOLD' in reply else 'COMPLETE',symbols=[symbol],question='')
             response=dict(schema_version=1,ok=True,request_id=request_id,conversation_id=request['conversation_id'],phase='ANALYSIS',
                 reply_sha256=reply_sha,authority='DIALOGUE_CONTROL_ONLY',trading_authority=False,
                 decision=decision,needs_followup=decision['action']=='CLARIFY',reason='DIALOGUE_DECISION')
@@ -149,6 +149,76 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('robot_candidates')['status'],'HOLD')
         self.assertEqual(self.db.execute('SELECT phase FROM analysis_response_recoveries').fetchone()[0],'CONSUMED')
         self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0],'accepted immutable payload')
+
+    def sui_setup(self,*,stale=False,approval=True):
+        """Use the exact authored SUI reply with isolated synthetic custody."""
+        previous=OP;operation=CYCLE+':analysis-v9:SUIUSDT'
+        selected=patch(__name__+'.OP',operation);selected.start();self.addCleanup(selected.stop)
+        self.context=json.loads(json.dumps(self.context).replace('BTCUSDT','SUIUSDT'))
+        self.body,serialized,self.request_hash=self.source.request_body(OP,'Prompt analisis pemilik — terbaru',SETUP_SCHEMA_V4,self.context)
+        self.payload={**self.body,'request_sha256':self.request_hash}
+        self.db.execute('UPDATE api_requests SET operation=?,body_hash=? WHERE operation=?',(OP,self.request_hash,previous))
+        self.db.execute('UPDATE robot_jobs SET operation=?,symbol=? WHERE operation=?',(OP,'SUIUSDT',previous))
+        self.db.execute('UPDATE research_browser_requests SET operation=?,request_sha256=?,marker=?,request_body=? WHERE operation=?',
+            (OP,self.request_hash,self.body['marker'],serialized,previous))
+        self.db.execute('UPDATE robot_candidates SET id=?,symbol=? WHERE id=?',(OP,'SUIUSDT',previous))
+        self.data=json.loads(json.dumps(self.data).replace('BTCUSDT','SUIUSDT'))
+        self.db.execute('UPDATE robot_cycles SET data=?',(json.dumps(self.data),))
+        reply=(ROOT/'tests/fixtures/neurobro_sui_pipe_setup_20261106.txt').read_text()
+        self.assertEqual(sha(reply),'95d8ecac519801cee81850b82e624418b7920e79a779c067dec4f06a83f891aa')
+        self.envelope=self.fixture(reply=reply,stale=stale,approval=approval,symbol='SUIUSDT')
+
+    def assert_sui_levels(self,output):
+        self.assertEqual((output['symbol'],output['side']),('SUIUSDT','SHORT'))
+        self.assertIs(type(output['limit_entry']),D);self.assertIs(type(output['stop_loss']),D)
+        self.assertEqual((output['limit_entry'],output['stop_loss'],output['take_profit']),
+            (D('0.860'),D('0.874'),D('0.832')))
+
+    def test_actual_sui_setup_crosses_native_decimal_recorder_and_cached_boundary(self):
+        from worker.neuroapi import setup,setup_number
+        self.sui_setup()
+        result,_,stale=validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW)
+        self.assertFalse(stale);self.assert_sui_levels(result['output'])
+        with self.assertRaisesRegex(Review,'INVALID_NUMERIC_TYPE'):setup_number(.874)
+        with self.assertRaisesRegex(Review,'ANALYSIS_CONTINUATION_NOT_REQUIRED'):
+            validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW,repair=True)
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW),'RESUME_CACHED')
+        cached=json.loads(self.row('api_requests')['output'],parse_float=D);self.assert_sui_levels(cached)
+        self.provider.require_key=self.forbid
+        answer=self.provider.ask(OP,self.body['prompt'],SETUP_SCHEMA_V4,
+            lambda value:setup(value,'SUIUSDT',require_declared_rr=False,require_gross_rr=False),self.context)
+        self.assert_sui_levels(answer)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM research_browser_responses WHERE operation=?',(OP,)).fetchone()[0],1)
+
+    def test_actual_sui_stale_setup_retains_native_receipt_and_replacement_proof(self):
+        self.sui_setup(stale=True,approval=False)
+        result,_,stale=validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW+301)
+        self.assertTrue(stale);self.assert_sui_levels(result['output'])
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW+301),'NOEXEC')
+        self.assertTrue(received_nonexecuted(self.db,self.row('robot_candidates')))
+        self.assertIsNone(self.row('robot_candidates')['plan']);self.assertIsNone(self.row('api_requests')['output'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
+    def test_actual_sui_native_complete_crash_reuses_exact_canonical_decimal_output(self):
+        self.sui_setup();original=self.provider._record_browser_response
+        def interrupted(*args,**kwargs):original(*args,**kwargs);raise RuntimeError('native COMPLETE before CAS')
+        self.provider._record_browser_response=interrupted
+        with self.assertRaisesRegex(RuntimeError,'before CAS'):recover_received_analysis(self.provider,self.envelope,now=NOW)
+        receipt=dict(self.db.execute('SELECT * FROM research_browser_responses WHERE operation=?',(OP,)).fetchone())
+        self.assert_sui_levels(json.loads(self.row('api_requests')['output'],parse_float=D))
+        self.provider._record_browser_response=original
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW+1),'RESUME_CACHED')
+        self.assertEqual(dict(self.db.execute('SELECT * FROM research_browser_responses WHERE operation=?',(OP,)).fetchone()),receipt)
+
+    def test_actual_sui_complete_crash_becomes_proof_backed_stale_replacement_after_disconnect(self):
+        self.sui_setup();original=self.provider._record_browser_response
+        def interrupted(*args,**kwargs):original(*args,**kwargs);raise RuntimeError('native receipt before disconnect')
+        self.provider._record_browser_response=interrupted
+        with self.assertRaises(RuntimeError):recover_received_analysis(self.provider,self.envelope,now=NOW)
+        self.provider._record_browser_response=original
+        self.assertEqual(recover_received_analysis(self.provider,self.envelope,now=NOW+400),'NOEXEC')
+        self.assertTrue(received_nonexecuted(self.db,self.row('robot_candidates')))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM research_browser_responses WHERE operation=?',(OP,)).fetchone()[0],1)
 
     def test_stale_clear_reply_is_nonexecuted_and_replaceable_not_fake_hold(self):
         self.envelope=self.fixture(stale=True,approval=False)
