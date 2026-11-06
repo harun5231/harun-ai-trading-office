@@ -2,6 +2,7 @@
 import ast
 import copy
 import hashlib
+import importlib
 import json
 import math
 from pathlib import Path
@@ -109,6 +110,112 @@ class NativeScreeningRecoveryTests(unittest.TestCase):
             ('robot_cycles','robot_jobs','api_requests','research_browser_requests','research_browser_responses','order_intents','robot_candidates')}
 
     def recover(self):return self.robot.recover_invalid_screening(DAY,self.account)
+
+    def seed_native_choice(self):
+        case=json.loads((SOURCE.parents[2]/'tests/fixtures/neurobro_pepe_invalid_native_choice_20261107.json').read_text())
+        for table in ('robot_cycles','robot_jobs','api_requests','research_browser_requests','research_browser_responses','order_intents','robot_candidates'):
+            self.db.execute('DELETE FROM '+table)
+        native_day=case['operation'].split(':',1)[0]
+        self.seed(symbols=case['symbols'],day=native_day,count=1)
+        self.assertEqual(self.operation,case['operation'])
+        self.assertEqual(self.row('research_browser_requests')['request_sha256'],case['request_sha256'])
+        self.assertEqual(digest(case['reply']),case['reply_sha256'])
+        request=self.row('research_browser_requests')
+        self.assertEqual(case['response_id'],'dom-'+digest('https://app.neurobro.ai/\n'+request['marker']+'\n'+case['reply']))
+        self.db.execute('UPDATE research_browser_responses SET response_id=?,assistant_text=?,assistant_sha256=? WHERE operation=?',
+            (case['response_id'],case['reply'],case['reply_sha256'],self.operation))
+        self.catalog={'1000PEPEUSDT':{},'BTCUSDT':{}}
+        self.next_symbols=['BTCUSDT']
+        self.account.update(running_positions=1,running_symbols=['LTCUSDT'],available_slots=1,carry_entries_today=1)
+        self.carry_id='2026-11-06:robot-v9:0:analysis-v9:LTCUSDT'
+        self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?)',(self.carry_id,self.carry_id,'LTCUSDT','POSITION_PROTECTED'))
+        self.robot.allowed=lambda today:self.on and today==native_day
+        self.robot.pause_reason=lambda:'ROBOT_OFF'if not self.on else'ROBOT_DAY_CHANGED'
+        return case,native_day
+
+    def recover_native_choice(self,native_day):
+        return self.robot.recover_invalid_screening(native_day,self.account)
+
+    def test_actual_native_pepe_reply_releases_one_slot_without_mapping_or_replaying(self):
+        case,native_day=self.seed_native_choice()
+        request=self.row('research_browser_requests');receipt=self.row('research_browser_responses')
+        carry=tuple(self.db.execute('SELECT * FROM order_intents WHERE id=?',(self.carry_id,)).fetchone())
+        settings=self.robot.store.settings();account=copy.deepcopy(self.account)
+        result=self.recover_native_choice(native_day)
+        self.assertEqual(result['wait_reason'],'SCREENING_INVALID_SYMBOL_REPLACEMENT_PENDING')
+        self.assertEqual((self.row('api_requests')['state'],self.row('api_requests')['failure_code'],self.row('api_requests')['output']),
+            ('REJECTED_RESPONSE_VALIDATION','INVALID_SCREENING_SYMBOL',None))
+        self.assertEqual(self.row('robot_jobs')['state'],'REQUEST_REJECTED')
+        data=json.loads(self.row('robot_cycles','id')['data'])
+        self.assertEqual((data['seen'],data['replacement_due'],data['queue']),(['PEPEUSDT'],1,[]))
+        self.assertNotIn('1000PEPEUSDT',data['seen'])
+        self.assertEqual(self.row('research_browser_requests'),request)
+        self.assertEqual(self.row('research_browser_responses'),receipt)
+        self.assertEqual(tuple(self.db.execute('SELECT * FROM order_intents WHERE id=?',(self.carry_id,)).fetchone()),carry)
+        self.assertEqual(self.robot.store.settings(),settings);self.assertEqual(self.account,account)
+        self.assertEqual(self.requests,[])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM robot_candidates').fetchone()[0],0)
+
+    def test_native_invalid_choice_survives_restart_and_original_tick_selects_new_one_coin(self):
+        case,native_day=self.seed_native_choice();self.recover_native_choice(native_day)
+        old_operation=self.operation
+        successor=object.__new__(coordinator_class());successor.__dict__.update(self.robot.__dict__);self.robot=successor
+        pending=importlib.import_module('agent.native_pending_review')
+        with patch.object(pending,'review_then_advance',return_value=None),patch.dict(self.robot._tick.__globals__,{'day':lambda:native_day}):
+            result=self.robot._tick()
+        self.assertEqual(result['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(len(self.requests),1)
+        request=self.requests[0]
+        self.assertEqual(request['operation'],self.cycle+':screening:1:1')
+        self.assertNotEqual(request['operation'],old_operation)
+        self.assertEqual(request['prompt'],REPLACEMENT_SCREENING.format(count=1))
+        self.assertEqual(request['context']['requested_count'],1)
+        self.assertIn('PEPEUSDT',request['context']['excluded_symbols'])
+        self.assertIn('LTCUSDT',request['context']['excluded_symbols'])
+        self.assertEqual(json.loads(self.row('robot_cycles','id')['data'])['queue'],['BTCUSDT'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+        self.assertEqual(self.db.execute('SELECT state FROM order_intents WHERE id=?',(self.carry_id,)).fetchone()[0],'POSITION_PROTECTED')
+
+    def test_native_looking_json_without_internal_marker_is_not_a_natural_receipt(self):
+        case,native_day=self.seed_native_choice()
+        text='Chosen coins.\n```json\n'+encode({'symbols':['PEPEUSDT']})+'\n```'
+        marker=self.row('research_browser_requests')['marker']
+        self.db.execute('UPDATE research_browser_responses SET response_id=?,assistant_text=?,assistant_sha256=? WHERE operation=?',
+            ('dom-'+digest('https://app.neurobro.ai/\n'+marker+'\n'+text),text,digest(text),self.operation))
+        before=self.frozen()
+        self.assertIsNone(self.recover_native_choice(native_day));self.assertEqual(self.frozen(),before)
+
+    def test_native_dom_identity_and_all_original_hashes_must_match(self):
+        mutations=(
+            ('UPDATE research_browser_responses SET response_id=?',('dom-'+'0'*64,)),
+            ('UPDATE research_browser_responses SET response_id=?',('other-native-receipt',)),
+            ('UPDATE research_browser_responses SET assistant_sha256=?',('0'*64,)),
+            ('UPDATE research_browser_responses SET output_sha256=?',('0'*64,)),
+            ('UPDATE research_browser_requests SET request_sha256=?',('0'*64,)),
+            ('UPDATE api_requests SET body_hash=?',('0'*64,)),
+        )
+        for sql,args in mutations:
+            with self.subTest(sql=sql,args=args):
+                _,native_day=self.seed_native_choice();self.db.execute(sql,args);before=self.frozen()
+                self.assertIsNone(self.recover_native_choice(native_day));self.assertEqual(self.frozen(),before)
+
+    def test_native_valid_catalog_choice_is_not_reclassified(self):
+        _,native_day=self.seed_native_choice();self.catalog['PEPEUSDT']={};before=self.frozen()
+        self.assertIsNone(self.recover_native_choice(native_day));self.assertEqual(self.frozen(),before)
+
+    def test_native_invalid_choice_does_not_clear_other_unknown_or_repeat_recovery(self):
+        _,native_day=self.seed_native_choice()
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            ('other-operation',None,'b'*64,'NEEDS_REVIEW',time.time(),1,None,'NETWORK_UNCERTAIN'))
+        self.recover_native_choice(native_day);after=self.frozen()
+        self.assertIsNone(self.recover_native_choice(native_day));self.assertEqual(self.frozen(),after)
+        self.assertTrue(self.robot.unresolved_research());self.assertEqual(self.requests,[])
+
+    def test_native_invalid_choice_off_or_different_day_preserves_evidence(self):
+        _,native_day=self.seed_native_choice();self.on=False;before=self.frozen()
+        self.assertEqual(self.recover_native_choice(native_day)['wait_reason'],'ROBOT_OFF');self.assertEqual(self.frozen(),before)
+        self.on=True
+        self.assertIsNone(self.recover_native_choice('2026-11-08'));self.assertEqual(self.frozen(),before)
 
     def test_bound_missing_symbol_is_rejected_without_accepting_partial_output(self):
         request=self.row('research_browser_requests');receipt=self.row('research_browser_responses')

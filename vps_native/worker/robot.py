@@ -136,12 +136,22 @@ class Coordinator:
             if index>0 and (type(body.get('context'))is not dict or body['context'].get('requested_count')!=count):return None
             text=receipt['assistant_text'];created=api['created'];received=receipt['received_at']
             if (type(text)is not str or hashlib.sha256(text.encode()).hexdigest()!=receipt['assistant_sha256']
-                    or re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])',text)!=[marker]
                     or not isinstance(receipt['response_id'],str)
                     or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}',receipt['response_id'])
                     or any(type(v)not in(int,float)or not math.isfinite(v)or v<=0 for v in(created,received))
                     or not created<=received<=time.time() or json.loads(receipt['chart_evidence'])not in(None,[])):return None
-            value=parse_assistant_text(text)
+            markers=re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])',text)
+            if markers==[marker]:
+                value=parse_assistant_text(text) # The original marker/JSON contract is unchanged.
+            elif not markers:
+                # Natural WEB replies do not echo internal operation markers.
+                # Bind the already recorded native receipt to its producer's
+                # exact page/marker/reply identity before reading its choice.
+                native_id='dom-'+hashlib.sha256(('https://app.neurobro.ai/\n'+marker+'\n'+text).encode()).hexdigest()
+                if receipt['response_id']!=native_id:return None
+                from agent.neurobro_reply import parse_reply_for_payload
+                value=parse_reply_for_payload(text,body)
+            else:return None
             if type(value)is not dict or set(value)!={'symbols'}:return None
             symbols=value['symbols']
             if (type(symbols)is not list or len(symbols)!=count
