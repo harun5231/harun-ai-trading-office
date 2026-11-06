@@ -165,6 +165,17 @@ class AnalysisContinuationTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
         self.assertEqual(self.db.execute('SELECT state FROM analysis_continuation_grants').fetchone()[0],'OBSERVED_NEW_REPLY')
 
+    def test_same_received_web_turn_uses_latest_closed_windows_not_arbitrary_180_seconds(self):
+        envelope=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=False)
+        grant=admit(self.provider,envelope,now=NOW);record_return(self.provider,grant,now=NOW+1)
+        reviewed=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=True,reviewed_at=NOW+1)
+        reviewed['observation'].update(observed_at=NOW+184,finished_at=NOW+185);self.f.seal(reviewed)
+        # It is still the latest 15M/1H closed interval. The same exact native
+        # reply and actual Mini approval need no extra WEB Send after 180s.
+        self.assertTrue(restore_received_checkpoint(self.provider,reviewed,now=NOW+186))
+        self.assertEqual(recover_received_analysis(self.provider,reviewed,now=NOW+186),'RESUME_CACHED')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
     def test_sixteen_row_stale_market_hold_ignores_unbound_complete_review_and_replaces(self):
         envelope=copy.deepcopy(self.envelope)
         self.f.data['queue']=[]

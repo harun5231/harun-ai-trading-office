@@ -363,11 +363,16 @@ def restore_received_checkpoint(provider,envelope,*,now=None,permitted=lambda:Tr
         # The native hook may finish only its missing Mini review of this
         # already received turn. Accept that without requiring another WEB
         # message, provided actual retained approval and materials are fresh.
+        from .owner_source_protocol import chart_windows_current,WEBSITE_SOURCE
+        charts=result['chart_evidence']
+        latest_material=(chart_windows_current(charts,int(current*1000))
+            if all(chart.get('source')==WEBSITE_SOURCE for chart in charts)else
+            all(0<=current-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()
+                <=min(180,provider.chart_max_age)for chart in charts))
         accepted_same_turn=(not stale and all(basis[key]==grant[key] for key in
             ('reply_sha256','latest_user_prompt_sha256','next_followup_sequence'))
             and datetime.fromtimestamp(current,ZoneInfo('Asia/Jakarta')).date().isoformat()==operation[:10]
-            and all(0<=current-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()
-                <=min(180,provider.chart_max_age) for chart in result['chart_evidence']))
+            and latest_material)
     if row['state']=='NOT_SENT' and not accepted_same_turn and basis['latest_user_prompt_sha256']==grant['latest_user_prompt_sha256']:
         return False
     need(accepted_same_turn or basis['latest_user_prompt_sha256']!=grant['latest_user_prompt_sha256']
