@@ -12,6 +12,8 @@ from agent.native_daily_room import identities, JOURNAL_NAME
 from agent.native_screening_recovery import recover,enqueue
 from agent.native_screening_recovery import _room_record,ScreeningRecoveryUnavailable
 from agent import native_analysis_material as material
+from agent import native_analysis_receipt as analysis_receipt
+from tests.test_agent_closed_candles_200 import native_context_200
 from tests import test_native_received_analysis as legacy
 
 
@@ -106,6 +108,41 @@ class GenericReceivedAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'SCREENING_RECOVERY_BUSY'):
             enqueue(c.actor,self.request)
         self.assertFalse(c.actor.claim.locked())
+
+    def test_large_review_history_stays_private_while_latest_whole_receipt_fits_transport(self):
+        # Each synthetic receipt carries the real-sized two-timeframe candle
+        # fixture, as actual Mini review requests do. No model call is made.
+        for sequence in range(12):
+            context=native_context_200();context['symbol']='DOGEUSDT'
+            request_id=observer.text_sha('review-'+str(sequence))
+            value=dict(schema_version=1,kind=analysis_receipt.KIND,
+                operation=self.payload['operation'],request_sha256=self.payload['request_sha256'],
+                payload_sha256=observer.digest(self.payload),request_id=request_id,
+                observed_at=1793969000+sequence,request=dict(market_context=context))
+            name=analysis_receipt.prefix(self.payload)+request_id+'.json'
+            path=self.case.root/name;path.write_bytes(observer.canonical(value));path.chmod(0o600)
+        archived={path.name:path.read_bytes() for path in self.case.root.glob('analysis-review-*.json')}
+        reviews=analysis_receipt.read_reviews(self.case.root,self.payload)
+        newest=max(reviews,key=lambda entry:entry['value']['observed_at'])
+        result=self.invoke();proof=result['observation']
+        private=json.loads((self.case.root/result['capture_name']).read_text())
+        self.assertGreater(len(observer.canonical(private)),690000)
+        self.assertEqual(private['review_receipts'],reviews)
+        self.assertEqual(proof['review_receipts'],[newest])
+        self.assertLess(len(observer.canonical(result)),690000)
+        for field in ('receipt_files','prepared_materials','rendered_prompt_receipt'):
+            self.assertEqual(proof[field],private[field])
+        self.assertEqual(proof['rows'],private['rows'][6:])
+        self.assertEqual({path.name:path.read_bytes() for path in self.case.root.glob('analysis-review-*.json')},archived)
+        # Screening retains its existing projection and review semantics.
+        private['kind']='NATIVE_RECEIVED_SCREENING_OBSERVATION_V1'
+        self.assertEqual(observer._project_operation(private)['review_receipts'],reviews)
+
+    def test_invalid_review_timestamp_cannot_select_an_approval(self):
+        for timestamp in (None,True,'1793969000',float('nan'),float('inf'),-1):
+            with self.subTest(timestamp=timestamp),self.assertRaisesRegex(ValueError,'RECEIVED_ANALYSIS_REVIEW_TIME_UNVERIFIED'):
+                observer._project_operation(dict(kind=observer.GENERIC_KIND,
+                    review_receipts=[dict(value=dict(observed_at=timestamp))]))
 
     def test_more_followups_preserve_context_without_fixed_discussion_count(self):
         c=self.case;directory=c.root/'dialogue-200-followup'

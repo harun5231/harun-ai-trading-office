@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -331,6 +332,15 @@ def _operation_scope(rows, witness, receipts):
 
 def _project_operation(capture):
     result=copy.deepcopy(capture);rows=capture.get('rows',[]);scope=capture.get('operation_scope',{})
+    if capture.get('kind')==GENERIC_KIND and result.get('review_receipts'):
+        reviews=result['review_receipts']
+        need(type(reviews)is list and all(type(entry)is dict and type(entry.get('value'))is dict
+            and type(entry['value'].get('observed_at'))in(int,float)
+            and math.isfinite(entry['value']['observed_at']) and entry['value']['observed_at']>0
+            for entry in reviews),'RECEIVED_ANALYSIS_REVIEW_TIME_UNVERIFIED')
+        # Full immutable reviews remain in the private capture/archive. Only
+        # the newest actual decision is needed for current-turn approval.
+        result['review_receipts']=[max(reviews,key=lambda entry:entry['value']['observed_at'])]
     start=scope.get('initial_user');end=scope.get('reply_row')
     if start is None:
         result['rows']=[];result['file_tiles']=[];result['row_offset']=None
