@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import uuid
 
@@ -24,6 +25,31 @@ def canonical(value):
 
 def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
+
+
+def outbound_question(question):
+    """Remove only standalone, value-free privacy reminders rejected as budget text."""
+    if web_prompt_allowed(question):
+        return question
+    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan)'
+    topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+pribadi)?'
+        r'|nominal\s+risiko(?:\s+pribadi)?|risiko\s+pribadi)')
+    reminder = (r'(?:jangan|tidak\s+perlu)\s+' + verb
+        + r'(?:\s+(?:atau|dan)\s+' + verb + r')*\s+' + topic
+        + r'(?:\s*(?:/|,|\bdan\b|\batau\b)\s*' + topic + r')*[.!?;]?')
+    if type(question) is not str:
+        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
+    # Split only at sentence/line boundaries, retaining all other text verbatim.
+    parts = re.split(r'((?<=[.!?;])\s+|\n+)', question)
+    for index in range(0, len(parts), 2):
+        if re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE):
+            parts[index] = ''
+            if index:
+                parts[index - 1] = ''
+    normalized = ''.join(parts)
+    if not normalized.strip() or not web_prompt_allowed(normalized):
+        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
+    return normalized
 
 
 def compact_protocol(rendered, payload):
@@ -125,6 +151,7 @@ class PromptCompositionCache:
         before = self.read(payload)
         if before is not None:
             return before['rendered_prompt']
+        question = outbound_question(question)
         projected = dict(payload, prompt=question)
         rendered = compact_protocol(self.original(projected), payload)
         if (type(rendered) is not str or not rendered

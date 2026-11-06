@@ -1,0 +1,24 @@
+{
+  "evidence_run": "42218574345",
+  "saved_runtime_source": "42217921585-1",
+  "operation": "2026-11-06:robot-v9:0:analysis-v9:NEARUSDT",
+  "request_sha256": "13449e8ddd3cc30171483fec19357d5273ac5f54892f975a2171a00288c5dcbe",
+  "drafts": [
+    {
+      "question": "Analisa NEARUSDT (Binance Futures) menggunakan data TF 1H dan TF 15m yang terlampir (200 closed candles per TF + running candles, mark price ~3.779). Saya mau scalping di TF15m dengan konfirmasi dari TF1h. Neurobro tentukan secara tegas: LONG / SHORT / HOLD; tetapkan ENTRY dan SL STRUKTURAL (berdasarkan swing high/low, area likuiditas, volatilitas, wick, false breakout, dan titik invalidasi) — jangan letakkan SL di area yang mudah tersapu wick. Berikan rekomendasi TP. Wajib: minta RISK REWARD minimal 1:2. Ingat peran: Neurobro yang menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi. Jawaban singkat dalam Bahasa Indonesia: penjelasan struktur & alasan maksimal 2 kalimat, lalu ringkasan akhir singkat: COIN, LONG/SHORT/HOLD, ENTRY, TP, SL. Jangan minta atau sebut ukuran/quantity/anggaran risiko pribadi.",
+      "request_id": "d2938c2e3214a4e459aa90e105e259fe805baa87829a14f69788beed20f61f55"
+    },
+    {
+      "question": "Analisa NEARUSDT (Binance Futures) menggunakan data TF 1H & 15m terlampir (200 closed candles per TF + running candles, mark price ~3.796). Aku mau scalping di TF15m dengan konfirmasi dari TF1h. Neurobro tentukan tegas: LONG / SHORT / HOLD; tetapkan ENTRY dan SL STRUKTURAL (berdasarkan swing high/low, area likuiditas, volatilitas, wick, false breakout, dan titik invalidasi) — jangan letakkan SL di area yang mudah tersapu wick. Berikan rekomendasi TP. Wajib: minta RISK REWARD minimal 1:2. Ingat peran: Neurobro yang menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi. Jawaban singkat dalam Bahasa Indonesia: alasan struktur maksimal 2 kalimat, lalu ringkasan akhir singkat: COIN, LONG/SHORT/HOLD, ENTRY, TP, SL. Jangan minta atau sebut ukuran/quantity/anggaran risiko pribadi.",
+      "request_id": "e98739b149f55a28e7ac0189b783dddd6a84baf6f09ef33afa6f661c564652ee"
+    },
+    {
+      "question": "Analisa NEARUSDT (Binance Futures) untuk scalping TF15m dengan konfirmasi TF1h menggunakan data chart TF1h & TF15m yang sudah dilampirkan (200 closed candles per TF + running candles). Neurobro tentukan: LONG / SHORT / HOLD; tetapkan ENTRY dan SL STRUKTURAL (berdasarkan swing high/low, area likuiditas, volatilitas, wick, false breakout, dan titik invalidasi) — jangan letakkan SL di area yang mudah tersapu wick. Berikan rekomendasi TP. Wajib minta RISK REWARD minimal 1:2. Ingat peran: Neurobro yang menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi. Jawaban singkat dalam Bahasa Indonesia: penjelasan struktur & alasan maksimal 2 kalimat, lalu ringkasan akhir singkat: COIN, LONG/SHORT/HOLD, ENTRY, TP, SL. Jangan minta atau sebut ukuran/quantity/anggaran risiko pribadi.",
+      "request_id": "77888869986d86a73cb26442571708ff6100714ecbb4316b3e4c8bdd9dddfecc"
+    },
+    {
+      "question": "Analisa NEARUSDT (Binance Futures) menggunakan data TF1h & TF15m yang dilampirkan (200 closed candles per TF + running candles, mark price ~3.764). Untuk scalping TF15m dengan konfirmasi TF1h: tentukan tegas LONG / SHORT / HOLD; Neurobro tetapkan ENTRY dan SL STRUKTURAL (berdasarkan swing high/low, area likuiditas, volatilitas, wick, false breakout, dan titik invalidasi) — jangan letakkan SL di area yang mudah tersapu wick. Berikan rekomendasi TP dan pastikan Risk Reward minimal 1:2. Jawaban singkat dalam bahasa Indonesia: alasan struktur maksimal 2 kalimat, lalu ringkasan akhir singkat: COIN, LONG/SHORT/HOLD, ENTRY, TP, SL. Ingat peran: Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi. Jangan minta atau sebut ukuran/quantity/anggaran risiko pribadi.",
+      "request_id": "98d806cea81822ca6e0c7cfc3cc2c2842259bd907d7f6c1560409445956c9c77"
+    }
+  ]
+}
