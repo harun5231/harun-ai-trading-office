@@ -131,6 +131,48 @@ class Controller:
         if changed:print(json.dumps({'event':'WORKER_SERVICE_FAILURE','code':code}),flush=True)
     def clear_failure(self,account=False):
         with self.lock:setattr(self,'account_failure' if account else 'worker_failure',None)
+    def wake_completed_research(self,coordinator,result):
+        """Advance a committed reply/plan without spending its remaining freshness waiting.
+
+        This is the existing actor's wake event, not another scheduler or an
+        execution grant. The next ordinary tick still validates source, risk,
+        capacity and order custody. Only one wake per durable transition is
+        emitted; a repeated status cannot turn a failed attempt into a busy loop.
+        """
+        if (self.stopping.is_set() or not isinstance(result,dict)
+                or result.get('robot_on') is not True or result.get('failure_code') is not None):return False
+        state=result.get('bot_status');wait=result.get('wait_reason')
+        if state=='WAITING' and wait=='ANALYSIS_RECEIVED_RESUME_PENDING':kind='RESUME_CACHED'
+        elif state=='READY_FOR_EXECUTION' and wait is None:kind='READY_FOR_EXECUTION'
+        else:return False
+        try:
+            with self.state_lock:
+                if self.stopping.is_set() or coordinator.store.settings().get('robot_on') is not True:return False
+                if kind=='RESUME_CACHED':
+                    row=coordinator.db.execute('''SELECT a.operation,a.body_hash,r.proof_sha256
+                        FROM api_requests a JOIN robot_jobs j ON j.operation=a.operation
+                        JOIN analysis_response_recoveries r ON r.operation=a.operation
+                        WHERE a.state='COMPLETE' AND a.output IS NOT NULL AND a.failure_code IS NULL
+                        AND r.phase='RESUME_CACHED' AND r.request_sha256=a.body_hash
+                        AND j.kind='ANALYSIS' AND j.state IN ('PENDING','NEEDS_REVIEW')
+                        AND NOT EXISTS(SELECT 1 FROM order_intents i WHERE i.candidate_id=a.operation)
+                        ORDER BY r.updated DESC LIMIT 1''').fetchone()
+                else:
+                    decision=result.get('last_decision')or{}
+                    row=coordinator.db.execute('''SELECT c.id,a.body_hash FROM robot_candidates c
+                        JOIN api_requests a ON a.operation=c.id
+                        WHERE c.status='READY_FOR_EXECUTION' AND c.plan IS NOT NULL AND c.symbol=?
+                        AND a.state='COMPLETE' AND a.output IS NOT NULL AND a.failure_code IS NULL
+                        AND NOT EXISTS(SELECT 1 FROM order_intents i WHERE i.candidate_id=c.id)
+                        ORDER BY c.rowid DESC LIMIT 1''',(decision.get('symbol'),)).fetchone()
+                if row is None:return False
+                identity=tuple(row)
+                previous=getattr(self,'_research_wakeups',{})
+                if previous.get(kind)==identity:return False
+                previous[kind]=identity;self._research_wakeups=previous
+                self.robot_wakeup.set()
+                return True
+        except Exception:return False
     def progress(self,account=False):
         with self.lock:
             if account:self.account_progress=time.monotonic()
@@ -272,7 +314,9 @@ class Controller:
                 if self.robot_wakeup.is_set() or time.monotonic()-last_tick>=ROBOT_POLL_SECONDS:
                     self.robot_wakeup.clear();last_tick=time.monotonic()
                     with self.lock:self.busy=True
-                    try:coordinator.tick();self.clear_failure()
+                    try:
+                        result=coordinator.tick();self.clear_failure()
+                        self.wake_completed_research(coordinator,result)
                     except Exception:self.failure('ROBOT_COORDINATOR_UNAVAILABLE')
                     finally:
                         with self.lock:self.checked=time.time();self.busy=False

@@ -455,6 +455,82 @@ def record_analysis_candidate(db,values):
     need(db.execute("UPDATE analysis_response_recoveries SET phase='CONSUMED',updated=? WHERE operation=? AND phase='RESUME_CACHED'",(time.time(),operation)).rowcount==1)
 
 
+def _consumed_stale_nonexecuted(db,row,api,job,receipt,request):
+    """A fresh recovered setup expired before sizing, without an order claim.
+
+    Preserve COMPLETE and the authored LONG/SHORT output. The sealed original
+    observation, its actual approval, and the terminal consumption timestamp
+    prove nonexecution; the STALE label alone never releases research capacity.
+    """
+    try:
+        from .research_provider import source_evidence,BROWSER_SOURCE,request_body
+        from types import SimpleNamespace
+        if (row['failure_code']!='STALE_MARKET_CONTEXT'
+                or api['failure_code']!='STALE_MARKET_CONTEXT'
+                or api['state']!='COMPLETE' or job['state']!='COMPLETE'
+                or api['attempts']!=1 or api['idempotency'] is not None
+                or not isinstance(api['output'],str) or not api['output']
+                or api['body_hash']!=request['request_sha256']
+                or job['cycle']!=row['cycle'] or job['symbol']!=row['symbol']
+                or job['kind']!='ANALYSIS'):
+            return False
+        journal=_row(db,'analysis_response_recoveries','operation',row['id'])
+        if (not journal or journal['phase']!='CONSUMED'
+                or journal['request_sha256']!=api['body_hash']
+                or journal['proof_sha256']!=sha(journal['proof'])
+                or not finite(journal['created']) or not finite(journal['updated'])
+                or not 0<api['created']<=journal['created']<=journal['updated']<=time.time()+5):
+            return False
+        body=json.loads(request['request_body'])
+        rebuilt,serialized,request_hash=request_body(row['id'],body['prompt'],body['output_schema'],body['context'])
+        if (body!=rebuilt or serialized!=request['request_body']
+                or request_hash!=api['body_hash'] or body['output_schema']!=SETUP_SCHEMA_V4
+                or body['context']['symbol']!=row['symbol']):
+            return False
+        source=source_evidence(db,row['id'])
+        if (source.get('source_type')!=BROWSER_SOURCE
+                or re.fullmatch('[a-f0-9]{64}',str(source.get('provider_evidence_sha256'))) is None):
+            return False
+        before=json.loads(journal['preimage'])
+        original_api=before['api_requests'];original_job=before['robot_jobs']
+        if (before['research_browser_requests']!=request
+                or original_api['operation']!=row['id']
+                or original_api['state'] not in ('PENDING','NEEDS_REVIEW')
+                or original_api['output'] is not None
+                or original_api['body_hash']!=api['body_hash']
+                or original_api['created']!=api['created']
+                or original_api['attempts']!=1 or original_api['idempotency'] is not None
+                or any(original_job[key]!=job[key] for key in ('operation','cycle','kind','symbol'))):
+            return False
+        original_candidate=before.get('robot_candidates')
+        if original_candidate is not None and (original_candidate['status']!='REJECTED'
+                or original_candidate['plan'] is not None
+                or any(original_candidate[key]!=row[key] for key in ('id','cycle','symbol'))):
+            return False
+        proof=json.loads(journal['proof'])
+        result,received,stale=validate_observation(
+            SimpleNamespace(chart_max_age=receipt['chart_max_age']),
+            proof,{**body,'request_sha256':request_hash},api['created'],
+            now=journal['created'],retained=True)
+        if (stale or result['output']['side'] not in ('LONG','SHORT')
+                or canonical_output(result['output'],body['output_schema'])!=api['output']
+                or result['assistant_text']!=receipt['assistant_text']
+                or result['response_id']!=receipt['response_id']
+                or received!=receipt['received_at']
+                or wire(result['chart_evidence'])!=receipt['chart_evidence']):
+            return False
+        from .owner_source_protocol import _instant
+        captured=[_instant(chart['captured_at']) for chart in result['chart_evidence']]
+        limit=min(180,receipt['chart_max_age'])
+        if not any(journal['updated']-stamp>limit for stamp in captured):
+            return False
+        cycle=_row(db,'robot_cycles','id',row['cycle'])
+        data=json.loads(cycle['data'])
+        return row['symbol'] in data['seen'] and row['symbol'] not in data['queue']
+    except Exception:
+        return False
+
+
 def received_nonexecuted(db,row):
     """Proof-backed nonexecution may seek a replacement; a label alone cannot."""
     if row['status']!='REJECTED' or row['plan'] is not None:return False
@@ -463,6 +539,8 @@ def received_nonexecuted(db,row):
         api=_row(db,'api_requests','operation',row['id']);job=_row(db,'robot_jobs','operation',row['id'])
         receipt=_row(db,'research_browser_responses','operation',row['id']);request=_row(db,'research_browser_requests','operation',row['id'])
     except Exception:return False # API-only fixtures have no native browser journal.
+    if all((api,job,receipt,request)) and api['state']=='COMPLETE':
+        return _consumed_stale_nonexecuted(db,row,api,job,receipt,request)
     if (not all((api,job,receipt,request)) or api['state']!=TERMINAL or job['state']!=TERMINAL
             or api['output'] is not None or api['attempts']!=1 or api['idempotency'] is not None
             or api['body_hash']!=request['request_sha256'] or job['cycle']!=row['cycle']

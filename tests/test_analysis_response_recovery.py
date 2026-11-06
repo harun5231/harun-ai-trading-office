@@ -77,8 +77,8 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         proof=envelope['observation'];raw=wire(proof)
         envelope.update(observation_sha256=sha(raw),observation_bytes=len(raw.encode()))
         return envelope
-    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None,mini_decision=None,symbol='BTCUSDT'):
-        check=NOW-60;observed=NOW+300 if stale else NOW-10
+    def fixture(self,reply='COIN: BTCUSDT\nARAH: HOLD',*,stale=False,approval=True,reviewed_at=None,mini_decision=None,symbol='BTCUSDT',finished=None):
+        check=NOW-60;observed=(NOW+300 if stale else NOW-10) if finished is None else finished
         url='https://app.neurobro.ai/chat/'+'a'*32
         initial=[dict(source='BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT',symbol=symbol,timeframe=tf,
             captured_at=utc(NOW-80),sha256=char*64,bytes=2048) for tf,char in (('15m','a'),('1h','b'))]
@@ -338,6 +338,88 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.db.execute('UPDATE api_requests SET state=?,failure_code=?',(TERMINAL,REASON))
         self.db.execute('UPDATE robot_jobs SET state=?',(TERMINAL,))
         self.assertFalse(received_nonexecuted(self.db,self.row('robot_candidates')))
+
+    def consumed_stale_setup(self):
+        # Actual ETH timing offsets: a final chart was145.84s old at receipt;
+        # normal cached consumption49.5s later crossed the unchanged180s gate.
+        # Keep the isolated fixture's BTC identity; levels stay authored values.
+        received=NOW+80.8399325
+        recorded=received+0.1926038
+        consumed=recorded+49.3139532
+        reply='COIN: BTCUSDT\nARAH: SHORT\nENTRY: 2248\nTP: 2188\nSL: 2265'
+        envelope=self.fixture(reply=reply,finished=received,reviewed_at=received-9.6634215)
+        self.assertEqual(recover_received_analysis(self.provider,envelope,now=recorded),'RESUME_CACHED')
+        self.db.execute("UPDATE api_requests SET failure_code='STALE_MARKET_CONTEXT' WHERE operation=?",(OP,))
+        with patch('worker.analysis_response_recovery.time.time',return_value=consumed):
+            self.db.execute('BEGIN IMMEDIATE')
+            record_analysis_candidate(self.db,(OP,CYCLE,'BTCUSDT','REJECTED',None,'STALE_MARKET_CONTEXT'))
+            self.db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=?",(OP,))
+            data=json.loads(self.row('robot_cycles')['data'])
+            data['queue'].remove('BTCUSDT');data['seen'].append('BTCUSDT')
+            self.db.execute('UPDATE robot_cycles SET data=? WHERE id=?',(json.dumps(data),CYCLE))
+            self.db.execute('COMMIT')
+        return consumed
+
+    def test_completed_short_expired_during_cached_handoff_is_proven_unsubmitted_not_hold(self):
+        self.consumed_stale_setup()
+        before='\n'.join(self.db.iterdump())
+        self.assertTrue(received_nonexecuted(self.db,self.row('robot_candidates')))
+        self.assertEqual('\n'.join(self.db.iterdump()),before)
+        api=self.row('api_requests');output=json.loads(api['output'])
+        self.assertEqual((api['state'],api['failure_code']),('COMPLETE','STALE_MARKET_CONTEXT'))
+        self.assertEqual((output['side'],output['limit_entry'],output['stop_loss'],output['take_profit']),
+            ('SHORT',2248,2265,2188))
+        self.assertEqual(self.row('robot_candidates')['status'],'REJECTED')
+        self.assertIsNone(self.row('robot_candidates')['plan'])
+        self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0],'accepted immutable payload')
+
+    def test_completed_stale_recovery_requires_bound_proof_source_and_terminal_age(self):
+        self.consumed_stale_setup()
+        snapshots={name:self.row(name) for name in ('api_requests','research_browser_responses','robot_candidates')}
+        journal=dict(self.db.execute('SELECT * FROM analysis_response_recoveries WHERE operation=?',(OP,)).fetchone())
+        changes=(
+            ('api_requests','state','NEEDS_REVIEW'),
+            ('api_requests','failure_code','NEUROBRO_BROWSER_OUTCOME_UNKNOWN'),
+            ('api_requests','output',None),
+            ('api_requests','body_hash','0'*64),
+            ('research_browser_responses','assistant_sha256','0'*64),
+            ('analysis_response_recoveries','proof_sha256','0'*64),
+            ('analysis_response_recoveries','phase','RESUME_CACHED'),
+            ('analysis_response_recoveries','updated',journal['created']),
+        )
+        for table,column,value in changes:
+            original=(journal if table=='analysis_response_recoveries'else snapshots[table])[column]
+            with self.subTest(table=table,column=column):
+                self.db.execute('UPDATE '+table+' SET '+column+'=? WHERE operation=?',(value,OP))
+                before='\n'.join(self.db.iterdump())
+                self.assertFalse(received_nonexecuted(self.db,self.row('robot_candidates')))
+                self.assertEqual('\n'.join(self.db.iterdump()),before)
+                self.db.execute('UPDATE '+table+' SET '+column+'=? WHERE operation=?',(original,OP))
+        self.db.execute('DELETE FROM analysis_response_recoveries WHERE operation=?',(OP,))
+        self.assertFalse(received_nonexecuted(self.db,self.row('robot_candidates')))
+
+    def test_completed_stale_recovery_never_releases_an_intent_or_changes_accepted_payload(self):
+        self.consumed_stale_setup()
+        self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?)',
+            (OP,OP,'BTCUSDT','NEEDS_REVIEW','unknown result must reconcile'))
+        before='\n'.join(self.db.iterdump())
+        self.assertFalse(received_nonexecuted(self.db,self.row('robot_candidates')))
+        self.assertEqual('\n'.join(self.db.iterdump()),before)
+
+    def test_original_scheduler_keeps_two_actual_free_slots_after_proven_stale_and_hold(self):
+        self.consumed_stale_setup()
+        data=json.loads(self.row('robot_cycles')['data'])
+        data.update(queue=[],seen=['BTCUSDT','ETHUSDT'],round_symbols=['ETHUSDT'])
+        self.db.execute('UPDATE robot_cycles SET data=? WHERE id=?',(json.dumps(data),CYCLE))
+        self.db.execute('INSERT INTO robot_candidates VALUES(?,?,?,?,?,?)',
+            (CYCLE+':analysis-v9:ETHUSDT',CYCLE,'ETHUSDT','HOLD',None,None))
+        module,coordinator=self.coordinator();calls=[]
+        coordinator.screen=lambda cycle,data,count,account,today,initial:(calls.append(count)or{'count':count})
+        with patch.object(module,'day',return_value=DAY),patch.object(module.time,'time',return_value=NOW+150), \
+                patch.object(module,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None):
+            result=coordinator._tick()
+        self.assertEqual(result,{'count':2});self.assertEqual(calls,[2])
 
     def test_only_sealed_failed_candidate_can_be_replaced(self):
         self.db.execute('BEGIN IMMEDIATE')
