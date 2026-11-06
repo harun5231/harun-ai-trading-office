@@ -12,7 +12,7 @@ import math
 import re
 import time
 from zoneinfo import ZoneInfo
-from .core import Review
+from .core import Review,D
 from .neuroapi import SETUP_SCHEMA_V4, setup, canonical_output
 
 TERMINAL = 'RECEIVED_STALE_NOT_EXECUTED'
@@ -280,7 +280,9 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False,
     technical=_TECHNICAL.search(rows[-1]['text']) is not None
     output=None;reason='NEUROBRO_INPUT_UNREADABLE' if technical else None
     if not technical:
-        try:output=parse_reply_for_payload(rows[-1]['text'],payload)
+        # The shared browser projection emits JSON numbers. Re-enter the same
+        # Decimal boundary as native HTTP before strict setup validation.
+        try:output=json.loads(wire(parse_reply_for_payload(rows[-1]['text'],payload)),parse_float=D)
         except ReplyIncomplete as error:reason=str(error)
     if repair:
         # This is permission to continue the SAME conversation, never a market
@@ -471,7 +473,7 @@ def received_nonexecuted(db,row):
         body=json.loads(request['request_body']);rebuilt,serialized,wire_hash=request_body(row['id'],body['prompt'],body['output_schema'],body['context'])
         if body!=rebuilt or serialized!=request['request_body'] or wire_hash!=api['body_hash']:return False
         if receipt['assistant_sha256']!=sha(receipt['assistant_text']) or _TECHNICAL.search(receipt['assistant_text']):return False
-        output=parse_reply_for_payload(receipt['assistant_text'],body)
+        output=json.loads(wire(parse_reply_for_payload(receipt['assistant_text'],body)),parse_float=D)
         setup(output,row['symbol'],require_declared_rr=False,require_gross_rr=False)
         if receipt['output_sha256']!=sha(canonical_output(output,body['output_schema'])):return False
         charts=json.loads(receipt['chart_evidence'])
