@@ -501,13 +501,23 @@ def observe(actor, delegated, value):
             capture['stage'] = 'INITIAL_NATIVE_ROWS'
             rows = room.full_turns(); capture['rows'] = rows
             _save(room.store.root, capture)
-            if not rows and capture['status'] == 'CONNECTED' and (snapshot is None or snapshot['state']=='BOUND'):
-                capture['history_restore_attempted'] = True; capture['stage'] = 'BOUND_ROOM_RESTORE'
+            if not rows and capture['status'] == 'CONNECTED':
+                restore_state='BOUND'if snapshot is None else snapshot['state']
+                capture['history_restore_attempted'] = True; capture['stage'] = restore_state+'_ROOM_RESTORE'
                 binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
                 if record['identifier_reconciliation'] is not None:
                     binding['identifier_reconciliation'] = record['identifier_reconciliation']
                 _gate(actor)
-                rows = room.restore(record['anchors'], binding, 'BOUND')
+                try:rows = room.restore(record['anchors'], binding, restore_state)
+                except BaseException:
+                    # A history load can expose a challenge or another room.
+                    # Retain that actual observation without hiding the refusal.
+                    try:
+                        capture['status']=raw.status(maintenance_allowed=lambda:False)
+                        capture['session_observation']=copy.deepcopy(raw.session_observation())
+                        capture['rows']=room.full_turns();capture['page_url']=raw.page.url
+                    except Exception:pass
+                    raise
                 capture['rows'] = rows; capture['history_restored'] = True
                 capture['page_url'] = raw.page.url
             _gate(actor); capture['stage'] = 'CURRENT_ATTACHMENT_WITNESSES'

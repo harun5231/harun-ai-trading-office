@@ -221,11 +221,10 @@ class SentRoomCompletionObservationTests(unittest.TestCase):
 
     def test_missing_user_or_incomplete_reply_or_challenge_never_promotes_or_resends(self):
         original=copy.deepcopy(self.c.raw.messages)
-        for mode in ('no-user','empty-dom','streaming','challenge'):
+        for mode in ('no-user','streaming','challenge'):
             with self.subTest(mode=mode):
                 self.c.raw.messages=copy.deepcopy(original);self.c.status='CONNECTED'
                 if mode=='no-user':self.c.raw.messages=self.c.raw.messages[:6]
-                if mode=='empty-dom':self.c.raw.messages=[]
                 if mode=='streaming':self.c.raw.messages[-1]['complete']=False
                 if mode=='challenge':self.c.status='CHALLENGE_REQUIRED'
                 result=self.invoke()
@@ -233,6 +232,45 @@ class SentRoomCompletionObservationTests(unittest.TestCase):
                 self.assertFalse(result['operation_completed'])
                 self.assertEqual(result['status'],self.c.status)
                 self.assertFalse(result['history_restore_attempted'])
+
+    def test_empty_connected_sent_page_reopens_only_existing_matching_history_and_seals(self):
+        saved=copy.deepcopy(self.c.raw.messages)
+        partial=self.c.raw._turns();partial[-1].update(text='Belum selesai.',complete=False)
+        with self.c.room.store.open()as db:
+            db.execute('UPDATE daily_rooms SET anchors=?',(json.dumps(identities(partial)),))
+        before=self.row()
+        self.c.room.history.rooms=[('Analisis SUI existing',saved)]
+        self.c.raw.messages=[]
+        with patch.object(self.c.room,'restore',wraps=self.c.room.restore)as restore:
+            result=self.invoke()
+        self.assertEqual(restore.call_args.args[2],'SENT')
+        self.assertTrue(result['history_restore_attempted']);self.assertTrue(result['history_restored'])
+        self.assertEqual(self.c.room.history.selected,['Analisis SUI existing'])
+        after=self.row();self.assertEqual(after['state'],'BOUND')
+        for key in ('day','room_id','url','binding'):self.assertEqual(after[key],before[key])
+        self.assertEqual(result['observation']['room_recovery']['preserved_prefix_count'],7)
+        self.assertEqual(result['observation']['stable_snapshot_reads'],4)
+        self.assertEqual(result['error_count'],0)
+        self.assertFalse(result['operation_completed'])
+
+    def test_empty_sent_history_cannot_be_bound_from_title_foreign_rows_or_a_challenge(self):
+        saved=copy.deepcopy(self.c.raw.messages)
+        for mode in ('missing','wrong-room','missing-current-user','challenge'):
+            with self.subTest(mode=mode):
+                self.c.status='CONNECTED';self.c.raw.messages=[];self.c.room.history.rooms=[]
+                rows=copy.deepcopy(saved)
+                if mode=='wrong-room':rows[0]['text']='Foreign first prompt without its original marker.'
+                if mode=='missing-current-user':rows=rows[:6]
+                if mode!='missing':self.c.room.history.rooms=[('Analisis SUI existing',rows)]
+                select=self.c.room.history.select
+                def select_challenge(row,*,occurrence=0):
+                    select(row,occurrence=occurrence);self.c.status='CHALLENGE_REQUIRED'
+                with patch.object(self.c.room.history,'select',side_effect=select_challenge if mode=='challenge'else select):
+                    result=self.invoke()
+                self.assertEqual(self.row(),self.before)
+                self.assertTrue(result['history_restore_attempted'])
+                self.assertFalse(result['operation_completed'])
+                if mode=='challenge':self.assertEqual(result['status'],'CHALLENGE_REQUIRED')
 
     def test_wrong_room_changed_prefix_duplicate_prompt_or_missing_files_cannot_seal(self):
         original=copy.deepcopy(self.c.raw.messages);url=self.c.raw.page.url
