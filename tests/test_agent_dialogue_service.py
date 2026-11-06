@@ -72,6 +72,125 @@ class DialogueServiceTests(unittest.TestCase):
         value['phase'] = 'COMPOSE_SCREENING'
         return value
 
+    def seed_received_screening_rejection(self):
+        fixture=json.loads((Path(__file__).parent/'fixtures/neurobro_inj_screening_rejected_clarify_20261107.json').read_text())
+        value=request(reply=fixture['author'],conversation='neurobro:2026-11-07:82506138e0424deb90d9ee583ccb0744')
+        value['request_id']=fixture['request_id']
+        self.assertEqual(value['reply_sha256'],fixture['author_sha256'])
+        parent_id='delegated-model:'+value['request_id'];updated=time.time()-2
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+            (parent_id,'DELEGATED_MODEL_DIALOGUE',fixture['parent_request_sha256'],'UNKNOWN',None,updated))
+        messages=[{'role':'user','content':'Fase: SCREENING\nJawaban Neurobro terbaru:\n'+value['reply']}]
+        raw=dict(schema_version=1,authority='UNVALIDATED_MODEL_OUTPUT',phase='SCREENING',
+            native_reply_sha256=value['reply_sha256'],
+            model_input_sha256=hashlib.sha256(json.dumps(messages,ensure_ascii=False).encode()).hexdigest(),
+            raw_output_text=json.dumps(fixture['raw_decision'],ensure_ascii=False),raw_decision=fixture['raw_decision'],
+            json_decoded=True,model_response_id=fixture['model_response_id'])
+        key='dialogue-model-raw:'+hashlib.sha256(d.canonical(raw).encode()).hexdigest()
+        raw['observed_at']=updated-.0045548;self.memory.put(key,raw)
+        return value,parent_id,key,raw
+
+    def test_actual_received_screening_price_rejection_gets_one_model_child_without_accepting_question(self):
+        value,parent_id,key,raw=self.seed_received_screening_rejection()
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
+            d.validate_decision(raw['raw_decision'],value)
+        parent=tuple(self.memory.db.execute('SELECT * FROM operations WHERE operation_id=?',(parent_id,)).fetchone())
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):
+            self.engine.completed_screening(value)
+        self.assertEqual(self.calls,[])
+        self.output={'action':'SCREENING','symbols':['INJUSDT'],'question':''}
+        result=self.engine.process(value)
+        child_id='delegated-model-screening-recovery:'+value['request_id']
+        lookup=self.engine.completed_screening(value)
+        self.assertEqual(lookup['receipt']['operation']['operation_id'],child_id)
+        self.assertEqual(result['request_id'],value['request_id'])
+        self.assertEqual(result['decision'],self.output)
+        self.assertEqual(tuple(self.memory.db.execute('SELECT * FROM operations WHERE operation_id=?',(parent_id,)).fetchone()),parent)
+        self.assertEqual(self.memory.get(key),raw);self.assertEqual(len(self.calls),1)
+        self.assertIn('question kosong',self.calls[0]['instructions'])
+        self.assertIn('fase ANALYSIS',self.calls[0]['instructions'])
+        self.assertNotIn(raw['raw_decision']['question'],json.dumps(self.memory.history(value['conversation_id'])))
+        checkpoint=self.memory.get('dialogue-screening-interpretation-rejection:'+parent_id)
+        self.assertEqual(checkpoint['parent_request_sha256'],parent[2])
+        self.assertFalse(checkpoint['rejected_output_accepted'])
+        value['deadline_epoch']+=1
+        self.assertEqual(self.engine.process(value),result);self.assertEqual(len(self.calls),1)
+        self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
+        self.engine=d.DialogueEngine(self.memory,self.key,model=OpenAIDialogue(self.key,self.memory,transport=self.transport))
+        self.assertEqual(self.engine.completed_screening(value)['receipt']['operation']['operation_id'],child_id)
+        self.assertEqual(self.engine.process(value),result);self.assertEqual(len(self.calls),1)
+
+    def test_received_screening_network_unknown_or_wrong_raw_binding_stays_blocked(self):
+        mutations=(lambda raw:raw.update(native_reply_sha256='0'*64),
+            lambda raw:raw.update(model_input_sha256='0'*64),lambda raw:raw.update(phase='ANALYSIS'),
+            lambda raw:raw.update(model_response_id=None),lambda raw:raw.update(observed_at=time.time()-100),
+            lambda raw:raw.update(raw_decision={'action':'CLARIFY','symbols':['INJUSDT'],'question':'Apakah pilihan ini jelas?'}))
+        for index,mutation in enumerate(mutations):
+            with self.subTest(index=index):
+                self.memory.db.execute('DELETE FROM operations');self.memory.db.execute('DELETE FROM metadata')
+                value,parent,key,raw=self.seed_received_screening_rejection()
+                self.memory.db.execute('DELETE FROM metadata WHERE key=?',(key,))
+                mutation(raw)
+                identity={k:v for k,v in raw.items()if k!='observed_at'}
+                self.memory.put('dialogue-model-raw:'+hashlib.sha256(d.canonical(identity).encode()).hexdigest(),raw)
+                with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+                self.assertEqual(self.calls,[]);self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+        self.memory.db.execute('DELETE FROM metadata')
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+        self.assertEqual(self.calls,[])
+
+    def test_received_screening_duplicate_raw_or_changed_metadata_cannot_authorize_child(self):
+        value,parent,key,raw=self.seed_received_screening_rejection()
+        other=copy.deepcopy(raw);other['model_response_id']+='duplicate'
+        identity={k:v for k,v in other.items()if k!='observed_at'}
+        self.memory.put('dialogue-model-raw:'+hashlib.sha256(d.canonical(identity).encode()).hexdigest(),other)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+        self.memory.db.execute('DELETE FROM metadata');raw['model_response_id']+='changed'
+        self.memory.put(key,raw)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+        self.assertEqual(self.calls,[])
+
+    def test_received_screening_foreign_or_empty_raw_symbols_never_authorize_interpretation(self):
+        for symbols in (['ETHUSDT'],[],['injusdt']):
+            with self.subTest(symbols=symbols):
+                self.memory.db.execute('DELETE FROM operations');self.memory.db.execute('DELETE FROM metadata')
+                value,parent,key,raw=self.seed_received_screening_rejection()
+                self.memory.db.execute('DELETE FROM metadata WHERE key=?',(key,))
+                raw['raw_decision']['symbols']=symbols
+                raw['raw_output_text']=json.dumps(raw['raw_decision'],ensure_ascii=False)
+                identity={k:v for k,v in raw.items()if k!='observed_at'}
+                self.memory.put('dialogue-model-raw:'+hashlib.sha256(d.canonical(identity).encode()).hexdigest(),raw)
+                if symbols==['ETHUSDT']:
+                    with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+                        d.validate_decision(raw['raw_decision'],value)
+                with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+                self.assertEqual(self.calls,[]);self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+
+    def test_received_screening_child_unknown_is_never_retried_and_off_makes_no_checkpoint(self):
+        value,parent,key,raw=self.seed_received_screening_rejection()
+        off=copy.deepcopy(value);off['gate']['robot_on']=False
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_ROBOT_OFF'):self.engine.process(off)
+        self.assertIsNone(self.memory.get('dialogue-screening-interpretation-rejection:'+parent))
+        child,payload=self.engine._received_screening_child(value,create=True)
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+            (child,'DELEGATED_MODEL_DIALOGUE',hashlib.sha256(d.canonical(payload).encode()).hexdigest(),'UNKNOWN',None,time.time()))
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.completed_screening(value)
+        self.assertEqual(self.calls,[]);self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':2})
+
+    def test_received_screening_history_change_or_reused_receipt_cannot_authorize_child(self):
+        value,parent,key,raw=self.seed_received_screening_rejection()
+        self.memory.append(value['conversation_id'],'user','Other newer discussion',time.time())
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(value)
+        self.memory.db.execute('DELETE FROM messages')
+        self.engine._received_screening_child(value,create=True)
+        other=copy.deepcopy(value);other['request_id']='a'*64
+        updated=self.memory.db.execute('SELECT updated_at FROM operations WHERE operation_id=?',(parent,)).fetchone()[0]
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+            ('delegated-model:'+other['request_id'],'DELEGATED_MODEL_DIALOGUE','b'*64,'UNKNOWN',None,updated))
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_OPERATION_UNKNOWN'):self.engine.process(other)
+        self.assertEqual(self.calls,[])
+
     def seed_rejected_screening(self, value, *, keep_raw=True, input_hash=None,
                                 decision=None, updated=None):
         from agent.llm import compose_screening_input_sha256

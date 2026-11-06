@@ -220,6 +220,43 @@ class ScreeningResponseRecoveryTests(unittest.TestCase):
         with self.assertRaises(Review): self.recover()
         self.assertEqual(self.snapshot(), before)
 
+    def test_completed_screening_child_retains_its_actual_operation_identity(self):
+        request_id = json.loads(self.done['result'])['request_id']
+        self.done['operation_id'] = 'delegated-model-screening-recovery:' + request_id
+        original = copy.deepcopy(self.done)
+        before = self.snapshot(); retained = []
+        result = self.recover(before_write=retained.append)
+        self.assertEqual(result['continuation'], 'RECEIVED_SCREENING_PENDING')
+        self.assertEqual(self.done, original)
+        self.assertEqual(retained[0]['mini_done'], original)
+        self.assertEqual(json.loads(retained[0]['mini_done']['result'])['request_id'], request_id)
+        self.assertNotEqual(retained[0]['mini_done']['operation_id'], 'delegated-model:' + request_id)
+        for table in ('order_intents', 'pending_review', 'robot_settings', 'research_browser_requests'):
+            self.assertEqual(self.snapshot()[table], before[table])
+        after = self.snapshot(); self.recover(); self.assertEqual(self.snapshot(), after)
+
+    def test_screening_child_unknown_or_foreign_identity_cannot_be_promoted(self):
+        request_id = json.loads(self.done['result'])['request_id']
+        child = 'delegated-model-screening-recovery:' + request_id
+        cases = (
+            ('operation_id', 'delegated-model-screening-recovery:' + 'f' * 64),
+            ('operation_id', child + ':retry'),
+            ('operation_id', child + '0'),
+            ('operation_id', 'delegated-model-recovery:' + request_id),
+            ('operation_id', 'delegated-model-screening-recovery:delegated-model:' + request_id),
+            ('state', 'UNKNOWN'),
+        )
+        self.done['operation_id'] = child
+        before = self.snapshot()
+        for key, value in cases:
+            original = self.done[key]; self.done[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(Review): self.recover()
+            self.assertEqual(self.snapshot(), before); self.done[key] = original
+        result = json.loads(self.done['result']); result['request_id'] = 'f' * 64
+        self.done['result'] = json.dumps(result)
+        with self.assertRaises(Review): self.recover()
+        self.assertEqual(self.snapshot(), before)
+
     def test_invalid_catalog_unrelated_unknown_and_changed_owner_settings_refuse(self):
         before = self.snapshot(); self.catalog.pop('TIAUSDT')
         with self.assertRaises(Review): self.recover()

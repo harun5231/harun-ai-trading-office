@@ -138,7 +138,8 @@ def _mini_selection(done, proof, payload, identity_alias=None):
     _need(type(result) is dict and type(result.get('schema_version')) is int
         and result.get('ok') is True and result.get('trading_authority') is False
         and result.get('needs_followup') is False
-        and done['operation_id'] == 'delegated-model:' + request_id and result == {
+        and done['operation_id'] in ('delegated-model:' + request_id,
+            'delegated-model-screening-recovery:' + request_id) and result == {
         'schema_version': 1, 'ok': True, 'request_id': request_id,
         'conversation_id': request['conversation_id'], 'phase': 'SCREENING',
         'reply_sha256': proof['initial_reply_sha256'], 'authority': 'DIALOGUE_CONTROL_ONLY',
@@ -384,7 +385,8 @@ def _screening_review(proof, payload, rows):
             and response['needs_followup'] is (decision['action'] == 'CLARIFY')
             and (bool(decision['question'].strip()) if response['needs_followup'] else decision['question'] == '')
             and type(done) is dict and set(done) == {'operation_id', 'kind', 'request_hash', 'state', 'result', 'updated_at'}
-            and done['operation_id'] == 'delegated-model:' + request_id and done['kind'] == 'DELEGATED_MODEL_DIALOGUE'
+            and done['operation_id'] in ('delegated-model:' + request_id,
+                'delegated-model-screening-recovery:' + request_id) and done['kind'] == 'DELEGATED_MODEL_DIALOGUE'
             # The authenticated DONE lookup preserves the historical request
             # hash. Its original technical deadline is not stored in the
             # operations row and can differ from today's read-only query.

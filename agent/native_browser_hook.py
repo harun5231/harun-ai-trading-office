@@ -564,11 +564,18 @@ class DelegatedDOMBridge:
                 request['source_facts'] = facts
             # Independently enforce the dialogue-only result protocol, including
             # no foreign symbols, prices or trading authority from the model.
-            from .dialogue_service import validate_request, validate_result
+            from .dialogue_service import DialogueError, validate_request, validate_result
             validate_request(request, now=self.wall_clock())
             model_operation=None
             lookup=(phase=='SCREENING' and getattr(self.client,'supports_screening_receipt_lookup',False)is True)
-            stored=self.client.completed_screening(request)if lookup else None
+            try:
+                stored=self.client.completed_screening(request)if lookup else None
+            except DialogueError as error:
+                if str(error)!='DIALOGUE_OPERATION_UNKNOWN':raise
+                # The authenticated service alone can admit a uniquely proven
+                # rejected interpretation under its distinct once-only child.
+                # Ordinary ambiguous model deliveries remain blocked there.
+                stored=None
             if stored is not None:
                 response=validate_result(stored['result'],request);model_operation=stored['operation']
             else:

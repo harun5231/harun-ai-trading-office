@@ -162,7 +162,7 @@ class LLMTests(unittest.TestCase):
         with patch.object(self.memory, "reserve_budget", wraps=self.memory.reserve_budget) as reserve:
             model.plan([], "$ZEC", phase="SCREENING", jakarta_day="2026-10-19")
         payload = self.calls[0]
-        expected = len(json.dumps(payload["input"], ensure_ascii=False).encode()) + len(INSTRUCTIONS.encode())
+        expected = len(json.dumps(payload["input"], ensure_ascii=False).encode()) + len(payload["instructions"].encode())
         expected += len(json.dumps(payload["text"]["format"]["schema"]).encode())
         self.assertEqual(reserve.call_args.args, ("2026-10-19", expected, model.max_output_tokens))
         self.assertEqual(reserve.call_args.kwargs, model.limits)
