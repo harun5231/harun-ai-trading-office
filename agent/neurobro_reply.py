@@ -23,9 +23,18 @@ _COIN = re.compile(r'^\s*' + _COIN_LABEL + '(' + PAIR + r')\b', re.I | re.M)
 _COIN_HEADING = re.compile(r'^\s*(' + PAIR + r')\s*(?:[-—:|]\s*|\s+)'
     r'(?:LONG|SHORT|HOLD)\s*[.!]?\s*$', re.I | re.M)
 _FINAL = re.compile(r'^\s*(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b[^\n]*', re.I | re.M)
+# Negating proof of a visual candle count does not negate readability. The
+# outer material/receipt checks still own actual CSV counts and chart coverage;
+# a separate missing, unreadable, inconsistent or wrong-material complaint
+# remains a technical failure even when this count caveat is also present.
+_VISUAL_COUNT_PROOF = (r'(?:dapat[ \t]+)?membuktikan[ \t]+(?:bahwa[ \t]+)?'
+    r'(?:(?:seluruh|semua|sebanyak|setidaknya|minimal|sekurang-kurangnya)[ \t]+)?'
+    r'\d{1,4}[ \t]+(?:candle|candlestick|bar)[ \t]+'
+    r'(?:tertutup[ \t]+)?(?:terlihat|tampak|kelihatan)\b')
 _TECHNICAL = re.compile(
     r'(?:\b(?:gambar|screenshot|chart|csv|lampiran|data)\b[^.!?\n]{0,100}'
-    r'\b(?:tidak|belum|kurang|gagal|tak)\b[^.!?\n]{0,70}'
+    r'\b(?:tidak|belum|kurang|gagal|tak)\b(?![ \t]+' + _VISUAL_COUNT_PROOF + r')'
+    r'[^.!?\n]{0,70}'
     r'\b(?:terbaca|terlihat|lengkap|konsisten|diunggah|diterima|tersedia)\b|'
     r'\b(?:tidak|belum|gagal)\b[^.!?\n]{0,70}'
     r'\b(?:membaca|melihat|menerima|mengakses)\b[^.!?\n]{0,70}'
@@ -147,7 +156,7 @@ def _inline_summary_fields(block):
     # coin-qualified form; ordinary prose keeps its original interpretation.
     direction = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)'
         r'(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?[ \t]*[:=][ \t]*(?:LONG|SHORT|HOLD)\b')
-    prefix = re.compile(r'^[ \t]*' + _COIN_LABEL + r'\$?(' + PAIR + r')'
+    prefix = re.compile(r'^[ \t]*(?:Ringkasan[ \t]+)?' + _COIN_LABEL + r'\$?(' + PAIR + r')'
         r'(?:[ \t]+Perpetual)?[ \t]+' + direction, re.I)
     labels = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?'
         r'|LIMIT ENTRY|ENTRY LIMIT|ENTRY_PRICE|ENTRY|STOP LOSS|STOP_LOSS|SL'

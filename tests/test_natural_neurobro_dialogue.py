@@ -172,6 +172,55 @@ class PerCoinReplyTests(unittest.TestCase):
         self.assertEqual((result['symbol'], result['side']), ('DOGEUSDT', 'HOLD'))
         self.assertTrue(all(value is None for key, value in result.items() if key not in ('symbol', 'side')))
 
+    def test_actual_aave_visual_count_caveats_preserve_author_market_hold(self):
+        saved = json.loads((Path(__file__).parent /
+            'fixtures/neurobro_aave_visual_count_hold_20261106.json').read_text())
+        expected = ('b6ed9db75bbfe757cf09d710b10b6007ed25baf3422a2b42b10b1930864cda26',
+            'd2e029037850057de89604fec797e6e990457dbcc3851fd67a1a5f9e7288ab9a',
+            '4e91f96333707f8ebf284bef20c1efbabb30842eaaedec78091738fdc49a3eb0')
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        for row, digest in zip(saved['cases'], expected, strict=True):
+            with self.subTest(name=row['name']):
+                self.assertEqual(hashlib.sha256(row['reply'].encode()).hexdigest(), digest)
+                self.assertEqual(row['reply_sha256'], digest)
+                result = parse_reply_for_payload(row['reply'],
+                    {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'AAVEUSDT'}})
+                self.assertEqual(result, dict(symbol='AAVEUSDT', side='HOLD',
+                    limit_entry=None, take_profit=None, stop_loss=None, risk_reward=None))
+
+    def test_visual_count_proof_caveat_does_not_hide_actual_material_problems(self):
+        base = ('COIN: LINKUSDT\nScreenshot menunjukkan candlestick dan timeframe, '
+            'tetapi tidak membuktikan seluruh 200 candle tertutup terlihat.\n'
+            'RINGKASAN COIN: LINKUSDT ARAH: HOLD ENTRY: - TP: - SL: -')
+        for count in ('100', '200', '400'):
+            self.assertEqual(parse_analysis_reply(base.replace('200', count), 'LINKUSDT')['side'], 'HOLD')
+        for complaint in (
+                'Screenshot belum terbaca.', 'Saya tidak menerima lampiran chart.',
+                'Data CSV kurang lengkap.', 'Tidak ada screenshot 1H.',
+                'Screenshot salah timeframe.', 'Gambar berbeda simbol.',
+                'Data CSV tidak konsisten karena candle terakhir masih berjalan.',
+                'Screenshot tidak membuktikan seluruh harga terbaca.',
+                'Screenshot tidak dapat membuktikan bahwa data chart terbaca.',
+                'Screenshot tidak membuktikan 200 angka harga terbaca.',
+                'Screenshot tidak membuktikan 200 candle tertutup terlihat; gambar belum terbaca.'):
+            with self.subTest(complaint=complaint), self.assertRaisesRegex(ReplyIncomplete, 'INPUT_UNREADABLE'):
+                parse_analysis_reply(base + '\n' + complaint, 'LINKUSDT')
+
+    def test_ringkasan_coin_inline_heading_keeps_fields_and_rejects_conflicts(self):
+        base = 'RINGKASAN COIN: $LINKUSDT ARAH: LONG ENTRY: 17.25 TP: 17.70 SL: 17.00'
+        result = parse_analysis_reply(base, 'LINKUSDT')
+        self.assertEqual((result['side'], result['limit_entry'], result['take_profit'], result['stop_loss']),
+            ('LONG', '17.25', '17.70', '17.00'))
+        for reply in (base.replace('LINKUSDT', 'AAVEUSDT'), base + ' ARAH: HOLD',
+                base + '\nRINGKASAN COIN: LINKUSDT ARAH: HOLD ENTRY: - TP: - SL: -',
+                base + ' COIN: AAVEUSDT ARAH: HOLD', base.replace('TP: 17.70', 'TP: 17.70-18.00'),
+                'Saya menyebut ' + base, 'Chart belum terbaca.\n' + base,
+                'Chart belum terbaca.\n' + base.replace('RINGKASAN COIN:', 'Ringkasan akhir: COIN:')):
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'LINKUSDT')
+        with self.assertRaisesRegex(ReplyIncomplete, 'SETUP_CONDITIONAL'):
+            parse_analysis_reply(base + '\nJika breakout terkonfirmasi.', 'LINKUSDT')
+
     def test_actual_technical_doge_footer_cannot_hide_unreadable_material(self):
         reply = (Path(__file__).parent / 'fixtures/neurobro_doge_technical_hold_20261105.txt').read_text()
         with self.assertRaisesRegex(ReplyIncomplete, 'INPUT_UNREADABLE'):
@@ -668,6 +717,41 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.hook.client.request.assert_called_once()
         self.assertEqual(responses[0]['decision'], saved['mini_decision'])
         self.assertIs(responses[0]['needs_followup'], True)
+
+    def test_actual_aave_market_hold_finishes_without_extra_material_or_discussion(self):
+        saved = json.loads((Path(__file__).parent /
+            'fixtures/neurobro_aave_visual_count_hold_20261106.json').read_text())
+        for row in saved['cases']:
+            with self.subTest(name=row['name']):
+                fixture = self.fixture()
+                fixture.bridge.initial = row['reply']
+                fixture.value['context']['symbol'] = 'AAVEUSDT'
+                for frame in fixture.value['context']['timeframes'].values(): frame['symbol'] = 'AAVEUSDT'
+                for image in fixture.initial: image['symbol'] = 'AAVEUSDT'
+                before = copy.deepcopy(fixture.value)
+                responses = []
+                def reason(value):
+                    result = {'schema_version': 1, 'ok': True,
+                        **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                        'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                        'decision': copy.deepcopy(row['mini_decision']), 'needs_followup': False,
+                        'reason': 'DIALOGUE_DECISION'}
+                    responses.append(result)
+                    return result
+                fixture.module.exact_json.side_effect = lambda text, marker: None
+                fixture.hook.client = Mock(request=Mock(side_effect=reason))
+                result = fixture.ask()
+                self.assertEqual(result['output']['symbol'], 'AAVEUSDT')
+                self.assertEqual(result['output']['side'], 'HOLD')
+                self.assertTrue(all(value is None for key, value in result['output'].items()
+                    if key not in ('symbol', 'side')))
+                self.assertEqual(result['assistant_text'], row['reply'])
+                self.assertEqual(fixture.value, before)
+                self.assertEqual(fixture.bridge.clicks, 1)
+                self.assertEqual(len(fixture.bridge.messages), 2)
+                fixture.hook.client.request.assert_called_once()
+                fixture.refresh.assert_not_called(); fixture.receipt.assert_not_called()
+                self.assertEqual(responses[0]['decision'], row['mini_decision'])
 
     def test_legacy_private_sizing_question_is_replaced_only_at_future_web_boundary(self):
         fixture = self.fixture()

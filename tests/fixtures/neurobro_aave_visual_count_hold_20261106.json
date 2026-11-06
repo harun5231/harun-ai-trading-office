@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "symbol": "AAVEUSDT",
+  "operation": "2026-11-06:robot-v9:0:analysis-v9:AAVEUSDT",
+  "cases": [
+    {
+      "name": "initial",
+      "source_run": 42240644470,
+      "reply_sha256": "b6ed9db75bbfe757cf09d710b10b6007ed25baf3422a2b42b10b1930864cda26",
+      "reply": "COIN: AAVEUSDT Perpetual - HOLD. CSV yang dikirim memuat rentang 200 candle tertutup per timeframe; screenshot menunjukkan candlestick dan timeframe, tetapi tidak membuktikan seluruh 200 candle tertutup terlihat. Harga pada candle 15M berjalan sekitar 131.09 sesuai screenshot dan harga mark yang Anda sebutkan.\n\nStruktur 1H masih konsolidasi setelah penurunan tajam, sementara 15M berada di tengah rentang candle tertutup terbaru: 128.20–133.28. Belum ada pemicu jelas untuk LONG atau SHORT; entry, SL, dan TP tidak ditetapkan. Area ekstrem rentang itu berpotensi memicu wick atau false breakout - menempatkan order di tengahnya berisiko tersapu.\n\nRINGKASAN COIN: AAVEUSDT ARAH: HOLD ENTRY: - TP: - SL: -\n\n⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisisnya tetap bisa salah - keputusan trading dan risiko yang Anda ambil adalah pilihan Anda.",
+      "mini_decision": {
+        "action": "HOLD",
+        "question": "",
+        "symbols": [
+          "AAVEUSDT"
+        ]
+      }
+    },
+    {
+      "name": "clarified",
+      "source_run": 42241533069,
+      "reply_sha256": "d2e029037850057de89604fec797e6e990457dbcc3851fd67a1a5f9e7288ab9a",
+      "reply": "Bahagian yang belum dapat disahkan ialah jumlah candle tertutup yang kelihatan pada screenshot: sumbu waktu dan candle terbaca, tetapi gambar tidak membuktikan sekurang-kurangnya 200 candle tertutup. CSV pula mengandungi 200 candle bagi setiap timeframe dan waktunya konsisten hingga 14:59:59.999 UTC; candle 15:00 pada gambar masih berjalan, jadi dikecualikan. Simbol $AAVEUSDT, timeframe 15M/1H dan harga pada gambar boleh dibaca. Harga futures Binance yang diperoleh kemudian ialah 131.37, berbanding mark 130.9873 pada masa pengambilan bahan - perbezaan ini selaras dengan waktu data yang berlainan, bukan percanggahan pada candle tertutup.\n\nPenilaian pasaran kekal HOLD: harga masih berada dalam julat struktur terbaru dan tiada penutupan 15M yang mengesahkan pecahan. Sebelum ini tiada entry, SL atau TP ditetapkan, jadi saya kekalkan kosong dan tidak menambah level baharu.\n\nRINGKASAN COIN: $AAVEUSDT ARAH: HOLD ENTRY: - TP: - SL: -\n\n⚖️ Neurobro ialah alat penyelidikan, bukan nasihat kewangan; ia masih boleh tersilap - keputusan dagangan dan risiko yang anda ambil ialah pilihan anda.",
+      "mini_decision": {
+        "action": "HOLD",
+        "question": "",
+        "symbols": [
+          "AAVEUSDT"
+        ]
+      }
+    },
+    {
+      "name": "final",
+      "source_run": 42241533069,
+      "reply_sha256": "4e91f96333707f8ebf284bef20c1efbabb30842eaaedec78091738fdc49a3eb0",
+      "reply": "Keputusan akhir untuk $AAVEUSDT kekal HOLD. CSV sepadan dengan candle terkini yang kelihatan pada screenshot, tetapi gambar tidak membuktikan 200 candle tertutup kelihatan; kekangan itu tidak mengubah keputusan pasar yang telah ditetapkan. Tiada level entry, TP atau SL pernah ditetapkan, jadi saya kekalkan kosong.\n\nCOIN: $AAVEUSDT ARAH: HOLD ENTRY: - TP: - SL: -\n\n⚖️ Neurobro ialah alat penyelidikan, bukan nasihat kewangan; ia masih boleh tersilap - keputusan dagangan dan risiko yang anda ambil ialah pilihan anda.",
+      "mini_decision": {
+        "action": "HOLD",
+        "question": "",
+        "symbols": [
+          "AAVEUSDT"
+        ]
+      }
+    }
+  ],
+  "evidence_scope": "Exact saved author replies; production later recovered naturally to COMPLETE/HOLD. Offline regression data is never a fresh setup or permission to submit."
+}
