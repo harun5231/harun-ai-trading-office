@@ -114,7 +114,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         envelope.update(observation_sha256=sha(raw), observation_bytes=len(raw.encode()))
         return envelope
 
-    def fixture(self, *, approval=True, reply='COIN: SUIUSDT', followup=False, operation=OP):
+    def fixture(self, *, approval=True, reply='COIN: SUIUSDT', followup=False, operation=OP, symbols=None):
         url = 'https://app.neurobro.ai/chat/' + 'a' * 32
         rendered = self.body['prompt'] + '\n\n' + self.body['marker']
         rows = [dict(role='user', text=rendered, attachments=[]),
@@ -150,7 +150,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
             response = dict(schema_version=1, ok=True, request_id=request_id,
                 conversation_id=request['conversation_id'], phase='SCREENING', reply_sha256=reply_sha,
                 authority='DIALOGUE_CONTROL_ONLY', trading_authority=False,
-                decision=dict(action='SCREENING', symbols=['SUIUSDT'], question=''),
+                decision=dict(action='SCREENING', symbols=['SUIUSDT'] if symbols is None else symbols, question=''),
                 needs_followup=False, reason='DIALOGUE_DECISION')
             value = dict(schema_version=1, kind='NATIVE_SCREENING_MINI_REVIEW_V1', operation=operation,
                 request_sha256=self.request_hash, payload_sha256=digest(self.payload),
@@ -302,6 +302,37 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(robot.replacement_count(data, [], CYCLE), 0)
         self.db.execute('DELETE FROM screening_response_recoveries WHERE operation=?', (operation,))
         self.assertEqual(robot.replacement_count(data, [], CYCLE), 0)
+
+    def test_received_named_two_coin_reply_requires_actual_done_review_before_stale_nonexecution(self):
+        operation = CYCLE + ':screening:0:2'
+        self.context = None
+        _, schema = screening_contract(2)
+        self.body, serialized, self.request_hash = self.source.request_body(
+            operation, 'Instruksi screening awal asli untuk dua coin.', schema, None)
+        self.payload = {**self.body, 'request_sha256': self.request_hash}
+        original = dict(target=2, queue=[], seen=[], screen=-1, replacements=0, round_symbols=[], risk_target='5')
+        self.catalog.update(NEARUSDT={}, ZECUSDT={})
+        self.db.execute('UPDATE robot_cycles SET data=? WHERE id=?', (json.dumps(original), CYCLE))
+        self.db.execute('UPDATE robot_jobs SET operation=? WHERE operation=?', (operation, OP))
+        self.db.execute('UPDATE api_requests SET operation=?,body_hash=?,created=? WHERE operation=?',
+            (operation, self.request_hash, NOW-1000, OP))
+        self.db.execute('UPDATE research_browser_requests SET operation=?,request_sha256=?,marker=?,request_body=? WHERE operation=?',
+            (operation, self.request_hash, self.body['marker'], serialized, OP))
+        reply = (ROOT / 'tests/fixtures/neurobro_screening_named_choices_20261106.txt').read_text()
+        envelope = self.fixture(approval=False, operation=operation, reply=reply)
+        finances = self.finances()
+        with self.assertRaisesRegex(Review, 'SCREENING_MINI_APPROVAL_NOT_RETAINED'):
+            self.recover(envelope)
+        self.assertIsNone(self.db.execute('SELECT 1 FROM research_browser_responses WHERE operation=?', (operation,)).fetchone())
+        self.assertEqual(self.db.execute('SELECT state FROM api_requests WHERE operation=?', (operation,)).fetchone()[0], 'NEEDS_REVIEW')
+        approved = self.fixture(operation=operation, reply=reply, symbols=['NEARUSDT', 'ZECUSDT'])
+        self.assertEqual(self.recover(approved), 'NOEXEC')
+        api = dict(self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone())
+        self.assertEqual((api['state'], api['failure_code'], api['output'], api['attempts'], api['created']),
+            ('RECEIVED_STALE_NOT_EXECUTED', 'SCREENING_RESPONSE_RECEIVED_STALE', None, 1, NOW-1000))
+        self.assertEqual(self.db.execute('SELECT state FROM robot_jobs WHERE operation=?', (operation,)).fetchone()[0], 'COMPLETE')
+        self.assertEqual(json.loads(self.row('robot_cycles')['data']), {**original, 'screen': 0, 'replacement_due': 2})
+        self.assertEqual(self.finances(), finances)
 
     def test_root_replacement_flag_without_recovery_journal_is_not_a_trigger(self):
         from worker.robot import Coordinator
