@@ -1,6 +1,8 @@
 """Coordinator account reads recover only proven clock errors, before carry writes."""
 import copy
+import ast
 from collections import Counter
+from pathlib import Path
 import unittest
 from urllib.parse import urlsplit
 
@@ -50,6 +52,19 @@ class Store:
 
 
 class CoordinatorAccountReadRecoveryTests(unittest.TestCase):
+    def test_actual_native_coordinator_account_import_contract_remains_available(self):
+        from worker import account_state as account_module
+        native=Path(__file__).resolve().parents[1]/'vps_native/worker/robot.py'
+        tree=ast.parse(native.read_text())
+        imports=[alias.name for node in tree.body if isinstance(node,ast.ImportFrom)
+            and node.module=='account_state' for alias in node.names]
+        self.assertIn('MAX_REPLACEMENTS',imports)
+        for name in imports:
+            with self.subTest(name=name):self.assertTrue(hasattr(account_module,name))
+        # Compatibility cannot reintroduce a replacement limit into production.
+        self.assertFalse(any(isinstance(node,ast.Name) and node.id=='MAX_REPLACEMENTS'
+            for node in ast.walk(tree)))
+
     def test_first_config_clock_error_retries_only_check_then_completes_once(self):
         client=Client(checks=[BinanceCheckError('BINANCE_CLOCK_ERROR')]);store=Store()
         value=account_state(client,store,DAY)

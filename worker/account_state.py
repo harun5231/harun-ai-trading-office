@@ -12,6 +12,9 @@ from .prompts import SCREENING
 
 SCREENING_ONE='pilihkan 1 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance'
 MANUAL_ONLY_SYMBOLS=frozenset(('HYPEUSDT',))
+# Retain the existing native import contract; the coordinator does not use
+# this legacy value to limit HOLD replacements.
+MAX_REPLACEMENTS=3
 ACCOUNT_FIELDS=('running_positions','running_symbols','open_entry_symbols','available_slots','manual_exposure',
     'usdt_wallet_balance','usdt_available_balance','bot_entries_today')
 ACCOUNT_GENERATION=uuid4().hex
