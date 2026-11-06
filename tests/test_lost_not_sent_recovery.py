@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from tests import test_analysis_continuation as continuation_fixture
-from tests.test_analysis_response_recovery import NOW,DAY,OP
+from tests.test_analysis_response_recovery import NOW,DAY,OP,CYCLE
 from worker.analysis_continuation import (admit,active_grant,record_return,retry_not_sent,
     recover_lost_not_sent,_observation_semantics,_not_sent)
 from worker.analysis_response_recovery import wire,sha,digest,resume_uncertain_analysis
@@ -163,6 +163,8 @@ class NativeAdmissionRenewedCapabilityRegression(unittest.TestCase):
         f=continuation_fixture.AnalysisContinuationTests('test_original_clock_and_owner_risk_survive_explicit_followup_grant')
         f.setUp();self.addCleanup(f.doCleanups)
         provider=f.provider;root=pathlib.Path(f.f.root.name);payload=f.f.payload
+        data=json.loads(f.f.row('robot_cycles')['data']);data.update(target=1,queue=[],round_symbols=['BTCUSDT'])
+        provider.db.execute('UPDATE robot_cycles SET data=? WHERE id=?',(json.dumps(data),CYCLE))
         source=copy.deepcopy(f.envelope['observation'])
         source.update(observed_at=NOW-3,finished_at=NOW-2)
         source['operation_scope'].update(initial_user=0,latest_user=2,reply_row=3,user_rows=[0,2],reason=None)
@@ -251,3 +253,4 @@ class NativeAdmissionRenewedCapabilityRegression(unittest.TestCase):
         self.assertEqual(provider.db.execute('SELECT enabled,risk FROM robot_settings').fetchone()[:],(1,'5'))
         self.assertIsNone(f.f.row('api_requests')['output'])
         self.assertIsNone(f.f.row('robot_candidates')['plan'])
+        self.lifecycle=dict(f=f,provider=provider,root=root,payload=payload,current=current,capability=next_capability)

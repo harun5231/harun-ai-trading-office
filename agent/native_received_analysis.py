@@ -662,11 +662,18 @@ def observe(actor, delegated, value):
         history_restore_attempted=False, history_restored=False, status=None,
         stage='BOUND_ROOM_READ', errors=[])
     old_deadline, old_visible = raw.operation_deadline, raw._visible
+    missing_names=object();old_names=getattr(raw,'uploaded_names',missing_names);names_changed=False
     with room.lock:
         try:
             raw.operation_deadline = raw.clock() + 25
             raw._visible = room.original_visible
             _gate(actor)
+            # uploaded_names is the previous Send's attachment projection hint,
+            # not evidence that a plain manual message contains those files.
+            # The actor owns this read; actual owned uploads remain proven by
+            # positive per-turn DOM file tiles below. Never change the hint
+            # before ownership validation, and restore the exact prior object.
+            raw.uploaded_names=[];names_changed=True
             record = _room_record(room.store.root, operation[:10],allow_sent=generic)
             snapshot=record.pop('_journal_snapshot',None)
             capture['room'] = record
@@ -761,6 +768,9 @@ def observe(actor, delegated, value):
                 stage=capture['stage']))
         finally:
             raw.operation_deadline, raw._visible = old_deadline, old_visible
+            if names_changed:
+                if old_names is missing_names:del raw.uploaded_names
+                else:raw.uploaded_names=old_names
         capture['finished_at'] = time.time()
         if generic and not screening:
             # A lost HTTP return may hide a positive native NOT_SENT receipt.
