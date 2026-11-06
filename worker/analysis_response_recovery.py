@@ -306,7 +306,7 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False,
         need(reason in {'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
             'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
             'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
-            'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'},'ANALYSIS_CONTINUATION_NOT_REQUIRED')
+            'ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_JSON_SUMMARY_INVALID'},'ANALYSIS_CONTINUATION_NOT_REQUIRED')
         return dict(reason=reason,reply_sha256=sha(rows[-1]['text']),
             latest_user_prompt_sha256=sha(rows[-2]['text']),next_followup_sequence=len(rows)//2,
             received_at=proof['finished_at'])
@@ -646,7 +646,7 @@ def resume_uncertain_analysis(coordinator,today,account):
             repairable={'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
                 'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
                 'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
-                'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'}
+                'ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_JSON_SUMMARY_INVALID'}
             continuation=getattr(coordinator.neuro,'continue_received_analysis',None)
             if str(error) not in repairable or not callable(continuation):raise
             grant=admit(coordinator.neuro,envelope,permitted=lambda:coordinator.allowed(today))
@@ -657,6 +657,7 @@ def resume_uncertain_analysis(coordinator,today,account):
             'NEUROBRO_BUSY','NEUROBRO_UNAVAILABLE','NEUROBRO_BROWSER_NOT_CONFIGURED','RESEARCH_PAUSED',
             'ANALYSIS_REPLY_NOT_COMPLETE','ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_INPUT_UNREADABLE',
             'NEUROBRO_REPLY_INCOMPLETE','NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE',
+            'NEUROBRO_JSON_SUMMARY_INVALID',
             'ANALYSIS_INITIAL_MATERIAL_RECEIPT_MISSING','ANALYSIS_RESPONSE_OBSERVATION_PENDING',
             'ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN','ANALYSIS_CONTINUATION_SOURCE_ALREADY_ADMITTED'}
         return coordinator.store.report('WAITING',account,wait_reason=(reason if reason in safe else 'ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED'))

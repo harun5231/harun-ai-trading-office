@@ -259,6 +259,39 @@ class AnalysisContinuationTests(unittest.TestCase):
         proof['payload_sha256']=sha(wire(self.f.payload));self.f.seal(self.envelope)
         with self.assertRaises(Review):admit(self.provider,self.envelope,now=NOW)
 
+    def test_malformed_final_json_keeps_authored_error_and_admits_same_room_format_clarification(self):
+        # The authenticated current author supplied an incomplete final JSON
+        # object. A model must not fill the missing SL or turn this into HOLD.
+        reply='Ringkasan akhir\n{"COIN":"BTCUSDT","ARAH":"SHORT","ENTRY":100,"TP":90}'
+        envelope=self.f.fixture(reply=reply,approval=False)
+        basis=validate_observation(self.provider,envelope,self.f.payload,self.f.created,now=NOW,repair=True)
+        self.assertEqual(basis['reason'],'NEUROBRO_JSON_SUMMARY_INVALID')
+        with self.assertRaisesRegex(Review,'NEUROBRO_JSON_SUMMARY_INVALID'):
+            validate_observation(self.provider,envelope,self.f.payload,self.f.created,now=NOW)
+        self.provider.observe_received_analysis=lambda operation:envelope
+        self.provider.continue_received_analysis=None
+        coordinator=SimpleNamespace(neuro=self.provider,db=self.db,allowed=lambda today:True,
+            store=SimpleNamespace(report=lambda status,account,**kw:dict(status=status,**kw)),pause_reason=lambda:'ROBOT_OFF')
+        with patch('worker.analysis_response_recovery.time.time',return_value=NOW):
+            waiting=resume_uncertain_analysis(coordinator,DAY,{})
+        self.assertEqual(waiting['wait_reason'],'NEUROBRO_JSON_SUMMARY_INVALID')
+        self.assertIsNone(active_grant(self.db,OP))
+        calls=[]
+        def existing_continuation(operation,grant):
+            calls.append((operation,grant['reply_sha256']))
+            return dict(kind='NATIVE_ANALYSIS_CONTINUATION_RESULT_V1',operation=operation,
+                request_sha256=self.f.request_hash,grant_id=grant['grant_id'])
+        self.provider.continue_received_analysis=existing_continuation
+        with patch('worker.analysis_response_recovery.time.time',return_value=NOW):
+            result=resume_uncertain_analysis(coordinator,DAY,{})
+        self.assertEqual(result['wait_reason'],'ANALYSIS_CONTINUATION_REPLY_RECONCILING')
+        self.assertEqual(calls,[(OP,sha(reply))])
+        self.assertEqual(self.f.row('api_requests')['state'],'PENDING')
+        self.assertIsNone(self.f.row('api_requests')['output'])
+        self.assertEqual(self.f.row('robot_candidates')['status'],'REJECTED')
+        self.assertIsNone(self.f.row('robot_candidates')['plan'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
     def test_scheduler_continues_once_then_observes_and_resumes_without_another_send(self):
         responses=[self.envelope,self.new_reply()];calls=[]
         self.provider.observe_received_analysis=lambda operation:responses.pop(0)
