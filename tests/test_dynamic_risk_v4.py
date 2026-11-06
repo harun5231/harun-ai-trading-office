@@ -1,3 +1,4 @@
+"""Archived V4 policy: accepted plans retain their original arithmetic."""
 import copy
 import json
 from dataclasses import asdict, replace, fields
@@ -9,9 +10,24 @@ from unittest.mock import patch
 
 from worker.core import (D, Review, Signal, Rules, DynamicRules, FEE_SOURCE,
     RISK_MODEL, DYNAMIC_RISK_MODEL, DYNAMIC_REWARD_RISK_POLICY,
-    risk_check, maximum_risk_quantity, preflight, validate_normalized_plan, verified_rr)
-from worker.dynamic_risk import (COST_SOURCE, BRACKET_SOURCE, costs, estimate_existing,
-    leverage_for, market_evidence, book_impact, MODEL, plan as dynamic_plan)
+    risk_check as current_risk_check, maximum_risk_quantity as current_maximum_risk_quantity, preflight, validate_normalized_plan, verified_rr)
+from worker.dynamic_risk import (COST_SOURCE, BRACKET_SOURCE, _legacy_costs as costs, estimate_existing,
+    leverage_for, market_evidence, book_impact, MODEL, _legacy_plan as dynamic_plan, _legacy_maximum_quantity)
+
+
+def risk_check(signal, rules, risk_target=D('5'), *, risk_model=None, reward_risk_policy=None):
+    # Historical policy tests explicitly select the preserved builder. New
+    # default production routing is covered by test_fee_only_sl_risk.
+    if risk_model == MODEL:
+        return dynamic_plan(signal, rules, risk_target)
+    return current_risk_check(signal, rules, risk_target,
+        risk_model=risk_model, reward_risk_policy=reward_risk_policy)
+
+
+def maximum_risk_quantity(entry, sl, rules, target, *, risk_model=None, side=None):
+    if risk_model == MODEL:
+        return _legacy_maximum_quantity(entry, sl, side, rules, target)
+    return current_maximum_risk_quantity(entry, sl, rules, target, risk_model=risk_model, side=side)
 
 
 class DynamicOwnerRiskTests(unittest.TestCase):

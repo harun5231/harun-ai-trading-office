@@ -1,7 +1,7 @@
-"""Owner policy V4: immutable, data-derived costs for new order intents only.
+"""Versioned owner risk arithmetic for new order intents only.
 
 This module has no exchange client, order methods, credentials, or state writes.
-Older plans stay on their original core V2/V3 arithmetic. Market observations are
+Older plans keep their original V2/V3/V4 arithmetic. Market observations are
 inputs, not predictions or permission to alter an accepted order.
 """
 import copy
@@ -16,7 +16,9 @@ from .core import (D, Review, Signal, number, validated_risk_target,
     validated_fee_rate, _exact_decimal, _exact_text, _ratio_decimal)
 
 MODEL = 'DYNAMIC_NET_2R_V4'
-POLICY = 'NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4'
+LEGACY_POLICY = 'NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4'
+POLICY_VERSION = 'FEE_ONLY_SL_RISK_PRICE_PNL_2R_V1'
+POLICY = 'ACTUAL_SL_LOSS_WITH_FEES_PRICE_PNL_2R_V1'
 COST_SOURCE = 'BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS'
 BRACKET_SOURCE = 'BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET'
 MIN_SAMPLE_COUNT = 20
@@ -160,7 +162,7 @@ def book_impact(quantity, evidence):
     return _rate_up(max(F(0), impact)), vwap
 
 
-def _cost_values(entry, tp, sl, quantity, fee, side, evidence):
+def _legacy_cost_values(entry, tp, sl, quantity, fee, side, evidence):
     e, t, s, q = map(F, (entry, tp, sl, quantity))
     impact, vwap = book_impact(q, evidence)
     uncertainty = evidence['uncertainty']; reserve = impact + uncertainty
@@ -179,7 +181,7 @@ def _cost_values(entry, tp, sl, quantity, fee, side, evidence):
         sl_fill=sl_fill, tp_fill=tp_fill, impact=impact, reserve=reserve, vwap=vwap)
 
 
-def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_fresh=True):
+def _legacy_maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_fresh=True):
     symbol = symbol or rules.fee_symbol
     evidence = market_evidence(rules, symbol, side, check_fresh=check_fresh)
     fee = F(validated_fee_rate(rules, symbol, check_fresh=check_fresh))
@@ -197,7 +199,7 @@ def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_
     # search ends on a legal lot interval, not an arbitrary iteration limit.
     while low < high:
         middle = (low + high + 1) // 2
-        costs = _cost_values(e, e, s, middle * step, fee, side, evidence)
+        costs = _legacy_cost_values(e, e, s, middle * step, fee, side, evidence)
         if costs['total'] <= target:
             low = middle
         else:
@@ -210,7 +212,7 @@ def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_
     # Missing depth is missing evidence, never a justification to silently
     # downsize an otherwise larger within-budget order.
     if searched_quantity + step <= maximum and searched_quantity + step > depth:
-        known_loss = _cost_values(e, e, s, searched_quantity, fee, side, evidence)['total']
+        known_loss = _legacy_cost_values(e, e, s, searched_quantity, fee, side, evidence)['total']
         if account_limits is None:
             _need(known_loss >= target, 'SLIPPAGE_DEPTH_INSUFFICIENT')
         else:
@@ -296,14 +298,14 @@ def leverage_for(notional, rules, symbol, *, check_fresh=True):
         account_max_leverage=account_max, selected_leverage=value)
 
 
-def costs(entry, tp, sl, quantity, rules, side, *, symbol=None, check_fresh=True):
+def _legacy_costs(entry, tp, sl, quantity, rules, side, *, symbol=None, check_fresh=True):
     symbol = symbol or rules.fee_symbol
     evidence = market_evidence(rules, symbol, side, check_fresh=check_fresh)
     fee = F(validated_fee_rate(rules, symbol, check_fresh=check_fresh))
     e, t, s, q = (F(number(v)) for v in (entry, tp, sl, quantity))
     _need(side in ('LONG', 'SHORT') and (s < e < t if side == 'LONG' else t < e < s),
         'INVALID_ENTRY_TP_SL')
-    values = _cost_values(e, t, s, q, fee, side, evidence)
+    values = _legacy_cost_values(e, t, s, q, fee, side, evidence)
     result = dict(risk_model=MODEL, risk=_exact_text(values['total']), total_risk=_exact_text(values['total']),
         gross_risk=_exact_text(values['gross_risk']), gross_reward=_exact_text(values['gross_reward']),
         net_reward=_exact_text(values['reward']), entry_fee_usdt=_exact_text(values['entry_fee']),
@@ -337,7 +339,7 @@ def costs(entry, tp, sl, quantity, rules, side, *, symbol=None, check_fresh=True
     return result
 
 
-def plan(signal, rules, risk_target, *, check_fresh=True):
+def _legacy_plan(signal, rules, risk_target, *, check_fresh=True):
     from .core import _validate_normalized_signal, DynamicRules
     _need(isinstance(rules,DynamicRules), 'INVALID_RULES_SCHEMA')
     rules = replace(rules, dynamic_cost_evidence=copy.deepcopy(rules.dynamic_cost_evidence),
@@ -346,7 +348,7 @@ def plan(signal, rules, risk_target, *, check_fresh=True):
     # directional TP proposal, but does not impose its old pre-normalization RR.
     _validate_normalized_signal(signal, rules, check_fresh=check_fresh, require_original_rr=False)
     target = validated_risk_target(risk_target)
-    quantity = maximum_quantity(signal.entry, signal.sl, signal.side, rules, target,
+    quantity = _legacy_maximum_quantity(signal.entry, signal.sl, signal.side, rules, target,
         symbol=signal.symbol, check_fresh=check_fresh)
     evidence = market_evidence(rules, signal.symbol, signal.side, check_fresh=check_fresh)
     fee = F(validated_fee_rate(rules, signal.symbol, check_fresh=check_fresh))
@@ -365,7 +367,7 @@ def plan(signal, rules, risk_target, *, check_fresh=True):
             continue
         if not F(rules.min_price) <= price <= F(rules.max_price):
             continue
-        values = _cost_values(e, price, F(signal.sl), q, fee, signal.side, evidence)
+        values = _legacy_cost_values(e, price, F(signal.sl), q, fee, signal.side, evidence)
         candidates.append((abs(values['reward']-2*F(target)), -values['reward'], price, values))
     _need(candidates, 'NO_LEGAL_NET_RR_TP')
     _, _, tp, values = min(candidates, key=lambda item:(item[0], item[1]))
@@ -375,7 +377,7 @@ def plan(signal, rules, risk_target, *, check_fresh=True):
         execution_tp=_exact_text(tp), quantity=format(quantity,'f'), execution_quantity=format(quantity,'f'),
         margin_mode='CROSS', leverage=selected_leverage, order_type='LIMIT', mode='ORDER_INTENT',
         risk_target_usdt=format(target,'f'), rules_checked_at=rules.observed_at,
-        reward_risk_policy=POLICY, policy_version=MODEL,
+        reward_risk_policy=LEGACY_POLICY, policy_version=MODEL,
         target_net_reward_usdt=_exact_text(2*F(target)),
         net_reward_target_difference_usdt=_exact_text(values['reward']-2*F(target)),
         leverage_evidence=leverage,
@@ -386,21 +388,159 @@ def plan(signal, rules, risk_target, *, check_fresh=True):
             nominal_risk_target_usdt=format(target,'f'), target_net_reward_usdt=_exact_text(2*F(target)),
             net_reward_target_difference_usdt=_exact_text(values['reward']-2*F(target)),
             tick_size=format(rules.tick,'f'), rounding='NEAREST_NET_USDT_TARGET_TICK', risk_model=MODEL),
-        **costs(signal.entry,_exact_decimal(tp),signal.sl,quantity,rules,signal.side,
+        **_legacy_costs(signal.entry,_exact_decimal(tp),signal.sl,quantity,rules,signal.side,
             symbol=signal.symbol,check_fresh=check_fresh))
     return result
 
 
+def _cost_values(entry, tp, sl, quantity, fee, side, evidence=None):
+    """SL loss includes account entry/SL fees only; TP target uses price PNL."""
+    e, t, s, q, fee = map(F, (entry, tp, sl, quantity, fee))
+    gross_risk, gross_reward = q * abs(e-s), q * abs(t-e)
+    entry_fee, sl_fee, tp_fee = q*e*fee, q*s*fee, q*t*fee
+    return dict(total=gross_risk+entry_fee+sl_fee,
+        # Reporting only: neither this estimate nor the TP fee sets the TP.
+        reward=gross_reward-entry_fee-tp_fee, gross_risk=gross_risk,
+        gross_reward=gross_reward, entry_fee=entry_fee, sl_fee=sl_fee, tp_fee=tp_fee,
+        sl_book=F(0), sl_unknown=F(0), tp_book=F(0), tp_unknown=F(0),
+        sl_fill=s, tp_fill=t, impact=F(0), reserve=F(0))
+
+
+def maximum_quantity(entry, sl, side, rules, risk_target, *, symbol=None, check_fresh=True):
+    symbol = symbol or rules.fee_symbol
+    fee = F(validated_fee_rate(rules, symbol, check_fresh=check_fresh))
+    e, s, target = F(number(entry)), F(number(sl)), F(validated_risk_target(risk_target))
+    _need(side in ('LONG', 'SHORT') and (s < e if side == 'LONG' else s > e), 'INVALID_ENTRY_TP_SL')
+    step, minimum, maximum = (F(number(v)) for v in (rules.step, rules.minimum, rules.maximum))
+    unit_loss = abs(e-s)+fee*(e+s)
+    ceiling = min(maximum, (target / (unit_loss*step) // 1)*step)
+    limits = _account_limits(rules, symbol, check_fresh=check_fresh)
+    if limits is None:
+        # Schema 1 has no available-balance snapshot. Preserve that schema's
+        # margin behavior, while still enforcing its real leverage/notional cap.
+        _, brackets, account_max = _bracket_data(rules, symbol, check_fresh=check_fresh)
+        limits = brackets, account_max, maximum*e*(1+fee)
+    quantity = _maximum_account_quantity(ceiling, step, e, fee, limits)
+    _need(quantity >= minimum and quantity > 0 and quantity*e >= F(rules.min_notional),
+        'NO_LEGAL_MAX_RISK_QUANTITY')
+    return _exact_decimal(quantity)
+
+
+def costs(entry, tp, sl, quantity, rules, side, *, symbol=None, check_fresh=True):
+    symbol = symbol or rules.fee_symbol
+    fee = F(validated_fee_rate(rules, symbol, check_fresh=check_fresh))
+    e, t, s, q = (F(number(v)) for v in (entry, tp, sl, quantity))
+    _need(side in ('LONG', 'SHORT') and (s < e < t if side == 'LONG' else t < e < s),
+        'INVALID_ENTRY_TP_SL')
+    values = _cost_values(e, t, s, q, fee, side)
+    result = dict(risk_model=MODEL, risk=_exact_text(values['total']), total_risk=_exact_text(values['total']),
+        gross_risk=_exact_text(values['gross_risk']), gross_reward=_exact_text(values['gross_reward']),
+        net_reward=_exact_text(values['reward']), entry_fee_usdt=_exact_text(values['entry_fee']),
+        sl_exit_fee_usdt=_exact_text(values['sl_fee']), tp_exit_fee_usdt=_exact_text(values['tp_fee']),
+        sl_book_impact_usdt='0', tp_book_impact_usdt='0',
+        sl_liquidity_uncertainty_usdt='0', tp_liquidity_uncertainty_usdt='0',
+        sl_slippage_usdt='0', tp_slippage_usdt='0',
+        sl_execution_price=_exact_text(s), tp_execution_price=_exact_text(t),
+        exit_slippage_rate='0', entry_slippage_rate='0',
+        entry_fee_rate=format(rules.taker_fee_rate, 'f'), exit_fee_rate=format(rules.taker_fee_rate, 'f'),
+        tp_fee_rate=format(rules.taker_fee_rate, 'f'), fee_symbol=rules.fee_symbol,
+        fee_source=rules.fee_source, fee_observed_at=rules.fee_observed_at,
+        rr=str(_ratio_decimal(abs(t-e)/abs(e-s))),
+        net_rr=str(_ratio_decimal(values['reward']/values['total'])),
+        price_pnl_reward_risk=str(_ratio_decimal(values['gross_reward']/values['total'])),
+        sizing_method='MAX_LOT_ENTRY_SL_ACCOUNT_FEES_ONLY_V1',
+        excluded_costs=['SLIPPAGE','BOOK_IMPACT','LIQUIDITY_UNCERTAINTY','FUNDING','GAPS'])
+    # Preserve execution observations without letting them resize or reprice a
+    # setup. Frozen observations are interpreted without a wall-clock freshness
+    # gate so accepted-plan validation is deterministic after time passes.
+    # Missing depth is not a synthetic zero expected impact observation.
+    telemetry = dict(expected_book_impact_rate=None, status='UNAVAILABLE')
+    try:
+        evidence = market_evidence(rules, symbol, side, check_fresh=False)
+        impact, _ = book_impact(q, evidence)
+        telemetry = dict(expected_book_impact_rate=_exact_text(impact), status='AVAILABLE',
+            future_liquidity_uncertainty_rate=_exact_text(evidence['uncertainty']))
+    except Review as error:
+        telemetry['reason'] = str(error)
+    except (KeyError, TypeError, ValueError):
+        telemetry['reason'] = 'INVALID_COST_EVIDENCE'
+    result['cost_evidence'] = dict(version=POLICY_VERSION,
+        market=copy.deepcopy(rules.dynamic_cost_evidence),
+        closing_side='SELL' if side == 'LONG' else 'BUY',
+        expected_book_impact_rate=telemetry['expected_book_impact_rate'],
+        slippage_observation=telemetry, slippage_in_risk_and_tp=False,
+        fee_source=rules.fee_source, fee_symbol=symbol, fee_observed_at=rules.fee_observed_at,
+        taker_fee_rate=format(rules.taker_fee_rate, 'f'),
+        risk_basis='ENTRY_TO_ORIGINAL_SL_PRICE_LOSS_PLUS_ENTRY_AND_SL_EXIT_FEES',
+        tp_target_basis='PRICE_PNL_BEFORE_TP_FEES_EQUALS_TWICE_ACTUAL_SL_TOTAL_RISK',
+        tp_fee_usage='REPORTING_ONLY_NOT_IN_SL_RISK_OR_TP_TARGET')
+    return result
+
+
+def plan(signal, rules, risk_target, *, check_fresh=True):
+    from .core import _validate_normalized_signal, DynamicRules
+    _need(isinstance(rules, DynamicRules), 'INVALID_RULES_SCHEMA')
+    rules = replace(rules, dynamic_cost_evidence=copy.deepcopy(rules.dynamic_cost_evidence),
+        leverage_brackets=copy.deepcopy(rules.leverage_brackets))
+    _validate_normalized_signal(signal, rules, check_fresh=check_fresh, require_original_rr=False)
+    target = validated_risk_target(risk_target)
+    quantity = maximum_quantity(signal.entry, signal.sl, signal.side, rules, target,
+        symbol=signal.symbol, check_fresh=check_fresh)
+    fee = F(validated_fee_rate(rules, signal.symbol, check_fresh=check_fresh))
+    e, s, q, tick = map(F, (signal.entry, signal.sl, quantity, rules.tick))
+    values = _cost_values(e, e, s, q, fee, signal.side)
+    price_target = 2*values['total']
+    ideal = e+price_target/q if signal.side == 'LONG' else e-price_target/q
+    steps = ideal/tick
+    count = -(-steps.numerator//steps.denominator) if signal.side == 'LONG' else steps.numerator//steps.denominator
+    tp = count*tick
+    _need(tp > 0 and F(rules.min_price) <= tp <= F(rules.max_price)
+        and (tp > e if signal.side == 'LONG' else tp < e), 'NO_LEGAL_PRICE_PNL_2R_TP')
+    values = _cost_values(e, tp, s, q, fee, signal.side)
+    _need(values['gross_reward'] >= price_target, 'NO_LEGAL_PRICE_PNL_2R_TP')
+    selected_leverage, leverage = leverage_for(q*e, rules, signal.symbol, check_fresh=check_fresh)
+    difference = values['gross_reward']-price_target
+    return dict(symbol=signal.symbol, side=signal.side, entry=format(signal.entry, 'f'),
+        sl=format(signal.sl, 'f'), tp=_exact_text(tp), neurobro_tp=format(signal.tp, 'f'),
+        execution_tp=_exact_text(tp), quantity=format(quantity, 'f'), execution_quantity=format(quantity, 'f'),
+        margin_mode='CROSS', leverage=selected_leverage, order_type='LIMIT', mode='ORDER_INTENT',
+        risk_target_usdt=format(target, 'f'), rules_checked_at=rules.observed_at,
+        reward_risk_policy=POLICY, policy_version=POLICY_VERSION,
+        target_price_pnl_usdt=_exact_text(price_target),
+        price_pnl_target_difference_usdt=_exact_text(difference),
+        # Existing gateway ABI: there is deliberately no after-fee TP target in
+        # this policy. The actual diagnostic net_reward remains separately true.
+        target_net_reward_usdt=None, net_reward_target_difference_usdt=None,
+        leverage_evidence=leverage,
+        tp_normalization=dict(version=POLICY_VERSION, source='OWNER_AUTHORIZED_RISK_MANAGER',
+            model_entry=format(signal.entry, 'f'), model_sl=format(signal.sl, 'f'),
+            model_tp=format(signal.tp, 'f'), execution_tp=_exact_text(tp),
+            model_gross_rr=str(_ratio_decimal(abs(F(signal.tp)-e)/abs(e-s))),
+            nominal_risk_target_usdt=format(target, 'f'), actual_sl_total_risk_usdt=_exact_text(values['total']),
+            target_price_pnl_usdt=_exact_text(price_target),
+            price_pnl_target_difference_usdt=_exact_text(difference),
+            tick_size=format(rules.tick, 'f'), rounding='NEAREST_OUTWARD_TICK_AT_LEAST_PRICE_PNL_2R',
+            tp_target_includes_tp_fee=False, risk_model=MODEL),
+        **costs(signal.entry, _exact_decimal(tp), signal.sl, quantity, rules, signal.side,
+            symbol=signal.symbol, check_fresh=check_fresh))
+
+
 def validate(plan_value, rules, *, check_fresh=False):
     try:
-        _need(plan_value.get('risk_model') == MODEL and plan_value.get('policy_version') == MODEL
-            and plan_value.get('reward_risk_policy') == POLICY, 'INVALID_COST_MODEL')
+        _need(plan_value.get('risk_model') == MODEL, 'INVALID_COST_MODEL')
+        version, policy = plan_value.get('policy_version'), plan_value.get('reward_risk_policy')
+        if (version, policy) == (MODEL, LEGACY_POLICY):
+            builder = _legacy_plan
+        elif (version, policy) == (POLICY_VERSION, POLICY):
+            builder = plan
+        else:
+            raise Review('INVALID_COST_MODEL')
         original = plan_value['tp_normalization']
         signal = Signal(plan_value['symbol'], plan_value['side'], number(original['model_entry']),
             number(original['model_tp']), number(original['model_sl']))
-        expected = plan(signal, rules, plan_value['risk_target_usdt'], check_fresh=check_fresh)
+        expected = builder(signal, rules, plan_value['risk_target_usdt'], check_fresh=check_fresh)
         for key, value in expected.items():
-            _need(plan_value.get(key) == value, 'ORDER_COSTS_CHANGED')
+            _need(key in plan_value and plan_value[key] == value, 'ORDER_COSTS_CHANGED')
         return True
     except Review:
         raise
@@ -411,7 +551,8 @@ def validate(plan_value, rules, *, check_fresh=False):
 def estimate_existing(plan_value, fresh_rules):
     """Return a separate monitoring estimate; never return replacement levels."""
     side = plan_value['side']; symbol = plan_value['symbol']
-    result = costs(number(plan_value['entry']), number(plan_value['tp']), number(plan_value['sl']),
+    calculator = costs if plan_value.get('policy_version') == POLICY_VERSION else _legacy_costs
+    result = calculator(number(plan_value['entry']), number(plan_value['tp']), number(plan_value['sl']),
         number(plan_value['quantity']), fresh_rules, side, symbol=symbol, check_fresh=True)
     target = validated_risk_target(plan_value['risk_target_usdt'])
     return dict(kind='MONITORING_ESTIMATE_ONLY', symbol=symbol,

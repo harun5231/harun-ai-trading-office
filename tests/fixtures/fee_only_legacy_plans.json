@@ -1,0 +1,3434 @@
+{
+  "cases": [
+    {
+      "intent": {
+        "client_order_id": "hao-177d73fa55e02c9adcdcee9a20da",
+        "cost_evidence": {
+          "closing_side": "SELL",
+          "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+          "execution_excess_q95_rate": "0",
+          "execution_history_min_samples": 20,
+          "execution_sample_count": 0,
+          "expected_book_impact_rate": "0.00058236659",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "future_liquidity_uncertainty_rate": "0.000028",
+          "market": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "price_move_q95_rate": "0.000028",
+          "price_move_sample_count": 29,
+          "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+          "taker_fee_rate": "0.0005",
+          "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+          "uncertainty_observation_horizons_seconds": [
+            900
+          ],
+          "version": "DYNAMIC_NET_2R_V4",
+          "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+        },
+        "entry": {
+          "order_type": "LIMIT",
+          "price": "100",
+          "quantity": "4.31",
+          "side": "BUY",
+          "time_in_force": "GTC"
+        },
+        "entry_fee_usdt": "0.2155",
+        "evidence_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_EMPIRICAL_RESERVE"
+        ],
+        "fee_evidence": {
+          "observed_at": 1794000000,
+          "source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "symbol": "ETHUSDT",
+          "taker_rate": "0.0005"
+        },
+        "gross_risk_usdt": "4.31",
+        "intent_id": "frozen-v4_schema1",
+        "leverage": 75,
+        "leverage_evidence": {
+          "account_max_leverage": 125,
+          "selected_bracket": {
+            "index": 0,
+            "max_leverage": 125,
+            "notional_cap": "10000",
+            "notional_floor": "0"
+          },
+          "selected_leverage": 75,
+          "snapshot": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "observed_at": 1794000000,
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          }
+        },
+        "margin_mode": "CROSS",
+        "net_reward_risk": "1.996938302016700981208769449303425624495970761347909852715544976338266260288691821560286989237683330140859391529585467985234047396788539766211389315656326617754",
+        "net_reward_target_difference_usdt": "-0.017001690653843404",
+        "net_reward_usdt": "9.982998309346156596",
+        "neurobro_tp": "104",
+        "normalized_plan": {
+          "cost_evidence": {
+            "closing_side": "SELL",
+            "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+            "execution_excess_q95_rate": "0",
+            "execution_history_min_samples": 20,
+            "execution_sample_count": 0,
+            "expected_book_impact_rate": "0.00058236659",
+            "fee_observed_at": 1794000000,
+            "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+            "fee_symbol": "ETHUSDT",
+            "future_liquidity_uncertainty_rate": "0.000028",
+            "market": {
+              "asks": [
+                [
+                  "100.01",
+                  "2"
+                ],
+                [
+                  "100.1",
+                  "8"
+                ],
+                [
+                  "100.5",
+                  "1000"
+                ]
+              ],
+              "bids": [
+                [
+                  "99.99",
+                  "2"
+                ],
+                [
+                  "99.9",
+                  "8"
+                ],
+                [
+                  "99.5",
+                  "1000"
+                ]
+              ],
+              "execution_samples": [],
+              "observed_at": 1794000000,
+              "price_moves": [
+                {
+                  "end": 1793973900,
+                  "high": "100.0001",
+                  "low": "99.9999",
+                  "reference": "100",
+                  "start": 1793973000
+                },
+                {
+                  "end": 1793974800,
+                  "high": "100.0002",
+                  "low": "99.9998",
+                  "reference": "100",
+                  "start": 1793973900
+                },
+                {
+                  "end": 1793975700,
+                  "high": "100.0003",
+                  "low": "99.9997",
+                  "reference": "100",
+                  "start": 1793974800
+                },
+                {
+                  "end": 1793976600,
+                  "high": "100.0004",
+                  "low": "99.9996",
+                  "reference": "100",
+                  "start": 1793975700
+                },
+                {
+                  "end": 1793977500,
+                  "high": "100.0005",
+                  "low": "99.9995",
+                  "reference": "100",
+                  "start": 1793976600
+                },
+                {
+                  "end": 1793978400,
+                  "high": "100.0006",
+                  "low": "99.9994",
+                  "reference": "100",
+                  "start": 1793977500
+                },
+                {
+                  "end": 1793979300,
+                  "high": "100.0007",
+                  "low": "99.9993",
+                  "reference": "100",
+                  "start": 1793978400
+                },
+                {
+                  "end": 1793980200,
+                  "high": "100.0008",
+                  "low": "99.9992",
+                  "reference": "100",
+                  "start": 1793979300
+                },
+                {
+                  "end": 1793981100,
+                  "high": "100.0009",
+                  "low": "99.9991",
+                  "reference": "100",
+                  "start": 1793980200
+                },
+                {
+                  "end": 1793982000,
+                  "high": "100.001",
+                  "low": "99.999",
+                  "reference": "100",
+                  "start": 1793981100
+                },
+                {
+                  "end": 1793982900,
+                  "high": "100.0011",
+                  "low": "99.9989",
+                  "reference": "100",
+                  "start": 1793982000
+                },
+                {
+                  "end": 1793983800,
+                  "high": "100.0012",
+                  "low": "99.9988",
+                  "reference": "100",
+                  "start": 1793982900
+                },
+                {
+                  "end": 1793984700,
+                  "high": "100.0013",
+                  "low": "99.9987",
+                  "reference": "100",
+                  "start": 1793983800
+                },
+                {
+                  "end": 1793985600,
+                  "high": "100.0014",
+                  "low": "99.9986",
+                  "reference": "100",
+                  "start": 1793984700
+                },
+                {
+                  "end": 1793986500,
+                  "high": "100.0015",
+                  "low": "99.9985",
+                  "reference": "100",
+                  "start": 1793985600
+                },
+                {
+                  "end": 1793987400,
+                  "high": "100.0016",
+                  "low": "99.9984",
+                  "reference": "100",
+                  "start": 1793986500
+                },
+                {
+                  "end": 1793988300,
+                  "high": "100.0017",
+                  "low": "99.9983",
+                  "reference": "100",
+                  "start": 1793987400
+                },
+                {
+                  "end": 1793989200,
+                  "high": "100.0018",
+                  "low": "99.9982",
+                  "reference": "100",
+                  "start": 1793988300
+                },
+                {
+                  "end": 1793990100,
+                  "high": "100.0019",
+                  "low": "99.9981",
+                  "reference": "100",
+                  "start": 1793989200
+                },
+                {
+                  "end": 1793991000,
+                  "high": "100.002",
+                  "low": "99.998",
+                  "reference": "100",
+                  "start": 1793990100
+                },
+                {
+                  "end": 1793991900,
+                  "high": "100.0021",
+                  "low": "99.9979",
+                  "reference": "100",
+                  "start": 1793991000
+                },
+                {
+                  "end": 1793992800,
+                  "high": "100.0022",
+                  "low": "99.9978",
+                  "reference": "100",
+                  "start": 1793991900
+                },
+                {
+                  "end": 1793993700,
+                  "high": "100.0023",
+                  "low": "99.9977",
+                  "reference": "100",
+                  "start": 1793992800
+                },
+                {
+                  "end": 1793994600,
+                  "high": "100.0024",
+                  "low": "99.9976",
+                  "reference": "100",
+                  "start": 1793993700
+                },
+                {
+                  "end": 1793995500,
+                  "high": "100.0025",
+                  "low": "99.9975",
+                  "reference": "100",
+                  "start": 1793994600
+                },
+                {
+                  "end": 1793996400,
+                  "high": "100.0026",
+                  "low": "99.9974",
+                  "reference": "100",
+                  "start": 1793995500
+                },
+                {
+                  "end": 1793997300,
+                  "high": "100.0027",
+                  "low": "99.9973",
+                  "reference": "100",
+                  "start": 1793996400
+                },
+                {
+                  "end": 1793998200,
+                  "high": "100.0028",
+                  "low": "99.9972",
+                  "reference": "100",
+                  "start": 1793997300
+                },
+                {
+                  "end": 1793999100,
+                  "high": "100.0029",
+                  "low": "99.9971",
+                  "reference": "100",
+                  "start": 1793998200
+                }
+              ],
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+              "symbol": "ETHUSDT"
+            },
+            "price_move_q95_rate": "0.000028",
+            "price_move_sample_count": 29,
+            "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+            "taker_fee_rate": "0.0005",
+            "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+            "uncertainty_observation_horizons_seconds": [
+              900
+            ],
+            "version": "DYNAMIC_NET_2R_V4",
+            "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+          },
+          "entry": "100",
+          "entry_fee_rate": "0.0005",
+          "entry_fee_usdt": "0.2155",
+          "entry_slippage_rate": "0",
+          "excluded_costs": [
+            "FUNDING",
+            "GAPS_BEYOND_EMPIRICAL_RESERVE"
+          ],
+          "execution_quantity": "4.31",
+          "execution_tp": "102.48",
+          "exit_fee_rate": "0.0005",
+          "exit_slippage_rate": "0.00061036659",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "gross_reward": "10.6888",
+          "gross_risk": "4.31",
+          "leverage": 75,
+          "leverage_evidence": {
+            "account_max_leverage": 125,
+            "selected_bracket": {
+              "index": 0,
+              "max_leverage": 125,
+              "notional_cap": "10000",
+              "notional_floor": "0"
+            },
+            "selected_leverage": 75,
+            "snapshot": {
+              "brackets": [
+                {
+                  "max_leverage": 125,
+                  "notional_cap": "10000",
+                  "notional_floor": "0"
+                },
+                {
+                  "max_leverage": 20,
+                  "notional_cap": "10000000",
+                  "notional_floor": "10000"
+                }
+              ],
+              "observed_at": 1794000000,
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+              "symbol": "ETHUSDT"
+            }
+          },
+          "margin_mode": "CROSS",
+          "mode": "ORDER_INTENT",
+          "net_reward": "9.982998309346156596",
+          "net_reward_target_difference_usdt": "-0.017001690653843404",
+          "net_rr": "1.996938302016700981208769449303425624495970761347909852715544976338266260288691821560286989237683330140859391529585467985234047396788539766211389315656326617754",
+          "neurobro_tp": "104",
+          "order_type": "LIMIT",
+          "policy_version": "DYNAMIC_NET_2R_V4",
+          "provenance": {
+            "payload_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "quantity": "4.31",
+          "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+          "risk": "4.99915210162695645",
+          "risk_model": "DYNAMIC_NET_2R_V4",
+          "risk_target_usdt": "5",
+          "rr": "2.48",
+          "rules_checked_at": 1794000000,
+          "side": "LONG",
+          "sizing_method": "MAX_LOT_DYNAMIC_CLOSE_COST_V4",
+          "sizing_rules": {
+            "dynamic_cost_evidence": {
+              "asks": [
+                [
+                  "100.01",
+                  "2"
+                ],
+                [
+                  "100.1",
+                  "8"
+                ],
+                [
+                  "100.5",
+                  "1000"
+                ]
+              ],
+              "bids": [
+                [
+                  "99.99",
+                  "2"
+                ],
+                [
+                  "99.9",
+                  "8"
+                ],
+                [
+                  "99.5",
+                  "1000"
+                ]
+              ],
+              "execution_samples": [],
+              "observed_at": 1794000000,
+              "price_moves": [
+                {
+                  "end": 1793973900,
+                  "high": "100.0001",
+                  "low": "99.9999",
+                  "reference": "100",
+                  "start": 1793973000
+                },
+                {
+                  "end": 1793974800,
+                  "high": "100.0002",
+                  "low": "99.9998",
+                  "reference": "100",
+                  "start": 1793973900
+                },
+                {
+                  "end": 1793975700,
+                  "high": "100.0003",
+                  "low": "99.9997",
+                  "reference": "100",
+                  "start": 1793974800
+                },
+                {
+                  "end": 1793976600,
+                  "high": "100.0004",
+                  "low": "99.9996",
+                  "reference": "100",
+                  "start": 1793975700
+                },
+                {
+                  "end": 1793977500,
+                  "high": "100.0005",
+                  "low": "99.9995",
+                  "reference": "100",
+                  "start": 1793976600
+                },
+                {
+                  "end": 1793978400,
+                  "high": "100.0006",
+                  "low": "99.9994",
+                  "reference": "100",
+                  "start": 1793977500
+                },
+                {
+                  "end": 1793979300,
+                  "high": "100.0007",
+                  "low": "99.9993",
+                  "reference": "100",
+                  "start": 1793978400
+                },
+                {
+                  "end": 1793980200,
+                  "high": "100.0008",
+                  "low": "99.9992",
+                  "reference": "100",
+                  "start": 1793979300
+                },
+                {
+                  "end": 1793981100,
+                  "high": "100.0009",
+                  "low": "99.9991",
+                  "reference": "100",
+                  "start": 1793980200
+                },
+                {
+                  "end": 1793982000,
+                  "high": "100.001",
+                  "low": "99.999",
+                  "reference": "100",
+                  "start": 1793981100
+                },
+                {
+                  "end": 1793982900,
+                  "high": "100.0011",
+                  "low": "99.9989",
+                  "reference": "100",
+                  "start": 1793982000
+                },
+                {
+                  "end": 1793983800,
+                  "high": "100.0012",
+                  "low": "99.9988",
+                  "reference": "100",
+                  "start": 1793982900
+                },
+                {
+                  "end": 1793984700,
+                  "high": "100.0013",
+                  "low": "99.9987",
+                  "reference": "100",
+                  "start": 1793983800
+                },
+                {
+                  "end": 1793985600,
+                  "high": "100.0014",
+                  "low": "99.9986",
+                  "reference": "100",
+                  "start": 1793984700
+                },
+                {
+                  "end": 1793986500,
+                  "high": "100.0015",
+                  "low": "99.9985",
+                  "reference": "100",
+                  "start": 1793985600
+                },
+                {
+                  "end": 1793987400,
+                  "high": "100.0016",
+                  "low": "99.9984",
+                  "reference": "100",
+                  "start": 1793986500
+                },
+                {
+                  "end": 1793988300,
+                  "high": "100.0017",
+                  "low": "99.9983",
+                  "reference": "100",
+                  "start": 1793987400
+                },
+                {
+                  "end": 1793989200,
+                  "high": "100.0018",
+                  "low": "99.9982",
+                  "reference": "100",
+                  "start": 1793988300
+                },
+                {
+                  "end": 1793990100,
+                  "high": "100.0019",
+                  "low": "99.9981",
+                  "reference": "100",
+                  "start": 1793989200
+                },
+                {
+                  "end": 1793991000,
+                  "high": "100.002",
+                  "low": "99.998",
+                  "reference": "100",
+                  "start": 1793990100
+                },
+                {
+                  "end": 1793991900,
+                  "high": "100.0021",
+                  "low": "99.9979",
+                  "reference": "100",
+                  "start": 1793991000
+                },
+                {
+                  "end": 1793992800,
+                  "high": "100.0022",
+                  "low": "99.9978",
+                  "reference": "100",
+                  "start": 1793991900
+                },
+                {
+                  "end": 1793993700,
+                  "high": "100.0023",
+                  "low": "99.9977",
+                  "reference": "100",
+                  "start": 1793992800
+                },
+                {
+                  "end": 1793994600,
+                  "high": "100.0024",
+                  "low": "99.9976",
+                  "reference": "100",
+                  "start": 1793993700
+                },
+                {
+                  "end": 1793995500,
+                  "high": "100.0025",
+                  "low": "99.9975",
+                  "reference": "100",
+                  "start": 1793994600
+                },
+                {
+                  "end": 1793996400,
+                  "high": "100.0026",
+                  "low": "99.9974",
+                  "reference": "100",
+                  "start": 1793995500
+                },
+                {
+                  "end": 1793997300,
+                  "high": "100.0027",
+                  "low": "99.9973",
+                  "reference": "100",
+                  "start": 1793996400
+                },
+                {
+                  "end": 1793998200,
+                  "high": "100.0028",
+                  "low": "99.9972",
+                  "reference": "100",
+                  "start": 1793997300
+                },
+                {
+                  "end": 1793999100,
+                  "high": "100.0029",
+                  "low": "99.9971",
+                  "reference": "100",
+                  "start": 1793998200
+                }
+              ],
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+              "symbol": "ETHUSDT"
+            },
+            "fee_observed_at": 1794000000,
+            "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+            "fee_symbol": "ETHUSDT",
+            "leverage_brackets": {
+              "brackets": [
+                {
+                  "max_leverage": 125,
+                  "notional_cap": "10000",
+                  "notional_floor": "0"
+                },
+                {
+                  "max_leverage": 20,
+                  "notional_cap": "10000000",
+                  "notional_floor": "10000"
+                }
+              ],
+              "observed_at": 1794000000,
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+              "symbol": "ETHUSDT"
+            },
+            "mark_price": null,
+            "max_price": "1000000000",
+            "maximum": "1000",
+            "min_notional": "1",
+            "min_price": "0",
+            "minimum": "0.01",
+            "multiplier_down": null,
+            "multiplier_up": null,
+            "observed_at": 1794000000,
+            "step": "0.01",
+            "taker_fee_rate": "0.0005",
+            "tick": "0.01"
+          },
+          "sl": "99",
+          "sl_book_impact_usdt": "0.2484900002871",
+          "sl_execution_price": "98.93957370759",
+          "sl_exit_fee_usdt": "0.21321478133985645",
+          "sl_liquidity_uncertainty_usdt": "0.01194732",
+          "sl_slippage_usdt": "0.2604373202871",
+          "symbol": "ETHUSDT",
+          "target_net_reward_usdt": "10",
+          "total_risk": "4.99915210162695645",
+          "tp": "102.48",
+          "tp_book_impact_usdt": "0.257224800297192",
+          "tp_execution_price": "102.4174496318568",
+          "tp_exit_fee_usdt": "0.220709603956651404",
+          "tp_fee_rate": "0.0005",
+          "tp_liquidity_uncertainty_usdt": "0.0123672864",
+          "tp_normalization": {
+            "execution_tp": "102.48",
+            "model_entry": "100",
+            "model_gross_rr": "4",
+            "model_sl": "99",
+            "model_tp": "104",
+            "net_reward_target_difference_usdt": "-0.017001690653843404",
+            "nominal_risk_target_usdt": "5",
+            "risk_model": "DYNAMIC_NET_2R_V4",
+            "rounding": "NEAREST_NET_USDT_TARGET_TICK",
+            "source": "OWNER_AUTHORIZED_RISK_MANAGER",
+            "target_net_reward_usdt": "10",
+            "tick_size": "0.01",
+            "version": "DYNAMIC_NET_2R_V4"
+          },
+          "tp_slippage_usdt": "0.269592086697192"
+        },
+        "position_side": "BOTH",
+        "protection": {
+          "exit_side": "SELL",
+          "stop_loss": "99",
+          "take_profit": "102.48",
+          "working_type": "MARK_PRICE"
+        },
+        "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+        "risk_model": "DYNAMIC_NET_2R_V4",
+        "risk_target_usdt": "5",
+        "risk_usdt": "4.99915210162695645",
+        "side": "LONG",
+        "sl_exit_fee_usdt": "0.21321478133985645",
+        "symbol": "ETHUSDT",
+        "target_net_reward_usdt": "10",
+        "tp_exit_fee_usdt": "0.220709603956651404",
+        "tp_tick_size": "0.01"
+      },
+      "name": "v4_schema1",
+      "plan": {
+        "cost_evidence": {
+          "closing_side": "SELL",
+          "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+          "execution_excess_q95_rate": "0",
+          "execution_history_min_samples": 20,
+          "execution_sample_count": 0,
+          "expected_book_impact_rate": "0.00058236659",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "future_liquidity_uncertainty_rate": "0.000028",
+          "market": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "price_move_q95_rate": "0.000028",
+          "price_move_sample_count": 29,
+          "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+          "taker_fee_rate": "0.0005",
+          "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+          "uncertainty_observation_horizons_seconds": [
+            900
+          ],
+          "version": "DYNAMIC_NET_2R_V4",
+          "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+        },
+        "entry": "100",
+        "entry_fee_rate": "0.0005",
+        "entry_fee_usdt": "0.2155",
+        "entry_slippage_rate": "0",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_EMPIRICAL_RESERVE"
+        ],
+        "execution_quantity": "4.31",
+        "execution_tp": "102.48",
+        "exit_fee_rate": "0.0005",
+        "exit_slippage_rate": "0.00061036659",
+        "fee_observed_at": 1794000000,
+        "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+        "fee_symbol": "ETHUSDT",
+        "gross_reward": "10.6888",
+        "gross_risk": "4.31",
+        "leverage": 75,
+        "leverage_evidence": {
+          "account_max_leverage": 125,
+          "selected_bracket": {
+            "index": 0,
+            "max_leverage": 125,
+            "notional_cap": "10000",
+            "notional_floor": "0"
+          },
+          "selected_leverage": 75,
+          "snapshot": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "observed_at": 1794000000,
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          }
+        },
+        "margin_mode": "CROSS",
+        "mode": "ORDER_INTENT",
+        "net_reward": "9.982998309346156596",
+        "net_reward_target_difference_usdt": "-0.017001690653843404",
+        "net_rr": "1.996938302016700981208769449303425624495970761347909852715544976338266260288691821560286989237683330140859391529585467985234047396788539766211389315656326617754",
+        "neurobro_tp": "104",
+        "order_type": "LIMIT",
+        "policy_version": "DYNAMIC_NET_2R_V4",
+        "provenance": {
+          "payload_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        "quantity": "4.31",
+        "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+        "risk": "4.99915210162695645",
+        "risk_model": "DYNAMIC_NET_2R_V4",
+        "risk_target_usdt": "5",
+        "rr": "2.48",
+        "rules_checked_at": 1794000000,
+        "side": "LONG",
+        "sizing_method": "MAX_LOT_DYNAMIC_CLOSE_COST_V4",
+        "sizing_rules": {
+          "dynamic_cost_evidence": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "leverage_brackets": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "observed_at": 1794000000,
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          },
+          "mark_price": null,
+          "max_price": "1000000000",
+          "maximum": "1000",
+          "min_notional": "1",
+          "min_price": "0",
+          "minimum": "0.01",
+          "multiplier_down": null,
+          "multiplier_up": null,
+          "observed_at": 1794000000,
+          "step": "0.01",
+          "taker_fee_rate": "0.0005",
+          "tick": "0.01"
+        },
+        "sl": "99",
+        "sl_book_impact_usdt": "0.2484900002871",
+        "sl_execution_price": "98.93957370759",
+        "sl_exit_fee_usdt": "0.21321478133985645",
+        "sl_liquidity_uncertainty_usdt": "0.01194732",
+        "sl_slippage_usdt": "0.2604373202871",
+        "symbol": "ETHUSDT",
+        "target_net_reward_usdt": "10",
+        "total_risk": "4.99915210162695645",
+        "tp": "102.48",
+        "tp_book_impact_usdt": "0.257224800297192",
+        "tp_execution_price": "102.4174496318568",
+        "tp_exit_fee_usdt": "0.220709603956651404",
+        "tp_fee_rate": "0.0005",
+        "tp_liquidity_uncertainty_usdt": "0.0123672864",
+        "tp_normalization": {
+          "execution_tp": "102.48",
+          "model_entry": "100",
+          "model_gross_rr": "4",
+          "model_sl": "99",
+          "model_tp": "104",
+          "net_reward_target_difference_usdt": "-0.017001690653843404",
+          "nominal_risk_target_usdt": "5",
+          "risk_model": "DYNAMIC_NET_2R_V4",
+          "rounding": "NEAREST_NET_USDT_TARGET_TICK",
+          "source": "OWNER_AUTHORIZED_RISK_MANAGER",
+          "target_net_reward_usdt": "10",
+          "tick_size": "0.01",
+          "version": "DYNAMIC_NET_2R_V4"
+        },
+        "tp_slippage_usdt": "0.269592086697192"
+      }
+    },
+    {
+      "intent": {
+        "client_order_id": "hao-3cca22d880543ae78e8432bb671f",
+        "cost_evidence": {
+          "closing_side": "SELL",
+          "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+          "execution_excess_q95_rate": "0",
+          "execution_history_min_samples": 20,
+          "execution_sample_count": 0,
+          "expected_book_impact_rate": "0.0001",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "future_liquidity_uncertainty_rate": "0.000028",
+          "market": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "price_move_q95_rate": "0.000028",
+          "price_move_sample_count": 29,
+          "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+          "taker_fee_rate": "0.0005",
+          "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+          "uncertainty_observation_horizons_seconds": [
+            900
+          ],
+          "version": "DYNAMIC_NET_2R_V4",
+          "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+        },
+        "entry": {
+          "order_type": "LIMIT",
+          "price": "100",
+          "quantity": "1.44",
+          "side": "BUY",
+          "time_in_force": "GTC"
+        },
+        "entry_fee_usdt": "0.072",
+        "evidence_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_EMPIRICAL_RESERVE"
+        ],
+        "fee_evidence": {
+          "observed_at": 1794000000,
+          "source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "symbol": "ETHUSDT",
+          "taker_rate": "0.0005"
+        },
+        "gross_risk_usdt": "1.44",
+        "intent_id": "frozen-v4_schema2",
+        "leverage": 75,
+        "leverage_evidence": {
+          "account_max_leverage": 125,
+          "selected_bracket": {
+            "index": 0,
+            "max_leverage": 125,
+            "notional_cap": "10000",
+            "notional_floor": "0"
+          },
+          "selected_leverage": 75,
+          "snapshot": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "margin": {
+              "asset": "USDT",
+              "available_balance_usdt": "2",
+              "observed_at": 1794000000,
+              "source": "BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE"
+            },
+            "observed_at": 1794000000,
+            "schema_version": 2,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          }
+        },
+        "margin_mode": "CROSS",
+        "net_reward_risk": "6.242571045458925442963504401085340465968566351999876162334031560247844515365293636686125925930401678000373872358641706816800271222902993703643057263094934029540",
+        "net_reward_target_difference_usdt": "-0.0024066325504",
+        "net_reward_usdt": "9.9975933674496",
+        "neurobro_tp": "104",
+        "normalized_plan": {
+          "cost_evidence": {
+            "closing_side": "SELL",
+            "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+            "execution_excess_q95_rate": "0",
+            "execution_history_min_samples": 20,
+            "execution_sample_count": 0,
+            "expected_book_impact_rate": "0.0001",
+            "fee_observed_at": 1794000000,
+            "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+            "fee_symbol": "ETHUSDT",
+            "future_liquidity_uncertainty_rate": "0.000028",
+            "market": {
+              "asks": [
+                [
+                  "100.01",
+                  "2"
+                ],
+                [
+                  "100.1",
+                  "8"
+                ],
+                [
+                  "100.5",
+                  "1000"
+                ]
+              ],
+              "bids": [
+                [
+                  "99.99",
+                  "2"
+                ],
+                [
+                  "99.9",
+                  "8"
+                ],
+                [
+                  "99.5",
+                  "1000"
+                ]
+              ],
+              "execution_samples": [],
+              "observed_at": 1794000000,
+              "price_moves": [
+                {
+                  "end": 1793973900,
+                  "high": "100.0001",
+                  "low": "99.9999",
+                  "reference": "100",
+                  "start": 1793973000
+                },
+                {
+                  "end": 1793974800,
+                  "high": "100.0002",
+                  "low": "99.9998",
+                  "reference": "100",
+                  "start": 1793973900
+                },
+                {
+                  "end": 1793975700,
+                  "high": "100.0003",
+                  "low": "99.9997",
+                  "reference": "100",
+                  "start": 1793974800
+                },
+                {
+                  "end": 1793976600,
+                  "high": "100.0004",
+                  "low": "99.9996",
+                  "reference": "100",
+                  "start": 1793975700
+                },
+                {
+                  "end": 1793977500,
+                  "high": "100.0005",
+                  "low": "99.9995",
+                  "reference": "100",
+                  "start": 1793976600
+                },
+                {
+                  "end": 1793978400,
+                  "high": "100.0006",
+                  "low": "99.9994",
+                  "reference": "100",
+                  "start": 1793977500
+                },
+                {
+                  "end": 1793979300,
+                  "high": "100.0007",
+                  "low": "99.9993",
+                  "reference": "100",
+                  "start": 1793978400
+                },
+                {
+                  "end": 1793980200,
+                  "high": "100.0008",
+                  "low": "99.9992",
+                  "reference": "100",
+                  "start": 1793979300
+                },
+                {
+                  "end": 1793981100,
+                  "high": "100.0009",
+                  "low": "99.9991",
+                  "reference": "100",
+                  "start": 1793980200
+                },
+                {
+                  "end": 1793982000,
+                  "high": "100.001",
+                  "low": "99.999",
+                  "reference": "100",
+                  "start": 1793981100
+                },
+                {
+                  "end": 1793982900,
+                  "high": "100.0011",
+                  "low": "99.9989",
+                  "reference": "100",
+                  "start": 1793982000
+                },
+                {
+                  "end": 1793983800,
+                  "high": "100.0012",
+                  "low": "99.9988",
+                  "reference": "100",
+                  "start": 1793982900
+                },
+                {
+                  "end": 1793984700,
+                  "high": "100.0013",
+                  "low": "99.9987",
+                  "reference": "100",
+                  "start": 1793983800
+                },
+                {
+                  "end": 1793985600,
+                  "high": "100.0014",
+                  "low": "99.9986",
+                  "reference": "100",
+                  "start": 1793984700
+                },
+                {
+                  "end": 1793986500,
+                  "high": "100.0015",
+                  "low": "99.9985",
+                  "reference": "100",
+                  "start": 1793985600
+                },
+                {
+                  "end": 1793987400,
+                  "high": "100.0016",
+                  "low": "99.9984",
+                  "reference": "100",
+                  "start": 1793986500
+                },
+                {
+                  "end": 1793988300,
+                  "high": "100.0017",
+                  "low": "99.9983",
+                  "reference": "100",
+                  "start": 1793987400
+                },
+                {
+                  "end": 1793989200,
+                  "high": "100.0018",
+                  "low": "99.9982",
+                  "reference": "100",
+                  "start": 1793988300
+                },
+                {
+                  "end": 1793990100,
+                  "high": "100.0019",
+                  "low": "99.9981",
+                  "reference": "100",
+                  "start": 1793989200
+                },
+                {
+                  "end": 1793991000,
+                  "high": "100.002",
+                  "low": "99.998",
+                  "reference": "100",
+                  "start": 1793990100
+                },
+                {
+                  "end": 1793991900,
+                  "high": "100.0021",
+                  "low": "99.9979",
+                  "reference": "100",
+                  "start": 1793991000
+                },
+                {
+                  "end": 1793992800,
+                  "high": "100.0022",
+                  "low": "99.9978",
+                  "reference": "100",
+                  "start": 1793991900
+                },
+                {
+                  "end": 1793993700,
+                  "high": "100.0023",
+                  "low": "99.9977",
+                  "reference": "100",
+                  "start": 1793992800
+                },
+                {
+                  "end": 1793994600,
+                  "high": "100.0024",
+                  "low": "99.9976",
+                  "reference": "100",
+                  "start": 1793993700
+                },
+                {
+                  "end": 1793995500,
+                  "high": "100.0025",
+                  "low": "99.9975",
+                  "reference": "100",
+                  "start": 1793994600
+                },
+                {
+                  "end": 1793996400,
+                  "high": "100.0026",
+                  "low": "99.9974",
+                  "reference": "100",
+                  "start": 1793995500
+                },
+                {
+                  "end": 1793997300,
+                  "high": "100.0027",
+                  "low": "99.9973",
+                  "reference": "100",
+                  "start": 1793996400
+                },
+                {
+                  "end": 1793998200,
+                  "high": "100.0028",
+                  "low": "99.9972",
+                  "reference": "100",
+                  "start": 1793997300
+                },
+                {
+                  "end": 1793999100,
+                  "high": "100.0029",
+                  "low": "99.9971",
+                  "reference": "100",
+                  "start": 1793998200
+                }
+              ],
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+              "symbol": "ETHUSDT"
+            },
+            "price_move_q95_rate": "0.000028",
+            "price_move_sample_count": 29,
+            "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+            "taker_fee_rate": "0.0005",
+            "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+            "uncertainty_observation_horizons_seconds": [
+              900
+            ],
+            "version": "DYNAMIC_NET_2R_V4",
+            "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+          },
+          "entry": "100",
+          "entry_fee_rate": "0.0005",
+          "entry_fee_usdt": "0.072",
+          "entry_slippage_rate": "0",
+          "excluded_costs": [
+            "FUNDING",
+            "GAPS_BEYOND_EMPIRICAL_RESERVE"
+          ],
+          "execution_quantity": "1.44",
+          "execution_tp": "107.06",
+          "exit_fee_rate": "0.0005",
+          "exit_slippage_rate": "0.000128",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "gross_reward": "10.1664",
+          "gross_risk": "1.44",
+          "leverage": 75,
+          "leverage_evidence": {
+            "account_max_leverage": 125,
+            "selected_bracket": {
+              "index": 0,
+              "max_leverage": 125,
+              "notional_cap": "10000",
+              "notional_floor": "0"
+            },
+            "selected_leverage": 75,
+            "snapshot": {
+              "brackets": [
+                {
+                  "max_leverage": 125,
+                  "notional_cap": "10000",
+                  "notional_floor": "0"
+                },
+                {
+                  "max_leverage": 20,
+                  "notional_cap": "10000000",
+                  "notional_floor": "10000"
+                }
+              ],
+              "margin": {
+                "asset": "USDT",
+                "available_balance_usdt": "2",
+                "observed_at": 1794000000,
+                "source": "BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE"
+              },
+              "observed_at": 1794000000,
+              "schema_version": 2,
+              "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+              "symbol": "ETHUSDT"
+            }
+          },
+          "margin_mode": "CROSS",
+          "mode": "ORDER_INTENT",
+          "net_reward": "9.9975933674496",
+          "net_reward_target_difference_usdt": "-0.0024066325504",
+          "net_rr": "6.242571045458925442963504401085340465968566351999876162334031560247844515365293636686125925930401678000373872358641706816800271222902993703643057263094934029540",
+          "neurobro_tp": "104",
+          "order_type": "LIMIT",
+          "policy_version": "DYNAMIC_NET_2R_V4",
+          "provenance": {
+            "payload_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+          },
+          "quantity": "1.44",
+          "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+          "risk": "1.60151855616",
+          "risk_model": "DYNAMIC_NET_2R_V4",
+          "risk_target_usdt": "5",
+          "rr": "7.06",
+          "rules_checked_at": 1794000000,
+          "side": "LONG",
+          "sizing_method": "MAX_LOT_DYNAMIC_CLOSE_COST_V4",
+          "sizing_rules": {
+            "dynamic_cost_evidence": {
+              "asks": [
+                [
+                  "100.01",
+                  "2"
+                ],
+                [
+                  "100.1",
+                  "8"
+                ],
+                [
+                  "100.5",
+                  "1000"
+                ]
+              ],
+              "bids": [
+                [
+                  "99.99",
+                  "2"
+                ],
+                [
+                  "99.9",
+                  "8"
+                ],
+                [
+                  "99.5",
+                  "1000"
+                ]
+              ],
+              "execution_samples": [],
+              "observed_at": 1794000000,
+              "price_moves": [
+                {
+                  "end": 1793973900,
+                  "high": "100.0001",
+                  "low": "99.9999",
+                  "reference": "100",
+                  "start": 1793973000
+                },
+                {
+                  "end": 1793974800,
+                  "high": "100.0002",
+                  "low": "99.9998",
+                  "reference": "100",
+                  "start": 1793973900
+                },
+                {
+                  "end": 1793975700,
+                  "high": "100.0003",
+                  "low": "99.9997",
+                  "reference": "100",
+                  "start": 1793974800
+                },
+                {
+                  "end": 1793976600,
+                  "high": "100.0004",
+                  "low": "99.9996",
+                  "reference": "100",
+                  "start": 1793975700
+                },
+                {
+                  "end": 1793977500,
+                  "high": "100.0005",
+                  "low": "99.9995",
+                  "reference": "100",
+                  "start": 1793976600
+                },
+                {
+                  "end": 1793978400,
+                  "high": "100.0006",
+                  "low": "99.9994",
+                  "reference": "100",
+                  "start": 1793977500
+                },
+                {
+                  "end": 1793979300,
+                  "high": "100.0007",
+                  "low": "99.9993",
+                  "reference": "100",
+                  "start": 1793978400
+                },
+                {
+                  "end": 1793980200,
+                  "high": "100.0008",
+                  "low": "99.9992",
+                  "reference": "100",
+                  "start": 1793979300
+                },
+                {
+                  "end": 1793981100,
+                  "high": "100.0009",
+                  "low": "99.9991",
+                  "reference": "100",
+                  "start": 1793980200
+                },
+                {
+                  "end": 1793982000,
+                  "high": "100.001",
+                  "low": "99.999",
+                  "reference": "100",
+                  "start": 1793981100
+                },
+                {
+                  "end": 1793982900,
+                  "high": "100.0011",
+                  "low": "99.9989",
+                  "reference": "100",
+                  "start": 1793982000
+                },
+                {
+                  "end": 1793983800,
+                  "high": "100.0012",
+                  "low": "99.9988",
+                  "reference": "100",
+                  "start": 1793982900
+                },
+                {
+                  "end": 1793984700,
+                  "high": "100.0013",
+                  "low": "99.9987",
+                  "reference": "100",
+                  "start": 1793983800
+                },
+                {
+                  "end": 1793985600,
+                  "high": "100.0014",
+                  "low": "99.9986",
+                  "reference": "100",
+                  "start": 1793984700
+                },
+                {
+                  "end": 1793986500,
+                  "high": "100.0015",
+                  "low": "99.9985",
+                  "reference": "100",
+                  "start": 1793985600
+                },
+                {
+                  "end": 1793987400,
+                  "high": "100.0016",
+                  "low": "99.9984",
+                  "reference": "100",
+                  "start": 1793986500
+                },
+                {
+                  "end": 1793988300,
+                  "high": "100.0017",
+                  "low": "99.9983",
+                  "reference": "100",
+                  "start": 1793987400
+                },
+                {
+                  "end": 1793989200,
+                  "high": "100.0018",
+                  "low": "99.9982",
+                  "reference": "100",
+                  "start": 1793988300
+                },
+                {
+                  "end": 1793990100,
+                  "high": "100.0019",
+                  "low": "99.9981",
+                  "reference": "100",
+                  "start": 1793989200
+                },
+                {
+                  "end": 1793991000,
+                  "high": "100.002",
+                  "low": "99.998",
+                  "reference": "100",
+                  "start": 1793990100
+                },
+                {
+                  "end": 1793991900,
+                  "high": "100.0021",
+                  "low": "99.9979",
+                  "reference": "100",
+                  "start": 1793991000
+                },
+                {
+                  "end": 1793992800,
+                  "high": "100.0022",
+                  "low": "99.9978",
+                  "reference": "100",
+                  "start": 1793991900
+                },
+                {
+                  "end": 1793993700,
+                  "high": "100.0023",
+                  "low": "99.9977",
+                  "reference": "100",
+                  "start": 1793992800
+                },
+                {
+                  "end": 1793994600,
+                  "high": "100.0024",
+                  "low": "99.9976",
+                  "reference": "100",
+                  "start": 1793993700
+                },
+                {
+                  "end": 1793995500,
+                  "high": "100.0025",
+                  "low": "99.9975",
+                  "reference": "100",
+                  "start": 1793994600
+                },
+                {
+                  "end": 1793996400,
+                  "high": "100.0026",
+                  "low": "99.9974",
+                  "reference": "100",
+                  "start": 1793995500
+                },
+                {
+                  "end": 1793997300,
+                  "high": "100.0027",
+                  "low": "99.9973",
+                  "reference": "100",
+                  "start": 1793996400
+                },
+                {
+                  "end": 1793998200,
+                  "high": "100.0028",
+                  "low": "99.9972",
+                  "reference": "100",
+                  "start": 1793997300
+                },
+                {
+                  "end": 1793999100,
+                  "high": "100.0029",
+                  "low": "99.9971",
+                  "reference": "100",
+                  "start": 1793998200
+                }
+              ],
+              "schema_version": 1,
+              "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+              "symbol": "ETHUSDT"
+            },
+            "fee_observed_at": 1794000000,
+            "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+            "fee_symbol": "ETHUSDT",
+            "leverage_brackets": {
+              "brackets": [
+                {
+                  "max_leverage": 125,
+                  "notional_cap": "10000",
+                  "notional_floor": "0"
+                },
+                {
+                  "max_leverage": 20,
+                  "notional_cap": "10000000",
+                  "notional_floor": "10000"
+                }
+              ],
+              "margin": {
+                "asset": "USDT",
+                "available_balance_usdt": "2",
+                "observed_at": 1794000000,
+                "source": "BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE"
+              },
+              "observed_at": 1794000000,
+              "schema_version": 2,
+              "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+              "symbol": "ETHUSDT"
+            },
+            "mark_price": null,
+            "max_price": "1000000000",
+            "maximum": "1000",
+            "min_notional": "1",
+            "min_price": "0",
+            "minimum": "0.01",
+            "multiplier_down": null,
+            "multiplier_up": null,
+            "observed_at": 1794000000,
+            "step": "0.01",
+            "taker_fee_rate": "0.0005",
+            "tick": "0.01"
+          },
+          "sl": "99",
+          "sl_book_impact_usdt": "0.014256",
+          "sl_execution_price": "98.987328",
+          "sl_exit_fee_usdt": "0.07127087616",
+          "sl_liquidity_uncertainty_usdt": "0.00399168",
+          "sl_slippage_usdt": "0.01824768",
+          "symbol": "ETHUSDT",
+          "target_net_reward_usdt": "10",
+          "total_risk": "1.60151855616",
+          "tp": "107.06",
+          "tp_book_impact_usdt": "0.01541664",
+          "tp_execution_price": "107.04629632",
+          "tp_exit_fee_usdt": "0.0770733333504",
+          "tp_fee_rate": "0.0005",
+          "tp_liquidity_uncertainty_usdt": "0.0043166592",
+          "tp_normalization": {
+            "execution_tp": "107.06",
+            "model_entry": "100",
+            "model_gross_rr": "4",
+            "model_sl": "99",
+            "model_tp": "104",
+            "net_reward_target_difference_usdt": "-0.0024066325504",
+            "nominal_risk_target_usdt": "5",
+            "risk_model": "DYNAMIC_NET_2R_V4",
+            "rounding": "NEAREST_NET_USDT_TARGET_TICK",
+            "source": "OWNER_AUTHORIZED_RISK_MANAGER",
+            "target_net_reward_usdt": "10",
+            "tick_size": "0.01",
+            "version": "DYNAMIC_NET_2R_V4"
+          },
+          "tp_slippage_usdt": "0.0197332992"
+        },
+        "position_side": "BOTH",
+        "protection": {
+          "exit_side": "SELL",
+          "stop_loss": "99",
+          "take_profit": "107.06",
+          "working_type": "MARK_PRICE"
+        },
+        "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+        "risk_model": "DYNAMIC_NET_2R_V4",
+        "risk_target_usdt": "5",
+        "risk_usdt": "1.60151855616",
+        "side": "LONG",
+        "sl_exit_fee_usdt": "0.07127087616",
+        "symbol": "ETHUSDT",
+        "target_net_reward_usdt": "10",
+        "tp_exit_fee_usdt": "0.0770733333504",
+        "tp_tick_size": "0.01"
+      },
+      "name": "v4_schema2",
+      "plan": {
+        "cost_evidence": {
+          "closing_side": "SELL",
+          "entry_slippage_reason": "LIMIT_PRICE_BOUNDS_ADVERSE_ENTRY_PRICE",
+          "execution_excess_q95_rate": "0",
+          "execution_history_min_samples": 20,
+          "execution_sample_count": 0,
+          "expected_book_impact_rate": "0.0001",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "future_liquidity_uncertainty_rate": "0.000028",
+          "market": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "price_move_q95_rate": "0.000028",
+          "price_move_sample_count": 29,
+          "rate_rounding": "CEILING_12_DECIMAL_PLACES",
+          "taker_fee_rate": "0.0005",
+          "uncertainty_method": "MAX_EMPIRICAL_ADVERSE_MOVE_Q95_AND_EXECUTION_EXCESS_Q95",
+          "uncertainty_observation_horizons_seconds": [
+            900
+          ],
+          "version": "DYNAMIC_NET_2R_V4",
+          "warning": "Observed reserves are estimates, not guarantees of future SL liquidity or realized PNL."
+        },
+        "entry": "100",
+        "entry_fee_rate": "0.0005",
+        "entry_fee_usdt": "0.072",
+        "entry_slippage_rate": "0",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_EMPIRICAL_RESERVE"
+        ],
+        "execution_quantity": "1.44",
+        "execution_tp": "107.06",
+        "exit_fee_rate": "0.0005",
+        "exit_slippage_rate": "0.000128",
+        "fee_observed_at": 1794000000,
+        "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+        "fee_symbol": "ETHUSDT",
+        "gross_reward": "10.1664",
+        "gross_risk": "1.44",
+        "leverage": 75,
+        "leverage_evidence": {
+          "account_max_leverage": 125,
+          "selected_bracket": {
+            "index": 0,
+            "max_leverage": 125,
+            "notional_cap": "10000",
+            "notional_floor": "0"
+          },
+          "selected_leverage": 75,
+          "snapshot": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "margin": {
+              "asset": "USDT",
+              "available_balance_usdt": "2",
+              "observed_at": 1794000000,
+              "source": "BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE"
+            },
+            "observed_at": 1794000000,
+            "schema_version": 2,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          }
+        },
+        "margin_mode": "CROSS",
+        "mode": "ORDER_INTENT",
+        "net_reward": "9.9975933674496",
+        "net_reward_target_difference_usdt": "-0.0024066325504",
+        "net_rr": "6.242571045458925442963504401085340465968566351999876162334031560247844515365293636686125925930401678000373872358641706816800271222902993703643057263094934029540",
+        "neurobro_tp": "104",
+        "order_type": "LIMIT",
+        "policy_version": "DYNAMIC_NET_2R_V4",
+        "provenance": {
+          "payload_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        },
+        "quantity": "1.44",
+        "reward_risk_policy": "NOMINAL_OFFICE_R_NET_2R_NEAREST_TICK_V4",
+        "risk": "1.60151855616",
+        "risk_model": "DYNAMIC_NET_2R_V4",
+        "risk_target_usdt": "5",
+        "rr": "7.06",
+        "rules_checked_at": 1794000000,
+        "side": "LONG",
+        "sizing_method": "MAX_LOT_DYNAMIC_CLOSE_COST_V4",
+        "sizing_rules": {
+          "dynamic_cost_evidence": {
+            "asks": [
+              [
+                "100.01",
+                "2"
+              ],
+              [
+                "100.1",
+                "8"
+              ],
+              [
+                "100.5",
+                "1000"
+              ]
+            ],
+            "bids": [
+              [
+                "99.99",
+                "2"
+              ],
+              [
+                "99.9",
+                "8"
+              ],
+              [
+                "99.5",
+                "1000"
+              ]
+            ],
+            "execution_samples": [],
+            "observed_at": 1794000000,
+            "price_moves": [
+              {
+                "end": 1793973900,
+                "high": "100.0001",
+                "low": "99.9999",
+                "reference": "100",
+                "start": 1793973000
+              },
+              {
+                "end": 1793974800,
+                "high": "100.0002",
+                "low": "99.9998",
+                "reference": "100",
+                "start": 1793973900
+              },
+              {
+                "end": 1793975700,
+                "high": "100.0003",
+                "low": "99.9997",
+                "reference": "100",
+                "start": 1793974800
+              },
+              {
+                "end": 1793976600,
+                "high": "100.0004",
+                "low": "99.9996",
+                "reference": "100",
+                "start": 1793975700
+              },
+              {
+                "end": 1793977500,
+                "high": "100.0005",
+                "low": "99.9995",
+                "reference": "100",
+                "start": 1793976600
+              },
+              {
+                "end": 1793978400,
+                "high": "100.0006",
+                "low": "99.9994",
+                "reference": "100",
+                "start": 1793977500
+              },
+              {
+                "end": 1793979300,
+                "high": "100.0007",
+                "low": "99.9993",
+                "reference": "100",
+                "start": 1793978400
+              },
+              {
+                "end": 1793980200,
+                "high": "100.0008",
+                "low": "99.9992",
+                "reference": "100",
+                "start": 1793979300
+              },
+              {
+                "end": 1793981100,
+                "high": "100.0009",
+                "low": "99.9991",
+                "reference": "100",
+                "start": 1793980200
+              },
+              {
+                "end": 1793982000,
+                "high": "100.001",
+                "low": "99.999",
+                "reference": "100",
+                "start": 1793981100
+              },
+              {
+                "end": 1793982900,
+                "high": "100.0011",
+                "low": "99.9989",
+                "reference": "100",
+                "start": 1793982000
+              },
+              {
+                "end": 1793983800,
+                "high": "100.0012",
+                "low": "99.9988",
+                "reference": "100",
+                "start": 1793982900
+              },
+              {
+                "end": 1793984700,
+                "high": "100.0013",
+                "low": "99.9987",
+                "reference": "100",
+                "start": 1793983800
+              },
+              {
+                "end": 1793985600,
+                "high": "100.0014",
+                "low": "99.9986",
+                "reference": "100",
+                "start": 1793984700
+              },
+              {
+                "end": 1793986500,
+                "high": "100.0015",
+                "low": "99.9985",
+                "reference": "100",
+                "start": 1793985600
+              },
+              {
+                "end": 1793987400,
+                "high": "100.0016",
+                "low": "99.9984",
+                "reference": "100",
+                "start": 1793986500
+              },
+              {
+                "end": 1793988300,
+                "high": "100.0017",
+                "low": "99.9983",
+                "reference": "100",
+                "start": 1793987400
+              },
+              {
+                "end": 1793989200,
+                "high": "100.0018",
+                "low": "99.9982",
+                "reference": "100",
+                "start": 1793988300
+              },
+              {
+                "end": 1793990100,
+                "high": "100.0019",
+                "low": "99.9981",
+                "reference": "100",
+                "start": 1793989200
+              },
+              {
+                "end": 1793991000,
+                "high": "100.002",
+                "low": "99.998",
+                "reference": "100",
+                "start": 1793990100
+              },
+              {
+                "end": 1793991900,
+                "high": "100.0021",
+                "low": "99.9979",
+                "reference": "100",
+                "start": 1793991000
+              },
+              {
+                "end": 1793992800,
+                "high": "100.0022",
+                "low": "99.9978",
+                "reference": "100",
+                "start": 1793991900
+              },
+              {
+                "end": 1793993700,
+                "high": "100.0023",
+                "low": "99.9977",
+                "reference": "100",
+                "start": 1793992800
+              },
+              {
+                "end": 1793994600,
+                "high": "100.0024",
+                "low": "99.9976",
+                "reference": "100",
+                "start": 1793993700
+              },
+              {
+                "end": 1793995500,
+                "high": "100.0025",
+                "low": "99.9975",
+                "reference": "100",
+                "start": 1793994600
+              },
+              {
+                "end": 1793996400,
+                "high": "100.0026",
+                "low": "99.9974",
+                "reference": "100",
+                "start": 1793995500
+              },
+              {
+                "end": 1793997300,
+                "high": "100.0027",
+                "low": "99.9973",
+                "reference": "100",
+                "start": 1793996400
+              },
+              {
+                "end": 1793998200,
+                "high": "100.0028",
+                "low": "99.9972",
+                "reference": "100",
+                "start": 1793997300
+              },
+              {
+                "end": 1793999100,
+                "high": "100.0029",
+                "low": "99.9971",
+                "reference": "100",
+                "start": 1793998200
+              }
+            ],
+            "schema_version": 1,
+            "source": "BINANCE_FUTURES_PUBLIC_MARKET_AND_OWN_FILLS",
+            "symbol": "ETHUSDT"
+          },
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "leverage_brackets": {
+            "brackets": [
+              {
+                "max_leverage": 125,
+                "notional_cap": "10000",
+                "notional_floor": "0"
+              },
+              {
+                "max_leverage": 20,
+                "notional_cap": "10000000",
+                "notional_floor": "10000"
+              }
+            ],
+            "margin": {
+              "asset": "USDT",
+              "available_balance_usdt": "2",
+              "observed_at": 1794000000,
+              "source": "BINANCE_FUTURES_ACCOUNT_AVAILABLE_BALANCE"
+            },
+            "observed_at": 1794000000,
+            "schema_version": 2,
+            "source": "BINANCE_FUTURES_ACCOUNT_LEVERAGE_BRACKET",
+            "symbol": "ETHUSDT"
+          },
+          "mark_price": null,
+          "max_price": "1000000000",
+          "maximum": "1000",
+          "min_notional": "1",
+          "min_price": "0",
+          "minimum": "0.01",
+          "multiplier_down": null,
+          "multiplier_up": null,
+          "observed_at": 1794000000,
+          "step": "0.01",
+          "taker_fee_rate": "0.0005",
+          "tick": "0.01"
+        },
+        "sl": "99",
+        "sl_book_impact_usdt": "0.014256",
+        "sl_execution_price": "98.987328",
+        "sl_exit_fee_usdt": "0.07127087616",
+        "sl_liquidity_uncertainty_usdt": "0.00399168",
+        "sl_slippage_usdt": "0.01824768",
+        "symbol": "ETHUSDT",
+        "target_net_reward_usdt": "10",
+        "total_risk": "1.60151855616",
+        "tp": "107.06",
+        "tp_book_impact_usdt": "0.01541664",
+        "tp_execution_price": "107.04629632",
+        "tp_exit_fee_usdt": "0.0770733333504",
+        "tp_fee_rate": "0.0005",
+        "tp_liquidity_uncertainty_usdt": "0.0043166592",
+        "tp_normalization": {
+          "execution_tp": "107.06",
+          "model_entry": "100",
+          "model_gross_rr": "4",
+          "model_sl": "99",
+          "model_tp": "104",
+          "net_reward_target_difference_usdt": "-0.0024066325504",
+          "nominal_risk_target_usdt": "5",
+          "risk_model": "DYNAMIC_NET_2R_V4",
+          "rounding": "NEAREST_NET_USDT_TARGET_TICK",
+          "source": "OWNER_AUTHORIZED_RISK_MANAGER",
+          "target_net_reward_usdt": "10",
+          "tick_size": "0.01",
+          "version": "DYNAMIC_NET_2R_V4"
+        },
+        "tp_slippage_usdt": "0.0197332992"
+      }
+    },
+    {
+      "intent": {
+        "client_order_id": "hao-955952e92ac34ce4d0546d2fb908",
+        "cost_evidence": {
+          "entry_slippage_rate": "0",
+          "excluded_costs": [
+            "FUNDING",
+            "GAPS_BEYOND_RESERVE",
+            "FEE_CHANGES_AFTER_OBSERVATION"
+          ],
+          "exit_slippage_rate": "0.005",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "reserve_source": "CONFIGURED_ADVERSE_EXIT_RATE",
+          "taker_fee_rate": "0.0005",
+          "version": "FEE_SLIPPAGE_RISK_V3"
+        },
+        "entry": {
+          "order_type": "LIMIT",
+          "price": "100",
+          "quantity": "3.11",
+          "side": "SELL",
+          "time_in_force": "GTC"
+        },
+        "entry_fee_usdt": "0.1555",
+        "entry_slippage_rate": "0",
+        "evidence_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_RESERVE",
+          "FEE_CHANGES_AFTER_OBSERVATION"
+        ],
+        "exit_slippage_rate": "0.005",
+        "fee_evidence": {
+          "observed_at": 1794000000,
+          "source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "symbol": "ETHUSDT",
+          "taker_rate": "0.0005"
+        },
+        "gross_risk_usdt": "3.11",
+        "intent_id": "frozen-v3",
+        "leverage": 75,
+        "margin_mode": "CROSS",
+        "net_reward_risk": "2.005701065388345962407033462504339865577042539245618487282442344010051362211797895379269221128411757104535101144167609890067118064583427396189636945917879623416",
+        "net_reward_usdt": "10.016251045",
+        "position_side": "BOTH",
+        "protection": {
+          "exit_side": "BUY",
+          "stop_loss": "101",
+          "take_profit": "96.2",
+          "working_type": "MARK_PRICE"
+        },
+        "reward_risk_policy": "NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE",
+        "risk_model": "FEE_SLIPPAGE_RISK_V3",
+        "risk_target_usdt": "5",
+        "risk_usdt": "4.993890275",
+        "side": "SHORT",
+        "sl_execution_price": "101.505",
+        "sl_exit_fee_usdt": "0.157840275",
+        "sl_slippage_usdt": "1.57055",
+        "symbol": "ETHUSDT",
+        "tp_execution_price": "96.681",
+        "tp_exit_fee_usdt": "0.150338955",
+        "tp_normalization": {
+          "execution_tp": "96.2",
+          "exit_slippage_rate": "0.005",
+          "model_entry": "100",
+          "model_gross_rr": "4",
+          "model_sl": "101",
+          "model_tp": "96",
+          "risk_model": "FEE_SLIPPAGE_RISK_V3",
+          "source": "WORKER_DERIVED",
+          "taker_fee_rate": "0.0005",
+          "tick_size": "0.01",
+          "version": "TP_NET_RR_NORMALIZATION_V1"
+        },
+        "tp_slippage_usdt": "1.49591",
+        "tp_tick_size": "0.01"
+      },
+      "name": "v3",
+      "plan": {
+        "cost_evidence": {
+          "entry_slippage_rate": "0",
+          "excluded_costs": [
+            "FUNDING",
+            "GAPS_BEYOND_RESERVE",
+            "FEE_CHANGES_AFTER_OBSERVATION"
+          ],
+          "exit_slippage_rate": "0.005",
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "reserve_source": "CONFIGURED_ADVERSE_EXIT_RATE",
+          "taker_fee_rate": "0.0005",
+          "version": "FEE_SLIPPAGE_RISK_V3"
+        },
+        "entry": "100",
+        "entry_fee_rate": "0.0005",
+        "entry_fee_usdt": "0.1555",
+        "entry_slippage_rate": "0",
+        "excluded_costs": [
+          "FUNDING",
+          "GAPS_BEYOND_RESERVE",
+          "FEE_CHANGES_AFTER_OBSERVATION"
+        ],
+        "execution_quantity": "3.11",
+        "exit_fee_rate": "0.0005",
+        "exit_slippage_rate": "0.005",
+        "fee_observed_at": 1794000000,
+        "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+        "fee_symbol": "ETHUSDT",
+        "gross_reward": "11.818",
+        "gross_risk": "3.11",
+        "leverage": 75,
+        "margin_mode": "CROSS",
+        "mode": "ORDER_INTENT",
+        "net_reward": "10.016251045",
+        "net_rr": "2.005701065388345962407033462504339865577042539245618487282442344010051362211797895379269221128411757104535101144167609890067118064583427396189636945917879623416",
+        "order_type": "LIMIT",
+        "provenance": {
+          "payload_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        },
+        "quantity": "3.11",
+        "reward_risk_policy": "NET_1_TO_2_NORMALIZED_WITH_EXIT_RESERVE",
+        "risk": "4.993890275",
+        "risk_model": "FEE_SLIPPAGE_RISK_V3",
+        "risk_target_usdt": "5",
+        "rr": "3.8",
+        "rules_checked_at": 1794000000,
+        "side": "SHORT",
+        "sizing_method": "MAX_LOT_ENTRY_SL_TAKER_FEES_SLIPPAGE_V3",
+        "sizing_rules": {
+          "fee_observed_at": 1794000000,
+          "fee_source": "BINANCE_FUTURES_COMMISSION_RATE",
+          "fee_symbol": "ETHUSDT",
+          "mark_price": null,
+          "max_price": "1000000000",
+          "maximum": "1000",
+          "min_notional": "1",
+          "min_price": "0",
+          "minimum": "0.01",
+          "multiplier_down": null,
+          "multiplier_up": null,
+          "observed_at": 1794000000,
+          "step": "0.01",
+          "taker_fee_rate": "0.0005",
+          "tick": "0.01"
+        },
+        "sl": "101",
+        "sl_execution_price": "101.505",
+        "sl_exit_fee_usdt": "0.157840275",
+        "sl_slippage_usdt": "1.57055",
+        "symbol": "ETHUSDT",
+        "total_risk": "4.993890275",
+        "tp": "96.2",
+        "tp_execution_price": "96.681",
+        "tp_exit_fee_usdt": "0.150338955",
+        "tp_fee_rate": "0.0005",
+        "tp_normalization": {
+          "execution_tp": "96.2",
+          "exit_slippage_rate": "0.005",
+          "model_entry": "100",
+          "model_gross_rr": "4",
+          "model_sl": "101",
+          "model_tp": "96",
+          "risk_model": "FEE_SLIPPAGE_RISK_V3",
+          "source": "WORKER_DERIVED",
+          "taker_fee_rate": "0.0005",
+          "tick_size": "0.01",
+          "version": "TP_NET_RR_NORMALIZATION_V1"
+        },
+        "tp_slippage_usdt": "1.49591"
+      }
+    }
+  ],
+  "source": "d25fcc41f3c927d7e9098d78cdc2feb8e155625d"
+}

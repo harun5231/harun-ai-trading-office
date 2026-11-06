@@ -94,10 +94,12 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         self.assertEqual(rules.leverage_brackets['margin']['available_balance_usdt'],'1000')
         constraint=context['risk_constraints']
         self.assertEqual(constraint['risk_budget_scope'],'PER_TRANSACTION')
-        self.assertEqual(constraint['target_net_profit_at_tp_usdt'],'6')
+        self.assertNotIn('target_net_profit_at_tp_usdt',constraint)
+        self.assertEqual(constraint['tp_target_basis'],
+            'PRICE_PNL_BEFORE_TP_FEES_EQUALS_TWICE_ACTUAL_SL_TOTAL_RISK')
         self.assertEqual(constraint['leverage_ceiling'],75)
         self.assertFalse(constraint['tp_requires_neurobro_reapproval'])
-        self.assertNotIn('exit_slippage_rate',constraint)
+        self.assertEqual(constraint['exit_slippage_rate'],'0')
         moves=rules.dynamic_cost_evidence['price_moves']
         self.assertEqual(len(moves),200)
         self.assertEqual(moves[0]['start'],original['timeframes']['15m']['candles'][0]['open_time']/1000)
@@ -108,7 +110,8 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         plan=risk_check(Signal('ETHUSDT','LONG',D('100'),D('100.5'),D('99')),rules,
             D('3'),risk_model=DYNAMIC_RISK_MODEL)
         self.assertEqual(plan['leverage'],50)
-        self.assertEqual(plan['target_net_reward_usdt'],'6')
+        self.assertIsNone(plan['target_net_reward_usdt'])
+        self.assertEqual(D(plan['target_price_pnl_usdt']),2*D(plan['risk']))
 
     def test_stale_fee_or_book_and_malformed_brackets_fail_as_technical_input(self):
         self.account.at-=301
@@ -185,7 +188,7 @@ class DynamicMarketPolicyTests(unittest.TestCase):
     def test_definitely_unsent_v4_recomputes_fresh_costs_without_duplicate_intents(self):
         coordinator,row,old=self.seed_candidate('READY_FOR_EXECUTION')
         old_intent=json.loads(self.db.execute('SELECT payload FROM order_intents').fetchone()[0])
-        self.market.book['bids']=[['99.5','1000']]
+        self.account.taker='0.0006'  # Fresh account fee changes sizing; book impact does not.
         fresh,rules=refresh_unsubmitted(coordinator,row,old,build_intent=build_intent)
         self.assertLess(D(fresh['quantity']),D(old['quantity']))
         self.assertEqual((fresh['entry'],fresh['sl'],fresh['neurobro_tp']),
