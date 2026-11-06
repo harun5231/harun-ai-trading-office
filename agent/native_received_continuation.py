@@ -208,8 +208,157 @@ def read_not_sent(root,payload,capture):
     finally:os.close(directory)
 
 
+MANUAL_CONTEXT_KIND='NATIVE_OBSERVED_MANUAL_CONTEXT_V1'
+
+def _manual_pair(rows,symbol):
+    """Only a formatting question and explicit null technical answer: no setup."""
+    need(type(rows)is list and len(rows)==2)
+    user,answer=rows
+    need(user.get('role')=='user' and answer.get('role')=='assistant'
+        and user.get('attachments',[])==[] and answer.get('complete')is True
+        and type(user.get('text'))is str and 0<len(user['text'])<=256
+        and type(answer.get('text'))is str and 0<len(answer['text'])<=4096
+        and type(answer.get('id'))is str
+        and re.fullmatch('[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',answer['id']))
+    words=re.findall(r'[a-z]+',user['text'].lower())
+    need('json'in words and 'format'in words and any(word in words for word in('coin','koin'))
+        and all(word in {'berikan','tolong','mohon','format','json','coin','koin','nama','arah',
+            'entry','tp','sl','keputusan','ringkasan','akhir','dan','dengan','saja','untuk','ini'}for word in words)
+        and re.fullmatch(r'[A-Za-z\s,.:/-]+',user['text']))
+    text=answer['text'].strip();fenced=re.fullmatch(r'```(?:json)?\s*([\s\S]*?)\s*```',text,re.I)
+    if fenced:text=fenced[1].strip()
+    def unique(items):
+        result={}
+        for key,value in items:
+            need(type(key)is str and key.lower()not in result);result[key.lower()]=value
+        return result
+    value=json.loads(text,object_pairs_hook=unique)
+    need(type(value)is dict and set(value)=={'coin','keputusan','entry','tp','sl','alasan'}
+        and value['coin']==symbol and all(value[key]is None for key in('keputusan','entry','tp','sl'))
+        and type(value['alasan'])is str and len(value['alasan'])<=2048
+        and re.search(r'\b(?:gambar|chart|screenshot|candle|lampiran)\b',value['alasan'],re.I)
+        and re.search(r'\b(?:belum|tidak|kurang|gagal)\b',value['alasan'],re.I))
+    return True
+
+
+def _context_rows_digest(rows):
+    return observer.native_digest([{k:v for k,v in row.items()if k not in('id','attachments')}for row in rows])
+
+
+def manual_context_tail(capture,payload):
+    scope=capture.get('operation_scope',{});rows=capture.get('rows',[])
+    if scope.get('verified')is not True or scope.get('reply_complete')is not True:return None
+    end=scope['reply_row'];tail=copy.deepcopy(rows[end+1:])
+    if not tail:return None
+    try:_manual_pair(tail,payload['context']['symbol'])
+    except (ValueError,KeyError,TypeError):return None
+    owned=observer._project_operation(capture)['rows']
+    return dict(rows=tail,after_owned_pairs=len(owned)//2,
+        after_owned_user_prompt_sha256=sha(owned[-2]['text'].encode()),
+        after_owned_reply_sha256=sha(owned[-1]['text'].encode()),
+        owned_prefix_sha256=_context_rows_digest(owned),semantic_sha256=_context_rows_digest(tail))
+
+
+def _context_prefix(payload):
+    return 'observed-manual-context-'+observer.native_digest({k:payload[k]for k in('operation','request_sha256')})+'-'
+
+
+def read_manual_contexts(root,payload):
+    prefix=_context_prefix(payload);directory=_directory(root)
+    try:
+        found=[];total=0
+        for name in sorted(os.listdir(directory)):
+            if not name.startswith(prefix):continue
+            need(re.fullmatch(re.escape(prefix)+r'[a-f0-9]{64}\.json',name))
+            raw=_private_file(directory,name,262144);total+=len(raw);need(total<=4*1024*1024)
+            value=json.loads(raw,object_pairs_hook=pairs)
+            need(value.get('kind')==MANUAL_CONTEXT_KIND and value.get('schema_version')==1
+                and all(value.get(k)==payload[k]for k in('operation','request_sha256','marker'))
+                and value.get('payload_sha256')==observer.native_digest(payload)
+                and type(value.get('context'))is dict)
+            context=value['context'];_manual_pair(context['rows'],payload['context']['symbol'])
+            need(context['semantic_sha256']==_context_rows_digest(context['rows'])
+                and name==prefix+observer.native_digest({k:context[k]for k in('after_owned_pairs',
+                    'after_owned_user_prompt_sha256','after_owned_reply_sha256','owned_prefix_sha256','semantic_sha256')})+'.json')
+            found.append(dict(name=name,sha256=sha(raw),bytes=len(raw),value=value))
+        return found
+    finally:os.close(directory)
+
+
+def locate_manual_contexts(rows,entries,payload):
+    """Locate each immutable context pair uniquely; it never becomes a trade turn."""
+    found=[];used=set()
+    ids=[row.get('id')for row in rows if row.get('role')=='assistant']
+    need(len(ids)==len(set(ids)))
+    for entry in entries:
+        value=entry['value'];context=value['context'];expected=context['rows']
+        _manual_pair(expected,payload['context']['symbol'])
+        matches=[]
+        for index in range(2,len(rows)-1):
+            pair=rows[index:index+2]
+            if _context_rows_digest(pair)!=context['semantic_sha256']:continue
+            try:_manual_pair(pair,payload['context']['symbol'])
+            except (ValueError,TypeError):continue
+            if (sha(rows[index-2].get('text','').encode())==context['after_owned_user_prompt_sha256']
+                    and sha(rows[index-1].get('text','').encode())==context['after_owned_reply_sha256']):matches.append(index)
+        need(len(matches)==1 and not used.intersection((matches[0],matches[0]+1)))
+        index=matches[0];used.update((index,index+1))
+        found.append(dict(receipt=copy.deepcopy(entry),global_row=index,rows=copy.deepcopy(rows[index:index+2])))
+    return found
+
+
+def _persist_manual_context(root,payload,grant,source,current):
+    candidate=current.get('manual_context_tail')
+    if candidate is None:return
+    prior=source.get('manual_context_tail')
+    need(type(prior)is dict and candidate['semantic_sha256']==prior['semantic_sha256']
+        and all(candidate[k]==prior[k]for k in('after_owned_pairs','after_owned_user_prompt_sha256',
+            'after_owned_reply_sha256','owned_prefix_sha256')))
+    _manual_pair(candidate['rows'],payload['context']['symbol'])
+    custody=current.get('continuation_not_sent');need(type(custody)is dict and custody['grant_id']==grant['grant_id']
+        and custody['mutation_markers']==dict(upload_started=False,send_attempted=False,completed=False))
+    # Re-read the actual latest admission/closure immediately before writing.
+    need(read_not_sent(root,payload,current)==custody)
+    name=_context_prefix(payload)+observer.native_digest({k:candidate[k]for k in
+        ('after_owned_pairs','after_owned_user_prompt_sha256','after_owned_reply_sha256','owned_prefix_sha256','semantic_sha256')})+'.json'
+    directory=_directory(root)
+    try:
+        try:existing=_private_file(directory,name,262144)
+        except FileNotFoundError:existing=None
+    finally:os.close(directory)
+    if existing is not None:
+        value=json.loads(existing,object_pairs_hook=pairs)
+        need(value['context']['semantic_sha256']==candidate['semantic_sha256']);return
+    value=dict(schema_version=1,kind=MANUAL_CONTEXT_KIND,**{k:payload[k]for k in('operation','request_sha256','marker')},
+        payload_sha256=observer.native_digest(payload),room={k:current['room'][k]for k in('day','room_id','url')},
+        grant=copy.deepcopy(grant),context=copy.deepcopy(prior),observed_rows=copy.deepcopy(candidate['rows']),
+        positive_not_sent={k:copy.deepcopy(custody[k])for k in('grant_id','latest_attempt','admission','disposition','mutation_markers')},
+        observed_at=current['finished_at'],authority='CONTEXT_ONLY_NO_SEND_NO_APPROVAL')
+    _write(root,name,value)
+    from .native_daily_room import retain_prefix_snapshot
+    retain_prefix_snapshot(root,current['room']['day'],current['room']['room_id'],current['rows'])
+
+
+def filter_manual_operation_rows(rows,contexts,*,attachment_projection=False):
+    """Recheck the exact physical context rows and UUIDs on every hook read."""
+    excluded=set()
+    for item in contexts:
+        index=item['relative_row'];expected=item['rows'];need(index>=0 and index+1<len(rows))
+        need([{k:v for k,v in row.items()if k!='attachments'}for row in rows[index:index+2]]==
+            [{k:v for k,v in row.items()if k!='attachments'}for row in expected])
+        need(rows[index].get('attachments',[])in([],['UNCONFIRMED'])if attachment_projection
+            else rows[index].get('attachments',[])==[])
+        excluded.update((index,index+1))
+    return [copy.deepcopy(row)for index,row in enumerate(rows)if index not in excluded]
+
+
 def _seed(capture,payload,grant):
-    scope=capture['operation_scope'];rows=copy.deepcopy(capture['rows'])
+    original=copy.deepcopy(capture['rows']);scope=copy.deepcopy(capture['operation_scope'])
+    contexts=locate_manual_contexts(original,capture.get('manual_context_receipts',[]),payload)
+    excluded={i for item in contexts for i in(item['global_row'],item['global_row']+1)}
+    remap={old:new for new,old in enumerate(i for i in range(len(original))if i not in excluded)}
+    rows=copy.deepcopy([row for index,row in enumerate(original)if index not in excluded])
+    scope={**scope,**{key:remap[scope[key]]for key in('initial_user','latest_user','reply_row')}}
     need(scope['verified']is True and scope['unmatched_intents']==[] and scope['reply_complete']is True
         and scope['reply_row']==len(rows)-1 and scope['latest_user']==len(rows)-2)
     start=scope['initial_user'];owned=rows[start:]
@@ -254,7 +403,7 @@ def _seed(capture,payload,grant):
     # witnesses, including actual decoded images, establish those attachments.
     for index,expected in enumerate(names):
         need(type(expected)is list and len(expected)==4 and len(set(expected))==4)
-        tiles=[item for item in capture['file_tiles']if item['row']==start+2*index]
+        tiles=[item for item in capture['file_tiles']if remap.get(item['row'])==start+2*index]
         need(len(tiles)==1);tile=tiles[0]
         groups=[item['witness']for item in tile['file_tile_witnesses']if item['names']==expected]
         need(len(groups)==1 and len(groups[0])==4 and all(witness.get('name')==name
@@ -267,7 +416,9 @@ def _seed(capture,payload,grant):
                 and type(decoded.get('width'))is int and decoded['width']>0
                 and type(decoded.get('height'))is int and decoded['height']>0)
         owned[2*index]['attachments']=copy.deepcopy(expected)
-    return dict(rows=owned,full_rows=rows,offset=start,record=capture['room'],prompt=cached['rendered_prompt'],
+    physical_start=capture['operation_scope']['initial_user']
+    bound_contexts=[dict(relative_row=item['global_row']-physical_start,rows=item['rows'],receipt=item['receipt'])for item in contexts]
+    return dict(rows=owned,full_rows=original,offset=physical_start,manual_contexts=bound_contexts,record=capture['room'],prompt=cached['rendered_prompt'],
         turn_names=names,followup_intents=intents,completed_intents=completed,bound_charts=bound,
         initial_chart_evidence=initial_charts)
 
@@ -347,6 +498,8 @@ def continue_received(actor,delegated,value):
         need(False,'SCREENING_RECOVERY_'+current_result['status'])
     need(current_result['error_count']==0 and current['stable_snapshot_reads']==4
         and _semantic(source)==_semantic(current),'SCREENING_RECOVERY_CONTINUATION_TURN_CHANGED')
+    _persist_manual_context(room.store.root,payload,grant,source,current)
+    current['manual_context_receipts']=read_manual_contexts(room.store.root,payload)
     seed=_seed(current,payload,grant)
     need(actor.dispatch_check(payload)is True,'SCREENING_RECOVERY_CONTINUATION_NOT_PERMITTED')
     # A stable grant ID excludes volatile read times. Repeated/uncertain calls

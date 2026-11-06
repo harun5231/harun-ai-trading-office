@@ -305,7 +305,7 @@ def _room_witness(record, rows, raw, root, cached, receipts, *, payload=None, ge
                 followup_user_rows=followup, same_loaded_room_verified=bool(matched))
 
 
-def _operation_scope(rows, witness, receipts):
+def _operation_scope(rows, witness, receipts, *, manual_contexts=(), payload=None):
     initial = witness['initial_analysis_user_rows']
     if len(initial) != 1:
         return dict(verified=False,initial_user=None,latest_user=None,user_rows=[],reply_row=None,
@@ -320,7 +320,12 @@ def _operation_scope(rows, witness, receipts):
         if len(matches)!=1: unmatched.append(name)
         else: users.append(matches[0])
     users=sorted(set(users));latest=users[-1]
-    consecutive=users==list(range(start,latest+1,2))
+    if manual_contexts:
+        from .native_received_continuation import locate_manual_contexts
+        contexts=locate_manual_contexts(rows,manual_contexts,payload)
+        excluded={i for item in contexts for i in(item['global_row'],item['global_row']+1)}
+        consecutive=users==[i for i in range(start,latest+1,2)if i not in excluded]
+    else:consecutive=users==list(range(start,latest+1,2))
     reply=latest+1 if latest+1<len(rows) else None
     complete=reply is not None and rows[reply].get('role')=='assistant' and rows[reply].get('complete')is True
     chain_complete=sequences==list(range(1,len(sequences)+1))
@@ -346,16 +351,27 @@ def _project_operation(capture):
         result['rows']=[];result['file_tiles']=[];result['row_offset']=None
         return result
     stop=(end+1)if end is not None else scope['latest_user']+1
-    result['rows']=copy.deepcopy(rows[start:stop]);result['row_offset']=start
+    excluded=set();contexts=[]
+    if capture.get('manual_context_receipts'):
+        from .native_received_continuation import locate_manual_contexts
+        payload=dict(operation=capture['operation'],request_sha256=capture['request_sha256'],
+            context={'symbol':capture['operation'].rsplit(':',1)[-1]})
+        contexts=locate_manual_contexts(rows,capture['manual_context_receipts'],payload)
+        excluded={i for item in contexts for i in(item['global_row'],item['global_row']+1)}
+        result['manual_context_observations']=[dict(receipt_sha256=item['receipt']['sha256'],
+            after_owned_pairs=sum(1 for i in range(start,item['global_row'])if i not in excluded)//2,
+            rows=copy.deepcopy(item['rows']))for item in contexts]
+    selected=[i for i in range(start,stop)if i not in excluded];remap={old:new for new,old in enumerate(selected)}
+    result['rows']=copy.deepcopy([rows[i]for i in selected]);result['row_offset']=start
     result['native_history_prefix_sha256']=digest([text_sha(row.get('text',''))for row in rows[:start]])
-    result['file_tiles']=[dict(copy.deepcopy(item),row=item['row']-start,global_row=item['row'])
-        for item in capture.get('file_tiles',[]) if start<=item['row']<stop]
+    result['file_tiles']=[dict(copy.deepcopy(item),row=remap[item['row']],global_row=item['row'])
+        for item in capture.get('file_tiles',[]) if item['row']in remap]
     initial_key=('initial_screening_user_rows'if 'initial_screening_user_rows'in result['room_witness']else'initial_analysis_user_rows')
-    result['room_witness'][initial_key]=[i-start for i in result['room_witness'][initial_key]]
-    result['room_witness']['followup_user_rows']=[i-start for i in result['room_witness']['followup_user_rows']]
+    result['room_witness'][initial_key]=[remap[i]for i in result['room_witness'][initial_key]]
+    result['room_witness']['followup_user_rows']=[remap[i]for i in result['room_witness']['followup_user_rows']]
     result['operation_scope']={**copy.deepcopy(scope),'initial_user':0,
-        'latest_user':scope['latest_user']-start,'user_rows':[i-start for i in scope['user_rows']],
-        'reply_row':None if end is None else end-start}
+        'latest_user':remap[scope['latest_user']],'user_rows':[remap[i]for i in scope['user_rows']],
+        'reply_row':None if end is None else remap[end]}
     return result
 
 
@@ -665,6 +681,10 @@ def observe(actor, delegated, value):
             need(cached is not None, 'RECEIVED_ANALYSIS_PROMPT_CACHE_MISSING')
             capture['rendered_prompt_receipt'] = cached
             capture['receipt_files'] = _receipts(room.store.root, payload)
+            if generic and not screening:
+                from .native_received_continuation import read_manual_contexts
+                context_receipts=read_manual_contexts(room.store.root,payload)
+                if context_receipts:capture['manual_context_receipts']=context_receipts
             if generic:
                 from .native_analysis_material import read_prepared
                 capture['prepared_materials'] = [] if screening else read_prepared(room.store.root,payload)
@@ -705,8 +725,13 @@ def observe(actor, delegated, value):
                 witness=capture['room_witness'];witness['initial_screening_user_rows']=witness.pop('initial_analysis_user_rows')
                 scope=operation_scope(rows,witness,capture.get('review_receipts',[]),payload)
                 witness['followup_user_rows']=scope['user_rows'][1:]
-            else:scope = _operation_scope(rows,capture['room_witness'],capture['receipt_files']) if generic else None
+            else:scope = _operation_scope(rows,capture['room_witness'],capture['receipt_files'],
+                manual_contexts=capture.get('manual_context_receipts',()),payload=payload) if generic else None
             if generic: capture['operation_scope'] = scope
+            if generic and not screening:
+                from .native_received_continuation import manual_context_tail
+                tail=manual_context_tail(capture,payload)
+                if tail is not None:capture['manual_context_tail']=tail
             selected = scope['user_rows'] if scope is not None else None
             capture['file_tiles'] = [] if screening else _file_tiles(room, raw, native, rows, capture['receipt_files'],
                 prepared=capture.get('prepared_materials',()),indices=selected)

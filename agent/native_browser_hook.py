@@ -251,6 +251,13 @@ class DelegatedDOMBridge:
                 current_url = self.bridge.page.url
                 if current_url != state['initial_url']:
                     failed('CONVERSATION_URL_CHANGED')
+            if _received is not None and _received.get('manual_contexts'):
+                from .native_received_continuation import filter_manual_operation_rows
+                previous_names=self.bridge.uploaded_names
+                try:
+                    self.bridge.uploaded_names=[]
+                    filter_manual_operation_rows(self.bridge._turns(),_received['manual_contexts'])
+                finally:self.bridge.uploaded_names=previous_names
             if check_material:
                 # Reuse the native PNG, timeframe, symbol, hash and age admission.
                 if state['fresh'] is not None:
@@ -281,7 +288,11 @@ class DelegatedDOMBridge:
             previous_names = self.bridge.uploaded_names
             try:
                 self.bridge.uploaded_names = list(names)
-                return self.bridge._turns()
+                rows=self.bridge._turns()
+                if _received is not None and _received.get('manual_contexts'):
+                    from .native_received_continuation import filter_manual_operation_rows
+                    rows=filter_manual_operation_rows(rows,_received['manual_contexts'],attachment_projection=True)
+                return rows
             finally:
                 self.bridge.uploaded_names = previous_names
 
@@ -456,6 +467,9 @@ class DelegatedDOMBridge:
                 'followup_chart_evidence': copy.deepcopy(bound), 'followup_attachment_names': names,
                 'observed_at': projected['observed_at'], 'closed_candles_per_timeframe': 200,
                 'closed_candles_total': 400}
+            if _received is not None and _received.get('manual_contexts'):
+                intent['manual_context_receipts']=[{k:item['receipt'][k]for k in('name','sha256','bytes')}
+                    for item in _received['manual_contexts']]
             intent.update(followup_sequence=len(state['followup_intents']) + 1,
                 previous_followup_intent_sha256=(
                     _digest(state['followup_intents'][-1]) if state['followup_intents'] else None))
@@ -546,7 +560,7 @@ class DelegatedDOMBridge:
                     # remain their real production values throughout.
                     reference = {'symbol': active_context.get('symbol'),
                         'observed_at': observed, 'server_time_ms': active_context.get('server_time')}
-                    question = ('Kita lanjutkan pembahasan yang sudah ada dengan chart dan data terbaru. '
+                    question = ('Kita lanjutkan pembahasan '+str(active_context.get('symbol'))+' yang sudah ada dengan chart dan data terbaru. '
                         'Periksa kembali kedua gambar 15M dan 1H serta batas waktu candle tertutup '
                         'UTC yang dijelaskan bersama CSV. Jika bahan terbaca dan konsisten, '
                         'berikan keputusan pasar terbaru; jika belum, jelaskan bagian yang bermasalah.'
@@ -554,6 +568,8 @@ class DelegatedDOMBridge:
                         'Candle tertutup terbaru Binance telah berubah sejak materi sebelumnya. '
                         'Berikut chart dan data terbaru untuk coin yang sama; mohon perbarui '
                         'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.')
+                    if received_refresh and _received.get('manual_contexts'):
+                        question+=' '+FINAL_SETUP_JSON_REQUEST
                     send_followup(question,
                         reference, observed_turns, answer, phase)
                     return
