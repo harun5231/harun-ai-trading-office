@@ -24,7 +24,9 @@ from tests.test_agent_closed_candles_200 import native_context_200
 from tests.test_screening_response_recovery import native_module
 
 ROOT=Path(__file__).resolve().parents[1]
-NOW=datetime(2026,11,5,12,0,tzinfo=timezone.utc).timestamp()
+# Keep ordinary successful material in one actual Binance closed-bar window;
+# explicit rollover cases below cross12:15.
+NOW=datetime(2026,11,5,12,10,tzinfo=timezone.utc).timestamp()
 DAY='2026-11-05';CYCLE=DAY+':robot-v9:0';OP=CYCLE+':analysis-v9:BTCUSDT'
 
 
@@ -243,6 +245,14 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
             recover_received_analysis(self.provider,self.envelope,now=NOW)
         self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
 
+    def test_slow_reply_same_latest_closed_bar_has_no_seconds_expiry(self):
+        envelope=self.fixture(finished=NOW+230,reviewed_at=NOW+220)
+        result,_,stale=validate_observation(self.provider,envelope,self.payload,self.created,now=NOW+231)
+        self.assertFalse(stale)
+        self.assertEqual(result['output']['side'],'HOLD')
+        self.assertEqual(recover_received_analysis(self.provider,envelope,now=NOW+231),'RESUME_CACHED')
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0],1)
+
     def test_technical_hold_final_cannot_clear_unknown_even_when_stale(self):
         self.envelope=self.fixture(reply='Data screenshot belum terbaca.\nCOIN: BTCUSDT\nARAH: HOLD',stale=True,approval=False)
         with self.assertRaisesRegex(Review,'NEUROBRO_INPUT_UNREADABLE'):
@@ -341,7 +351,9 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
 
     def consumed_stale_setup(self):
         # Actual ETH timing offsets: a final chart was145.84s old at receipt;
-        # normal cached consumption49.5s later crossed the unchanged180s gate.
+        # historical cached consumption49.5s later crossed its former180s gate.
+        # That recorded rejection remains proof of nonexecution after the new
+        # watermark policy; it is not permission to replay that old setup.
         # Keep the isolated fixture's BTC identity; levels stay authored values.
         received=NOW+80.8399325
         recorded=received+0.1926038
@@ -439,7 +451,8 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         coordinator.execution_slots=lambda account,today:2
         coordinator.settle_previous_research=lambda today,account:None
         coordinator.recover_invalid_screening=lambda today,account:None
-        coordinator.market=SimpleNamespace(max_age=180,catalog=lambda:{'BTCUSDT':{},'ETHUSDT':{}})
+        coordinator.market=SimpleNamespace(max_age=180,catalog=lambda:{'BTCUSDT':{},'ETHUSDT':{}},
+            data=lambda symbol:native_context_200(NOW),fresh=lambda context,symbol:None)
         coordinator.store=SimpleNamespace(settings=lambda:dict(robot_on=True,risk_target_usdt='5'),
             entries=lambda today:0,report_account=lambda account:None,
             results=lambda cycle:list(self.db.execute('SELECT * FROM robot_candidates WHERE cycle=?',(cycle,))),

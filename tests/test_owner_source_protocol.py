@@ -217,9 +217,29 @@ class FreshHandoffTests(unittest.TestCase):
             self.record(**change)
             with self.subTest(change=change), self.assertRaises(Review):
                 self.handoff(refresh=True)
-        self.market.data.assert_not_called()
         self.record(received=NOW - 181)
         with self.assertRaises(Review):self.handoff(max_age=300)
+
+    def test_old_by_seconds_same_latest_binance_bars_is_valid_and_actual_get_checks_rollover(self):
+        current = NOW//900*900 + 650
+        captured = current-240
+        self.record(received=current-10, rows=charts(captured))
+        self.market.data.return_value = native_context(current)
+        result = owner.completed_decision_fresh(self.db,'analysis',self.market,'BTCUSDT',
+            now=current,refresh=True,source_reader=self.reader,browser_source='NEUROBRO_BROWSER')
+        self.assertEqual(result['fetched_at'],current)
+        self.market.data.assert_called_once_with('BTCUSDT')
+        later = (current//900+1)*900
+        self.market.data.return_value = native_context(later)
+        with self.assertRaisesRegex(Review,'STALE_MARKET_CONTEXT'):
+            owner.completed_decision_fresh(self.db,'analysis',self.market,'BTCUSDT',
+                now=later,refresh=True,source_reader=self.reader,browser_source='NEUROBRO_BROWSER')
+
+    def test_actual_current_tick_observation_is_reused_without_duplicate_public_get(self):
+        actual = native_context(NOW)
+        self.assertEqual(self.handoff(refresh=True,current_context=actual)['fetched_at'],NOW)
+        self.market.data.assert_not_called()
+        self.market.fresh.assert_called_once_with(actual,'BTCUSDT')
 
     def test_hash_or_native_output_authority_failure_never_refreshes_or_writes(self):
         self.reader.side_effect = Review('ROBOT_SETUP_UNVERIFIED')

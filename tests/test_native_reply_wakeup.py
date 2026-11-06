@@ -104,10 +104,12 @@ class NativeReplyWakeTests(unittest.TestCase):
         self.db.execute("UPDATE robot_jobs SET state='COMPLETE'")
         self.db.execute("UPDATE robot_candidates SET status='READY_FOR_EXECUTION',plan='{}'")
 
-    def test_actual_eth_clock_guard_stays_180_but_successful_steps_do_not_wait_45(self):
+    def test_latest_closed_bars_survive_seconds_delay_and_successful_steps_do_not_wait_45(self):
         self.assertTrue(self.fresh(RECEIVED))
         self.assertAlmostEqual(RECEIVED-CAPTURED,145.8399325,places=5)
-        with self.assertRaisesRegex(Review,'STALE_MARKET_CONTEXT'):self.fresh(OLD_CONSUMED)
+        self.assertTrue(self.fresh(OLD_CONSUMED))
+        with self.assertRaisesRegex(Review,'STALE_MARKET_CONTEXT'):
+            self.fresh((OLD_CONSUMED//900+1)*900)
         ticks=[];normal_gateway_calls=[]
         def tick():
             ticks.append(self.clock.now)

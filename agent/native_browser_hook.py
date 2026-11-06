@@ -386,7 +386,7 @@ class DelegatedDOMBridge:
                     or projected['observed_at'] < refresh_started
                     or projected['observed_at'] < market['observed_at']
                     or projected['server_time_ms'] < market['server_time_ms']
-                    or not 0 <= current-projected['observed_at'] <= 180):
+                    or not 0 <= current-projected['observed_at']):
                 unknown()
             fields = {'source', 'symbol', 'timeframe', 'captured_at', 'sha256', 'bytes'}
             from .native_chart_capture import SOURCE
@@ -402,7 +402,8 @@ class DelegatedDOMBridge:
                 captured = datetime.fromisoformat(row['captured_at'].replace('Z', '+00:00'))
                 if (captured.tzinfo is None or captured.utcoffset() != timezone.utc.utcoffset(captured)
                         or not projected['observed_at'] <= captured.timestamp() <= current
-                        or not 0 <= current-captured.timestamp() <= 180):
+                        or int(current*1000)//(900000 if row['timeframe']=='15m' else 3600000)
+                            != int(captured.timestamp()*1000)//(900000 if row['timeframe']=='15m' else 3600000)):
                     unknown()
                 frames.add(row['timeframe'])
             artifacts = self.native.image_artifacts(fresh['chart_images'], fresh['chart_evidence'])
@@ -535,8 +536,11 @@ class DelegatedDOMBridge:
             if phase in ('ANALYSIS', 'PENDING_REVIEW'):
                 observed = active_context.get('fetched_at') if isinstance(active_context, dict) else None
                 received_refresh = (_received is not None and state['fresh'] is None)
-                if (received_refresh or type(observed) in (int, float) and math.isfinite(observed)
-                        and self.wall_clock() - observed > 180):
+                server = active_context.get('server_time') if isinstance(active_context, dict) else None
+                series_changed = (type(server) is int and any(
+                    int(self.wall_clock()*1000)//interval != server//interval
+                    for interval in (900000,3600000)))
+                if received_refresh or series_changed:
                     # The reply is known, not an uncertain Send. Refresh before
                     # accepting a market decision from old charts; timestamps
                     # remain their real production values throughout.
@@ -547,7 +551,7 @@ class DelegatedDOMBridge:
                         'UTC yang dijelaskan bersama CSV. Jika bahan terbaca dan konsisten, '
                         'berikan keputusan pasar terbaru; jika belum, jelaskan bagian yang bermasalah.'
                         if received_refresh else
-                        'Materi pasar sebelumnya sudah berusia lebih lama. '
+                        'Candle tertutup terbaru Binance telah berubah sejak materi sebelumnya. '
                         'Berikut chart dan data terbaru untuk coin yang sama; mohon perbarui '
                         'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.')
                     send_followup(question,

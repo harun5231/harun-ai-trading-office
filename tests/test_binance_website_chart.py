@@ -76,7 +76,9 @@ class WebsiteChartContractTests(unittest.TestCase):
         facts=material_dispatch_provenance(self.native,rows,now=NOW+2)
         self.assertEqual(facts['closed_candles_total'],400)
         self.assertEqual(facts['send_checked_at'],NOW+2)
-        with self.assertRaises(NativeContextUnavailable):material_dispatch_provenance(self.native,rows,now=NOW+181)
+        self.assertEqual(material_dispatch_provenance(self.native,rows,now=NOW+181)['closed_candles_total'],400)
+        with self.assertRaises(NativeContextUnavailable):
+            material_dispatch_provenance(self.native,rows,now=(NOW//900+1)*900)
         rows[0]['symbol']='ETHUSDT'
         with self.assertRaises(FollowupUnavailable):material_dispatch_provenance(self.native,rows,now=NOW+2)
 

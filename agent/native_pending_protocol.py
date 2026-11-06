@@ -327,7 +327,10 @@ def install_source_protocol(namespace):
                         or row['attachment_id'] in attachments):
                     raise ValueError
                 captured = _utc_instant(row['captured_at'])
-                if not created - 5 <= captured <= received_at or not 0 <= received_at - captured <= max_age:
+                current_material = (context.get('material_contract') == 'OWNER_MATERIALS_V4'
+                    and namespace['CHART_SOURCE'] == 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT')
+                if (not created - 5 <= captured <= received_at
+                        or not current_material and not 0 <= received_at - captured <= max_age):
                     raise ValueError
                 timeframes.add(row['timeframe'])
                 attachments.add(row['attachment_id'])

@@ -32,19 +32,28 @@ from .charts import chart_provenance, render_chart_png
 MAX_BYTES = 256 * 1024
 MAX_SECONDS = 70.0
 CLEANUP_SECONDS = 10.0
-MARKET_CHILD = '''import json,sys,time
-sys.path.insert(0,"/app")
-from agent.market import BinanceFuturesMarket
-request=json.loads(sys.stdin.buffer.read(1025))
-assert type(request) is dict and set(request)=={"symbol","seconds"}
-assert type(request["seconds"]) in (int,float) and 0<request["seconds"]<=30
-deadline=time.monotonic()+request["seconds"]
-market=BinanceFuturesMarket(timeout_seconds=5,candle_limit=202)
-market.set_remaining_budget(lambda:max(0,deadline-time.monotonic()))
-value=market.snapshot(request["symbol"])
-raw=json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
-assert 0<len(raw)<=262144
-sys.stdout.buffer.write(raw)
+MARKET_CHILD = '''import json,sys,re
+try:
+    import json,sys,time
+    sys.path.insert(0,"/app")
+    from agent.market import BinanceFuturesMarket
+    request=json.loads(sys.stdin.buffer.read(1025))
+    assert type(request) is dict and set(request)=={"symbol","seconds"}
+    assert type(request["seconds"]) in (int,float) and 0<request["seconds"]<=30
+    deadline=time.monotonic()+request["seconds"]
+    market=BinanceFuturesMarket(timeout_seconds=5,candle_limit=202)
+    market.set_remaining_budget(lambda:max(0,deadline-time.monotonic()))
+    value=market.snapshot(request["symbol"])
+    raw=json.dumps(value,sort_keys=True,separators=(",",":"),allow_nan=False).encode()
+    assert 0<len(raw)<=262144
+    sys.stdout.buffer.write(raw)
+except BaseException as error:
+    reason=str(error)
+    reason=reason if re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}",reason) else "PUBLIC_MARKET_CHILD_ERROR"
+    name=type(error).__name__
+    name=name if re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}",name) else "UnknownError"
+    sys.stdout.write(json.dumps({"native_market_error":{"class":name,"reason":reason}},sort_keys=True,separators=(",",":")))
+    sys.exit(3)
 '''
 
 
@@ -147,6 +156,20 @@ def public_snapshot(symbol, *, deadline, gate, monotonic=time.monotonic):
                 break
             except subprocess.TimeoutExpired:
                 first = False
+        if process.returncode != 0:
+            detail = {'class': 'UnknownError', 'reason': 'PUBLIC_MARKET_CHILD_FAILED'}
+            try:
+                envelope = json.loads(output) if 0 < len(output) <= 2048 else {}
+                selected = envelope.get('native_market_error')
+                if (type(selected) is dict and set(selected) == {'class','reason'}
+                        and type(selected['class']) is str and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}',selected['class'])
+                        and type(selected['reason']) is str and re.fullmatch(r'[A-Z][A-Z0-9_]{0,95}',selected['reason'])):
+                    detail = selected
+            except (ValueError,TypeError):
+                pass
+            failure = FollowupUnavailable(detail['reason'])
+            failure.snapshot_error = dict(detail, returncode=process.returncode)
+            raise failure
         need(process.returncode == 0 and 0 < len(output) <= MAX_BYTES
              and gate() is True and monotonic() < until)
         value = json.loads(output)
@@ -401,7 +424,27 @@ class ActorCharts:
                  and dispatch_check() is True)
             return True
         gate()
-        public = self.snapshot(reference['symbol'], deadline=min(work_deadline, self.clock()+31), gate=gate)
+        try:
+            public = self.snapshot(reference['symbol'], deadline=min(work_deadline, self.clock()+31), gate=gate)
+        except FollowupUnavailable as error:
+            # Preserve the completed public-child failure before the outer
+            # native actor restores its browser. This is evidence, not replay.
+            detail = getattr(error, 'snapshot_error', None)
+            if type(detail) is dict:
+                directory = _directory(self.root)
+                try:
+                    record = {'kind':'NATIVE_PUBLIC_MARKET_FAILURE','symbol':reference['symbol'],
+                        'request_sha256':payload['request_sha256'],'observed_at':self.wall_clock(),
+                        'error':detail,'send_attempted':False}
+                    encoded = canonical(record)
+                    name = 'public-market-failure-'+sha(record)+'.json'
+                    fd = os.open(name,os.O_CREAT|os.O_EXCL|os.O_WRONLY|os.O_NOFOLLOW,0o600,dir_fd=directory)
+                    with os.fdopen(fd,'wb') as stream:
+                        stream.write(encoded);stream.flush();os.fsync(stream.fileno())
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
+            raise
         gate()
         context = native_snapshot(public, now=self.wall_clock())
         need(context['symbol'] == reference['symbol']
@@ -511,7 +554,8 @@ def verify_website_capture(charts, result, context, payload, *, archive_root, no
             captured = datetime.fromisoformat(receipt['captured_at'].replace('Z','+00:00'))
             need(captured.utcoffset() == timezone.utc.utcoffset(captured)
                  and projected['observed_at'] <= captured.timestamp() <= now
-                 and now-captured.timestamp() <= 180)
+                 and int(now*1000)//(900000 if tf=='15m' else 3600000)
+                 == int(captured.timestamp()*1000)//(900000 if tf=='15m' else 3600000))
             png = _private_file(directory, path.name, charts.MAX_PNG)
             need(len(png) == receipt['bytes'] and hashlib.sha256(png).hexdigest() == receipt['sha256'])
             row = sidecar['charts'][tf]
@@ -578,7 +622,8 @@ def material_dispatch_provenance(context, chart_evidence, *, now, allowed_source
         captured = datetime.fromisoformat(row['captured_at'].replace('Z','+00:00'))
         need(captured.tzinfo is not None and captured.utcoffset() == timezone.utc.utcoffset(captured)
              and projected['observed_at'] <= captured.timestamp() <= now
-             and now-captured.timestamp() <= 180)
+             and int(now*1000)//(900000 if timeframe=='15m' else 3600000)
+                 == int(captured.timestamp()*1000)//(900000 if timeframe=='15m' else 3600000))
         captures.append({'timeframe': timeframe,'captured_at': row['captured_at'],
                          'sha256': row['sha256'], 'age_at_send_check_seconds': now-captured.timestamp()})
     return {'symbol': projected['symbol'], 'data_observed_at': projected['observed_at'],
@@ -598,7 +643,10 @@ def validate_material_send_check(receipt, *, now, check_freshness):
          and facts['running_candles_separate'] is True
          and finite(facts['data_observed_at']) and finite(facts['send_checked_at'])
          and facts['data_observed_at'] == receipt.get('observed_at')
-         and 0 <= facts['send_checked_at']-facts['data_observed_at'] <= 180
+         and 0 <= facts['send_checked_at']-facts['data_observed_at']
+         and all(int(facts['send_checked_at']*1000)//interval
+                 == int(facts['data_observed_at']*1000)//interval
+                 for interval in (900000,3600000))
          and facts['data_age_at_send_check_seconds'] == facts['send_checked_at']-facts['data_observed_at'])
     if check_freshness:
         need(finite(now) and 0 <= now-facts['send_checked_at'] <= 5)
@@ -622,6 +670,8 @@ def validate_material_send_check(receipt, *, now, check_freshness):
         stamp = datetime.fromisoformat(row['captured_at'].replace('Z','+00:00'))
         need(stamp.utcoffset() == timezone.utc.utcoffset(stamp)
              and facts['data_observed_at'] <= stamp.timestamp() <= facts['send_checked_at']
-             and 0 <= facts['send_checked_at']-stamp.timestamp() <= 180
+             and 0 <= facts['send_checked_at']-stamp.timestamp()
+             and int(facts['send_checked_at']*1000)//(900000 if tf=='15m' else 3600000)
+                 == int(stamp.timestamp()*1000)//(900000 if tf=='15m' else 3600000)
              and row['age_at_send_check_seconds'] == facts['send_checked_at']-stamp.timestamp())
     return facts

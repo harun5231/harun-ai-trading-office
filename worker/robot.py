@@ -679,7 +679,8 @@ class Coordinator:
             if policy==DYNAMIC_RISK_MODEL:
                 # Even HOLD must be a current, hash-bound market decision;
                 # unreadable/stale attachments are technical failures.
-                completed_decision_fresh(self.db,operation,self.market,symbol)
+                completed_decision_fresh(self.db,operation,self.market,symbol,
+                    refresh=self.allowed(today),current_context=context)
             signal=setup(value,symbol,require_declared_rr=policy!=DYNAMIC_RISK_MODEL,require_gross_rr=policy!=DYNAMIC_RISK_MODEL)
             if signal.side=='HOLD':state='HOLD'
             else:

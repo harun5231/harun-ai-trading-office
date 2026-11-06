@@ -244,12 +244,12 @@ def validated_market_context(value, *, now=None):
             or not isinstance(value["symbol"], str) or not re.fullmatch(r"[A-Z0-9]{2,20}USDT", value["symbol"])
             or type(value["observed_at"]) not in (int, float)
             or not 0 < value["observed_at"] <= 10**13 or not math.isfinite(value["observed_at"])
-            or not 0 <= now - value["observed_at"] <= 180
+            or not 0 <= now - value["observed_at"]
             or type(value["server_time_ms"]) is not int or not 0 < value["server_time_ms"] <= 10**16
             or abs(value["server_time_ms"] / 1000 - value["observed_at"]) > 180
             or type(value["mark_time_ms"]) is not int
             or not 0 < value["mark_time_ms"] <= 10**16
-            or not -30 <= now - value["mark_time_ms"] / 1000 <= 180
+            or not -30 <= value["observed_at"] - value["mark_time_ms"] / 1000 <= 180
             or abs(value["mark_time_ms"] - value["server_time_ms"]) > 180000
             or type(value["observed_at_utc"]) is not str
             or not 20 <= len(value["observed_at_utc"]) <= 40 or not value["observed_at_utc"].isascii()):
@@ -301,7 +301,9 @@ def validated_market_context(value, *, now=None):
                     or index < 200 and row["close_time"] >= value["server_time_ms"]):
                 raise invalid()
             previous = row["open_time"]
-        if not running[timeframe]["open_time"] <= value["server_time_ms"] <= running[timeframe]["close_time"]:
+        if (not running[timeframe]["open_time"] <= value["server_time_ms"] <= running[timeframe]["close_time"]
+                or int(value["server_time_ms"]+(now-value["observed_at"])*1000)//interval
+                    != value["server_time_ms"]//interval):
             raise invalid()
         expected = {"closed_count": 200, "closed_as_of_server_time_ms": value["server_time_ms"],
             "first_open_time_ms": rows[0]["open_time"], "last_close_time_ms": rows[-1]["close_time"],
