@@ -24,7 +24,8 @@ from tests.test_native_daily_room import History
 from tests import test_lost_not_sent_recovery as recovery_fixture
 from tests.test_analysis_response_recovery import NOW,DAY,OP,CYCLE
 from worker.analysis_continuation import record_return,restore_received_checkpoint
-from worker.analysis_response_recovery import (digest,sha,wire,validate_observation,recover_received_analysis)
+from worker.analysis_response_recovery import (digest,sha,wire,validate_observation,recover_received_analysis,
+    received_nonexecuted,TERMINAL)
 from worker.core import Review
 
 
@@ -102,8 +103,8 @@ class PostSendObserverProjectionTests(unittest.TestCase):
         record_return(self.provider,self.capability,dict(kind=continuation.KIND,operation=OP,
             request_sha256=self.payload['request_sha256'],grant_id=self.capability['grant_id']),now=self.fresh+3)
 
-    def observe(self):
-        with self.actor.claim,patch.object(observer.time,'time',return_value=self.fresh+4):
+    def observe(self,now=None):
+        with self.actor.claim,patch.object(observer.time,'time',return_value=self.fresh+4 if now is None else now):
             return observer.observe(self.actor,self.delegated,dict(action=observer.GENERIC_ACTION,payload=self.payload))
 
     def test_postsend_full_observer_and_native_recorder_consume_current_json_hold_without_another_send(self):
@@ -124,6 +125,39 @@ class PostSendObserverProjectionTests(unittest.TestCase):
         self.assertEqual(recover_received_analysis(self.provider,result,now=self.fresh+4),'RESUME_CACHED')
         self.assertEqual(json.loads(self.f.f.row('api_requests')['output'])['side'],'HOLD')
         self.assertEqual(self.provider.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
+    def test_postsend_manual_context_noexec_reopens_completed_cycle_and_screens_one_free_slot(self):
+        # Match the live boundary: native receipt exists with the complete
+        # manual-context witness, but a new Binance closed bar arrived before
+        # consumption. Keep the actual reply and original operation immutable.
+        retired=self.fresh+300
+        result=self.observe(now=retired)
+        self.assertEqual(len(result['observation']['manual_context_receipts']),1)
+        self.assertTrue(restore_received_checkpoint(self.provider,result,now=retired))
+        self.assertEqual(recover_received_analysis(self.provider,result,now=retired),'NOEXEC')
+        self.assertEqual(self.f.f.row('api_requests')['state'],TERMINAL)
+        self.assertEqual(self.f.f.row('robot_candidates')['status'],'REJECTED')
+        self.assertIsNone(self.f.f.row('robot_candidates')['plan'])
+        self.assertEqual(self.f.f.row('research_browser_responses')['assistant_text'],self.answer)
+        data=json.loads(self.f.f.row('robot_cycles')['data'])
+        data.update(queue=[],seen=['PEPEUSDT','RENDERUSDT','BTCUSDT'],screen=3,replacements=3)
+        self.provider.db.execute("UPDATE robot_cycles SET state='COMPLETE',data=? WHERE id=?",(json.dumps(data),CYCLE))
+        before='\n'.join(self.provider.db.iterdump())
+        self.assertTrue(received_nonexecuted(self.provider.db,self.f.f.row('robot_candidates')))
+        self.assertEqual('\n'.join(self.provider.db.iterdump()),before)
+
+        module,coordinator=self.f.f.coordinator();calls=[]
+        coordinator.execution_slots=lambda account,today:1
+        coordinator.screen=lambda cycle,data,count,account,today,initial:(calls.append((cycle,count,initial))or{'count':count})
+        with patch.object(module,'day',return_value=DAY),patch.object(module.time,'time',return_value=retired), \
+                patch.object(module,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None):
+            advanced=coordinator._tick()
+        self.assertEqual(advanced,{'count':1})
+        self.assertEqual(calls,[(CYCLE,1,False)])
+        self.assertEqual(self.f.f.row('robot_cycles')['state'],'ACTIVE')
+        self.assertEqual(self.f.f.row('research_browser_responses')['assistant_text'],self.answer)
+        self.assertEqual(self.provider.db.execute('SELECT payload FROM order_intents').fetchone()[0],'accepted immutable payload')
 
     def test_owned_missing_csv_witness_still_rejects_and_restores_original_hint(self):
         self.raw.messages[22]['display_names']=self.names[:-1]

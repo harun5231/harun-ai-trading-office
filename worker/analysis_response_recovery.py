@@ -525,7 +525,7 @@ def _consumed_stale_nonexecuted(db,row,api,job,receipt,request):
             return False
         proof=json.loads(journal['proof'])
         result,received,stale=validate_observation(
-            SimpleNamespace(chart_max_age=receipt['chart_max_age']),
+            SimpleNamespace(db=db,chart_max_age=receipt['chart_max_age']),
             proof,{**body,'request_sha256':request_hash},api['created'],
             now=journal['created'],retained=True)
         if (stale or result['output']['side'] not in ('LONG','SHORT')
@@ -585,7 +585,7 @@ def received_nonexecuted(db,row):
         if not journal or journal['phase']!='NOEXEC' or journal['request_sha256']!=api['body_hash'] or journal['proof_sha256']!=sha(journal['proof']):return False
         from types import SimpleNamespace
         proof=json.loads(journal['proof']);result,received,stale=validate_observation(
-            SimpleNamespace(chart_max_age=receipt['chart_max_age']),proof,
+            SimpleNamespace(db=db,chart_max_age=receipt['chart_max_age']),proof,
             {**body,'request_sha256':api['body_hash']},api['created'],now=journal['updated'],retained=True)
         if result['assistant_text']!=receipt['assistant_text'] or result['response_id']!=receipt['response_id']:return False
         return (datetime.fromtimestamp(journal['updated'],ZoneInfo('Asia/Jakarta')).date().isoformat()!=row['cycle'][:10]
