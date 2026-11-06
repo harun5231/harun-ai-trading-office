@@ -17,6 +17,47 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_actual_sui_space_labelled_pipe_setup_keeps_original_entry_sl_and_gross_rr(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_sui_pipe_setup_20261106.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '95d8ecac519801cee81850b82e624418b7920e79a779c067dec4f06a83f891aa')
+        self.assertIn('R:R neto 1.67:1', reply)
+        parsed = parse_analysis_reply(reply, 'SUIUSDT')
+        self.assertEqual((parsed['side'], parsed['limit_entry'], parsed['take_profit'], parsed['stop_loss']),
+            ('SHORT', '0.860', '0.832', '0.874'))
+        self.assertEqual(parsed['risk_reward'], 2.0)
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        output = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'SUIUSDT'}})
+        self.assertEqual(output, dict(symbol='SUIUSDT', side='SHORT', limit_entry=.860,
+            take_profit=.832, stop_loss=.874, risk_reward=2))
+
+    def test_space_labelled_pipe_setup_keeps_whole_block_ambiguity_and_material_guards(self):
+        base = 'Ringkasan: COIN $SUIUSDT | SHORT | ENTRY 0.860 | TP 0.832 | SL 0.874 | R:R 1:2'
+        replies = (
+            'ENTRY: 0.861\n' + base,
+            'ARAH: LONG\n' + base,
+            'Chart belum terbaca.\n' + base,
+            'Jika harga breakdown, pertimbangkan berikut.\n' + base,
+            base.replace('ENTRY 0.860', 'ENTRY 0.860-0.862'),
+            base + ' | TP 0.830',
+            base.replace('SUIUSDT', 'AVAXUSDT'),
+            base + ' | Pembanding AVAXUSDT',
+            # Ordinary prose or unqualified numeric cells gain no authority.
+            'ARAH: SHORT\nSUIUSDT | ENTRY 0.860 | TP 0.832 | SL 0.874',
+        )
+        for reply in replies:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'SUIUSDT')
+
+    def test_pipe_level_spaces_do_not_change_existing_colon_equal_or_per_coin_formats(self):
+        parsed = parse_analysis_reply('COIN: SUIUSDT | SHORT | ENTRY : 0.860 | TP=0.832 | SL 0.874', 'SUIUSDT')
+        self.assertEqual((parsed['limit_entry'], parsed['take_profit'], parsed['stop_loss']), ('0.860', '0.832', '0.874'))
+        reply = ('COIN: SUIUSDT\nARAH: SHORT\nENTRY: 0.860\nTP: 0.832\nSL: 0.874\n'
+            'COIN: AVAXUSDT\nARAH: HOLD')
+        self.assertEqual(parse_analysis_reply(reply, 'SUIUSDT')['side'], 'SHORT')
+        self.assertEqual(parse_analysis_reply(reply, 'AVAXUSDT')['side'], 'HOLD')
+
     def test_actual_flattened_xrp_summary_retains_explicit_hold(self):
         reply = (Path(__file__).parent / 'fixtures/neurobro_xrp_flattened_hold_20261105.txt').read_text()
         self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),

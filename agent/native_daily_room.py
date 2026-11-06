@@ -46,6 +46,68 @@ def identities(rows):
         if key != 'attachments'}).encode()).hexdigest() for row in rows]
 
 
+def _prefix_name(day, room_id, anchors):
+    return 'daily-room-prefix-'+hashlib.sha256(canonical(dict(day=day,room_id=room_id,anchors=anchors)).encode()).hexdigest()+'.json'
+
+
+def read_prefix_snapshot(root, day, room_id, anchors):
+    """Read exact old native identities; a snapshot never authorizes Send."""
+    from .native_chart_followup import _directory,_private_file,pairs
+    directory=_directory(root);name=_prefix_name(day,room_id,anchors)
+    try:
+        try:raw=_private_file(directory,name,8*1024*1024)
+        except FileNotFoundError:return None
+    finally:os.close(directory)
+    value=json.loads(raw,object_pairs_hook=pairs)
+    need(type(value)is dict and set(value)=={'schema_version','kind','day','room_id','anchors','rows'}
+        and value['schema_version']==1 and value['kind']=='NATIVE_DAILY_ROOM_PREFIX_V1'
+        and value['day']==day and value['room_id']==room_id and value['anchors']==anchors
+        and identities(value['rows'])==anchors and all('attachments'not in row for row in value['rows']))
+    return dict(name=name,sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw),value=value)
+
+
+def retain_prefix_snapshot(root, day, room_id, rows):
+    """Preserve native rows before the existing anchor checkpoint advances."""
+    from .native_turn_batch import _write
+    from .native_chart_followup import _directory
+    selected=[{key:value for key,value in row.items()if key!='attachments'}for row in rows]
+    anchors=identities(selected)
+    value=dict(schema_version=1,kind='NATIVE_DAILY_ROOM_PREFIX_V1',day=day,room_id=room_id,anchors=anchors,rows=selected)
+    need(len(canonical(value).encode())<=8*1024*1024)
+    _write(root,_prefix_name(day,room_id,anchors),value)
+    directory=_directory(root)
+    try:os.fsync(directory)
+    finally:os.close(directory)
+    receipt=read_prefix_snapshot(root,day,room_id,anchors)
+    need(receipt is not None and receipt['value']==value)
+    return {key:receipt[key]for key in('name','sha256','bytes')}
+
+
+def prefix_snapshot_matches(root, day, room_id, anchors, rows):
+    """Use exact archived native rows when a reloaded UUID changes."""
+    try:
+        receipt=read_prefix_snapshot(root,day,room_id,anchors)
+        if receipt is None or not rows:return False
+        old=receipt['value']['rows']
+        semantic=lambda row:{key:value for key,value in row.items()if key not in('id','attachments')}
+        def same(prior,current):
+            return bool(prior and len(prior)==len(current)and all(semantic(before)==semantic(after)
+                and (before.get('role')=='assistant'and before.get('complete')is True
+                    and type(after.get('id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',after['id'])
+                    or identities([before])==identities([after]))for before,after in zip(prior,current)))
+        if len(rows)>=len(old)and same(old,rows[:len(old)]):return True
+        if (len(rows)>=2 and len(rows)<len(old)and rows[-2].get('role')=='user'
+                and rows[-1].get('role')=='assistant'and rows[-1].get('complete')is True):
+            if same(old[-len(rows):],rows):return True
+        # A capped native window may show the old suffix followed by one new
+        # user/assistant pair. This identifies history, never its new operation.
+        if (len(rows)>=4 and rows[-2].get('role')=='user'and rows[-1].get('role')=='assistant'
+                and rows[-1].get('complete')is True and len(rows)-2<len(old)):
+            return same(old[-(len(rows)-2):],rows[:-2])
+        return False
+    except (OSError,ValueError,KeyError,TypeError):return False
+
+
 # The existing production history observer established ordinary BUTTON history
 # entries under direct sidebar group labels (including Hari ini). No guessed
 # application route, private runtime state or application API is used.
@@ -308,7 +370,7 @@ class DailyRoom:
             'journal': JOURNAL_NAME}
 
     @staticmethod
-    def matches(rows, anchors, binding, state, *, archive_root=None):
+    def matches(rows, anchors, binding, state, *, archive_root=None, prefix_identity=None):
         reconciliation = binding.get('identifier_reconciliation')
         if reconciliation is not None:
             if archive_root is None or not isinstance(reconciliation, dict):
@@ -348,9 +410,12 @@ class DailyRoom:
             values = set(re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])', text))
             if type(marker) is str and values == {marker}:
                 return True
+        if archive_root is not None and type(prefix_identity)is tuple and len(prefix_identity)==2:
+            return prefix_snapshot_matches(archive_root,*prefix_identity,anchors,rows)
         return False
 
-    def restore(self, anchors, binding, state):
+    def restore(self, anchors, binding, state, *, prefix_identity=None):
+        prefix_identity=prefix_identity or(self.day,self.room_id)
         self._history_windows = []
         # A root SPA URL identifies no chat. Reopen ordinary observed history
         # entries, and admit only the room whose actual native messages match.
@@ -395,7 +460,7 @@ class DailyRoom:
                     continue
                 need(status == 'CONNECTED')
                 rows = self.full_turns()
-                if self.matches(rows, anchors, binding, state, archive_root=self.store.root):
+                if self.matches(rows, anchors, binding, state, archive_root=self.store.root,prefix_identity=prefix_identity):
                     return rows
                 # A saved title is only a navigation hint. Load its older UI
                 # history, then require the exact unchanged identity contract.
@@ -408,7 +473,7 @@ class DailyRoom:
                         and rows[-1].get('role') == 'assistant'
                         and rows[-1].get('complete') is True):
                     older_attempted = True
-                    restored = self.restore_older(rows, anchors, binding, state)
+                    restored = self.restore_older(rows, anchors, binding, state,prefix_identity=prefix_identity)
                     if restored is not None:
                         return restored
                 observed = identities(rows)
@@ -449,7 +514,7 @@ class DailyRoom:
             'schema_version': 1, 'day': self.day, 'room_id': self.room_id,
             'windows': self._history_windows}, replace=True)
 
-    def restore_older(self, rows, anchors, binding, state):
+    def restore_older(self, rows, anchors, binding, state, *, prefix_identity=None):
         """Load older messages in the observed room, without changing matches."""
         until = self.bridge._until(20)
         while self.bridge.clock() < until:
@@ -477,7 +542,8 @@ class DailyRoom:
                 need(status in ('CONNECTED', 'UNAVAILABLE'))
                 if status == 'CONNECTED':
                     current = self.full_turns()
-                    if self.matches(current, anchors, binding, state, archive_root=self.store.root):
+                    if self.matches(current, anchors, binding, state, archive_root=self.store.root,
+                            prefix_identity=prefix_identity or(self.day,self.room_id)):
                         return current
                     if (len(current) > previous_count and current[-1].get('role') == 'assistant'
                             and current[-1].get('complete') is True):
@@ -591,7 +657,8 @@ class DailyRoom:
                     need(not rows)
                 state = 'PREPARED' if not rows else 'BOUND'
                 anchors = identities(rows)
-            if not self.matches(rows, anchors, self._binding, state, archive_root=self.store.root):
+            if not self.matches(rows, anchors, self._binding, state, archive_root=self.store.root,
+                    prefix_identity=(self.day,self.room_id)):
                 rows = self.restore(anchors, self._binding, state)
             self.mode = 'REUSED'
             composer = self.composer()
@@ -607,6 +674,7 @@ class DailyRoom:
                 prompt.replace('\r\n', '\n').strip().encode()).hexdigest(),
                 marker=self._payload['marker'])
         self._binding['history_titles'] = [row['text'] for row in self.history.rows()]
+        retain_prefix_snapshot(self.store.root,self.day,self.room_id,rows)
         db.execute('UPDATE daily_rooms SET state=?,url=?,anchors=?,binding=?,updated_at=? WHERE day=?',
             ('BOUND' if rows else 'PREPARED', self.bridge.page.url, canonical(self.prefix),
                 canonical(self._binding), self.wall_clock(), self.day))
@@ -645,6 +713,7 @@ class DailyRoom:
                     stable = rows if (not rows or rows[-1].get('role') == 'assistant'
                         and rows[-1].get('complete') is True) else rows[:self.offset]
                     self._binding['history_titles'] = [row['text'] for row in self.history.rows()]
+                    retain_prefix_snapshot(self.store.root,self.day,self.room_id,stable)
                     db.execute('UPDATE daily_rooms SET state=CASE WHEN ? THEN ? ELSE state END, '
                         'anchors=?,binding=?,updated_at=? WHERE day=?',
                         (bool(stable), 'BOUND', canonical(identities(stable)), canonical(self._binding),

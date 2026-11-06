@@ -282,7 +282,8 @@ def _room_witness(record, rows, raw, root, cached, receipts, *, payload=None, ge
     binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
     if record['identifier_reconciliation'] is not None:
         binding['identifier_reconciliation'] = record['identifier_reconciliation']
-    native_room = DailyRoom.matches(rows, record['anchors'], binding, 'BOUND', archive_root=root)
+    native_room = DailyRoom.matches(rows, record['anchors'], binding, 'BOUND', archive_root=root,
+        prefix_identity=(record['day'],record['room_id']))
     initial = [i for i, row in enumerate(rows) if row.get('role') == 'user'
                and text_sha(row.get('text', '')) == cached['rendered_sha256']]
     followup = []
@@ -348,13 +349,175 @@ def _project_operation(capture):
     return result
 
 
+def _prior_review_user(root, rows, assistant, review, cache, receipts):
+    """Bind a retained author's answer to its exact initial/followup user."""
+    value=review['value'];operation=value['operation'];marker='HARUN_'+text_sha(operation)[:32]
+    user=assistant-1
+    initial=[i for i,row in enumerate(rows[:assistant])if row.get('role')=='user'
+        and row.get('text')==cache['rendered_prompt']]
+    need(len(initial)==1,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+    start=initial[0]
+    files=receipts(root,dict(operation=operation,request_sha256=value['request_sha256'],marker=marker))
+    if start==user:
+        first=[(name,entry)for name,entry in files.items()if name.endswith('.intent.json')
+            and entry['value'].get('followup_sequence',1)==1]
+        if not first:return dict(initial_user=start,followup_receipts=[])
+        need(len(first)==1,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        name,entry=first[0];intent=entry['value']
+        need(intent.get('original_payload_sha256')==value['payload_sha256']
+            and intent.get('initial_prompt_sha256')==text_sha(rows[start]['text'])
+            and intent.get('initial_reply_sha256')==text_sha(rows[assistant]['text'])
+            and intent.get('initial_turns_sha256')==value['transcript_sha256'],
+            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        return dict(initial_user=start,followup_receipts=[dict(name=name,sha256=entry['sha256'],bytes=entry['bytes'])])
+    need(start<user and (user-start)%2==0,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+    previous=None;witness=[]
+    for sequence,index in enumerate(range(start+2,user+1,2),1):
+        matches=[(name,entry)for name,entry in files.items()if name.endswith('.intent.json')
+            and entry['value'].get('followup_sequence',1)==sequence]
+        need(len(matches)==1,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        name,entry=matches[0];intent=entry['value']
+        need(intent.get('kind')=='NATIVE_200_CHART_FOLLOWUP' and intent.get('schema_version')==1
+            and intent.get('original_payload_sha256')==value['payload_sha256']
+            and intent.get('initial_prompt_sha256')==text_sha(rows[start]['text'])
+            and intent.get('followup_prompt_sha256')==text_sha(rows[index]['text'])
+            and intent.get('initial_reply_sha256')==text_sha(rows[index-1]['text'])
+            and intent.get('previous_followup_intent_sha256')==previous,
+            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        previous=native_digest(intent)
+        witness.append(dict(name=name,sha256=entry['sha256'],bytes=entry['bytes']))
+    complete=[(name,entry)for name,entry in files.items()if name.endswith('.complete.json')
+        and entry['value'].get('intent_sha256')==previous]
+    need(len(complete)==1,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+    name,entry=complete[0];closed=entry['value']
+    need({key:item for key,item in closed.items()if key not in('intent_sha256','response_id','final_reply_sha256')}==intent
+        and closed.get('final_reply_sha256')==text_sha(rows[assistant]['text'])
+        and type(closed.get('response_id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',closed['response_id']),
+        'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+    witness.append(dict(name=name,sha256=entry['sha256'],bytes=entry['bytes']))
+    return dict(initial_user=start,followup_receipts=witness)
+
+
+def _sent_prefix_authority(room, capture, snapshot, prefix_count):
+    """Translate only assistant IDs, backed by old native rows or prior reviews."""
+    from .native_daily_room import read_prefix_snapshot
+    from .dialogue_service import validate_result
+    record=capture['room'];rows=capture['rows'];anchors=record['anchors'];actual=identities(rows)
+    changed=[i for i in range(prefix_count)if actual[i]!=anchors[i]]
+    if not changed:return None
+    need(all(i%2==1 and rows[i].get('role')=='assistant'and rows[i].get('complete')is True
+        and type(rows[i].get('id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',rows[i]['id'])for i in changed),
+        'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+    retained=read_prefix_snapshot(room.store.root,record['day'],record['room_id'],anchors)
+    if retained is not None:
+        old=retained['value']['rows']
+        semantic=lambda row:{key:value for key,value in row.items()if key not in('id','attachments')}
+        need(all(semantic(old[i])==semantic(rows[i])for i in range(prefix_count)),
+            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        return dict(kind='EXACT_NATIVE_PREFIX_SNAPSHOT',changed_assistant_rows=changed,
+            snapshot={key:retained[key]for key in('name','sha256','bytes')})
+    # Older releases kept immutable native Mini reviews but not full row IDs.
+    # Those independently bind exact reply text, paired users and this room.
+    directory=_directory(room.store.root);available=[];prior_answers={};wanted={text_sha(rows[i]['text'])for i in changed}
+    try:
+        for name in sorted(os.listdir(directory)):
+            if not re.fullmatch(r'(?:screening|analysis)-review-[a-f0-9]{64}-[a-f0-9]{64}\.json',name):continue
+            try:
+                raw=_private_file(directory,name,512*1024);value=json.loads(raw,object_pairs_hook=pairs)
+            except (OSError,ValueError):continue
+            if type(value)is dict and type(value.get('operation'))is str and type(value.get('reply_sha256'))is str:
+                if (value.get('conversation_id')=='neurobro:'+record['day']+':'+record['room_id']
+                        and type(value.get('observed_at'))in(int,float)and 0<value['observed_at']<=snapshot['updated_at']):
+                    prior_answers.setdefault(value.get('operation'),set()).add(value.get('reply_sha256'))
+                if value.get('reply_sha256')in wanted:
+                    available.append(dict(name=name,sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw),value=value))
+        authority=[]
+        for index in changed:
+            choices=[]
+            for entry in available:
+                value=entry['value']
+                if value.get('reply_sha256')!=text_sha(rows[index]['text']):continue
+                try:
+                    phase=value['phase'];operation=value['operation'];request=value['request'];response=value['response']
+                    need(phase in('SCREENING','ANALYSIS')and value['kind']==('NATIVE_SCREENING_MINI_REVIEW_V1'if phase=='SCREENING'else'NATIVE_ANALYSIS_MINI_REVIEW_V1')
+                        and value['schema_version']==1 and operation.startswith(record['day']+':robot-v9:')
+                        and value['conversation_id']=='neurobro:'+record['day']+':'+record['room_id']
+                        and type(value['observed_at'])in(int,float)and 0<value['observed_at']<=snapshot['updated_at']
+                        and all(type(value[key])is str and re.fullmatch('[a-f0-9]{64}',value[key])for key in
+                            ('request_sha256','payload_sha256','context_sha256','reply_sha256','transcript_sha256','request_id')),
+                        'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    request_id=native_digest(dict(operation=operation,request_sha256=value['request_sha256'],
+                        reply_sha256=value['reply_sha256'],phase=phase,transcript_sha256=value['transcript_sha256']))
+                    prefix=('screening'if phase=='SCREENING'else'analysis')+'-review-'+native_digest(
+                        dict(operation=operation,request_sha256=value['request_sha256']))+'-'
+                    need(entry['name']==prefix+request_id+'.json'and value['request_id']==request_id
+                        and request['request_id']==request_id and request['phase']==phase
+                        and request['conversation_id']==value['conversation_id']
+                        and request['reply']==rows[index]['text'] and request['reply_sha256']==value['reply_sha256']
+                        and request['gate']==dict(robot_on=True,native_dispatch_verified=True)
+                        and response['reason']=='DIALOGUE_DECISION','RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    validate_result(response,request)
+                    if phase=='SCREENING':
+                        need(re.fullmatch(re.escape(record['day'])+r':robot-v9:(?:0|[1-9]\d{0,11}):screening:(?:0|[1-9]\d{0,11}):[12]',operation)
+                            and request['market_context']is None,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                        done=value['model_operation']
+                        need(done['state']=='DONE'and done['kind']=='DELEGATED_MODEL_DIALOGUE'
+                            and done['operation_id']=='delegated-model:'+request_id
+                            and re.fullmatch('[a-f0-9]{64}',done['request_hash'])
+                            and json.loads(done['result'])==response and 0<done['updated_at']<=value['observed_at'],
+                            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    else:
+                        selected=re.fullmatch(re.escape(record['day'])+r':robot-v9:(?:0|[1-9]\d{0,11}):analysis-v9:([A-Z0-9]{2,18}USDT)',operation)
+                        need(selected is not None and type(request['market_context'])is dict
+                            and request['market_context'].get('symbol')==selected[1],'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    cache_name='mini-prompt-'+value['payload_sha256']+'.json'
+                    cache_raw=_private_file(directory,cache_name,384*1024);cache=json.loads(cache_raw,object_pairs_hook=pairs)
+                    marker='HARUN_'+text_sha(operation)[:32]
+                    need(type(cache)is dict and set(cache)=={'schema_version','operation','payload_sha256','model_request_id','rendered_prompt','rendered_sha256'}
+                        and cache['schema_version']==1 and cache['operation']==operation and cache['payload_sha256']==value['payload_sha256']
+                        and cache['rendered_sha256']==text_sha(cache['rendered_prompt'])
+                        and type(cache['model_request_id'])is str and re.fullmatch('[a-f0-9]{64}',cache['model_request_id'])
+                        and cache['rendered_prompt'].count(marker)==1,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    association=_prior_review_user(room.store.root,rows,index,entry,cache,_receipts)
+                    need(association['followup_receipts']or len(prior_answers.get(operation,()))==1,
+                        'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+                    choices.append(dict(index=index,old_anchor=anchors[index],current_anchor=actual[index],
+                        review={key:entry[key]for key in('name','sha256','bytes')},
+                        cache=dict(name=cache_name,sha256=hashlib.sha256(cache_raw).hexdigest(),bytes=len(cache_raw)),
+                        operation=operation,request_sha256=value['request_sha256'],reply_sha256=value['reply_sha256'],
+                        transcript_sha256=value['transcript_sha256'],**association))
+                except (OSError,ValueError,KeyError,TypeError):continue
+            need(choices,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+            authority.append(choices[0])
+        return dict(kind='PRIOR_NATIVE_REVIEWS_AND_USER_ANCHORS',changed_assistant_rows=changed,rows=authority)
+    finally:os.close(directory)
+
+
+def _sent_window_alignment(room,capture):
+    """Preserve only omitted rows from an exact old snapshot, never invent DOM."""
+    from .native_daily_room import read_prefix_snapshot,prefix_snapshot_matches
+    record=capture['room'];rows=capture['rows'];offset=capture['operation_scope']['latest_user']
+    if type(offset)is not int or offset<2 or offset>=len(record['anchors'])or len(rows)!=offset+2:return None
+    retained=read_prefix_snapshot(room.store.root,record['day'],record['room_id'],record['anchors'])
+    if retained is None:return None
+    old=retained['value']['rows'];omitted=len(old)-offset
+    if omitted<=0 or omitted%2:return None
+    # Check the historical suffix alone: the current operation's pair is
+    # independently bound by cache, attachments and four stable native reads.
+    if not prefix_snapshot_matches(room.store.root,record['day'],record['room_id'],record['anchors'],rows[:offset]):return None
+    return dict(omitted=omitted,rows=old[:omitted]+rows,
+        authority=dict(kind='EXACT_NATIVE_PREFIX_SNAPSHOT_WINDOW',visible_row_offset=omitted,
+            visible_prior_rows=offset,snapshot={key:retained[key]for key in('name','sha256','bytes')}))
+
+
 def _seal_sent_room(actor, room, raw, payload, capture, snapshot, *, screening):
     """Append one observed completed turn, never infer whether Send happened."""
-    from .native_daily_room import canonical as room_canonical
+    from .native_daily_room import canonical as room_canonical,retain_prefix_snapshot
     from .native_screening_recovery import _room_record
     from .native_analysis_material import validate_prepared
     record=capture['room'];rows=capture['rows'];scope=capture['operation_scope']
     anchors=record['anchors'];offset=scope['latest_user'];cached=capture['rendered_prompt_receipt']
+    alignment=_sent_window_alignment(room,capture)
     _gate(actor)
     capture['status']=raw.status(maintenance_allowed=lambda:False)
     capture['session_observation']=copy.deepcopy(raw.session_observation())
@@ -364,7 +527,7 @@ def _seal_sent_room(actor, room, raw, payload, capture, snapshot, *, screening):
         and capture['room_witness']['same_loaded_room_verified'] is True
         and type(anchors)is list and len(anchors)%2==0
         and all(type(anchor)is str and re.fullmatch('[a-f0-9]{64}',anchor)for anchor in anchors)
-        and type(offset)is int and offset>=0 and len(anchors)in(offset,offset+2)
+        and type(offset)is int and offset>=0 and (len(anchors)in(offset,offset+2)or alignment is not None)
         and len(rows)==offset+2
         and rows[offset]['role']=='user' and rows[-1]['role']=='assistant' and rows[-1]['complete']is True
         and type(rows[-1].get('text'))is str and bool(rows[-1]['text'])
@@ -374,9 +537,8 @@ def _seal_sent_room(actor, room, raw, payload, capture, snapshot, *, screening):
     # SENT can retain the current user and a last assistant snapshot taken
     # before its final text settled. Preserve every earlier identity, including
     # that user; only this operation's last assistant may finish changing.
-    prefix_count=offset+1 if len(anchors)==offset+2 else offset
-    need(identities(rows[:prefix_count])==anchors[:prefix_count],
-        'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    prefix_count=offset+1 if len(anchors)==offset+2 and alignment is None else offset
+    prefix_authority=alignment['authority']if alignment is not None else _sent_prefix_authority(room,capture,snapshot,prefix_count)
     start=scope['initial_user']
     need(cached['operation']==payload['operation'] and cached['payload_sha256']==native_digest(payload)
         and cached['rendered_sha256']==text_sha(cached['rendered_prompt'])==text_sha(rows[start]['text'])
@@ -422,12 +584,15 @@ def _seal_sent_room(actor, room, raw, payload, capture, snapshot, *, screening):
                 and type(image['decoded'].get('width'))is int and image['decoded']['width']>0
                 and type(image['decoded'].get('height'))is int and image['decoded']['height']>0
                 for image in tile['images']),'RECEIVED_ANALYSIS_SENT_MATERIAL_UNVERIFIED')
-    updated=room.wall_clock();bound_anchors=room_canonical(identities(rows))
+    bound_rows=rows if alignment is None else alignment['rows']
+    updated=room.wall_clock();bound_anchors=room_canonical(identities(bound_rows))
     capture['room_recovery']=dict(kind='NATIVE_SENT_ROOM_COMPLETION_SEAL_V1',state='PREPARED',
         operation=payload['operation'],request_sha256=payload['request_sha256'],
         prior_record=copy.deepcopy(snapshot),preserved_prefix_count=prefix_count,
-        prior_assistant_anchor=anchors[-1]if len(anchors)==offset+2 else None,
+        prior_assistant_anchor=anchors[-1]if len(anchors)==offset+2 and alignment is None else None,
         completed_anchors_sha256=text_sha(bound_anchors),updated_at=updated)
+    capture['room_recovery']['prefix_authority']=prefix_authority
+    capture['room_recovery']['completed_prefix_snapshot']=retain_prefix_snapshot(room.store.root,record['day'],record['room_id'],bound_rows)
     capture['stage']='SENT_ROOM_SEAL_PREPARED';_save(room.store.root,capture)
     with room.store.open()as db:
         db.execute('BEGIN IMMEDIATE')
@@ -508,7 +673,8 @@ def observe(actor, delegated, value):
                 if record['identifier_reconciliation'] is not None:
                     binding['identifier_reconciliation'] = record['identifier_reconciliation']
                 _gate(actor)
-                try:rows = room.restore(record['anchors'], binding, restore_state)
+                try:rows = room.restore(record['anchors'], binding, restore_state,
+                    prefix_identity=(record['day'],record['room_id']))
                 except BaseException:
                     # A history load can expose a challenge or another room.
                     # Retain that actual observation without hiding the refusal.
