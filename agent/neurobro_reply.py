@@ -174,6 +174,12 @@ def _inline_summary_fields(block):
         if match:
             if attributed_symbols(line) != {symbol(match.group(1))}:
                 raise ReplyIncomplete('NEUROBRO_COIN_UNVERIFIED')
+            # A labelled RR-only annotation is metadata, not part of TP. Keep
+            # every other suffix intact so ranges, extra prices and prose fail.
+            line = re.sub(r'[ \t]+-[ \t]+(R[ \t]*:[ \t]*R(?:[ \t]+bersih)?[ \t]+'
+                r'\d{1,16}(?:[.,]\d{1,16})?[ \t]*:[ \t]*\d{1,16}(?:[.,]\d{1,16})?)'
+                r'(?=[ \t]+(?:' + labels + r')[ \t]*[:=]|[ \t]*$)',
+                r'\n\1', line, flags=re.I)
             line = re.sub(r'[ \t]+(?=(?:' + labels + r')[ \t]*[:=])', '\n', line, flags=re.I)
         lines.append(line)
     return '\n'.join(lines)

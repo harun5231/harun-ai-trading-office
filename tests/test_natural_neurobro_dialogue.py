@@ -17,6 +17,49 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_actual_near_inline_tp_rr_annotation_keeps_prices_and_calculates_ratio(self):
+        reply = (Path(__file__).parent / 'fixtures/neurobro_near_inline_rr_setup_20261106.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '2158c656f4ae9effe8c85beb4d64cfe072f97d180afdf2697e412002dc31c135')
+        parsed = parse_analysis_reply(reply, 'NEARUSDT')
+        self.assertEqual((parsed['side'], parsed['limit_entry'], parsed['take_profit'], parsed['stop_loss']),
+            ('SHORT', '3.770', '3.590', '3.835'))
+        self.assertAlmostEqual(parsed['risk_reward'], .180 / .065)
+        self.assertNotEqual(parsed['risk_reward'], 2.38)
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        output = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'NEARUSDT'}})
+        self.assertEqual((output['limit_entry'], output['take_profit'], output['stop_loss']),
+            (3.770, 3.590, 3.835))
+
+    def test_inline_rr_annotation_never_discards_ambiguous_price_or_setup_content(self):
+        base = 'COIN: NEARUSDT Perpetual ARAH: SHORT ENTRY: $3.770 TP: $3.590 - R:R bersih 2.38:1 SL: $3.835'
+        invalid = (
+            base.replace('2.38:1', '2.38:1 3.600'),
+            base.replace('2.38:1', '2.38:1 estimasi'),
+            base.replace('$3.590 -', '$3.590-$3.600 -'),
+            base.replace('$3.590 -', '$3.590 / $3.600 -'),
+            base.replace('$3.590 -', '$3.590 atau 3.600 -'),
+            base.replace(' SL:', ' TP: $3.580 SL:'),
+            base + ' TP: $3.580',
+            base + ' COIN: BCHUSDT ARAH: SHORT',
+            base.replace('ARAH: SHORT', 'ARAH: SHORT jika retest entry'),
+            base.replace('R:R bersih', 'rasio bersih'),
+            base.replace('R:R bersih', 'R:R bersih setelah biaya'),
+        )
+        for reply in invalid:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'NEARUSDT')
+        # Existing newline and pipe boundaries already separate metadata; they
+        # remain valid without changing the strict price parser.
+        for reply in (
+                base.replace(' SL:', '\nSL:'),
+                'COIN: NEARUSDT | SHORT | ENTRY: $3.770 | TP: $3.590 | R:R bersih 2.38:1 | SL: $3.835'):
+            with self.subTest(reply=reply):
+                parsed = parse_analysis_reply(reply, 'NEARUSDT')
+                self.assertEqual((parsed['limit_entry'], parsed['take_profit'], parsed['stop_loss']),
+                    ('3.770', '3.590', '3.835'))
+
     def test_actual_sui_space_labelled_pipe_setup_keeps_original_entry_sl_and_gross_rr(self):
         reply = (Path(__file__).parent / 'fixtures/neurobro_sui_pipe_setup_20261106.txt').read_text()
         self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
