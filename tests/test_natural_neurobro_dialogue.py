@@ -17,6 +17,44 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_author_final_short_json_keeps_original_levels_and_transport_precision(self):
+        reply = ('```json\n{"COIN":"ETHUSDT","ARAH":"SHORT",'
+            '"ENTRY":2248,"TP":2188,"SL":2265}\n```')
+        parsed = parse_analysis_reply(reply, 'ETHUSDT')
+        self.assertEqual((parsed['side'], parsed['limit_entry'], parsed['take_profit'],
+            parsed['stop_loss']), ('SHORT', '2248', '2188', '2265'))
+        self.assertAlmostEqual(parsed['risk_reward'], 60/17)
+        from worker.neuroapi import SETUP_SCHEMA_V4
+        projected = parse_reply_for_payload(reply,
+            {'output_schema': SETUP_SCHEMA_V4, 'context': {'symbol': 'ETHUSDT'}})
+        self.assertEqual(projected['limit_entry'], 2248)
+        self.assertEqual(projected['stop_loss'], 2265)
+
+    def test_final_json_supersedes_older_scenario_only_with_explicit_final_heading(self):
+        summary = '{"COIN":"LINKUSDT","ARAH":"LONG","ENTRY":17.25,"TP":18,"SL":17}'
+        prefix = 'Jika breakout terjadi, skenario lama belum aktif.\nCOIN: LINKUSDT\nARAH: HOLD\n'
+        self.assertEqual(parse_analysis_reply(prefix + '\n### Ringkasan akhir:\n' + summary,
+            'LINKUSDT')['limit_entry'], '17.25')
+        with self.assertRaises(ReplyIncomplete):
+            parse_analysis_reply('COIN: LINKUSDT\nARAH: LONG\nJika breakout terjadi.\n'
+                + summary, 'LINKUSDT')
+        hold = '{"coin":"LINKUSDT","arah":"HOLD","entry":null,"tp":null,"sl":null}'
+        self.assertEqual(parse_analysis_reply(hold, 'LINKUSDT')['side'], 'HOLD')
+
+    def test_final_json_refuses_unreadable_input_foreign_coin_and_invented_defaults(self):
+        base = '{"COIN":"LINKUSDT","ARAH":"LONG","ENTRY":17.25,"TP":18,"SL":17}'
+        invalid = (base.replace('LINKUSDT', 'ETHUSDT'), base.replace('"SL":17', '"SL":null'),
+            base.replace('"SL":17', '"SL":true'), base.replace('"SL":17', '"SL":NaN'),
+            base.replace('"SL":17', '"SL":17,"SL":16'),
+            base.replace('"SL":17', '"SL":17,"condition":"jika breakout"'),
+            base.replace('"SL":17', '"SL":"17\\nENTRY:18"'),
+            base.replace('LINKUSDT', 'LINKUSDT\\nARAH:HOLD'),
+            base.replace('"LONG"', '"HOLD"'), base.replace('"TP":18', '"TP":16'),
+            'Screenshot belum terbaca.\nRingkasan akhir:\n' + base)
+        for reply in invalid:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, 'LINKUSDT')
+
     def test_actual_sc3_named_selection_list_preserves_explicit_market_hold(self):
         from agent.neurobro_reply import screening_market_hold
         reply = (Path(__file__).parent / 'fixtures/neurobro_sc3_named_hold_20261106.txt').read_text()
@@ -638,6 +676,31 @@ class ComposedPromptServiceTests(unittest.TestCase):
 
 
 class CurrentMaterialConversationTests(unittest.TestCase):
+    def test_incomplete_final_setup_gets_one_short_json_request_with_fresh_same_coin_material(self):
+        fixture = self.fixture()
+        fixture.bridge.initial = 'COIN: BTCUSDT\nARAH: SHORT\nENTRY: 100\nSL: 101'
+        fixture.bridge.final = ('{"COIN":"BTCUSDT","ARAH":"SHORT",'
+            '"ENTRY":100,"TP":97,"SL":101}')
+        fixture.module.exact_json.side_effect = lambda text, marker: None
+        def reason(value):
+            return {'schema_version': 1, 'ok': True,
+                **{key: value[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
+                'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
+                'decision':{'action':'COMPLETE','symbols':['BTCUSDT'],'question':''},
+                'needs_followup':False,'reason':'DIALOGUE_DECISION'}
+        fixture.hook.client = Mock(request=Mock(side_effect=reason))
+        result = fixture.ask()
+        sent = fixture.bridge.messages[2]['text']
+        self.assertIn('JSON singkat', sent)
+        self.assertIn('COIN, ARAH, ENTRY, TP, SL', sent)
+        self.assertNotIn('risk_usdt', sent)
+        self.assertNotIn('ukuran posisi', sent)
+        self.assertEqual(result['assistant_text'], fixture.bridge.final)
+        self.assertEqual((result['output']['side'], result['output']['entry_price'],
+            result['output']['stop_loss'], result['output']['take_profit']), ('SHORT', 100, 101, 97))
+        self.assertEqual(fixture.bridge.clicks, 2)
+        fixture.refresh.assert_called_once()
+
     def fixture(self):
         from tests.test_native_browser_hook import NativeFreshFollowupTests
         fixture = NativeFreshFollowupTests(
@@ -645,7 +708,7 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.harness()
         return fixture
 
-    def test_a_known_late_reply_refreshes_data_in_same_chat_before_model_or_acceptance(self):
+    def test_closed_candle_rollover_refreshes_same_chat_before_model_or_acceptance(self):
         from datetime import datetime, timezone
         from tests.test_agent_closed_candles_200 import native_context_200
         fixture = self.fixture()
@@ -653,14 +716,14 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         def after_click(bridge):
             original(bridge)
             if bridge.clicks == 1:
-                fixture.now += 200  # Separate controlled-clock test; no production time change.
+                fixture.now += 900 - fixture.now % 900 + 1  # Controlled closed-bar rollover only.
                 fixture.fresh['context'] = native_context_200(fixture.now)
                 for row in fixture.fresh['chart_evidence']:
                     row['captured_at'] = datetime.fromtimestamp(fixture.now, timezone.utc).isoformat()
         fixture.bridge.after_click = after_click
         result = fixture.ask()
         self.assertEqual(fixture.bridge.clicks, 2)
-        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Materi pasar sebelumnya'))
+        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Candle tertutup terbaru Binance'))
         self.assertEqual(fixture.reasoner.request.call_count, 1)
         fixture.refresh.assert_called_once()
         self.assertEqual(result['assistant_text'], fixture.bridge.final)

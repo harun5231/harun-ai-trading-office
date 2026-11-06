@@ -148,6 +148,42 @@ class PublicSnapshotTests(unittest.TestCase):
             create.assert_called_once(); self.assertEqual(len(process.inputs), 1)
             self.assertTrue(process.stdin.closed and process.stdout.closed)
 
+    def test_child_failure_retains_only_bounded_sanitized_public_cause(self):
+        encoded = followup.canonical({'native_market_error':{
+            'class':'MarketUnavailable','reason':'LATEST_CANDLE_NOT_CURRENT'}})
+        process = self.process(encoded)
+        def complete(input=None,timeout=None):
+            process.returncode = 3
+            return encoded,None
+        process.communicate = complete
+        with patch.object(followup.subprocess,'Popen',return_value=process) as create:
+            with self.assertRaisesRegex(followup.FollowupUnavailable,'LATEST_CANDLE_NOT_CURRENT') as caught:
+                followup.public_snapshot('BTCUSDT',deadline=time.monotonic()+5,gate=lambda:True)
+        self.assertEqual(caught.exception.snapshot_error,{
+            'class':'MarketUnavailable','reason':'LATEST_CANDLE_NOT_CURRENT','returncode':3})
+        create.assert_called_once()
+
+    def test_actor_archives_public_failure_before_restore_without_browser_or_send(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)/'archive';root.mkdir(mode=0o700)
+            error=followup.FollowupUnavailable('LATEST_CANDLE_NOT_CURRENT')
+            error.snapshot_error={'class':'MarketUnavailable','reason':'LATEST_CANDLE_NOT_CURRENT','returncode':3}
+            actor=followup.ActorCharts.__new__(followup.ActorCharts)
+            actor.root=str(root);actor.clock=time.monotonic;actor.wall_clock=lambda:NOW
+            from unittest.mock import Mock
+            actor.snapshot=Mock(side_effect=error)
+            payload={'context':native_context_200(NOW-2),'request_sha256':'a'*64}
+            with self.assertRaisesRegex(followup.FollowupUnavailable,'LATEST_CANDLE_NOT_CURRENT'):
+                actor(payload=payload,deadline=time.monotonic()+30,dispatch_check=lambda:True)
+            evidence=list(root.glob('public-market-failure-*.json'))
+            self.assertEqual(len(evidence),1)
+            record=json.loads(evidence[0].read_bytes())
+            self.assertFalse(record['send_attempted'])
+            self.assertEqual(record['error'],error.snapshot_error)
+            self.assertEqual(record['request_sha256'],payload['request_sha256'])
+            self.assertEqual(evidence[0].stat().st_mode&0o777,0o600)
+            actor.snapshot.assert_called_once()
+
 
 class CaptureProvenanceTests(unittest.TestCase):
     @classmethod

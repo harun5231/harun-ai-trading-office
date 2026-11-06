@@ -165,6 +165,17 @@ class AnalysisContinuationTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
         self.assertEqual(self.db.execute('SELECT state FROM analysis_continuation_grants').fetchone()[0],'OBSERVED_NEW_REPLY')
 
+    def test_same_received_web_turn_uses_latest_closed_windows_not_arbitrary_180_seconds(self):
+        envelope=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=False)
+        grant=admit(self.provider,envelope,now=NOW);record_return(self.provider,grant,now=NOW+1)
+        reviewed=self.f.fixture(reply='COIN: BTCUSDT\nARAH: HOLD',approval=True,reviewed_at=NOW+1)
+        reviewed['observation'].update(observed_at=NOW+184,finished_at=NOW+185);self.f.seal(reviewed)
+        # It is still the latest 15M/1H closed interval. The same exact native
+        # reply and actual Mini approval need no extra WEB Send after 180s.
+        self.assertTrue(restore_received_checkpoint(self.provider,reviewed,now=NOW+186))
+        self.assertEqual(recover_received_analysis(self.provider,reviewed,now=NOW+186),'RESUME_CACHED')
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
     def test_sixteen_row_stale_market_hold_ignores_unbound_complete_review_and_replaces(self):
         envelope=copy.deepcopy(self.envelope)
         self.f.data['queue']=[]
@@ -247,6 +258,39 @@ class AnalysisContinuationTests(unittest.TestCase):
         self.assertEqual(validate_observation(self.provider,self.envelope,self.f.payload,self.f.created,now=NOW,repair=True)['reason'],'NEUROBRO_INPUT_UNREADABLE')
         proof['payload_sha256']=sha(wire(self.f.payload));self.f.seal(self.envelope)
         with self.assertRaises(Review):admit(self.provider,self.envelope,now=NOW)
+
+    def test_malformed_final_json_keeps_authored_error_and_admits_same_room_format_clarification(self):
+        # The authenticated current author supplied an incomplete final JSON
+        # object. A model must not fill the missing SL or turn this into HOLD.
+        reply='Ringkasan akhir\n{"COIN":"BTCUSDT","ARAH":"SHORT","ENTRY":100,"TP":90}'
+        envelope=self.f.fixture(reply=reply,approval=False)
+        basis=validate_observation(self.provider,envelope,self.f.payload,self.f.created,now=NOW,repair=True)
+        self.assertEqual(basis['reason'],'NEUROBRO_JSON_SUMMARY_INVALID')
+        with self.assertRaisesRegex(Review,'NEUROBRO_JSON_SUMMARY_INVALID'):
+            validate_observation(self.provider,envelope,self.f.payload,self.f.created,now=NOW)
+        self.provider.observe_received_analysis=lambda operation:envelope
+        self.provider.continue_received_analysis=None
+        coordinator=SimpleNamespace(neuro=self.provider,db=self.db,allowed=lambda today:True,
+            store=SimpleNamespace(report=lambda status,account,**kw:dict(status=status,**kw)),pause_reason=lambda:'ROBOT_OFF')
+        with patch('worker.analysis_response_recovery.time.time',return_value=NOW):
+            waiting=resume_uncertain_analysis(coordinator,DAY,{})
+        self.assertEqual(waiting['wait_reason'],'NEUROBRO_JSON_SUMMARY_INVALID')
+        self.assertIsNone(active_grant(self.db,OP))
+        calls=[]
+        def existing_continuation(operation,grant):
+            calls.append((operation,grant['reply_sha256']))
+            return dict(kind='NATIVE_ANALYSIS_CONTINUATION_RESULT_V1',operation=operation,
+                request_sha256=self.f.request_hash,grant_id=grant['grant_id'])
+        self.provider.continue_received_analysis=existing_continuation
+        with patch('worker.analysis_response_recovery.time.time',return_value=NOW):
+            result=resume_uncertain_analysis(coordinator,DAY,{})
+        self.assertEqual(result['wait_reason'],'ANALYSIS_CONTINUATION_REPLY_RECONCILING')
+        self.assertEqual(calls,[(OP,sha(reply))])
+        self.assertEqual(self.f.row('api_requests')['state'],'PENDING')
+        self.assertIsNone(self.f.row('api_requests')['output'])
+        self.assertEqual(self.f.row('robot_candidates')['status'],'REJECTED')
+        self.assertIsNone(self.f.row('robot_candidates')['plan'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
 
     def test_scheduler_continues_once_then_observes_and_resumes_without_another_send(self):
         responses=[self.envelope,self.new_reply()];calls=[]

@@ -16,8 +16,8 @@ import re
 from urllib.parse import urlsplit
 
 SOURCE = 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT'
-VIEWPORT = {'width': 1920, 'height': 1080}
-CONTRACT = 'BINANCE_ORIGINAL_VISIBLE_UI_20261101_V1'
+VIEWPORT = {'width': 2560, 'height': 1440}
+CONTRACT = 'BINANCE_ORIGINAL_VOLUME_ONLY_VISIBLE_UI_20261107_V2'
 ROOT = '.chart-widget-root'
 TIMEFRAMES = {'15m': '15m', '1h': '1H'}
 PERIODS = {'15m': 900000, '1h': 3600000}
@@ -39,6 +39,13 @@ OBSERVE = r"""roots => {
   result.timeframes[tf]={count:nodes.length,active:nodes.length===1&&nodes[0].classList.contains('text-PrimaryText')};
  }
  result.header_rows=Array.from(chart.querySelectorAll('.chart-title-row')).filter(show).map(e=>e.innerText);
+ result.indicators=Array.from(chart.querySelectorAll('.chart-title-indicator-container')).filter(e=>show(e)&&
+   (e.hasAttribute('key')||e.querySelector('[key="VOL[0]"]'))).map(e=>({
+  id:e.getAttribute('key')||(e.querySelector('[key="VOL[0]"]')?'@VOL':null),
+  visible:Array.from(e.querySelectorAll('.default-label-box')).some(show)}));
+ result.volume_average_series=Array.from(chart.querySelectorAll('.chart-title-indicator-container--sub [key]'))
+  .filter(e=>/^VOL\[\d+\]Series$/.test(e.getAttribute('key'))&&!['VOL[0]Series','VOL[1]Series'].includes(e.getAttribute('key'))&&show(e))
+  .map(e=>e.getAttribute('key'));
  const original=Array.from(chart.querySelectorAll('*')).filter(e=>e.children.length===0&&show(e)&&e.textContent.trim()==='Original');
  result.original_chart_visible=original.length===1;
  if(canvases.length===1){
@@ -64,6 +71,28 @@ SELECT = r"""(roots,tf) => {
 DISMISS_TOUR = r"""roots => {
  const nodes=Array.from(document.body.querySelectorAll('*')).filter(e=>{const r=e.getBoundingClientRect();return !e.children.length&&e.textContent.trim()==='Skip'&&r.width>0&&r.height>0;});
  if(nodes.length===1){nodes[0].click();return true;}return false;
+}"""
+# These controls were observed on the actual public Original chart 2026-11-07.
+# Locate the chart's own controls; RPC hover/click performs normal UI actions.
+# Never cover/remove DOM or alter pixels to pretend an overlay was disabled.
+VOLUME_ONLY = r"""roots => {
+ const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
+ const charts=Array.from(document.querySelectorAll('.chart-widget-root')).filter(show);
+ if(charts.length!==1)return false;
+ const chart=charts[0];
+ return {ma_rows:chart.querySelectorAll('.chart-title-indicator-container[key="@MA"]').length,
+  volume_rows:chart.querySelectorAll('.chart-title-indicator-container--sub:has([key="VOL[0]"])').length};
+}"""
+VOLUME_SETTINGS = r"""roots => {
+ const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
+ const dialogs=Array.from(document.querySelectorAll('[role="dialog"][aria-label="modal"]')).filter(show);
+ if(dialogs.length!==1)return null;
+ const d=dialogs[0],headers=Array.from(d.querySelectorAll('*')).filter(e=>!e.children.length&&e.textContent.trim()==='Vol - Volume');
+ if(headers.length!==1)return null;
+ return ['MAVOL1','MAVOL2'].map(label=>{
+  const boxes=Array.from(d.querySelectorAll('[role="checkbox"]')).filter(e=>e.textContent.trim()===label);
+  return {label,count:boxes.length,checked:boxes.length===1?boxes[0].getAttribute('aria-checked'):null};
+ });
 }"""
 
 class WebsiteChartUnavailable(ValueError):
@@ -131,6 +160,15 @@ def hover_open_time(value):
     return int(stamp.timestamp()*1000)
 
 
+def volume_only(value):
+    """Require an observed visible volume pane and no price/other indicators."""
+    need(type(value) is dict and value.get('indicators') == [
+        {'id': '@VOL', 'visible': True}] and value.get('volume_average_series') == [],
+        'BINANCE_WEBSITE_VOLUME_ONLY_UNVERIFIED')
+    return {'policy': 'CANDLES_AND_VOLUME_ONLY', 'indicators': value['indicators'],
+            'volume_average_series': []}
+
+
 def coverage(snapshot, timeframe, left, right):
     """Verify visible chart endpoints cover every immutable CLOSED CSV row.
 
@@ -147,10 +185,18 @@ def coverage(snapshot, timeframe, left, right):
          and last <= snapshot.get('collection_finished_server_time_ms', snapshot['server_time_ms'])//period*period,
          'BINANCE_WEBSITE_200_CLOSED_RANGE_NOT_VISIBLE')
     closed_last = min(last, snapshot['server_time_ms']//period*period-period)
+    count = (last-first)//period+1
+    # Measure spacing from rendered hover endpoints. Seeing a long range alone
+    # is insufficient: over-zoomed bars can hide bodies/wicks in dense pixels.
+    spacing = (right['canvas']['width']-100) / max(1, count-1)
+    need(spacing >= 5, 'BINANCE_WEBSITE_CANDLE_READABILITY_UNVERIFIED')
     return {'verification': 'VISIBLE_CANDLE_HOVER_ENDPOINTS_UTC_V1',
         'first_visible_open_time_ms': first,'last_visible_open_time_ms': last,
         'covered_closed_count': (closed_last-first)//period+1,
         'required_closed_count': 200, 'required_first_open_time_ms': rows[0]['open_time'],
         'required_last_close_time_ms': rows[-1]['close_time'],
         'running_candle_visible': last >= snapshot['server_time_ms']//period*period,
-        'running_candle_in_closed_count': False}
+        'running_candle_in_closed_count': False,
+        'sampled_plot_width_css_px': right['canvas']['width'],
+        'observed_candle_spacing_css_px': spacing,
+        'minimum_candle_spacing_css_px': 5}

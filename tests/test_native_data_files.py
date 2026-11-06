@@ -85,6 +85,8 @@ class NativeDataFileTests(unittest.TestCase):
         self.assertLess(len(rendered), 2500)
         self.assertIn('body/wick candle', rendered)
         self.assertIn('jangan menyatakannya jika gambar tidak membuktikannya', rendered)
+        self.assertIn('Periksa jumlah 200 candle tertutup dari tiap CSV', rendered)
+        self.assertIn('Tidak perlu menghitung ulang setiap candle pada PNG', rendered)
         projected = convert_native_market_context(payload['context'], now=NOW)
         for frame,label in (('15m','15M'),('1h','1H')):
             window=projected['candle_windows'][frame]

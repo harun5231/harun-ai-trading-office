@@ -57,6 +57,17 @@ class NativeMarketContextTests(unittest.TestCase):
         result['candles']['1h'][0]['close'] = '999'
         self.assertEqual(self.context, before)
 
+    def test_coherent_material_has_no_180_second_expiry_but_requires_latest_closed_bar(self):
+        now = int(self.now//900)*900 + 600
+        context = native_context(now-240)
+        actual = convert_native_market_context(context, now=now)
+        self.assertEqual(actual['observed_at'], now-240)
+        self.assertEqual(validated_market_context(actual, now=now), actual)
+        with self.assertRaises(NativeContextUnavailable):
+            convert_native_market_context(context, now=(int(now//900)+1)*900)
+        with self.assertRaises(AgentError):
+            validated_market_context(actual, now=(int(now//900)+1)*900)
+
     def test_private_and_unselected_extra_values_are_never_serialized_or_forwarded(self):
         self.context['risk_constraints']['arbitrary_object'] = object()
         self.context['unknown_private_data'] = {'credential_canary': object()}

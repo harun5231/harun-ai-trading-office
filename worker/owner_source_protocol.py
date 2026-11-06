@@ -120,14 +120,40 @@ def _instant(value):
         raise Review('STALE_MARKET_CONTEXT') from None
 
 
+def chart_windows_current(charts, reference_ms):
+    """Pure latest closed-series watermark check, with no seconds-to-live.
+
+    Callers retain their own symbol/hash/receipt authority. Runtime handoff
+    passes Binance's actual server clock; read-only recovery may use its
+    observation clock and still needs that final actual market validation.
+    """
+    try:
+        if (type(reference_ms) is not int or reference_ms <= 0
+                or type(charts) is not list or len(charts) != 2
+                or {row.get('timeframe') for row in charts if type(row) is dict} != {'1h','15m'}):
+            return False
+        for chart in charts:
+            if chart.get('source') != WEBSITE_SOURCE:
+                return False
+            captured = _instant(chart.get('captured_at'))
+            interval = 3_600_000 if chart['timeframe'] == '1h' else 900_000
+            if not 0 <= captured*1000 <= reference_ms or int(captured*1000)//interval != reference_ms//interval:
+                return False
+        return True
+    except (TypeError,ValueError,OverflowError,Review):
+        return False
+
+
 def completed_decision_fresh(db, operation, market, symbol=None, *, now=None,
-                             max_age=180, refresh=False, source_reader=None, browser_source=None):
+                             max_age=180, refresh=False, source_reader=None, browser_source=None, current_context=None):
     """Verify final accepted material, then optionally perform public GETs.
 
     Initial market facts are immutable request witnesses. V4 discussions may
     refresh their screenshots during the same operation; the final *native*
-    receipt must still be recent now, and each website witness must be fresh
-    both at receipt and now. Old receipts retain their old initial-context age.
+    receipt must retain exact source and chronological bindings. For V4 there is
+    no fixed seconds-to-live: material must cover the latest closed Binance
+    candle for each timeframe. An allowed refresh verifies that watermark
+    against an actual public GET observation, not a prolonged cache deadline.
     ``refresh=True`` is for an already permitted caller; it cannot bypass that
     caller's research-read guard or authorize a financial operation.
     """
@@ -164,10 +190,9 @@ def completed_decision_fresh(db, operation, market, symbol=None, *, now=None,
     if not owner_material_request(body):
         market.fresh(context, selected)
         return deepcopy(context) if refresh else True
-    final_max_age = min(max_age, 180)
     received = receipt['received_at']
     if (type(received) not in (int, float) or not math.isfinite(received)
-            or not 0 <= current - received <= final_max_age
+            or not 0 <= current - received
             or type(receipt['chart_max_age']) is not int
             or not 30 <= receipt['chart_max_age'] <= 300):
         raise Review('STALE_MARKET_CONTEXT')
@@ -175,17 +200,32 @@ def completed_decision_fresh(db, operation, market, symbol=None, *, now=None,
     if (type(charts) is not list or len(charts) != 2
             or {row.get('timeframe') for row in charts if type(row) is dict} != {'1h', '15m'}):
         raise Review('NEUROBRO_CHART_EVIDENCE_INVALID')
+    fresh = None
+    if refresh:
+        cached_current = (type(current_context) is dict
+            and type(current_context.get('fetched_at')) in (int, float)
+            and received <= current_context['fetched_at'] <= current)
+        fresh = current_context if cached_current else market.data(selected)
+        if now is None:
+            current = time.time()
+        market.fresh(fresh, selected)
+        if (type(fresh) is not dict or fresh.get('source') != 'Binance Futures'
+                or fresh.get('symbol') != selected or type(fresh.get('server_time')) is not int
+                or type(fresh.get('fetched_at')) not in (int, float)
+                or not received <= fresh['fetched_at'] <= current
+                or abs(fresh['server_time']/1000-fresh['fetched_at']) > 30):
+            raise Review('STALE_MARKET_CONTEXT')
+    reference_ms = fresh['server_time'] if fresh is not None else int(current*1000)
     for chart in charts:
         if chart.get('source') != WEBSITE_SOURCE or chart.get('symbol') != selected:
             raise Review('NEUROBRO_CHART_EVIDENCE_INVALID')
         captured = _instant(chart.get('captured_at'))
-        if not (0 <= received - captured <= min(final_max_age, receipt['chart_max_age'])
-                and 0 <= current - captured <= final_max_age):
+        interval = 3_600_000 if chart['timeframe'] == '1h' else 900_000
+        if not (captured <= received <= current
+                and int(captured*1000)//interval == reference_ms//interval):
             raise Review('STALE_MARKET_CONTEXT')
     if not refresh:
         return True
-    fresh = market.data(selected)
-    market.fresh(fresh, selected)
     result = deepcopy(context)
     for key in ('source', 'symbol', 'fetched_at', 'server_time', 'mark_price', 'timeframes', 'quantity_unit'):
         if key in fresh:

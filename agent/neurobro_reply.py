@@ -194,8 +194,75 @@ def _inline_summary_fields(block):
     return '\n'.join(lines)
 
 
+def _final_json_analysis(reply):
+    """Read only an author's short final summary, never JSON inside a scenario.
+
+    The browser still binds the reply to the current operation and its native
+    receipt. This is an alternative presentation of the same authored fields,
+    not permission to supply missing prices from model output or chat history.
+    """
+    if not isinstance(reply, str):
+        return None
+    text = reply.strip()
+    # An explicit final heading supersedes older cards/scenarios in this reply,
+    # just as the prose parser does. Do not change price lexemes while stripping
+    # Markdown. Input complaints still cannot disappear behind a JSON object.
+    headings = list(re.finditer(r'(?im)^\s*(?:#{1,6}\s+)?(?:\*\*)?'
+        r'(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b(?:\*\*)?'
+        r'[ \t]*:?[ \t]*(?:\n|(?=\{)|(?=```))', text))
+    if headings:
+        prefix, text = text[:headings[-1].end()], text[headings[-1].end():].strip()
+        if _TECHNICAL.search(prefix):
+            raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
+    fenced = re.fullmatch(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', text, re.I)
+    if fenced:
+        text = fenced.group(1).strip()
+    if not text.startswith('{'):
+        return None
+    def unique(items):
+        result = {}
+        for key, value in items:
+            key = key.upper()
+            if key in result:
+                raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+            result[key] = value
+        return result
+    try:
+        value = json.loads(text, object_pairs_hook=unique, parse_float=Decimal,
+            parse_int=Decimal, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, TypeError, AttributeError):
+        raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID') from None
+    if type(value) is dict and not {'COIN', 'ARAH'}.intersection(value):
+        return None  # Existing marker-bound native protocol is a separate ABI.
+    if (type(value) is not dict or set(value) != {'COIN', 'ARAH', 'ENTRY', 'TP', 'SL'}
+            or type(value['COIN']) is not str or type(value['ARAH']) is not str
+            or re.fullmatch(PAIR, value['COIN'], re.I) is None
+            or value['ARAH'].upper() not in {'LONG', 'SHORT', 'HOLD'}):
+        raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+    direction = value['ARAH'].upper()
+    if direction == 'HOLD':
+        if any(value[key] is not None for key in ('ENTRY', 'TP', 'SL')):
+            raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
+        return 'COIN: ' + value['COIN'] + '\nARAH: HOLD'
+    levels = {}
+    for key in ('ENTRY', 'TP', 'SL'):
+        price = value[key]
+        if type(price) not in (str, Decimal):
+            raise ReplyIncomplete('NEUROBRO_LEVEL_INCOMPLETE')
+        levels[key] = format(price, 'f') if type(price) is Decimal else price
+        if not re.fullmatch(r'\d{1,32}(?:[.,]\d{1,24})?', levels[key]):
+            raise ReplyIncomplete('NEUROBRO_LEVEL_AMBIGUOUS')
+    return ('COIN: ' + value['COIN'] + '\nARAH: ' + direction + '\n'
+        + '\n'.join(key + ': ' + levels[key] for key in ('ENTRY', 'TP', 'SL')))
+
+
+def analysis_coin_block(reply, requested):
+    summary = _final_json_analysis(reply)
+    return coin_block(reply if summary is None else summary, requested)
+
+
 def parse_analysis_reply(reply, requested):
-    block = coin_block(reply, requested)
+    block = analysis_coin_block(reply, requested)
     if _TECHNICAL.search(block):
         raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
     block = _inline_summary_fields(block)

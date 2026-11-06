@@ -74,6 +74,23 @@ class LostNotSentRecoveryTests(unittest.TestCase):
             recover_lost_not_sent(self.provider,early,now=NOW+105)
         self.assertEqual(active_grant(self.db,OP)['state'],'UNKNOWN')
 
+    def test_fresh_positive_native_custody_after_pre_admission_retry_failure_preserves_unknown_history(self):
+        early=self.custody(self.envelope,at=NOW+101)
+        self.assertTrue(recover_lost_not_sent(self.provider,early,now=NOW+102))
+        retry_not_sent(self.provider,early,now=NOW+103)
+        record_return(self.provider,self.grant,now=NOW+104)
+        # Unlike a replay of the older envelope, this actor observation occurs
+        # after UNKNOWN and proves the SAME latest closed native admission;
+        # any .2 admission would make the native reader return no custody.
+        latest=self.custody(self.envelope,at=NOW+106)
+        self.assertTrue(recover_lost_not_sent(self.provider,latest,now=NOW+107))
+        self.assertEqual(active_grant(self.db,OP)['state'],'NOT_SENT')
+        states=[r[0]for r in self.db.execute('SELECT state FROM analysis_continuation_returns ORDER BY sequence')]
+        self.assertEqual(states.count('UNKNOWN'),2)
+        self.assertEqual(states.count('NATIVE_NOT_SENT_RECEIPT_RECONCILED'),2)
+        self.assertIsNone(self.f.f.row('api_requests')['output'])
+        self.assertEqual(self.db.execute('SELECT count(*) FROM order_intents').fetchone()[0],1)
+
     def test_partial_history_prefix_offset_changes_but_owned_native_identity_must_match(self):
         # Reloading fewer earlier room rows changes the unrelated prefix count.
         reloaded=copy.deepcopy(self.fresh)

@@ -147,6 +147,44 @@ def _observation_semantics(proof):
         receipt_files=proof['receipt_files'])
 
 
+def _rebound_not_sent_semantics(row,proof,custody):
+    """Independently bind UUID rerendering to the stored grant's exact source."""
+    import copy,re
+    binding=custody.get('native_id_rebinding')
+    need(type(binding)is dict and set(binding)=={'kind','bindings','without_ids_semantics_sha256'}
+        and binding['kind']=='NATIVE_RENDERED_MESSAGE_IDS_REBOUND_V1')
+    prior=json.loads(row['source_proof'])['observation']
+    old=_observation_semantics(prior);new=_observation_semantics(proof)
+    need({k:v for k,v in old.items()if k!='rows'}=={k:v for k,v in new.items()if k!='rows'})
+    left,right=prior['rows'],proof['rows']
+    need(len(left)>=2 and len(left)%2==0 and len(left)==len(right))
+    entries=binding['bindings'];need(type(entries)is list and len(entries)==len(left)//2)
+    admitted=copy.deepcopy(proof);seen=[set(),set(),set()];changed=False
+    for index,(a,b)in enumerate(zip(left,right)):
+        clean=lambda value:{k:v for k,v in value.items()if k not in('id','attachments')}
+        need(clean(a)==clean(b) and a.get('role')==('assistant'if index%2 else'user')
+            and type(a.get('text'))is str and bool(a['text']))
+        if not index%2:
+            need('id'not in a and 'id'not in b);continue
+        need(a.get('complete')is True)
+        entry=entries[index//2]
+        need(type(entry)is dict and set(entry)=={'row','source_id','admitted_id','current_id'}
+            and entry['row']==index and entry['source_id']==a.get('id') and entry['current_id']==b.get('id'))
+        ids=[entry[key]for key in('source_id','admitted_id','current_id')]
+        for group,identifier in zip(seen,ids):
+            need(type(identifier)is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',identifier)
+                and identifier not in group);group.add(identifier)
+        if len(set(ids))>1:
+            need(all(re.fullmatch('[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',identifier)for identifier in ids));changed=True
+        admitted['rows'][index]['id']=entry['admitted_id']
+    normalized=copy.deepcopy(old);normalized['rows']=[digest({k:v for k,v in value.items()if k not in('id','attachments')})for value in left]
+    need(changed and binding['without_ids_semantics_sha256']==digest(normalized)
+        and custody.get('source_semantics_sha256')==digest(old)
+        and custody.get('current_semantics_sha256')==digest(new)
+        and custody.get('admitted_capture',{}).get('semantics_sha256')==digest(_observation_semantics(admitted)))
+    return digest(new)
+
+
 def _lost_not_sent(provider,row,envelope,now):
     """An actual latest native closure can recover a lost HTTP disposition."""
     import re
@@ -159,8 +197,11 @@ def _lost_not_sent(provider,row,envelope,now):
         and custody.get('grant_id')==grant['grant_id']
         and type(custody.get('latest_attempt')) is int and custody['latest_attempt']>=1)
     semantics=digest(_observation_semantics(proof))
-    need(custody.get('source_semantics_sha256')==custody.get('current_semantics_sha256')==semantics
-        and custody.get('intent_chain_sha256')==digest(proof['receipt_files'])
+    if custody.get('native_id_rebinding')is not None:
+        need(_rebound_not_sent_semantics(row,proof,custody)==semantics)
+    else:
+        need(custody.get('source_semantics_sha256')==custody.get('current_semantics_sha256')==semantics)
+    need(custody.get('intent_chain_sha256')==digest(proof['receipt_files'])
         and custody.get('mutation_markers')==dict(upload_started=False,send_attempted=False,completed=False))
     admission=custody.get('admission');disposition=custody.get('disposition')
     def file_value(entry):
@@ -184,15 +225,22 @@ def _lost_not_sent(provider,row,envelope,now):
         and type(capture.get('sha256')) is str and re.fullmatch('[a-f0-9]{64}',capture['sha256'])
         and capture.get('name')=='received-analysis-observation-'+prefix+'-'+capture['sha256']+'.json'
         and type(capture.get('bytes')) is int and 0<capture['bytes']<=8*1024*1024
-        and capture.get('semantics_sha256')==semantics)
+        and (custody.get('native_id_rebinding')is not None or capture.get('semantics_sha256')==semantics))
     result={**closed,'disposition':disposition};_not_sent(result,grant,now)
     # An earlier closure already consumed for a retry cannot settle a later
     # uncertain native attempt, even if its grant ID and clock did not change.
     if provider.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_continuation_returns'").fetchone():
         for old in provider.db.execute("SELECT response FROM analysis_continuation_returns WHERE grant_id=? AND state='NOT_SENT'",(grant['grant_id'],)):
             previous=json.loads(old[0]) if old[0] is not None else None
-            need(type(previous) is dict and previous.get('disposition',{}).get('sha256')!=disposition['sha256'],
-                'ANALYSIS_CONTINUATION_CLOSURE_ALREADY_CONSUMED')
+            need(type(previous) is dict,'ANALYSIS_CONTINUATION_CLOSURE_ALREADY_CONSUMED')
+            if previous.get('disposition',{}).get('sha256')==disposition['sha256']:
+                # A fresh actor observation sees the same latest positive
+                # closure and no later durable admission. Admission is fsynced
+                # before every upload/Send. An older observation cannot settle
+                # a subsequent transport failure; UNKNOWN history is retained.
+                need(proof['finished_at']>row['updated']
+                    and proof['observed_at']>=row['updated'],
+                    'ANALYSIS_CONTINUATION_CLOSURE_ALREADY_CONSUMED')
     before=json.loads(row['preimage'])
     need(_row(provider.db,'robot_cycles','id',before['robot_cycles']['id'])==json.loads(row['admitted_cycle'])
         and _row(provider.db,'robot_candidates','id',row['operation'])==before['robot_candidates']
@@ -267,7 +315,11 @@ def retry_not_sent(provider,envelope,*,now=None,permitted=lambda:True):
             and _row(db,'api_requests','operation',operation)==dict(before['api_requests'],state='PENDING')
             and _row(db,'robot_jobs','operation',operation)==dict(before['robot_jobs'],state='PENDING')
             and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?',(operation,)).fetchone())
-        if current>=grant['expires_at']:
+        rebind=envelope.get('observation',{}).get('continuation_not_sent',{}).get('native_id_rebinding')
+        if rebind is not None:
+            _rebound_not_sent_semantics(row,envelope['observation'],envelope['observation']['continuation_not_sent'])
+        renew_source=current>=grant['expires_at'] or rebind is not None
+        if renew_source:
             # A positively closed pre-upload attempt can renew only its technical
             # clock after fresh observation of the exact same received turn.
             # UNKNOWN or any upload/intent/possible Send never reaches this path.
@@ -277,12 +329,13 @@ def retry_not_sent(provider,envelope,*,now=None,permitted=lambda:True):
             need(grant_identity(renewed)==grant['grant_id'])
             sequence=db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM analysis_continuation_returns WHERE grant_id=?',(grant['grant_id'],)).fetchone()[0]
             audit=dict(old_grant=grant,new_grant=renewed,old_source_proof=json.loads(row['source_proof']),
-                new_source_proof=envelope,positive_not_sent=json.loads(row['result']),preimage=row)
+                new_source_proof=envelope,positive_not_sent=json.loads(row['result']),preimage=row,
+                source_rebound_after_not_sent=rebind is not None)
             db.execute('INSERT INTO analysis_continuation_returns VALUES(?,?,?,?,?)',
                 (grant['grant_id'],sequence,'CLOCK_RENEWED_AFTER_PROVED_NOT_SENT',wire(audit),current))
             grant=renewed
         need(db.execute("UPDATE analysis_continuation_grants SET state='GRANTED',grant=?,source_proof=?,updated=? WHERE grant_id=? AND state='NOT_SENT' AND result=?",
-            (wire(grant),wire(envelope) if current>=json.loads(row['grant'])['expires_at'] else row['source_proof'],
+            (wire(grant),wire(envelope) if renew_source else row['source_proof'],
              current,grant['grant_id'],row['result'])).rowcount==1)
         db.execute('COMMIT')
     except BaseException:db.execute('ROLLBACK');raise
@@ -310,11 +363,16 @@ def restore_received_checkpoint(provider,envelope,*,now=None,permitted=lambda:Tr
         # The native hook may finish only its missing Mini review of this
         # already received turn. Accept that without requiring another WEB
         # message, provided actual retained approval and materials are fresh.
+        from .owner_source_protocol import chart_windows_current,WEBSITE_SOURCE
+        charts=result['chart_evidence']
+        latest_material=(chart_windows_current(charts,int(current*1000))
+            if all(chart.get('source')==WEBSITE_SOURCE for chart in charts)else
+            all(0<=current-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()
+                <=min(180,provider.chart_max_age)for chart in charts))
         accepted_same_turn=(not stale and all(basis[key]==grant[key] for key in
             ('reply_sha256','latest_user_prompt_sha256','next_followup_sequence'))
             and datetime.fromtimestamp(current,ZoneInfo('Asia/Jakarta')).date().isoformat()==operation[:10]
-            and all(0<=current-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()
-                <=min(180,provider.chart_max_age) for chart in result['chart_evidence']))
+            and latest_material)
     if row['state']=='NOT_SENT' and not accepted_same_turn and basis['latest_user_prompt_sha256']==grant['latest_user_prompt_sha256']:
         return False
     need(accepted_same_turn or basis['latest_user_prompt_sha256']!=grant['latest_user_prompt_sha256']

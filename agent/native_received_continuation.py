@@ -90,6 +90,43 @@ def _semantic(capture):
         rendered_prompt_receipt=capture['rendered_prompt_receipt'],receipt_files=capture['receipt_files'])
 
 
+def _native_id_rebinding(source, admitted, current):
+    """Qualify UUID-only rerendering under an actual positive NOT_SENT closure.
+
+    Message IDs may be regenerated when the same room is rendered again. The
+    room, exact owned text/roles/completion and immutable receipt chain still
+    have to agree; this helper never grants a Send or ignores an altered turn.
+    """
+    captures=(source,admitted,current)
+    semantics=[_semantic(value) for value in captures]
+    need(all({k:v for k,v in value.items() if k!='rows'}==
+        {k:v for k,v in semantics[0].items() if k!='rows'} for value in semantics))
+    rows=[observer._project_operation(value)['rows'] for value in captures]
+    need(len(rows[0])>=2 and len(rows[0])%2==0 and all(len(value)==len(rows[0])for value in rows))
+    bindings=[];seen=[set(),set(),set()];changed=False
+    for index,items in enumerate(zip(*rows)):
+        cleaned=[{k:v for k,v in row.items() if k not in ('id','attachments')}for row in items]
+        need(cleaned[0]==cleaned[1]==cleaned[2]
+            and cleaned[0].get('role')==('assistant'if index%2 else'user')
+            and type(cleaned[0].get('text'))is str and bool(cleaned[0]['text']))
+        if not index%2:
+            need(all('id'not in row for row in items));continue
+        need(cleaned[0].get('complete')is True)
+        ids=[row.get('id')for row in items]
+        for group,identifier in zip(seen,ids):
+            need(type(identifier)is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',identifier)
+                and identifier not in group);group.add(identifier)
+        if len(set(ids))>1:
+            need(all(re.fullmatch('[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',identifier)for identifier in ids))
+            changed=True
+        bindings.append(dict(row=index,source_id=ids[0],admitted_id=ids[1],current_id=ids[2]))
+    need(changed)
+    normalized=copy.deepcopy(semantics[0])
+    normalized['rows']=identities([{k:v for k,v in row.items() if k!='id'}for row in rows[0]])
+    return dict(kind='NATIVE_RENDERED_MESSAGE_IDS_REBOUND_V1',bindings=bindings,
+        without_ids_semantics_sha256=observer.native_digest(normalized))
+
+
 def read_not_sent(root,payload,capture):
     """Recover only the latest positively closed native attempt, without Send.
 
@@ -154,15 +191,20 @@ def read_not_sent(root,payload,capture):
             and admitted_capture.get('stable_snapshot_reads')==4 and admitted_capture.get('status')=='CONNECTED'
             and admitted_capture['operation']==payload['operation']
             and admitted_capture['request_sha256']==payload['request_sha256']
-            and admitted_capture['finished_at']<=admitted['admitted_at']
-            and _semantic(source)==_semantic(admitted_capture)==_semantic(capture))
-        semantics_sha=observer.native_digest(_semantic(capture))
-        return dict(kind=NOT_SENT_CUSTODY,grant_id=grant_id,latest_attempt=number,
+            and admitted_capture['finished_at']<=admitted['admitted_at'])
+        source_semantics=_semantic(source);admitted_semantics=_semantic(admitted_capture);current_semantics=_semantic(capture)
+        rebinding=None
+        if not source_semantics==admitted_semantics==current_semantics:
+            rebinding=_native_id_rebinding(source,admitted_capture,capture)
+        semantics_sha=observer.native_digest(current_semantics)
+        result=dict(kind=NOT_SENT_CUSTODY,grant_id=grant_id,latest_attempt=number,
             admission=admission,disposition=disposition,
-            admitted_capture=dict(name=current_name,sha256=sha(current_raw),bytes=len(current_raw),semantics_sha256=semantics_sha),
-            source_semantics_sha256=semantics_sha,current_semantics_sha256=semantics_sha,
+            admitted_capture=dict(name=current_name,sha256=sha(current_raw),bytes=len(current_raw),semantics_sha256=observer.native_digest(admitted_semantics)),
+            source_semantics_sha256=observer.native_digest(source_semantics),current_semantics_sha256=semantics_sha,
             intent_chain_sha256=observer.native_digest(capture['receipt_files']),
             mutation_markers=dict(upload_started=False,send_attempted=False,completed=False))
+        if rebinding is not None:result['native_id_rebinding']=rebinding
+        return result
     finally:os.close(directory)
 
 

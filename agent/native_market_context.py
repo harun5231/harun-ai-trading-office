@@ -19,7 +19,6 @@ from .models import NotSent
 
 
 NATIVE_CHART_KIND = 'NATIVE_PUBLIC_KLINES_CONTEXT'
-MAX_AGE = 180
 INTERVALS = {'1h': 3_600_000, '15m': 900_000}
 CANDLE_FIELDS = ('open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time')
 CLOSED_CANDLES_PER_TIMEFRAME = 200
@@ -88,6 +87,9 @@ def convert_native_market_context(context, *, now=None):
     """Return 400 closed native klines and separately marked running bars.
 
     This accepts the verified native Market.data/analysis_context structure.
+    Material has no arbitrary seconds-to-live: each closed-series watermark
+    must still be the latest Binance interval at the current check. A new bar
+    requires a new public observation rather than extending an old deadline.
     Extra native contract/risk fields are deliberately neither serialized nor
     forwarded. The provenance labels the public data format only: actual chart
     attachments continue to require the original browser's independent receipt.
@@ -98,13 +100,13 @@ def convert_native_market_context(context, *, now=None):
           and type(context.get('symbol')) is str and SYMBOL.fullmatch(context['symbol']) is not None)
     symbol = context['symbol']
     observed, server = context.get('fetched_at'), context.get('server_time')
-    _need(_instant(observed) and 0 <= now-observed <= MAX_AGE
+    _need(_instant(observed) and 0 <= now-observed
           and type(server) is int and 0 < server <= 10**16
-          and abs(server/1000-observed) <= 30 and -30 <= now-server/1000 <= MAX_AGE)
+          and abs(server/1000-observed) <= 30 and -30 <= now-server/1000)
     mark = context.get('mark_price')
     _need(type(mark) is dict and set(mark) == {'price', 'time'}
           and type(mark['time']) is int and 0 < mark['time'] <= 10**16
-          and 0 <= now-mark['time']/1000 <= MAX_AGE and mark['time'] <= server)
+          and 0 <= observed-mark['time']/1000 <= 60 and mark['time'] <= server)
     _number(mark['price'])
     frames = context.get('timeframes')
     _need(type(frames) is dict and set(frames) == set(INTERVALS))
@@ -128,7 +130,7 @@ def convert_native_market_context(context, *, now=None):
             copied.append({key: row[key] for key in CANDLE_FIELDS})
             previous = opened
         _need(copied[-1]['open_time'] <= server <= copied[-1]['close_time']
-              and now*1000 <= copied[-1]['close_time']+MAX_AGE*1000)
+              and int(server+(now-observed)*1000)//interval == server//interval)
         candles[timeframe], running_candles[timeframe], windows[timeframe] = closed_candle_window(
             copied, timeframe, server)
     result = {'symbol': symbol, 'observed_at': observed,

@@ -14,6 +14,7 @@ import time
 from zoneinfo import ZoneInfo
 from .core import Review,D
 from .neuroapi import SETUP_SCHEMA_V4, setup, canonical_output
+from .owner_source_protocol import chart_windows_current
 
 TERMINAL = 'RECEIVED_STALE_NOT_EXECUTED'
 REASON = 'ANALYSIS_RECEIVED_MATERIAL_STALE'
@@ -142,7 +143,12 @@ def _material(proof,payload,provider,created):
             and check['closed_candles_per_timeframe']==200 and check['closed_candles_total']==400
             and finite(send_checked) and created<=send_checked<=proof['finished_at']
             and finite(check['data_age_at_send_check_seconds'])
-            and 0<=check['data_age_at_send_check_seconds']<=provider.chart_max_age)
+            and 0<=check['data_age_at_send_check_seconds']
+            and finite(check.get('data_observed_at'))
+            and check['data_age_at_send_check_seconds']==send_checked-check['data_observed_at']
+            and all(int(send_checked*1000)//interval==int(check['data_observed_at']*1000)//interval
+                for interval in (900000,3600000))
+            and chart_windows_current(charts,int(send_checked*1000)))
         validate_chart_evidence(charts,payload['output_schema'],payload['context'],created,send_checked,provider.chart_max_age)
         previous=digest(intent);context_sha=intent['followup_context_sha256']
     # Completion files may only attest their own existing intent and this answer.
@@ -162,6 +168,7 @@ def _material(proof,payload,provider,created):
         times=[datetime.fromisoformat(row['captured_at'].replace('Z','+00:00')).timestamp() for row in charts]
         need(all(proof['finished_at']-instant>provider.chart_max_age for instant in times))
         stale=True
+    stale=stale or not chart_windows_current(charts,int(proof['finished_at']*1000))
     return charts,context_sha,stale
 
 
@@ -299,7 +306,7 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False,
         need(reason in {'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
             'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
             'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
-            'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'},'ANALYSIS_CONTINUATION_NOT_REQUIRED')
+            'ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_JSON_SUMMARY_INVALID'},'ANALYSIS_CONTINUATION_NOT_REQUIRED')
         return dict(reason=reason,reply_sha256=sha(rows[-1]['text']),
             latest_user_prompt_sha256=sha(rows[-2]['text']),next_followup_sequence=len(rows)//2,
             received_at=proof['finished_at'])
@@ -365,7 +372,7 @@ def recover_received_analysis(provider,envelope,*,now=None,permitted=lambda:True
     # A receipt can also become stale during a crash or between scheduler ticks.
     captured=[datetime.fromisoformat(row['captured_at'].replace('Z','+00:00')).timestamp()
         for row in result['chart_evidence']]
-    stale=stale or any(current-instant>provider.chart_max_age for instant in captured)
+    stale=stale or not chart_windows_current(result['chart_evidence'],int(current*1000))
     stale=stale or datetime.fromtimestamp(current,ZoneInfo('Asia/Jakarta')).date().isoformat()!=match[1]
     data=json.loads(cycle['data']);need(type(data.get('queue')) is list and type(data.get('seen')) is list)
     need(job['state'] in ('PENDING','NEEDS_REVIEW') and api['state'] in ('PENDING','NEEDS_REVIEW')
@@ -522,7 +529,8 @@ def _consumed_stale_nonexecuted(db,row,api,job,receipt,request):
         from .owner_source_protocol import _instant
         captured=[_instant(chart['captured_at']) for chart in result['chart_evidence']]
         limit=min(180,receipt['chart_max_age'])
-        if not any(journal['updated']-stamp>limit for stamp in captured):
+        if (not any(journal['updated']-stamp>limit for stamp in captured)
+                and chart_windows_current(result['chart_evidence'],int(journal['updated']*1000))):
             return False
         cycle=_row(db,'robot_cycles','id',row['cycle'])
         data=json.loads(cycle['data'])
@@ -572,6 +580,7 @@ def received_nonexecuted(db,row):
             {**body,'request_sha256':api['body_hash']},api['created'],now=journal['updated'],retained=True)
         if result['assistant_text']!=receipt['assistant_text'] or result['response_id']!=receipt['response_id']:return False
         return (datetime.fromtimestamp(journal['updated'],ZoneInfo('Asia/Jakarta')).date().isoformat()!=row['cycle'][:10]
+            or not chart_windows_current(charts,int(journal['updated']*1000))
             or any(journal['updated']-datetime.fromisoformat(chart['captured_at'].replace('Z','+00:00')).timestamp()>receipt['chart_max_age'] for chart in charts))
     except Exception:return False
 
@@ -637,7 +646,7 @@ def resume_uncertain_analysis(coordinator,today,account):
             repairable={'NEUROBRO_INPUT_UNREADABLE','NEUROBRO_REPLY_INCOMPLETE',
                 'NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE','NEUROBRO_LEVEL_AMBIGUOUS',
                 'NEUROBRO_SETUP_CONDITIONAL','NEUROBRO_FOREIGN_COIN','NEUROBRO_COIN_UNVERIFIED',
-                'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'}
+                'ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_JSON_SUMMARY_INVALID'}
             continuation=getattr(coordinator.neuro,'continue_received_analysis',None)
             if str(error) not in repairable or not callable(continuation):raise
             grant=admit(coordinator.neuro,envelope,permitted=lambda:coordinator.allowed(today))
@@ -648,6 +657,7 @@ def resume_uncertain_analysis(coordinator,today,account):
             'NEUROBRO_BUSY','NEUROBRO_UNAVAILABLE','NEUROBRO_BROWSER_NOT_CONFIGURED','RESEARCH_PAUSED',
             'ANALYSIS_REPLY_NOT_COMPLETE','ANALYSIS_MINI_APPROVAL_NOT_RETAINED','NEUROBRO_INPUT_UNREADABLE',
             'NEUROBRO_REPLY_INCOMPLETE','NEUROBRO_DECISION_CONFLICT','NEUROBRO_LEVEL_INCOMPLETE',
+            'NEUROBRO_JSON_SUMMARY_INVALID',
             'ANALYSIS_INITIAL_MATERIAL_RECEIPT_MISSING','ANALYSIS_RESPONSE_OBSERVATION_PENDING',
             'ANALYSIS_CONTINUATION_OUTCOME_UNKNOWN','ANALYSIS_CONTINUATION_SOURCE_ALREADY_ADMITTED'}
         return coordinator.store.report('WAITING',account,wait_reason=(reason if reason in safe else 'ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED'))

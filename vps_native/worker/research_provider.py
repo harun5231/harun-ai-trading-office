@@ -214,7 +214,9 @@ def validate_chart_evidence(value, schema, context, created, received_at, max_ag
             if captured.tzinfo is None or captured.utcoffset() != timezone.utc.utcoffset(captured):
                 raise ValueError
             captured_at = captured.timestamp()
-            if not created - 5 <= captured_at <= received_at or not 0 <= received_at - captured_at <= max_age:
+            if (not created - 5 <= captured_at <= received_at
+                    or (schema != SETUP_SCHEMA_V4 or CHART_SOURCE != 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT')
+                        and not 0 <= received_at - captured_at <= max_age):
                 raise ValueError
             timeframes.add(row['timeframe'])
             attachments.add(row['attachment_id'])
@@ -294,6 +296,6 @@ def create_provider(ledger, *, kind=None, api_factory=None, **kwargs):
 __import__('agent.native_pending_protocol', fromlist=('install_source_protocol',)).install_source_protocol(globals())
 
 
-__import__('agent.native_chart_history', fromlist=('install_website_chart_history',)).install_website_chart_history(globals(), legacy_source='BINANCE_USDM_FUTURES_WEB', release_cutoff_utc='2026-10-22T16:46:25Z', data_render_release_cutoff_utc=load_owner_release_cutoff(), source_evidence_sha256='855fd7e9ec580c9b0ecf62c62f0691d7cce1a69837341d03597237b8593d6bed', validator_sha256='a07f40e9fa9176baa3cb0d70ff90664cc90715d786089d2969457f1e25ce1fe2')
+__import__('agent.native_chart_history', fromlist=('install_website_chart_history',)).install_website_chart_history(globals(), legacy_source='BINANCE_USDM_FUTURES_WEB', release_cutoff_utc='2026-10-22T16:46:25Z', data_render_release_cutoff_utc=load_owner_release_cutoff(), source_evidence_sha256='855fd7e9ec580c9b0ecf62c62f0691d7cce1a69837341d03597237b8593d6bed', validator_sha256='03f8bb641720136904a3903e3528056578c22652694de2eaa0b8ad1748d1b185')
 
 __import__('agent.native_evaluation_protocol', fromlist=('install_source_protocol',)).install_source_protocol(globals())
