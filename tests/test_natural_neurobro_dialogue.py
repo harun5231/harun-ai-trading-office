@@ -708,7 +708,7 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.harness()
         return fixture
 
-    def test_a_known_late_reply_refreshes_data_in_same_chat_before_model_or_acceptance(self):
+    def test_closed_candle_rollover_refreshes_same_chat_before_model_or_acceptance(self):
         from datetime import datetime, timezone
         from tests.test_agent_closed_candles_200 import native_context_200
         fixture = self.fixture()
@@ -716,14 +716,14 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         def after_click(bridge):
             original(bridge)
             if bridge.clicks == 1:
-                fixture.now += 200  # Separate controlled-clock test; no production time change.
+                fixture.now += 900 - fixture.now % 900 + 1  # Controlled closed-bar rollover only.
                 fixture.fresh['context'] = native_context_200(fixture.now)
                 for row in fixture.fresh['chart_evidence']:
                     row['captured_at'] = datetime.fromtimestamp(fixture.now, timezone.utc).isoformat()
         fixture.bridge.after_click = after_click
         result = fixture.ask()
         self.assertEqual(fixture.bridge.clicks, 2)
-        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Materi pasar sebelumnya'))
+        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Candle tertutup terbaru Binance'))
         self.assertEqual(fixture.reasoner.request.call_count, 1)
         fixture.refresh.assert_called_once()
         self.assertEqual(result['assistant_text'], fixture.bridge.final)

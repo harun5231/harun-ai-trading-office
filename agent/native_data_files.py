@@ -111,7 +111,9 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
         'jadi perhatikan waktu pengambilannya. '
         f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
         'Periksa juga dua gambar chart terlampir: body/wick candle, simbol, timeframe, sumbu waktu, dan harga harus terbaca. '
-        'Verifikasi sedikitnya 200 candle tertutup terlihat; jangan menyatakannya jika gambar tidak membuktikannya. '
+        'Periksa jumlah 200 candle tertutup dari tiap CSV dan kecocokan rentang waktunya dengan gambar. '
+        'Tidak perlu menghitung ulang setiap candle pada PNG; gunakan gambar untuk membaca struktur, body, dan wick. '
+        'Jangan mengarang hitungan visual; jangan menyatakannya jika gambar tidak membuktikannya. '
         'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '
         'Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; '
         'itu bukan keputusan HOLD berdasarkan pasar.')
