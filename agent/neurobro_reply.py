@@ -152,8 +152,24 @@ def _inline_summary_fields(block):
     labels = (r'(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)(?:[ \t]+(?:AKHIR|FINAL|AKTIF))?'
         r'|LIMIT ENTRY|ENTRY LIMIT|ENTRY_PRICE|ENTRY|STOP LOSS|STOP_LOSS|SL'
         r'|TAKE PROFIT|TAKE_PROFIT|TP')
+    pipe = re.compile(r'^[ \t]*(?:Ringkasan(?:[ \t]+(?:akhir|final|aktif))?[ \t]*[:=][ \t]*)?'
+        + _COIN_LABEL + r'\$?(' + PAIR + r')(?:[ \t]+Perpetual)?[ \t]*\|', re.I)
+    level_labels = r'LIMIT ENTRY|ENTRY LIMIT|ENTRY_PRICE|ENTRY|STOP LOSS|STOP_LOSS|SL|TAKE PROFIT|TAKE_PROFIT|TP'
     lines = []
     for line in block.split('\n'):
+        selected = pipe.match(line)
+        if selected:
+            if attributed_symbols(line) != {symbol(selected.group(1))}:
+                raise ReplyIncomplete('NEUROBRO_COIN_UNVERIFIED')
+            cells = line.split('|')
+            for index in range(1, len(cells)):
+                # A labelled price cell may use a space rather than a colon.
+                # Preserve its entire value so ranges, prose and conflicting
+                # levels still fail the ordinary full-block checks below.
+                field = re.fullmatch(r'([ \t]*(?:' + level_labels + r'))[ \t]+([^ \t:=].*)', cells[index], re.I)
+                if field:
+                    cells[index] = field.group(1) + ': ' + field.group(2)
+            line = '|'.join(cells)
         match = prefix.match(line)
         if match:
             if attributed_symbols(line) != {symbol(match.group(1))}:

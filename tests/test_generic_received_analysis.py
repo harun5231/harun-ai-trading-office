@@ -207,7 +207,7 @@ class SentRoomCompletionObservationTests(unittest.TestCase):
         path.write_text(json.dumps(cached))
         result=self.invoke()
         self.assertEqual(self.row(),before)
-        self.assertEqual(result['observation']['errors'][0]['reason'],'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+        self.assertEqual(result['observation']['errors'][0]['reason'],'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
 
     def test_changed_snapshot_during_four_reads_retains_sent_and_actual_failure(self):
         wait=self.c.raw.page.wait_for_timeout
@@ -301,6 +301,166 @@ class SentRoomCompletionObservationTests(unittest.TestCase):
         self.assertEqual(self.row()['state'],'SENT')
         self.assertEqual(self.row()['anchors'],self.before['anchors'])
         self.assertNotEqual(self.row()['binding'],self.before['binding'])
+
+
+class PriorAssistantIdentifierRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.base=SentRoomCompletionObservationTests();self.base.setUp();self.addCleanup(self.base.doCleanups)
+        self.c=self.base.c;self.review_files=[]
+        self.screen=self.payload('screening:1:2','SCREENING')
+        self.analysis=self.payload('analysis-v9:AVAXUSDT','ANALYSIS')
+        screen_prompt=self.c.cache.store(self.screen,'Pilih dua coin Futures.','a'*64)
+        analysis_prompt=self.c.cache.store(self.analysis,'Analisa AVAXUSDT.','b'*64)
+        self.c.raw.messages[2]['text']=screen_prompt
+        self.c.raw.messages[3]['text']='COIN: AVAXUSDT, SUIUSDT'
+        self.c.raw.messages[4]['text']=analysis_prompt
+        self.c.raw.messages[5]['text']='COIN: AVAXUSDT\nARAH: SHORT\nENTRY: 8.38\nSL: 8.54\nTP: 7.98'
+        self.c.raw.messages[6:6]=[dict(role='user',text='Berikut chart AVAXUSDT terbaru. '+self.analysis['marker'],attachments=[]),
+            dict(role='assistant',text='Ringkasan akhir\nCOIN: AVAXUSDT\nARAH: SHORT\nENTRY: 8.38\nSL: 8.54\nTP: 7.98',complete=True,id='original-final-avax')]
+        original=self.c.raw._turns()
+        self.retain_review(self.screen,original[2:4],'SCREENING')
+        first=self.retain_review(self.analysis,original[4:6],'COMPLETE')
+        self.retain_review(self.analysis,original[4:8],'COMPLETE')
+        intent=dict(schema_version=1,kind='NATIVE_200_CHART_FOLLOWUP',operation=self.analysis['operation'],
+            request_sha256=self.analysis['request_sha256'],marker=self.analysis['marker'],
+            original_payload_sha256=observer.native_digest(self.analysis),initial_prompt_sha256=observer.text_sha(original[4]['text']),
+            followup_prompt_sha256=observer.text_sha(original[6]['text']),initial_reply_sha256=observer.text_sha(original[5]['text']),
+            initial_turns_sha256=first['transcript_sha256'],followup_sequence=1,previous_followup_intent_sha256=None)
+        complete={**intent,'intent_sha256':observer.native_digest(intent),'response_id':'dom-old-final',
+            'final_reply_sha256':observer.text_sha(original[7]['text'])}
+        key=observer.native_digest({k:self.analysis[k]for k in('operation','request_sha256')})
+        self.intent=self.c.root/'dialogue-200-followup'/(key+'.intent.json')
+        for suffix,value in (('intent',intent),('complete',complete)):
+            path=self.c.root/'dialogue-200-followup'/(key+'.'+suffix+'.json')
+            path.write_text(json.dumps(value));path.chmod(0o600)
+        with self.c.room.store.open()as db:
+            db.execute('UPDATE daily_rooms SET anchors=?',(json.dumps(identities(original[:8])),))
+        self.before=self.base.row()
+        for index in(3,5,7):self.c.raw.messages[index]['id']='00000000-0000-4000-8000-'+str(index).zfill(12)
+
+    def payload(self,suffix,phase):
+        operation='2026-11-05:robot-v9:0:'+suffix
+        body=dict(operation=operation,marker='HARUN_'+observer.text_sha(operation)[:32],provider='NEUROBRO_WEB',
+            contract_version='neurobro-browser-decision-v2',prompt='Bahan percakapan '+suffix,
+            output_schema={'required':['symbols']}if phase=='SCREENING'else self.base.payload['output_schema'],
+            context=None if phase=='SCREENING'else{'symbol':'AVAXUSDT','source':'Binance Futures'})
+        return {**body,'request_sha256':observer.digest(body)}
+
+    def retain_review(self,payload,turns,action):
+        from agent.native_analysis_receipt import persist_review,prefix
+        phase='SCREENING'if action=='SCREENING'else'ANALYSIS';reply=turns[-1]['text']
+        reply_sha=observer.text_sha(reply);transcript=observer.native_digest(turns)
+        identity=observer.native_digest(dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
+            reply_sha256=reply_sha,phase=phase,transcript_sha256=transcript))
+        conversation='neurobro:2026-11-05:'+'a'*32
+        request=dict(schema_version=1,request_id=identity,conversation_id=conversation,phase=phase,reply=reply,
+            reply_sha256=reply_sha,market_context=None if phase=='SCREENING'else{'symbol':'AVAXUSDT'},
+            gate={'robot_on':True,'native_dispatch_verified':True},deadline_epoch=self.base.before['updated_at']+30)
+        response=dict(schema_version=1,ok=True,request_id=identity,conversation_id=conversation,phase=phase,
+            reply_sha256=reply_sha,authority='DIALOGUE_CONTROL_ONLY',trading_authority=False,
+            decision={'action':action,'symbols':['AVAXUSDT','SUIUSDT']if phase=='SCREENING'else['AVAXUSDT'],'question':''},
+            needs_followup=False,reason='DIALOGUE_DECISION')
+        done=dict(operation_id='delegated-model:'+identity,kind='DELEGATED_MODEL_DIALOGUE',request_hash='e'*64,
+            state='DONE',result=json.dumps(response),updated_at=self.base.before['updated_at']-10)
+        value=persist_review(self.c.root,payload,request,response,turns,context=payload['context'],
+            observed_at=self.base.before['updated_at']-5,model_operation=done if phase=='SCREENING'else None)
+        self.review_files.append(self.c.root/(prefix(payload)+identity+'.json'))
+        return value
+
+    def test_actual_shape_three_assistant_uuid_changes_require_each_retained_authority(self):
+        result=self.base.invoke();proof=result['observation'];after=self.base.row()
+        self.assertEqual(result['error_count'],0)
+        self.assertEqual(after['state'],'BOUND')
+        witness=proof['room_recovery']['prefix_authority']
+        self.assertEqual(witness['kind'],'PRIOR_NATIVE_REVIEWS_AND_USER_ANCHORS')
+        self.assertEqual(witness['changed_assistant_rows'],[3,5,7])
+        self.assertEqual([item['index']for item in witness['rows']],[3,5,7])
+        self.assertEqual([len(item['followup_receipts'])for item in witness['rows']],[0,1,2])
+        self.assertEqual(proof['room_recovery']['prior_record'],self.before)
+        self.assertEqual(json.loads(after['anchors']),identities(self.c.raw._turns()))
+
+    def test_changed_initial_text_cannot_reuse_valid_final_review_or_skip_missing_authority(self):
+        original=copy.deepcopy(self.c.raw.messages)
+        review=self.review_files[0];saved=review.read_bytes();intent=self.intent.read_bytes()
+        cache=self.c.root/self.c.cache._name(self.screen);cache_bytes=cache.read_bytes()
+        for mode in('changed-text','reuse-final-reply','missing-review','missing-intent','changed-user',
+                'review-after-sent','foreign-room','unknown-model','extra-cache-field'):
+            with self.subTest(mode=mode):
+                self.c.raw.messages=copy.deepcopy(original)
+                for path,raw in((review,saved),(self.intent,intent),(cache,cache_bytes)):
+                    path.write_bytes(raw);path.chmod(0o600)
+                if mode=='changed-text':self.c.raw.messages[3]['text']='A different selection.'
+                if mode=='reuse-final-reply':self.c.raw.messages[5]['text']=self.c.raw.messages[7]['text']
+                if mode=='missing-review':review.unlink()
+                if mode=='missing-intent':self.intent.unlink()
+                if mode=='changed-user':self.c.raw.messages[2]['text']+=' Changed.'
+                if mode in('review-after-sent','foreign-room','unknown-model'):
+                    value=json.loads(saved)
+                    if mode=='review-after-sent':value['observed_at']=self.before['updated_at']+1
+                    if mode=='foreign-room':value['conversation_id']='neurobro:2026-11-05:'+'f'*32
+                    if mode=='unknown-model':value['model_operation']['state']='UNKNOWN'
+                    review.write_text(json.dumps(value))
+                if mode=='extra-cache-field':
+                    value=json.loads(cache_bytes);value['unexpected']='not native cache';cache.write_text(json.dumps(value))
+                result=self.base.invoke()
+                self.assertEqual(self.base.row(),self.before)
+                self.assertTrue(result['error_count'])
+                self.assertFalse(result['operation_completed'])
+
+    def test_future_reload_uses_exact_native_snapshot_without_old_review_fallback(self):
+        self.assertEqual(self.base.invoke()['error_count'],0)
+        for path in self.review_files:path.unlink()
+        with self.c.room.store.open()as db:db.execute("UPDATE daily_rooms SET state='SENT'")
+        for index in(3,5,7):self.c.raw.messages[index]['id']='another-native-id-'+str(index)
+        result=self.base.invoke()
+        self.assertEqual(result['error_count'],0)
+        self.assertEqual(result['observation']['room_recovery']['prefix_authority']['kind'],'EXACT_NATIVE_PREFIX_SNAPSHOT')
+
+    def test_loaded_thirty_row_window_without_first_marker_reopens_from_exact_snapshot(self):
+        from agent.native_daily_room import retain_prefix_snapshot
+        # Normal prepare persists the actually loaded tail, rather than all
+        # older room history. Its original first marker can be outside it.
+        prior=[]
+        for number in range(11):
+            prior.extend([dict(role='user',text='Prior window user '+str(number),attachments=[]),
+                dict(role='assistant',text='Prior window answer '+str(number),id='window-'+str(number),complete=True)])
+        self.c.raw.messages=prior+self.c.raw.messages
+        old=self.c.raw._turns()[:30]
+        with self.c.room.store.open()as db:
+            binding=json.loads(self.before['binding']);binding.update(first_prompt_sha256=observer.text_sha('Older unloaded original prompt'),marker='HARUN_'+'f'*32)
+            db.execute('UPDATE daily_rooms SET anchors=?,binding=?',(json.dumps(identities(old)),json.dumps(binding)))
+        before=self.base.row();retain_prefix_snapshot(self.c.root,'2026-11-05','a'*32,old)
+        for index in range(1,30,2):self.c.raw.messages[index]['id']='reloaded-window-'+str(index)
+        # The reload is capped at thirty total rows: the old suffix of 28
+        # followed by the real new SUI pair, rather than all 32 messages.
+        saved=copy.deepcopy(self.c.raw.messages[-30:]);self.c.room.history.rooms=[('Existing partial window',saved)]
+        self.c.raw.messages=[]
+        result=self.base.invoke()
+        self.assertEqual(result['error_count'],0)
+        self.assertTrue(result['history_restored'])
+        self.assertEqual(result['observation']['row_offset'],28)
+        self.assertEqual(result['row_count'],30)
+        self.assertEqual(result['observation']['room_recovery']['prefix_authority']['kind'],'EXACT_NATIVE_PREFIX_SNAPSHOT_WINDOW')
+        self.assertEqual(result['observation']['room_recovery']['prefix_authority']['visible_row_offset'],2)
+        self.assertEqual(len(json.loads(self.base.row()['anchors'])),32)
+        self.assertEqual(self.base.row()['binding'],before['binding'])
+
+    def test_exact_snapshot_rejects_changed_text_user_or_completion(self):
+        from agent.native_daily_room import retain_prefix_snapshot
+        # A future release already holds all original native IDs, unlike the
+        # legacy migration above. Semantic drift cannot use a review fallback.
+        rows=self.c.raw._turns()
+        old=copy.deepcopy(rows[:8])
+        for index in(3,5,7):old[index]['id']='snapshot-original-'+str(index)
+        anchors=identities(old);retain_prefix_snapshot(self.c.root,'2026-11-05','a'*32,old)
+        capture={'room':{'day':'2026-11-05','room_id':'a'*32,'anchors':anchors},'rows':rows}
+        for mode in('text','user','complete'):
+            value=copy.deepcopy(capture)
+            if mode=='text':value['rows'][3]['text']='Changed reviewed text.'
+            if mode=='user':value['rows'][2]['text']='Changed original user.'
+            if mode=='complete':value['rows'][3]['complete']=False
+            with self.subTest(mode=mode),self.assertRaises(ValueError):
+                observer._sent_prefix_authority(self.c.room,value,self.before,8)
 
 
 if __name__=='__main__':unittest.main()
