@@ -453,6 +453,25 @@ class AnalysisResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
         self.assertIsNone(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
 
+    def test_projected_latest_review_still_requires_exact_current_approval(self):
+        from agent.native_received_analysis import _project_operation,GENERIC_KIND
+        current=copy.deepcopy(self.envelope['observation']['review_receipts'][0])
+        old=self.retain_older_identical_reply_review()
+        before=copy.deepcopy([current,old])
+        projected=_project_operation(dict(kind=GENERIC_KIND,review_receipts=before))
+        self.assertEqual(projected['review_receipts'],[current])
+        self.assertEqual(before,[current,old])
+        proof=self.envelope['observation']
+        for reviews in ([],[old]):
+            projected=_project_operation(dict(kind=GENERIC_KIND,review_receipts=reviews))
+            proof['review_receipts']=projected['review_receipts'];self.seal(self.envelope)
+            with self.assertRaisesRegex(Review,'ANALYSIS_MINI_APPROVAL_NOT_RETAINED'):
+                validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW)
+            self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
+        proof['review_receipts']=[current];self.seal(self.envelope)
+        validate_observation(self.provider,self.envelope,self.payload,self.created,now=NOW)
+        self.assertEqual(len(read_reviews(self.root.name,self.payload)),2)
+
     def test_clear_hold_retains_mini_clarify_without_another_size_discussion(self):
         reply='COIN: BTCUSDT\nARAH: HOLD\nHarga di dalam range; entry belum valid.'
         decision=dict(action='CLARIFY',symbols=['BTCUSDT'],question='Apakah ada setup entry selanjutnya?')
