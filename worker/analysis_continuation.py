@@ -184,6 +184,118 @@ def _rebound_not_sent_semantics(row,proof,custody):
         and custody.get('admitted_capture',{}).get('semantics_sha256')==digest(_observation_semantics(admitted)))
     return digest(new)
 
+import re
+
+def _manual_context_pair(rows,symbol):
+    """Only a formatting question and explicit null technical answer: no setup."""
+    need(type(rows)is list and len(rows)==2)
+    user,answer=rows
+    need(user.get('role')=='user' and answer.get('role')=='assistant'
+        and user.get('attachments',[])==[] and answer.get('complete')is True
+        and type(user.get('text'))is str and 0<len(user['text'])<=256
+        and type(answer.get('text'))is str and 0<len(answer['text'])<=4096
+        and type(answer.get('id'))is str
+        and re.fullmatch('[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}',answer['id']))
+    words=re.findall(r'[a-z]+',user['text'].lower())
+    need('json'in words and 'format'in words and any(word in words for word in('coin','koin'))
+        and all(word in {'berikan','tolong','mohon','format','json','coin','koin','nama','arah',
+            'entry','tp','sl','keputusan','ringkasan','akhir','dan','dengan','saja','untuk','ini'}for word in words)
+        and re.fullmatch(r'[A-Za-z\s,.:/-]+',user['text']))
+    text=answer['text'].strip();fenced=re.fullmatch(r'```(?:json)?\s*([\s\S]*?)\s*```',text,re.I)
+    if fenced:text=fenced[1].strip()
+    def unique(items):
+        result={}
+        for key,value in items:
+            need(type(key)is str and key.lower()not in result);result[key.lower()]=value
+        return result
+    value=json.loads(text,object_pairs_hook=unique)
+    need(type(value)is dict and set(value)=={'coin','keputusan','entry','tp','sl','alasan'}
+        and value['coin']==symbol and all(value[key]is None for key in('keputusan','entry','tp','sl'))
+        and type(value['alasan'])is str and len(value['alasan'])<=2048
+        and re.search(r'\b(?:gambar|chart|screenshot|candle|lampiran)\b',value['alasan'],re.I)
+        and re.search(r'\b(?:belum|tidak|kurang|gagal)\b',value['alasan'],re.I))
+    return True
+
+def _manual_context_digest(rows):
+    return digest([{k:v for k,v in row.items()if k not in('id','attachments')}for row in rows])
+
+
+def validate_manual_context_candidate(candidate,proof,payload):
+    need(type(candidate)is dict and set(candidate)=={'rows','after_owned_pairs',
+        'after_owned_user_prompt_sha256','after_owned_reply_sha256','owned_prefix_sha256','semantic_sha256'})
+    _manual_context_pair(candidate['rows'],payload['context']['symbol'])
+    count=candidate['after_owned_pairs'];rows=proof['rows']
+    need(type(count)is int and 1<=count<=len(rows)//2
+        and candidate['semantic_sha256']==_manual_context_digest(candidate['rows'])
+        and candidate['owned_prefix_sha256']==_manual_context_digest(rows[:count*2])
+        and candidate['after_owned_user_prompt_sha256']==sha(rows[count*2-2]['text'])
+        and candidate['after_owned_reply_sha256']==sha(rows[count*2-1]['text']))
+    return candidate
+
+
+def validate_manual_context_receipts(provider,proof,payload):
+    """Independently verify context against a worker-issued source grant.
+
+    The manual pair has no prices or direction and is never a provider result.
+    It authorizes neither a Send nor trading. Every real new followup still
+    needs its existing intent, fresh charts, native receipt and Mini review.
+    """
+    entries=proof.get('manual_context_receipts',[])
+    observations=proof.get('manual_context_observations',[])
+    need(type(entries)is list and type(observations)is list and len(entries)==len(observations))
+    if not entries:return []
+    need(provider.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_continuation_grants'").fetchone())
+    descriptors=[]
+    for entry in entries:
+        need(type(entry)is dict and set(entry)=={'name','sha256','bytes','value'})
+        value=entry['value'];need(type(value)is dict)
+        raw=wire(value);need(entry['sha256']==sha(raw) and entry['bytes']==len(raw.encode()))
+        grant=value.get('grant');need(type(grant)is dict and grant_identity(grant)==grant.get('grant_id'))
+        need(value.get('schema_version')==1 and value.get('kind')=='NATIVE_OBSERVED_MANUAL_CONTEXT_V1'
+            and value.get('authority')=='CONTEXT_ONLY_NO_SEND_NO_APPROVAL'
+            and all(value.get(k)==payload[k]for k in('operation','request_sha256','marker'))
+            and value.get('payload_sha256')==digest(payload))
+        row=_row(provider.db,'analysis_continuation_grants','grant_id',grant['grant_id'])
+        need(row is not None and row['operation']==payload['operation']and row['request_sha256']==payload['request_sha256'])
+        sources=[(json.loads(row['grant']),json.loads(row['source_proof']))]
+        if provider.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_continuation_returns'").fetchone():
+            for returned in provider.db.execute("SELECT response FROM analysis_continuation_returns WHERE grant_id=? AND state='CLOCK_RENEWED_AFTER_PROVED_NOT_SENT'",(grant['grant_id'],)):
+                audit=json.loads(returned[0]);sources.extend((audit[g],audit[s])for g,s in
+                    (('old_grant','old_source_proof'),('new_grant','new_source_proof')))
+        matches=[envelope for known,envelope in sources if known==grant]
+        need(bool(matches));source=matches[-1]
+        need(all(source[key]==grant[field]for key,field in(('capture_name','source_capture_name'),
+            ('capture_sha256','source_capture_sha256'),('capture_bytes','source_capture_bytes'),
+            ('observation_sha256','source_observation_sha256')))
+            and sha(wire(source['observation']))==grant['source_observation_sha256'])
+        original=source['observation'];candidate=validate_manual_context_candidate(original.get('manual_context_tail'),original,payload)
+        need(value.get('context')==candidate and finite(value.get('observed_at'))
+            and grant['started_at']<=value['observed_at']<=proof['finished_at']
+            and value.get('room')=={k:original['room'][k]for k in('day','room_id','url')}
+            and value['room']=={k:proof['room'][k]for k in('day','room_id','url')})
+        positive=original.get('continuation_not_sent');need(type(positive)is dict)
+        expected={k:positive[k]for k in('grant_id','latest_attempt','admission','disposition','mutation_markers')}
+        need(value.get('positive_not_sent')==expected and expected['grant_id']==grant['grant_id']
+            and expected['mutation_markers']==dict(upload_started=False,send_attempted=False,completed=False))
+        closed=expected['disposition']['value']
+        need(closed.get('kind')=='NATIVE_ANALYSIS_CONTINUATION_NOT_SENT_V1'
+            and all(closed.get(k)is False for k in('send_attempted','new_intent_written','upload_started')))
+        _manual_context_pair(value['observed_rows'],payload['context']['symbol'])
+        need(_manual_context_digest(value['observed_rows'])==candidate['semantic_sha256'])
+        scope=digest({k:payload[k]for k in('operation','request_sha256')})
+        identity=digest({k:candidate[k]for k in('after_owned_pairs','after_owned_user_prompt_sha256',
+            'after_owned_reply_sha256','owned_prefix_sha256','semantic_sha256')})
+        need(entry['name']=='observed-manual-context-'+scope+'-'+identity+'.json')
+        seen=[item for item in observations if item.get('receipt_sha256')==entry['sha256']]
+        need(len(seen)==1 and seen[0].get('after_owned_pairs')==candidate['after_owned_pairs'])
+        _manual_context_pair(seen[0]['rows'],payload['context']['symbol'])
+        need(_manual_context_digest(seen[0]['rows'])==candidate['semantic_sha256'])
+        validate_manual_context_candidate(candidate,proof,payload)
+        descriptors.append(dict(after_owned_pairs=candidate['after_owned_pairs'],
+            descriptor={k:entry[k]for k in('name','sha256','bytes')}))
+    need(len({item['descriptor']['name']for item in descriptors})==len(descriptors))
+    return descriptors
+
 
 def _lost_not_sent(provider,row,envelope,now):
     """An actual latest native closure can recover a lost HTTP disposition."""
@@ -318,7 +430,12 @@ def retry_not_sent(provider,envelope,*,now=None,permitted=lambda:True):
         rebind=envelope.get('observation',{}).get('continuation_not_sent',{}).get('native_id_rebinding')
         if rebind is not None:
             _rebound_not_sent_semantics(row,envelope['observation'],envelope['observation']['continuation_not_sent'])
-        renew_source=current>=grant['expires_at'] or rebind is not None
+        candidate=envelope.get('observation',{}).get('manual_context_tail')
+        previous_context=json.loads(row['source_proof'])['observation'].get('manual_context_tail')
+        if candidate is not None:
+            validate_manual_context_candidate(candidate,envelope['observation'],payload)
+        context_changed=candidate is not None and candidate!=previous_context
+        renew_source=current>=grant['expires_at'] or rebind is not None or context_changed
         if renew_source:
             # A positively closed pre-upload attempt can renew only its technical
             # clock after fresh observation of the exact same received turn.
@@ -330,7 +447,7 @@ def retry_not_sent(provider,envelope,*,now=None,permitted=lambda:True):
             sequence=db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM analysis_continuation_returns WHERE grant_id=?',(grant['grant_id'],)).fetchone()[0]
             audit=dict(old_grant=grant,new_grant=renewed,old_source_proof=json.loads(row['source_proof']),
                 new_source_proof=envelope,positive_not_sent=json.loads(row['result']),preimage=row,
-                source_rebound_after_not_sent=rebind is not None)
+                source_rebound_after_not_sent=rebind is not None,manual_context_observed=context_changed)
             db.execute('INSERT INTO analysis_continuation_returns VALUES(?,?,?,?,?)',
                 (grant['grant_id'],sequence,'CLOCK_RENEWED_AFTER_PROVED_NOT_SENT',wire(audit),current))
             grant=renewed

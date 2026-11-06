@@ -269,6 +269,15 @@ def validate_observation(provider,envelope,payload,created,*,now,retained=False,
         if index%2:
             need(row.get('complete') is True and type(row.get('id')) is str
                 and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',row['id']), 'ANALYSIS_REPLY_NOT_COMPLETE')
+    from .analysis_continuation import validate_manual_context_receipts,validate_manual_context_candidate
+    contexts=validate_manual_context_receipts(provider,proof,payload)
+    if proof.get('manual_context_tail')is not None:
+        validate_manual_context_candidate(proof['manual_context_tail'],proof,payload)
+    for name,entry in proof['receipt_files'].items():
+        if not name.endswith('.intent.json'):continue
+        intent=entry['value'];sequence=intent.get('followup_sequence',1)
+        expected=[item['descriptor']for item in contexts if item['after_owned_pairs']<=sequence]
+        need(intent.get('manual_context_receipts',[])==expected)
     charts,context_sha,stale=_material(proof,payload,provider,created)
     reviewed=copy.deepcopy(proof)
     for item in reviewed['file_tiles']:
