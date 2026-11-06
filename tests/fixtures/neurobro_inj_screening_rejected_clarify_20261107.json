@@ -1,0 +1,17 @@
+{
+  "evidence_run": "42264084970",
+  "author": "INJ naik rating-nya sebagai pengganti terbaik siklus ini - momentumnya paling lengkap buat day trade di Binance futures sekarang. Volume $INJ tembus $136M dalam 24 jam dengan open interest naik +6.6%, harga $8.22 (+2.8%), dan yang bikin beda: RSI masih 63 (belum overbought) plus EMA 5/9/21/50/200 semuanya stacking bullish.\n\nSINYAL REVERSAL BARU MUNCUL HARI INI\n\nPola Morning Star (strength 85) dan Bullish Engulfing (80) baru terbentuk jam 12:00 hari ini setelah koreksi kemarin - artinya peluang lanjut naik lebih tinggi daripada kejar momentum yang udah basi. Support kunci di $8.10 dan $7.89, resistance di $8.41-$8.51.\n\nLEVEL DAY-TRADE\n\nEntry saat pullback ke $8.05 (bukan ngejar harga sekarang), stop $7.78, TP1 $8.42 dan TP2 $8.78. Confidence 7/10 dengan risk-reward bersih setelah fee 1.61x-1.93x tergantung alokasi TP - termasuk setup paling solid dibanding kandidat lain yang dicek hari ini.\n\n⚖️ Neurobro cuma alat riset dan nggak kasih saran finansial! Tim kami terus upgrade akurasi, tapi tetap bisa salah - apa yang kamu trading dan risiko yang kamu ambil sepenuhnya keputusanmu.\n\nCOIN: INJUSDT Perpetual - alasan singkat: volume terdalam ($136M) + OI naik + sinyal bullish reversal hari ini + RSI sehat, rating profit tertinggi untuk scapling sekarang.",
+  "author_sha256": "1f140af5ed478c6dbaa3869ec492ac5a9166514aa2a7b0e7051e85883f3db401",
+  "request_id": "2094e6a9aa1866b8a84960394110dbfffe5c70b15d07c7fda6c23816fe947637",
+  "parent_request_sha256": "3d887332a2c76862686c4b074f8490732f295ef8cc228ba8bf2d7901c2141a76",
+  "observed_raw_key": "dialogue-model-raw:907840ab1523be4489b302b456e602d2fc8cfffc30db5eadb0caa17d00c99114",
+  "observed_model_input_sha256": "4e2754effc99720e8fa717370a5cef7f2983bffa2c68260893033b02152e40e1",
+  "model_response_id": "resp_0080dee7e521d994016aee10ba495887d2b29419b2608e5bba",
+  "raw_decision": {
+    "action": "CLARIFY",
+    "question": "Konfirmasi setup INJUSDT: kamu sebut Entry pullback $8.05, Stop $7.78, TP1 $8.42 TP2 $8.78. Saya minta: 1) Berikan SL berdasarkan struktur pasar (swing low/likuiditas/invalidasi) — jelaskan kenapa $7.78 valid sebagai titik invalidasi. 2) Berikan level TP yang menyesuaikan RISK:REWARD minimum 1:2 dan hitung level TP konkret untuk R:R 1:2 dari ENTRY $8.05 (tanpa mengubah ENTRY/SL struktural). 3) Sebut timeframe analisis (15M/1H/4H) dan sumber harga (Binance perp). 4) Konfirmasi confidence dan apakah TP1/TP2 tetap dipertahankan selain TP R:R1:2. Jika ada koreksi angka atau struktur, perbaiki level yang eksplisit.",
+    "symbols": [
+      "INJUSDT"
+    ]
+  }
+}

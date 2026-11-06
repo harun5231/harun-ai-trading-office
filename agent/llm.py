@@ -486,6 +486,14 @@ class OpenAIDialogue:
                 'COMPLETE hanya untuk setup aktif LONG atau SHORT dengan ENTRY, SL, dan TP yang lengkap. '
                 'Jika bahan belum terbaca, keputusan bertentangan, atau setup belum jelas, gunakan CLARIFY; '
                 'jangan menyamarkan masalah input sebagai HOLD pasar.\n')
+        if phase == 'SCREENING':
+            instructions += ('\nKHUSUS MEMBACA SCREENING: jika Neurobro sudah memilih coin dengan jelas, '
+                'gunakan action SCREENING, symbols berisi pilihan akhirnya, dan question kosong. '
+                'Screening hanya memilih coin; level ENTRY, SL, TP, wick dan RR belum memerlukan '
+                'diskusi di fase ini meskipun Neurobro menyebutkannya. Pembahasan setup dilakukan '
+                'pada fase ANALYSIS sesudah chart Futures 1H dan 15M coin tersebut tersedia. '
+                'CLARIFY hanya untuk pilihan coin yang benar-benar belum jelas, bukan untuk '
+                'melengkapi level atau meminta timeframe tambahan. Jangan menciptakan pilihan sendiri.\n')
         if phase == 'COMPOSE_SCREENING':
             instructions += ('\nKHUSUS SCREENING: question harus menyalin persis teks tugas pemilik, '
                 'dengan jumlah coin yang diminta. Jangan menambahkan permintaan arah, ENTRY, SL, TP, '

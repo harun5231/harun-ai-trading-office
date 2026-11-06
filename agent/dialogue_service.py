@@ -61,6 +61,7 @@ PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'D
     'DIALOGUE_MODEL_RESULT_INVALID', 'DIALOGUE_FOREIGN_SYMBOL', 'DIALOGUE_PRICE_PROPOSAL_REFUSED',
     'DIALOGUE_SOURCE_FACTS_INVALID', 'DIALOGUE_RESPONSE_LIMIT', 'DIALOGUE_UNAVAILABLE'})
 SCREENING_RECOVERY_POLICY = 'ORIGINAL_SCREENING_KNOWN_REJECTION_V1'
+SCREENING_INTERPRETATION_POLICY = 'RECEIVED_SCREENING_KNOWN_REJECTION_V1'
 SCREENING_RECEIPT_LOOKUP = 'SCREENING_RECEIPT_LOOKUP'
 SCREENING_LOOKUP_BINDING = ('request_id', 'conversation_id', 'phase', 'reply_sha256')
 
@@ -354,7 +355,7 @@ def validate_screening_lookup_result(value, request):
     row = receipt['operation']
     need(type(row) is dict and set(row) == {'operation_id', 'kind', 'request_hash',
             'state', 'result', 'updated_at'}
-        and row['operation_id'] == 'delegated-model:' + request['request_id']
+        and screening_model_operation(row['operation_id'], request['request_id'])
         and row['kind'] == 'DELEGATED_MODEL_DIALOGUE' and row['state'] == 'DONE'
         and type(row['request_hash']) is str and SHA.fullmatch(row['request_hash'])
         and type(row['updated_at']) in (int, float) and math.isfinite(row['updated_at'])
@@ -368,6 +369,13 @@ def validate_screening_lookup_result(value, request):
         and len(canonical(value).encode()) <= MAX_RESPONSE,
          'DIALOGUE_MODEL_RESULT_INVALID')
     return receipt
+
+
+def screening_model_operation(operation_id, request_id):
+    """Keep the real original or once-only recovery ID in every receipt."""
+    return (type(request_id) is str and SHA.fullmatch(request_id) is not None
+        and operation_id in ('delegated-model:' + request_id,
+            'delegated-model-screening-recovery:' + request_id))
 
 
 def private_secret(path, *, uid=None):
@@ -493,6 +501,14 @@ class DialogueEngine:
                 ('delegated-model:' + request['request_id'],)).fetchone()
             receipt = None
             if row is not None:
+                if row[3] == 'UNKNOWN':
+                    child = self._received_screening_child(request, create=False)
+                    need(child is not None, 'DIALOGUE_OPERATION_UNKNOWN')
+                    child_id, child_payload = child
+                    row = self.memory.db.execute('SELECT operation_id,kind,request_hash,state,result,updated_at '
+                        'FROM operations WHERE operation_id=?', (child_id,)).fetchone()
+                    need(row is not None and row[2] == hashlib.sha256(canonical(child_payload).encode()).hexdigest(),
+                         'DIALOGUE_OPERATION_UNKNOWN')
                 need(row[1] == 'DELEGATED_MODEL_DIALOGUE' and row[3] == 'DONE',
                      'DIALOGUE_OPERATION_UNKNOWN')
                 operation = dict(zip(names, row))
@@ -503,6 +519,92 @@ class DialogueEngine:
                 'state': 'MISSING' if receipt is None else 'DONE', 'receipt': receipt}
             validate_screening_lookup_result(value, request)
             return value
+
+    def _received_screening_child(self, request, *, create):
+        """Interpret a once-received coin choice after a proven model rejection.
+
+        The original model attempt stays UNKNOWN with its original opaque
+        request hash/deadline. A unique completed raw answer proves a local
+        price-validator rejection, not an uncertain network delivery. Only one
+        separately identified model interpretation may follow; it sends no WEB
+        message and cannot turn the rejected CLARIFY text into a selection.
+        """
+        def bound(ok):
+            need(ok, 'DIALOGUE_OPERATION_UNKNOWN')
+        bound(request['phase'] == 'SCREENING' and request['market_context'] is None
+            and 'source_facts' not in request and type(request['request_id']) is str
+            and SHA.fullmatch(request['request_id']))
+        parent_id = 'delegated-model:' + request['request_id']
+        row = self.memory.db.execute('SELECT kind,request_hash,state,result,updated_at FROM operations '
+            'WHERE operation_id=?', (parent_id,)).fetchone()
+        bound(row is not None and row[0] == 'DELEGATED_MODEL_DIALOGUE' and row[2] == 'UNKNOWN'
+            and row[3] is None and type(row[1]) is str and SHA.fullmatch(row[1])
+            and type(row[4]) in (int, float) and math.isfinite(row[4]) and row[4] > 0)
+        checkpoint_key = 'dialogue-screening-interpretation-rejection:' + parent_id
+        checkpoint = self.memory.get(checkpoint_key)
+        if checkpoint is None and not create:
+            return None
+        history = (checkpoint.get('model_history') if type(checkpoint) is dict else
+            self.memory.history(request['conversation_id'], max_chars=8000, max_messages=12))
+        bound(type(history) is list and len(history) <= 12 and all(type(item) is dict
+            and set(item) == {'role', 'content'} and item['role'] in ('user', 'assistant')
+            and type(item['content']) is str for item in history))
+        messages = history + [{'role': 'user', 'content': 'Fase: SCREENING\nJawaban Neurobro terbaru:\n' + request['reply']}]
+        input_sha = hashlib.sha256(json.dumps(messages, ensure_ascii=False).encode()).hexdigest()
+        used = set()
+        for encoded, in self.memory.db.execute(
+                "SELECT value FROM metadata WHERE key LIKE 'dialogue-screening-interpretation-rejection:%'"):
+            saved = decode_json(encoded.encode())
+            if saved.get('parent_operation') != parent_id:
+                used.add(saved.get('rejected_receipt_key'))
+        matches = []
+        for key, encoded in self.memory.db.execute("SELECT key,value FROM metadata WHERE key LIKE 'dialogue-model-raw:%'"):
+            try:
+                raw = decode_json(encoded.encode())
+                identity = {name: value for name, value in raw.items() if name != 'observed_at'}
+                if (key in used or key != 'dialogue-model-raw:' + hashlib.sha256(canonical(identity).encode()).hexdigest()
+                        or raw.get('schema_version') != 1 or raw.get('authority') != 'UNVALIDATED_MODEL_OUTPUT'
+                        or raw.get('phase') != 'SCREENING' or raw.get('json_decoded') is not True
+                        or raw.get('native_reply_sha256') != request['reply_sha256']
+                        or raw.get('model_input_sha256') != input_sha
+                        or type(raw.get('model_response_id')) is not str
+                        or re.fullmatch(r'resp_[A-Za-z0-9_-]{1,150}', raw['model_response_id']) is None
+                        or type(raw.get('observed_at')) not in (int, float)
+                        or not math.isfinite(raw['observed_at']) or not 0 <= row[4] - raw['observed_at'] <= 1):
+                    continue
+                decision = decode_json(raw['raw_output_text'].encode())
+                if (decision != raw.get('raw_decision') or set(decision) != {'action', 'symbols', 'question'}
+                        or decision['action'] != 'CLARIFY' or type(decision['symbols']) is not list
+                        or not 1 <= len(decision['symbols']) <= 2):
+                    continue
+                try:
+                    validate_decision(decision, request)
+                except DialogueError as error:
+                    if str(error) != 'DIALOGUE_PRICE_PROPOSAL_REFUSED':
+                        continue
+                else:
+                    continue
+                matches.append((key, raw))
+            except (DialogueError, ValueError, TypeError, KeyError, AttributeError):
+                continue
+        bound(len(matches) == 1)
+        raw_key, raw = matches[0]
+        caller = {key: value for key, value in request.items() if key != 'deadline_epoch'}
+        seed = dict(policy=SCREENING_INTERPRETATION_POLICY, parent_operation=parent_id,
+            parent_request_sha256=row[1], rejected_receipt_key=raw_key,
+            rejected_receipt_sha256=hashlib.sha256(canonical(raw).encode()).hexdigest())
+        child_id = 'delegated-model-screening-recovery:' + request['request_id']
+        child_payload = {**seed, 'caller_request': caller}
+        record = {**seed, 'schema_version': 1, 'child_operation': child_id,
+            'child_request_sha256': hashlib.sha256(canonical(child_payload).encode()).hexdigest(),
+            'caller_request_sha256': hashlib.sha256(canonical(caller).encode()).hexdigest(),
+            'model_history': history, 'model_input_sha256': input_sha,
+            'model_response_id': raw['model_response_id'], 'parent_unknown_at': row[4],
+            'rejection': 'DIALOGUE_PRICE_PROPOSAL_REFUSED', 'rejected_output_accepted': False}
+        bound(checkpoint is None or checkpoint == record)
+        if checkpoint is None:
+            self.memory.put(checkpoint_key, record)
+        return child_id, child_payload
 
     def _rejected_screening_child(self, request, parent_id, parent_payload, caller_payload):
         """A known rejected answer may get a new, once-only model operation.
@@ -656,6 +758,11 @@ class DialogueEngine:
                 memo_request = ({key: value for key, value in request.items()
                     if key != 'deadline_epoch'} if request['phase'].startswith('COMPOSE_') else request)
                 current_id, operation_payload = operation_id, memo_request
+                if request['phase'] == 'SCREENING':
+                    parent = self.memory.db.execute('SELECT state FROM operations WHERE operation_id=?',
+                        (operation_id,)).fetchone()
+                    if parent is not None and parent[0] == 'UNKNOWN':
+                        current_id, operation_payload = self._received_screening_child(request, create=True)
                 visited = set()
                 while True:
                     validate_request(request, now=self.clock())

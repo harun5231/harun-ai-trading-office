@@ -33,7 +33,7 @@ def _need(value):
 
 
 def persist_review(root, payload, request, response, turns, *, context, observed_at,model_operation=None):
-    from .dialogue_service import validate_result
+    from .dialogue_service import validate_result, screening_model_operation
     screening=payload.get('output_schema',{}).get('required')==['symbols']
     phase='SCREENING'if screening else'ANALYSIS';kind=SCREENING_KIND if screening else KIND
     _need(request.get('phase') == phase and (context==payload.get('context') if screening else type(context) is dict)
@@ -56,7 +56,7 @@ def persist_review(root, payload, request, response, turns, *, context, observed
     if screening:
         if model_operation is not None:
             _need(set(model_operation)=={'operation_id','kind','request_hash','state','result','updated_at'}
-                and model_operation['operation_id']=='delegated-model:'+request['request_id']
+                and screening_model_operation(model_operation['operation_id'],request['request_id'])
                 and model_operation['kind']=='DELEGATED_MODEL_DIALOGUE' and model_operation['state']=='DONE'
                 and type(model_operation['request_hash'])is str and re.fullmatch('[a-f0-9]{64}',model_operation['request_hash'])
                 and json.loads(model_operation['result'])==response

@@ -471,8 +471,9 @@ def _sent_prefix_authority(room, capture, snapshot, prefix_count):
                         need(re.fullmatch(re.escape(record['day'])+r':robot-v9:(?:0|[1-9]\d{0,11}):screening:(?:0|[1-9]\d{0,11}):[12]',operation)
                             and request['market_context']is None,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
                         done=value['model_operation']
+                        from .dialogue_service import screening_model_operation
                         need(done['state']=='DONE'and done['kind']=='DELEGATED_MODEL_DIALOGUE'
-                            and done['operation_id']=='delegated-model:'+request_id
+                            and screening_model_operation(done['operation_id'],request_id)
                             and re.fullmatch('[a-f0-9]{64}',done['request_hash'])
                             and json.loads(done['result'])==response and 0<done['updated_at']<=value['observed_at'],
                             'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
