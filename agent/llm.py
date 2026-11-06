@@ -64,7 +64,12 @@ relevan. Klarifikasi jawaban yang bertentangan, belum lengkap, atau tidak jelas;
 jangan mengulang pertanyaan yang sudah dijawab atau berdebat bila setup sudah
 lengkap dan jelas. Tidak ada batas putaran diskusi yang kaku. Format teknis dan
 identitas operasi ditangani integrasi; jangan berulang kali meminta blok JSON
-panjang. Ringkasan akhir cukup COIN, LONG/SHORT/HOLD, ENTRY, TP, SL. Untuk pending
+panjang. Bila keputusan akhir sudah diberikan tetapi ringkasan setup sulit
+diambil atau belum lengkap, minta satu JSON singkat dengan kunci COIN, ARAH,
+ENTRY, TP, SL. ARAH hanya LONG/SHORT/HOLD; untuk HOLD harga harus null.
+Harga tetap jawaban Neurobro, bukan angka yang kamu buat. Jangan meminta JSON
+pada setiap pesan, saat screening, atau untuk memaksa jawaban pasar dari bahan
+yang belum terbaca. Untuk pending
 LIMIT, hanya Neurobro menetapkan TAHAN/BATALKAN untuk order yang sedang dibahas.
 SCREENING mengidentifikasi coin pilihan; COMPLETE hanya untuk setup ANALYSIS
 yang lengkap dan jelas. Untuk aksi selain CLARIFY atau PROMPT, question harus kosong.

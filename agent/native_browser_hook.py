@@ -17,13 +17,23 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
-from .neurobro_reply import ReplyIncomplete, coin_block, parse_reply_for_payload
+from .neurobro_reply import ReplyIncomplete, analysis_coin_block, parse_reply_for_payload
 from .llm import web_prompt_allowed
 
 
 # A technical budget for one native browser RPC, not a discussion-round or
 # trading limit. Each model call and each material Send keeps its own checks.
 OWNER_DIALOGUE_TIMEOUT_SECONDS = 900
+
+# Request only after an observed author reply needs its final setup clarified.
+# No price examples: executable values must be supplied by Neurobro itself.
+FINAL_SETUP_JSON_REQUEST = (
+    'Jika keputusanmu sudah final, balas satu JSON singkat dengan kunci '
+    'COIN, ARAH, ENTRY, TP, SL. ARAH hanya LONG, SHORT, atau HOLD. '
+    'Gunakan harga yang memang menjadi keputusanmu; jangan mengubah ENTRY atau SL. '
+    'Untuk HOLD, isi ENTRY, TP, SL dengan null. '
+    'Jika bahan belum terbaca atau keputusan belum final, jelaskan masalahnya '
+    'dan jangan mengisi setup atau HOLD hanya untuk melengkapi format.')
 
 
 def _same_text(left, right):
@@ -620,7 +630,8 @@ class DelegatedDOMBridge:
                     # This transport cannot represent the authored level. Do
                     # not round it or ask Neurobro to move ENTRY/SL to fit.
                     raise ValueError(parse_error) from None
-                if parse_error in {'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT',
+                if parse_error in {'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_JSON_SUMMARY_INVALID',
+                        'NEUROBRO_LEVEL_INCOMPLETE', 'NEUROBRO_DECISION_CONFLICT',
                         'NEUROBRO_SETUP_CONDITIONAL', 'NEUROBRO_REVIEW_CONDITIONAL'}:
                     output = None  # Do not fall back to an old/conflicting card.
             complete = type(output) is dict and set(required).issubset(output)
@@ -660,14 +671,13 @@ class DelegatedDOMBridge:
                      'mengambil level coin lain atau skenario bersyarat. ')
                     + ('Ringkas COIN dan KEPUTUSAN: TAHAN/BATALKAN untuk order ini.'
                        if phase == 'PENDING_REVIEW' else
-                       'Ringkas COIN, ARAH LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
-                       'Pertahankan level yang memang sudah menjadi keputusanmu.'))
+                       FINAL_SETUP_JSON_REQUEST))
             legacy_complete = complete and self.prompt_cache is None and not natural_parsed and parse_error not in {
                 'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_SETUP_CONDITIONAL'}
             clear_market_hold = (phase == 'ANALYSIS' and natural_parsed and complete
                 and parse_error is None and output.get('side') == 'HOLD'
                 and not re.search(r'\b(?:jika|apabila|bersyarat|alternatif|skenario)\b',
-                    coin_block(answer, expected_symbol), re.I))
+                    analysis_coin_block(answer, expected_symbol), re.I))
             # A clear author market HOLD ends this coin's analysis. Keep the
             # actual Mini CLARIFY receipt intact; future setup/size questions
             # cannot turn Neurobro's present no-entry decision into a debate.
@@ -693,9 +703,7 @@ class DelegatedDOMBridge:
                 except DialogueError:
                     if phase == 'ANALYSIS':
                         question = ('Mohon pertegas keputusan akhir untuk coin yang sedang dibahas. '
-                            'Ringkas COIN, ARAH LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
-                            'Pertahankan level yang memang sudah menjadi keputusanmu; '
-                            'jika bahan belum terbaca, jelaskan bagian yang perlu diperbaiki.')
+                            + FINAL_SETUP_JSON_REQUEST)
                     elif phase == 'PENDING_REVIEW':
                         question = ('Mohon pertegas COIN dan KEPUTUSAN TAHAN/BATALKAN untuk '
                             'order yang sama berdasarkan chart terbaru. Pertahankan parameter order; '
