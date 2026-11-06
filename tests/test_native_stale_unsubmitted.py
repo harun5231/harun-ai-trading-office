@@ -23,9 +23,19 @@ SPEC=importlib.util.spec_from_file_location('worker.native_stale_coordinator',RO
 native=importlib.util.module_from_spec(SPEC)
 PROVIDER_SPEC=importlib.util.spec_from_file_location('worker.research_provider',ROOT/'vps_native/worker/research_provider.py')
 provider=importlib.util.module_from_spec(PROVIDER_SPEC)
-with patch.dict(sys.modules,{'worker.order_gateway':gateway,'worker.research_provider':provider}),\
-        patch('worker.owner_source_protocol.load_owner_release_cutoff',return_value='2026-11-04T00:00:00Z'):
-    PROVIDER_SPEC.loader.exec_module(provider);SPEC.loader.exec_module(native)
+# Restore only these two fixture overrides. patch.dict(sys.modules, ...) would
+# also discard transitive imports while leaving their attributes on package
+# objects, splitting the history/pending validator's module identities.
+_overrides={'worker.order_gateway':gateway,'worker.research_provider':provider}
+_previous={name:sys.modules.get(name)for name in _overrides}
+try:
+    sys.modules.update(_overrides)
+    with patch('worker.owner_source_protocol.load_owner_release_cutoff',return_value='2026-11-04T00:00:00Z'):
+        PROVIDER_SPEC.loader.exec_module(provider);SPEC.loader.exec_module(native)
+finally:
+    for _name,_module in _previous.items():
+        if _module is None:sys.modules.pop(_name,None)
+        else:sys.modules[_name]=_module
 
 
 class NativeStaleUnsubmittedTests(unittest.TestCase):
