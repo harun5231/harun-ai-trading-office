@@ -17,6 +17,30 @@ from agent.neurobro_reply import (ReplyIncomplete, parse_analysis_reply,
 
 
 class PerCoinReplyTests(unittest.TestCase):
+    def test_actual_sc3_named_selection_list_preserves_explicit_market_hold(self):
+        from agent.neurobro_reply import screening_market_hold
+        reply = (Path(__file__).parent / 'fixtures/neurobro_sc3_named_hold_20261106.txt').read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '5ff1cca55de13955513e806908f660fdcaaa9a281ba6a620246fda9090f8481f')
+        selected = ['ARBUSDT', 'ZECUSDT']
+        self.assertEqual(parse_screening_reply(reply), {'symbols': selected})
+        self.assertTrue(screening_market_hold(reply, selected))
+        self.assertTrue(screening_market_hold(reply.replace('COIN PILIHAN:', 'COIN YANG DIPILIH:'), selected))
+        self.assertFalse(screening_market_hold(reply.replace('ZECUSDT Perpetual - HOLD',
+            'ZECUSDT Perpetual - LONG'), selected))
+        self.assertFalse(screening_market_hold(reply.replace('HOLD,', 'pantau,'), selected))
+        for invalid in (
+                'Jika ada breakout, gunakan daftar ini.\n\nCOIN PILIHAN:\nARBUSDT Perpetual - HOLD',
+                'COIN PILIHAN:\nARBUSDT Perpetual - HOLD dibanding ZECUSDT',
+                'COIN PILIHAN:\nARBUSDT Perpetual - HOLD atau ZECUSDT',
+                'COIN PILIHAN:\nARBUSDT Perpetual - HOLD\nARBUSDT Perpetual - HOLD',
+                'COIN PILIHAN:\nARBUSDT Perpetual - HOLD\n\nCatatan\nZECUSDT Perpetual - HOLD',
+                'COIN PILIHAN:\nARB: ZECUSDT Perpetual - HOLD',
+                'COIN PILIHAN:\nARBUSDT Perpetual - HOLD jika breakout'):
+            with self.subTest(reply=invalid), self.assertRaises(ReplyIncomplete):
+                parse_screening_reply(invalid)
+        self.assertFalse(screening_market_hold('Data chart belum terbaca.\n' + reply, selected))
+
     def test_actual_near_inline_tp_rr_annotation_keeps_prices_and_calculates_ratio(self):
         reply = (Path(__file__).parent / 'fixtures/neurobro_near_inline_rr_setup_20261106.txt').read_text()
         self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),

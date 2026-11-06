@@ -114,7 +114,8 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         envelope.update(observation_sha256=sha(raw), observation_bytes=len(raw.encode()))
         return envelope
 
-    def fixture(self, *, approval=True, reply='COIN: SUIUSDT', followup=False, operation=OP, symbols=None):
+    def fixture(self, *, approval=True, reply='COIN: SUIUSDT', followup=False, operation=OP, symbols=None,
+            action='SCREENING'):
         url = 'https://app.neurobro.ai/chat/' + 'a' * 32
         rendered = self.body['prompt'] + '\n\n' + self.body['marker']
         rows = [dict(role='user', text=rendered, attachments=[]),
@@ -150,7 +151,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
             response = dict(schema_version=1, ok=True, request_id=request_id,
                 conversation_id=request['conversation_id'], phase='SCREENING', reply_sha256=reply_sha,
                 authority='DIALOGUE_CONTROL_ONLY', trading_authority=False,
-                decision=dict(action='SCREENING', symbols=['SUIUSDT'] if symbols is None else symbols, question=''),
+                decision=dict(action=action, symbols=['SUIUSDT'] if symbols is None else symbols, question=''),
                 needs_followup=False, reason='DIALOGUE_DECISION')
             value = dict(schema_version=1, kind='NATIVE_SCREENING_MINI_REVIEW_V1', operation=operation,
                 request_sha256=self.request_hash, payload_sha256=digest(self.payload),
@@ -172,6 +173,164 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         return recovery.recover_received_screening(self.provider, envelope or self.envelope,
             catalog=self.catalog, max_age=180, now=now)
 
+    def assert_market_hold_replaced(self, *, stale=False, action='SCREENING'):
+        reply = 'COIN PILIHAN:\nSUIUSDT Perpetual - HOLD, tunggu struktur dan momentum yang jelas.'
+        self.envelope = self.fixture(reply=reply, action=action)
+        if stale:
+            self.created = NOW-1000
+            self.db.execute('UPDATE api_requests SET created=? WHERE operation=?', (self.created, OP))
+        finances = self.finances()
+        self.assertEqual(self.recover(), 'NOEXEC')
+        api = self.row('api_requests')
+        self.assertEqual((api['state'],api['failure_code'],api['output'],api['attempts'],api['created']),
+            (recovery.RECEIVED_HOLD_TERMINAL,recovery.RECEIVED_HOLD_REASON,None,1,self.created))
+        data = json.loads(self.row('robot_cycles')['data'])
+        self.assertEqual(data,{**self.data,'screen':9,'replacements':9,'round_symbols':[],
+            'seen':self.data['seen']+['SUIUSDT'],'replacement_due':1})
+        self.assertEqual(self.row('robot_jobs')['state'],'COMPLETE')
+        self.assertEqual(recovery.received_screening_replacement_due(self.db,CYCLE,data),1)
+        self.assertEqual(recovery.received_screening_replacement_due(self.db,CYCLE,{**data,'seen':self.data['seen']}),0)
+        self.assertEqual(self.finances(),finances)
+        self.assertEqual(self.row('research_browser_responses')['assistant_text'],reply)
+        snapshot=tuple(self.db.iterdump());self.assertEqual(self.recover(),'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()),snapshot)
+
+    def test_fresh_neurobro_hold_with_immutable_mini_screening_review_never_queues_held_coin(self):
+        self.assert_market_hold_replaced()
+
+    def test_stale_neurobro_hold_keeps_true_hold_cause_and_actual_mini_hold(self):
+        self.assert_market_hold_replaced(stale=True,action='HOLD')
+
+    def test_mini_hold_cannot_invent_clear_hold_or_replace_missing_approval(self):
+        finances=self.finances()
+        for reply,approval,action in (
+                ('COIN: SUIUSDT',True,'HOLD'),
+                ('COIN PILIHAN:\nSUIUSDT Perpetual - HOLD dan LONG',True,'HOLD'),
+                ('COIN PILIHAN:\nSUIUSDT Perpetual - HOLD, tunggu struktur.',False,'HOLD'),
+                ('Data chart belum terbaca.\nCOIN PILIHAN:\nSUIUSDT Perpetual - HOLD',True,'HOLD')):
+            with self.subTest(reply=reply,approval=approval),self.assertRaises(Review):
+                self.recover(self.fixture(reply=reply,approval=approval,action=action))
+            self.assertEqual(self.row('api_requests')['state'],'NEEDS_REVIEW')
+            self.assertIsNone(self.row('research_browser_responses'))
+            self.assertEqual(self.finances(),finances)
+
+    def test_actual_sc3_reply_retires_both_hold_selections_without_queue_or_replay(self):
+        operation=CYCLE+':screening:3:2';_,schema=screening_contract(2)
+        self.context=dict(self.context,requested_count=2)
+        self.body,serialized,self.request_hash=self.source.request_body(operation,
+            'Pilih dua coin pengganti.',schema,self.context)
+        self.payload={**self.body,'request_sha256':self.request_hash}
+        data={**self.data,'screen':2,'replacements':2}
+        self.db.execute('UPDATE robot_cycles SET data=? WHERE id=?',(json.dumps(data),CYCLE))
+        self.db.execute('UPDATE robot_jobs SET operation=? WHERE operation=?',(operation,OP))
+        self.db.execute('UPDATE api_requests SET operation=?,body_hash=? WHERE operation=?',
+            (operation,self.request_hash,OP))
+        self.db.execute('UPDATE research_browser_requests SET operation=?,request_sha256=?,marker=?,request_body=? WHERE operation=?',
+            (operation,self.request_hash,self.body['marker'],serialized,OP))
+        reply=(ROOT/'tests/fixtures/neurobro_sc3_named_hold_20261106.txt').read_text()
+        self.catalog.update(ARBUSDT={},ZECUSDT={})
+        envelope=self.fixture(operation=operation,reply=reply,symbols=['ARBUSDT','ZECUSDT'],action='HOLD')
+        self.assertEqual(self.recover(envelope),'NOEXEC')
+        cycle=dict(self.db.execute('SELECT * FROM robot_cycles WHERE id=?',(CYCLE,)).fetchone())
+        current=json.loads(cycle['data'])
+        self.assertEqual(current['queue'],[]);self.assertEqual(current['round_symbols'],[])
+        self.assertEqual(current['seen'][-2:],['ARBUSDT','ZECUSDT'])
+        self.assertEqual((current['screen'],current['replacements'],current['replacement_due']),(3,3,2))
+        self.assertEqual(recovery.received_screening_replacement_due(self.db,CYCLE,current),2)
+        self.assertEqual(self.db.execute('SELECT state FROM api_requests WHERE operation=?',(operation,)).fetchone()[0],
+            recovery.RECEIVED_HOLD_TERMINAL)
+
+    def native_hold_replacement_case(self):
+        reply='COIN PILIHAN:\nSUIUSDT Perpetual - HOLD, tunggu struktur yang jelas.'
+        self.envelope=self.fixture(reply=reply)
+        result,received,_=recovery.validate_received_screening(self.provider,self.envelope,self.payload,
+            self.created,catalog=self.catalog,max_age=180,now=NOW)
+        from worker.neuroapi import selections
+        self.provider._record_browser_response(OP,self.body,self.request_hash,result,self.body['output_schema'],
+            lambda value:selections(value,self.catalog,1),self.context,catalog=self.catalog,received_at=received,recovery=True)
+        self.db.execute("UPDATE robot_jobs SET state='PENDING' WHERE operation=?",(OP,))
+        self.db.execute("UPDATE robot_cycles SET state='ACTIVE' WHERE id=?",(CYCLE,))
+        self.assertTrue(recovery.completed_screening_market_hold(self.db,OP))
+        native_robot=native_module('worker._held_screen_native',ROOT/'vps_native/worker/robot.py')
+        robot=object.__new__(native_robot.Coordinator);robot.db=self.db;robot.neuro=self.provider
+        robot.allowed=lambda today:True;robot.market=SimpleNamespace(catalog=lambda:self.catalog,max_age=180)
+        robot.exposed_symbols=lambda account:set()
+        robot.store=SimpleNamespace(report=lambda status,account=None,reason=None,**kw:dict(bot_status=status,reason=reason,**kw))
+        with patch.object(native_robot.time,'time',return_value=NOW):
+            waiting=robot.screen(CYCLE,copy.deepcopy(self.data),1,{},DAY,False)
+        self.assertEqual(waiting['wait_reason'],'SCREENING_HOLD_RECONCILING')
+        self.assertEqual(json.loads(self.row('robot_cycles')['data']),self.data)
+        self.assertEqual(self.row('api_requests')['state'],'COMPLETE')
+        calls=[];self.provider.require_key=lambda:None
+        self.provider.headers=lambda:{}
+        def transport(method,url,headers,body,*,timeout):
+            calls.append(body['action']);return 200,{},self.envelope
+        self.provider.transport=transport
+        with patch.object(recovery.time,'time',return_value=NOW):
+            recovered=recovery.resume_uncertain_screening(robot,DAY,{})
+        self.assertEqual(recovered['wait_reason'],'SCREENING_HOLD_REPLACEMENT_PENDING')
+        self.assertEqual(calls,['SCREENING_RECEIVED_OBSERVE'])
+        self.assertEqual(self.row('api_requests')['state'],recovery.RECEIVED_HOLD_TERMINAL)
+        current=json.loads(self.row('robot_cycles')['data'])
+        self.assertEqual(native_robot.Coordinator.replacement_count(robot,current,[],CYCLE),1)
+        self.assertEqual(current['seen'][-1],'SUIUSDT');self.assertEqual(current['queue'],[])
+        # The next original coordinator tick follows the sealed replacement
+        # trigger. Its existing provider boundary is stopped before any Send.
+        robot.stopping=None;robot.account_factory=lambda:None
+        robot.settle_previous_research=lambda today,account:None
+        robot.execution_slots=lambda account,today:1
+        robot.store.settings=lambda:dict(robot_on=True)
+        robot.store.entries=lambda today:1
+        robot.store.report_account=lambda account:None
+        robot.store.results=lambda cycle:list(self.db.execute('SELECT * FROM robot_candidates WHERE cycle=?',(cycle,)))
+        asks=[]
+        from worker.neuroapi import ResearchPaused
+        def before_send(operation,prompt,schema,validate,context,**kwargs):
+            asks.append((operation,context));raise ResearchPaused('RESEARCH_PAUSED')
+        self.provider.ask=before_send
+        with patch.object(native_robot,'day',return_value=DAY), \
+                patch.object(native_robot,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None):
+            following=robot._tick()
+        self.assertEqual(following['wait_reason'],'NEUROBRO_RESEARCH_PAUSED')
+        self.assertEqual(asks[0][0],CYCLE+':screening:10:1')
+        self.assertEqual(asks[0][1]['requested_count'],1)
+        self.assertIn('SUIUSDT',asks[0][1]['excluded_symbols'])
+        self.assertEqual(self.row('api_requests')['attempts'],1)
+        return robot,native_robot,asks
+
+    def test_normal_native_screen_defers_accepted_hold_then_scheduler_recovers_without_unknown(self):
+        self.native_hold_replacement_case()
+
+    def test_native_hold_then_stale_replacement_keeps_search_running_with_sealed_proof(self):
+        robot,native_robot,asks=self.native_hold_replacement_case()
+        operation=CYCLE+':screening:10:1';self.context=asks[0][1]
+        self.body,serialized,self.request_hash=self.source.request_body(operation,
+            'Pilih satu coin pengganti lain.',self.body['output_schema'],self.context)
+        self.payload={**self.body,'request_sha256':self.request_hash};self.catalog['FILUSDT']={}
+        self.db.execute('INSERT INTO robot_jobs VALUES(?,?,?,?,?,?)',
+            (operation,CYCLE,'SCREENING',None,'NEEDS_REVIEW',None))
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            (operation,None,self.request_hash,'NEEDS_REVIEW',NOW-1000,1,None,'NEUROBRO_BROWSER_OUTCOME_UNKNOWN'))
+        self.db.execute('INSERT INTO research_browser_requests VALUES(?,?,?,?,?,?)',
+            (operation,self.source.BROWSER_PROVIDER,self.source.BROWSER_CONTRACT,self.request_hash,self.body['marker'],serialized))
+        replacement=self.fixture(operation=operation,reply='COIN: FILUSDT',symbols=['FILUSDT'])
+        self.assertEqual(self.recover(replacement),'NOEXEC')
+        current=json.loads(self.row('robot_cycles')['data'])
+        self.assertEqual((current['screen'],current['replacements'],current['replacement_due']),(10,10,1))
+        self.assertEqual(current['round_symbols'],[]);self.assertIn('SUIUSDT',current['seen'])
+        self.assertNotIn('FILUSDT',current['seen'])
+        self.assertEqual(recovery.received_screening_replacement_due(self.db,CYCLE,current),1)
+        with patch.object(native_robot,'day',return_value=DAY), \
+                patch.object(native_robot,'account_state',return_value={}), \
+                patch('agent.native_pending_review.review_then_advance',return_value=None):
+            following=robot._tick()
+        self.assertEqual(following['wait_reason'],'NEUROBRO_RESEARCH_PAUSED')
+        self.assertEqual(asks[-1][0],CYCLE+':screening:11:1')
+        self.assertIn('SUIUSDT',asks[-1][1]['excluded_symbols'])
+        self.assertEqual(self.db.execute('SELECT state FROM api_requests WHERE operation=?',(operation,)).fetchone()[0],
+            recovery.RECEIVED_TERMINAL)
+
     def test_fresh_round9_uses_original_saved_contract_and_native_cached_receipt(self):
         original = self.row('robot_cycles')['data']
         before_api = self.row('api_requests')
@@ -192,6 +351,14 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         snapshot = tuple(self.db.iterdump())
         self.assertEqual(self.recover(), 'RESUME_CACHED')
         self.assertEqual(tuple(self.db.iterdump()), snapshot)
+
+    def test_existing_selection_table_approval_and_cache_are_unchanged(self):
+        from agent.neurobro_reply import screening_market_hold
+        reply='COIN PILIHAN:\n| COIN | Alasan |\n| --- | --- |\n| SUIUSDT | Momentum jelas |'
+        self.assertFalse(screening_market_hold(reply,['SUIUSDT']))
+        self.assertEqual(self.recover(self.fixture(reply=reply)),'RESUME_CACHED')
+        self.assertEqual(json.loads(self.row('api_requests')['output']),{'symbols':['SUIUSDT']})
+        self.assertEqual(self.row('robot_jobs')['state'],'PENDING')
 
     def test_existing_coordinator_drains_fresh_round9_cache_without_provider_call(self):
         from worker import robot as robot_module
@@ -229,7 +396,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('robot_jobs')['state'], 'COMPLETE')
         self.assertEqual(self.row('robot_cycles')['state'], 'ACTIVE')
         self.assertEqual(json.loads(self.row('robot_cycles')['data']),
-            {**self.data, 'screen': 9, 'replacements': 9})
+            {**self.data, 'screen': 9, 'replacements': 9, 'replacement_due': 1})
         self.assertEqual(self.finances(), finances)
         self.assertEqual(self.row('research_browser_responses')['assistant_text'], 'COIN: SUIUSDT')
         snapshot = tuple(self.db.iterdump())
@@ -559,7 +726,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('research_browser_responses'), receipt)
         self.assertIsNone(self.row('api_requests')['output'])
         self.assertEqual(json.loads(self.row('robot_cycles')['data']),
-            {**self.data, 'screen': 9, 'replacements': 9})
+            {**self.data, 'screen': 9, 'replacements': 9, 'replacement_due': 1})
 
 
 if __name__ == '__main__':

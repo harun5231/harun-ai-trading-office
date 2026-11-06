@@ -248,7 +248,13 @@ def parse_screening_reply(reply):
             # the explicitly labelled selection table's coin column, never
             # pairs mentioned in its reasons, comparisons or earlier prose.
             end = labels[index + 1].start() if index + 1 < len(labels) else len(text)
-            selected = _screening_table(text[label.end():end])
+            section = text[label.end():end]
+            if re.search(r'\b(?:jika|apabila|bersyarat|alternatif)\b',
+                    text[:label.start()].strip().rsplit('\n\n', 1)[-1], re.I):
+                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+            first = section.strip().splitlines()[0] if section.strip() else ''
+            table = re.match(r'^(?:COIN|KOIN|SYMBOL|SIMBOL)(?:\t|[ \t]*\||$)', first.strip('|').strip(), re.I)
+            selected = _screening_table(section) if table else _screening_named_choices(section)
             if count is not None and len(selected) != int(count):
                 raise ReplyIncomplete('NEUROBRO_SCREENING_COUNT_MISMATCH')
             result.extend(selected)
@@ -267,12 +273,12 @@ def parse_screening_reply(reply):
     return {'symbols': result}
 
 
-def _screening_named_choices(block):
+def _screening_named_choices(block, *, details=False):
     """Read explicit pair identities from a labelled human selection list."""
     row = re.compile(r'^[ \t]*(?:\$?([A-Z0-9]{2,20})[ \t]*:[ \t]*)?'
         r'\$?(' + PAIR + r')(?:[ \t]+Perpetual)?'
         r'(?:[ \t]+[-—][ \t]+([^\n]+))?[ \t]*$', re.I)
-    selected = []
+    selected = []; reasons = []
     lines = block.splitlines()
     for index, line in enumerate(lines):
         if not line.strip():
@@ -302,9 +308,29 @@ def _screening_named_choices(block):
                 or attributed_symbols(reason) - {choice}):
             raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
         selected.append(choice)
+        reasons.append(reason)
     if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
         raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
-    return selected
+    return (selected, reasons) if details else selected
+
+
+def screening_market_hold(reply, selected):
+    """Only explicit final per-coin HOLD rows make every selected coin held."""
+    try:
+        text = clean(reply)
+        if _TECHNICAL.search(text) or parse_screening_reply(text)['symbols'] != selected:
+            return False
+        headings = list(re.finditer(r'^[ \t]*(?:(?:COIN|KOIN)(?:[ \t]+YANG[ \t]+DIPILIH)?|PILIHAN COIN|COIN PILIHAN)'
+            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$', text, re.I | re.M))
+        if not headings:
+            return False
+        choices, reasons = _screening_named_choices(text[headings[-1].end():], details=True)
+    except ReplyIncomplete:
+        return False
+    return choices == selected and all(type(reason) is str
+        and re.match(r'^HOLD\b', reason, re.I)
+        and not re.search(r'\b(?:LONG|SHORT|jika|apabila|bersyarat|alternatif|skenario)\b', reason, re.I)
+        for reason in reasons)
 
 
 def _screening_table(block):

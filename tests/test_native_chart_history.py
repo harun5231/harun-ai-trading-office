@@ -13,6 +13,8 @@ import inspect
 import json
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -442,6 +444,38 @@ class WebsiteChartHistoryTests(unittest.TestCase):
         before=self.manifest();self.freeze_db();self.website_install()
         with self.assertRaises(Review):self.ns['source_evidence'](self.db,'mixed-old-sources')
         self.assertEqual(self.manifest(),before);self.assertEqual(self.denied,[])
+
+
+class HistoricalFixtureImportIsolationTests(unittest.TestCase):
+    def test_scoped_native_fixture_keeps_transitive_validator_modules_coherent(self):
+        # Reproduce CI's import order in a fresh process. No other test bodies,
+        # provider, browser, account transport or production state are invoked.
+        script='''import agent,io,sys,unittest
+import worker.order_gateway
+previous={name:sys.modules.get(name)for name in ('worker.order_gateway','worker.research_provider')}
+import tests.test_confirmed_absent_intent
+assert all(sys.modules.get(name)is module for name,module in previous.items())
+from agent import native_chart_history as history,native_pending_protocol as pending
+assert sys.modules.get('agent.native_chart_history')is history
+assert sys.modules.get('agent.native_pending_protocol')is pending
+import tests.test_native_evaluation_protocol
+assert sys.modules.get('agent.native_chart_history')is history
+assert sys.modules.get('agent.native_pending_protocol')is pending
+assert history.install_source_protocol is pending.install_source_protocol
+suite=unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(name)for name in (
+    'tests.test_native_chart_history.NativeChartHistoryTests',
+    'tests.test_native_chart_history.WebsiteChartHistoryTests'))
+stream=io.StringIO();result=unittest.TextTestRunner(stream=stream,verbosity=0).run(suite)
+assert result.wasSuccessful(),stream.getvalue()
+assert result.testsRun==18
+print('HISTORY18_IMPORT_IDENTITIES_AND_EXISTING_GUARDS_PRESERVED')
+'''
+        root=Path(__file__).resolve().parents[1]
+        launcher='import sys;sys.path.insert(0,sys.argv[1]);exec(compile(sys.argv[2],"<history-import-order>","exec"))'
+        result=subprocess.run([sys.executable,'-I','-c',launcher,str(root),script],
+            cwd=root,capture_output=True,text=True,timeout=20)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(result.stdout.strip(),'HISTORY18_IMPORT_IDENTITIES_AND_EXISTING_GUARDS_PRESERVED')
 
 
 if __name__ == '__main__':unittest.main()

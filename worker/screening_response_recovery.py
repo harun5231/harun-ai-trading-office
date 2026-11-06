@@ -274,6 +274,8 @@ def recover_screening_response(provider, proof, mini_done, *, catalog, max_age, 
 RECEIVED_KIND = 'NATIVE_RECEIVED_SCREENING_OBSERVATION_V1'
 RECEIVED_TERMINAL = 'RECEIVED_STALE_NOT_EXECUTED'
 RECEIVED_REASON = 'SCREENING_RESPONSE_RECEIVED_STALE'
+RECEIVED_HOLD_TERMINAL = 'RECEIVED_HOLD_NOT_EXECUTED'
+RECEIVED_HOLD_REASON = 'SCREENING_RESPONSE_RECEIVED_HOLD'
 RECEIVED_NATIVE_SOURCE = '30ea13cd51706b1db65620cdfb5f8db6dec1c9b3b8a20c9b7ca1d6c9db07f72e'
 RECEIVED_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_response_recoveries(
  operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
@@ -377,7 +379,7 @@ def _screening_review(proof, payload, rows):
             and response['reason'] == 'DIALOGUE_DECISION' and type(response['needs_followup']) is bool)
         decision = response['decision']
         _require(type(decision) is dict and set(decision) == {'action', 'symbols', 'question'}
-            and decision['action'] in ('SCREENING', 'CLARIFY') and type(decision['symbols']) is list
+            and decision['action'] in ('SCREENING', 'HOLD', 'CLARIFY') and type(decision['symbols']) is list
             and type(decision['question']) is str and len(decision['question']) <= 1600
             and response['needs_followup'] is (decision['action'] == 'CLARIFY')
             and (bool(decision['question'].strip()) if response['needs_followup'] else decision['question'] == '')
@@ -479,8 +481,13 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
     review = _screening_review(proof, payload, rows)
     if require_approval:
         _require(review is not None, 'SCREENING_MINI_APPROVAL_NOT_RETAINED')
-        _require(review['decision'] == {'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}
-            and review['needs_followup'] is False, 'NEUROBRO_DECISION_CONFLICT')
+        decision = review['decision']
+        from agent.neurobro_reply import screening_market_hold
+        held = screening_market_hold(rows[-1]['text'], output['symbols'])
+        _require(review['needs_followup'] is False and decision['question'] == ''
+            and (decision == {'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}
+                or decision['action'] == 'HOLD' and held
+                and decision['symbols'] in ([], output['symbols'])), 'NEUROBRO_DECISION_CONFLICT')
     result = {key: payload[key] for key in ('operation', 'marker', 'request_sha256')}
     result.update(output=output, assistant_text=rows[-1]['text'], chart_evidence=[],
         response_id='dom-' + _sha(room['url'] + '\n' + payload['marker'] + '\n' + rows[-1]['text']))
@@ -497,6 +504,28 @@ def _native_screening_receipt(provider, operation, result, received, cached):
         and receipt['chart_evidence'] == response_output_text([]) and receipt['received_at'] == received
         and receipt['chart_max_age'] == provider.chart_max_age)
     return receipt
+
+
+def completed_screening_market_hold(db, operation):
+    """Recognize an accepted all-HOLD response for NO-SEND review, never execute it."""
+    from agent.neurobro_reply import parse_reply_for_payload, screening_market_hold
+    try:
+        body, request_hash, match = stored_screening_request(db, operation)
+        api = _row(db, 'api_requests', 'operation', operation)
+        receipt = _row(db, 'research_browser_responses', 'operation', operation)
+        if (api['state'] != 'COMPLETE' or api['attempts'] != 1 or api['idempotency'] is not None
+                or api['failure_code'] is not None or receipt is None
+                or receipt['assistant_sha256'] != _sha(receipt['assistant_text'])):
+            return False
+        output = parse_reply_for_payload(receipt['assistant_text'], body)
+        if len(output['symbols']) != int(match[4]):
+            return False
+        encoded = json.dumps({'symbols': output['symbols']})
+        return (api['body_hash'] == request_hash and api['output'] == encoded
+            and receipt['output_sha256'] == _sha(encoded)
+            and screening_market_hold(receipt['assistant_text'], output['symbols']))
+    except Exception:
+        return False
 
 
 def recover_received_screening(provider, envelope, *, catalog, max_age, now=None, permitted=lambda: True):
@@ -519,10 +548,11 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
         envelope = json.loads(journal['proof']); before = json.loads(journal['preimage'])
     api, job, request, old_receipt, cycle, settings = (before[name] for name in (
         'api_requests', 'robot_jobs', 'research_browser_requests', 'research_browser_responses', 'robot_cycles', 'robot_settings'))
+    accepted_hold = api is not None and completed_screening_market_hold(db, operation)
     _require(all(value is not None for value in (api, job, request, cycle, settings))
         and settings['enabled'] == 1 and type(api['attempts']) is int and api['attempts'] == 1
-        and api['idempotency'] is None and api['output'] is None
-        and api['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and api['idempotency'] is None and (api['output'] is None or accepted_hold)
+        and (api['state'] in ('PENDING', 'NEEDS_REVIEW') or accepted_hold)
         and api['failure_code'] in (None, 'NEUROBRO_BROWSER_OUTCOME_UNKNOWN', 'LOCAL_PROCESSING_FAILED')
         and job['cycle'] == cycle_id and job['kind'] == 'SCREENING' and job['symbol'] is None and job['risk_target'] is None
         and job['state'] in ('PENDING', 'NEEDS_REVIEW') and cycle['state'] in ('ACTIVE', 'NEEDS_REVIEW')
@@ -536,6 +566,9 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
     result, received, stale = validate_received_screening(provider, envelope, payload, api['created'],
         catalog=catalog, max_age=max_age, now=current, retained=journal is not None)
     cached = canonical_output(result['output'], body['output_schema'], catalog)
+    from agent.neurobro_reply import screening_market_hold
+    held = screening_market_hold(result['assistant_text'], result['output']['symbols'])
+    _require(not accepted_hold or held)
     if old_receipt is not None:
         # The native recorder may already have retained the exact raw response
         # before its final parsing/COMPLETE commit. Keep that real receipt clock.
@@ -549,12 +582,13 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
             (operation, request_hash, _sha(raw), raw, _wire(before), 'PREPARED', current, current))
     _require(permitted() is True, 'RESEARCH_PAUSED')
     native_api = _row(db, 'api_requests', 'operation', operation)
-    if native_api == api:
+    if native_api == api and not accepted_hold:
         provider._record_browser_response(operation, body, request_hash, result, body['output_schema'],
             lambda value: selections(value, catalog, count), body['context'], catalog=catalog,
             received_at=received, recovery=True)
     else:
-        _require(journal is not None and native_api == {**api, 'state': 'COMPLETE', 'output': cached, 'failure_code': None})
+        _require((journal is not None or accepted_hold)
+            and native_api == {**api, 'state': 'COMPLETE', 'output': cached, 'failure_code': None})
     receipt = _native_screening_receipt(provider, operation, result, received, cached)
     db.execute('BEGIN IMMEDIATE')
     try:
@@ -563,14 +597,17 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
         _require(all(after[name] == before[name] for name in ('research_browser_requests', 'robot_jobs', 'robot_cycles', 'robot_settings'))
             and after['research_browser_responses'] == receipt
             and after['api_requests'] == {**api, 'state': 'COMPLETE', 'output': cached, 'failure_code': None})
-        if stale:
+        if stale or held:
             data['screen'] = index
+            data['replacement_due'] = count
             if index:
                 data['replacements'] += 1
-            else:
-                data['replacement_due'] = count
+            if held:
+                data['seen'] = list(dict.fromkeys(data['seen'] + result['output']['symbols']))
+                data['queue'] = []; data['round_symbols'] = []; data['replacement_due'] = count
             _require(db.execute('UPDATE api_requests SET state=?,output=NULL,failure_code=? WHERE operation=? AND state=\'COMPLETE\' AND output=?',
-                (RECEIVED_TERMINAL, RECEIVED_REASON, operation, cached)).rowcount == 1)
+                (RECEIVED_HOLD_TERMINAL if held else RECEIVED_TERMINAL,
+                 RECEIVED_HOLD_REASON if held else RECEIVED_REASON, operation, cached)).rowcount == 1)
             _require(db.execute('UPDATE robot_jobs SET state=\'COMPLETE\' WHERE operation=? AND state=?', (operation, job['state'])).rowcount == 1)
             _require(db.execute('UPDATE robot_cycles SET state=\'ACTIVE\',data=? WHERE id=? AND state=? AND data=?',
                 (json.dumps(data), cycle_id, cycle['state'], cycle['data'])).rowcount == 1)
@@ -590,13 +627,15 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
 
 
 def received_screening_replacement_due(db, cycle_id, data):
-    """Only a proof-backed initial stale receipt can request another round."""
+    """Only a sealed stale or market-HOLD screening receipt requests a new round."""
     due = data.get('replacement_due')
-    if type(due) is not int or due not in (1, 2) or data.get('screen') != 0 or data.get('queue') != []:
+    index = data.get('screen')
+    if (type(due) is not int or due not in (1, 2) or type(index) is not int
+            or index < 0 or data.get('queue') != []):
         return 0
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_response_recoveries'").fetchone():
         return 0
-    operation = cycle_id + ':screening:0:' + str(due)
+    operation = cycle_id + ':screening:' + str(index) + ':' + str(due)
     try:
         journal = _row(db, 'screening_response_recoveries', 'operation', operation)
         if journal is None or journal['phase'] != 'NOEXEC' or journal['proof_sha256'] != _sha(journal['proof']):
@@ -607,11 +646,27 @@ def received_screening_replacement_due(db, cycle_id, data):
         cycle = _row(db, 'robot_cycles', 'id', cycle_id); receipt = _row(db, 'research_browser_responses', 'operation', operation)
         proof = envelope['observation']; final = proof['rows'][-1]
         original_data = json.loads(before['robot_cycles']['data'])
-        expected_data = {**original_data, 'screen': 0, 'replacement_due': due}
+        held = api['state'] == RECEIVED_HOLD_TERMINAL and api['failure_code'] == RECEIVED_HOLD_REASON
+        expected_data = {**original_data, 'screen': index, 'replacement_due': due}
+        if index:
+            expected_data['replacements'] += 1
+        if held:
+            from agent.neurobro_reply import parse_reply_for_payload, screening_market_hold
+            output = parse_reply_for_payload(final['text'], body)
+            review = _screening_review(proof, {**body, 'request_sha256': request_hash}, proof['rows'])
+            _require(screening_market_hold(final['text'], output['symbols']) and review is not None
+                and review['needs_followup'] is False and review['decision']['question'] == ''
+                and (review['decision'] == {'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}
+                    or review['decision']['action'] == 'HOLD'
+                    and review['decision']['symbols'] in ([], output['symbols'])))
+            expected_data.update(seen=list(dict.fromkeys(original_data['seen'] + output['symbols'])),
+                round_symbols=[])
         _require(journal['request_sha256'] == request_hash and envelope['request_sha256'] == request_hash
             and envelope['observation_sha256'] == _sha(_wire(proof)) and proof['payload_sha256'] == _digest({**body, 'request_sha256': request_hash})
             and data == expected_data and json.loads(cycle['data']) == data and cycle['state'] == 'ACTIVE'
-            and api == {**before['api_requests'], 'state': RECEIVED_TERMINAL, 'output': None, 'failure_code': RECEIVED_REASON}
+            and api == {**before['api_requests'],
+                'state': RECEIVED_HOLD_TERMINAL if held else RECEIVED_TERMINAL, 'output': None,
+                'failure_code': RECEIVED_HOLD_REASON if held else RECEIVED_REASON}
             and job == {**before['robot_jobs'], 'state': 'COMPLETE'} and job['cycle'] == cycle_id
             and receipt is not None and receipt['assistant_text'] == final['text']
             and receipt['assistant_sha256'] == _sha(final['text'])
@@ -632,7 +687,13 @@ def resume_uncertain_screening(coordinator, today, account):
         WHERE j.kind='SCREENING' AND j.state IN ('PENDING','NEEDS_REVIEW') AND a.attempts=1
         AND a.output IS NULL AND ((a.state='NEEDS_REVIEW' AND a.failure_code IN
         ('NEUROBRO_BROWSER_OUTCOME_UNKNOWN','LOCAL_PROCESSING_FAILED')) OR a.state='PENDING') ORDER BY a.created LIMIT 2'''))
-    if coordinator.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_response_recoveries'").fetchone():
+    accepted = list(coordinator.db.execute('''SELECT j.* FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation
+        WHERE j.kind='SCREENING' AND j.state='PENDING' AND a.state='COMPLETE'
+        AND a.attempts=1 ORDER BY a.created LIMIT 2'''))
+    jobs.extend(job for job in accepted if completed_screening_market_hold(coordinator.db, job['operation'])
+        and job['operation'] not in {item['operation'] for item in jobs})
+    has_recoveries = coordinator.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_response_recoveries'").fetchone()
+    if has_recoveries:
         prepared = list(coordinator.db.execute('''SELECT j.* FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation
             JOIN screening_response_recoveries r ON r.operation=j.operation WHERE j.kind='SCREENING'
             AND j.state IN ('PENDING','NEEDS_REVIEW') AND a.state='COMPLETE' AND a.attempts=1
@@ -647,9 +708,13 @@ def resume_uncertain_screening(coordinator, today, account):
         api = _row(coordinator.db, 'api_requests', 'operation', operation)
         if api['state'] == 'COMPLETE':
             coordinator.neuro.require_key()
-            journal = _row(coordinator.db, 'screening_response_recoveries', 'operation', operation)
-            _require(journal is not None and journal['phase'] == 'PREPARED' and journal['proof_sha256'] == _sha(journal['proof']))
-            envelope = json.loads(journal['proof'])
+            journal = _row(coordinator.db, 'screening_response_recoveries', 'operation', operation) if has_recoveries else None
+            if journal is not None:
+                _require(journal['phase'] == 'PREPARED' and journal['proof_sha256'] == _sha(journal['proof']))
+                envelope = json.loads(journal['proof'])
+            else:
+                _require(completed_screening_market_hold(coordinator.db, operation))
+                envelope = observe(operation)
         else:
             envelope = observe(operation)
         try:
@@ -675,5 +740,7 @@ def resume_uncertain_screening(coordinator, today, account):
             'SCREENING_RESPONSE_OBSERVATION_PENDING', 'SCREENING_REVIEW_OUTCOME_UNKNOWN', 'SCREENING_REVIEW_INCOMPLETE'}
         return coordinator.store.report('WAITING', account,
             wait_reason=reason if reason in safe else 'SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
+    held = _row(coordinator.db, 'api_requests', 'operation', operation)['state'] == RECEIVED_HOLD_TERMINAL
     return coordinator.store.report('WAITING', account, wait_reason=(
+        'SCREENING_HOLD_REPLACEMENT_PENDING' if held else
         'SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING' if phase == 'NOEXEC' else 'SCREENING_RECEIVED_RESUME_PENDING'))
