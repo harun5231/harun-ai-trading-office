@@ -230,7 +230,7 @@ def _save_receipt(root, payload, value):
         os.close(directory)
 
 
-def _room_record(root, day):
+def _room_record(root, day, *, allow_sent=False):
     """Existing journal only: RO SQLite cannot initialize or repair the room."""
     directory = _directory(root); fd = None; db = None
     try:
@@ -244,15 +244,20 @@ def _room_record(root, day):
         db.execute('PRAGMA query_only=ON'); db.execute('BEGIN')
         db.row_factory = sqlite3.Row
         row = db.execute('SELECT * FROM daily_rooms WHERE day=?', (day,)).fetchone()
-        need(row is not None and row['state'] == 'BOUND')
+        need(row is not None and row['state'] in (('BOUND', 'SENT') if allow_sent else ('BOUND',)))
         named = os.stat(JOURNAL_NAME, dir_fd=directory, follow_symlinks=False)
         need((before.st_dev, before.st_ino) == (named.st_dev, named.st_ino))
         binding = json.loads(row['binding'], object_pairs_hook=pairs)
-        return dict(day=row['day'], room_id=row['room_id'], url=row['url'],
+        result = dict(day=row['day'], room_id=row['room_id'], url=row['url'],
                     updated_at=row['updated_at'], anchors=json.loads(row['anchors']),
                     first_prompt_sha256=binding['first_prompt_sha256'], marker=binding['marker'],
                     history_titles=binding.get('history_titles', []),
                     identifier_reconciliation=binding.get('identifier_reconciliation'))
+        if allow_sent:
+            # Private preimage for the observer's separately verified CAS.
+            # Reading SENT is not permission to send or claim it completed.
+            result['_journal_snapshot'] = dict(row)
+        return result
     finally:
         if db is not None: db.close()
         if fd is not None: os.close(fd)

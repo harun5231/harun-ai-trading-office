@@ -1,9 +1,10 @@
 """Observe an already sent analysis on the existing native page thread.
 
-This bounded incident reader never sends, uploads, calls Mini, completes a
-research request, or writes a trading/daily-room journal. Ordinary history may
-reopen only the existing BOUND room. All current text is retained privately
-before a compact result leaves the actor; no old HOLD becomes a new decision.
+This bounded incident reader never sends, uploads, calls Mini, or completes a
+research request. It can seal an uncertain SENT room only from its actual
+complete stable native reply and exact prior journal prefix. All current text
+is retained privately before a compact result leaves the actor; no old HOLD
+becomes a new decision.
 """
 from __future__ import annotations
 
@@ -347,6 +348,111 @@ def _project_operation(capture):
     return result
 
 
+def _seal_sent_room(actor, room, raw, payload, capture, snapshot, *, screening):
+    """Append one observed completed turn, never infer whether Send happened."""
+    from .native_daily_room import canonical as room_canonical
+    from .native_screening_recovery import _room_record
+    from .native_analysis_material import validate_prepared
+    record=capture['room'];rows=capture['rows'];scope=capture['operation_scope']
+    anchors=record['anchors'];offset=scope['latest_user'];cached=capture['rendered_prompt_receipt']
+    _gate(actor)
+    capture['status']=raw.status(maintenance_allowed=lambda:False)
+    capture['session_observation']=copy.deepcopy(raw.session_observation())
+    need(capture['status']=='CONNECTED','RECEIVED_ANALYSIS_BROWSER_NOT_READY')
+    need(snapshot['state']=='SENT' and capture['stable_snapshot_reads']==4
+        and scope['verified'] is True and scope['reply_complete'] is True
+        and capture['room_witness']['same_loaded_room_verified'] is True
+        and type(anchors)is list and len(anchors)%2==0
+        and all(type(anchor)is str and re.fullmatch('[a-f0-9]{64}',anchor)for anchor in anchors)
+        and type(offset)is int and offset>=0 and len(anchors)in(offset,offset+2)
+        and len(rows)==offset+2
+        and rows[offset]['role']=='user' and rows[-1]['role']=='assistant' and rows[-1]['complete']is True
+        and type(rows[-1].get('text'))is str and bool(rows[-1]['text'])
+        and type(rows[-1].get('id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',rows[-1]['id'])
+        and raw.page.url==record['url']==capture['page_url']
+        and room.full_turns()==rows,'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    # SENT can retain the current user and a last assistant snapshot taken
+    # before its final text settled. Preserve every earlier identity, including
+    # that user; only this operation's last assistant may finish changing.
+    prefix_count=offset+1 if len(anchors)==offset+2 else offset
+    need(identities(rows[:prefix_count])==anchors[:prefix_count],
+        'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    start=scope['initial_user']
+    need(cached['operation']==payload['operation'] and cached['payload_sha256']==native_digest(payload)
+        and cached['rendered_sha256']==text_sha(cached['rendered_prompt'])==text_sha(rows[start]['text'])
+        and cached['rendered_prompt'].count(payload['marker'])==1
+        and sum(row.get('role')=='user' and row.get('text')==cached['rendered_prompt'] for row in rows)==1,
+        'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    if not anchors:
+        need(record['first_prompt_sha256']==text_sha(cached['rendered_prompt'].replace('\r\n','\n').strip())
+            and record['marker']==payload['marker'],'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    if screening:
+        need(rows[offset].get('attachments',[])==[] and capture['file_tiles']==[],
+            'RECEIVED_ANALYSIS_SENT_ROOM_UNVERIFIED')
+    else:
+        materials=[]
+        if offset==start:
+            for entry in capture.get('prepared_materials',[]):
+                value=entry['value'];validate_prepared(value,payload)
+                if value['rendered_prompt_sha256']==text_sha(rows[offset]['text']) and value['original_request_matches_material']is True:
+                    materials.append(value['attachment_names'])
+        else:
+            for name,entry in capture['receipt_files'].items():
+                value=entry['value']
+                if (name.endswith('.intent.json') and value.get('kind')=='NATIVE_200_CHART_FOLLOWUP'
+                        and value.get('original_payload_sha256')==native_digest(payload)
+                        and value.get('initial_prompt_sha256')==text_sha(rows[start]['text'])
+                        and value.get('followup_prompt_sha256')==text_sha(rows[offset]['text'])
+                        and value.get('followup_sequence',1)==len(scope['user_rows'])-1):
+                    materials.append(value['followup_attachment_names'])
+        need(len(materials)==1,'RECEIVED_ANALYSIS_SENT_MATERIAL_UNVERIFIED')
+        names=materials[0]
+        need(type(names)is list and len(names)==4 and len(set(names))==4,
+            'RECEIVED_ANALYSIS_SENT_MATERIAL_UNVERIFIED')
+        tiles=[tile for tile in capture['file_tiles'] if tile['row']==offset]
+        need(len(tiles)==1 and tiles[0]['prompt_sha256']==text_sha(rows[offset]['text']),
+            'RECEIVED_ANALYSIS_SENT_MATERIAL_UNVERIFIED')
+        tile=tiles[0]
+        witnesses=[group for group in tile['file_tile_witnesses'] if group['names']==names]
+        need(len(witnesses)==1 and len(witnesses[0]['witness'])==4
+            and all(item.get('name')==name and item.get('ready')is True and item.get('matches')==1
+                for item,name in zip(witnesses[0]['witness'],names))
+            and len(tile['images'])==2 and {image['alt']for image in tile['images']}==set(names[:2])
+            and all(image['visible']is True and image['decoded'].get('complete')is True
+                and type(image['decoded'].get('width'))is int and image['decoded']['width']>0
+                and type(image['decoded'].get('height'))is int and image['decoded']['height']>0
+                for image in tile['images']),'RECEIVED_ANALYSIS_SENT_MATERIAL_UNVERIFIED')
+    updated=room.wall_clock();bound_anchors=room_canonical(identities(rows))
+    capture['room_recovery']=dict(kind='NATIVE_SENT_ROOM_COMPLETION_SEAL_V1',state='PREPARED',
+        operation=payload['operation'],request_sha256=payload['request_sha256'],
+        prior_record=copy.deepcopy(snapshot),preserved_prefix_count=prefix_count,
+        prior_assistant_anchor=anchors[-1]if len(anchors)==offset+2 else None,
+        completed_anchors_sha256=text_sha(bound_anchors),updated_at=updated)
+    capture['stage']='SENT_ROOM_SEAL_PREPARED';_save(room.store.root,capture)
+    with room.store.open()as db:
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            current=db.execute('SELECT * FROM daily_rooms WHERE day=?',(record['day'],)).fetchone()
+            need(current is not None and dict(zip(('day','room_id','state','url','anchors','binding','updated_at'),current))==snapshot,
+                'RECEIVED_ANALYSIS_SENT_ROOM_CHANGED')
+            _gate(actor)
+            capture['status']=raw.status(maintenance_allowed=lambda:False)
+            capture['session_observation']=copy.deepcopy(raw.session_observation())
+            need(capture['status']=='CONNECTED','RECEIVED_ANALYSIS_BROWSER_NOT_READY')
+            need(raw.page.url==record['url'] and room.full_turns()==rows,
+                'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+            changed=db.execute('UPDATE daily_rooms SET state=\'BOUND\',anchors=?,updated_at=? '
+                'WHERE day=? AND room_id=? AND state=\'SENT\' AND url IS ? AND anchors=? AND binding=? AND updated_at=?',
+                (bound_anchors,updated,snapshot['day'],snapshot['room_id'],snapshot['url'],snapshot['anchors'],
+                    snapshot['binding'],snapshot['updated_at'])).rowcount
+            need(changed==1,'RECEIVED_ANALYSIS_SENT_ROOM_CHANGED')
+            db.execute('COMMIT')
+        except BaseException:
+            db.execute('ROLLBACK');raise
+    capture['room']=_room_record(room.store.root,record['day'])
+    capture['room_recovery']['state']='SEALED'
+
+
 def observe(actor, delegated, value):
     payload = validate(value); _gate(actor)
     screening = value['action']=='SCREENING_RECEIVED_OBSERVE'
@@ -369,7 +475,10 @@ def observe(actor, delegated, value):
             raw.operation_deadline = raw.clock() + 25
             raw._visible = room.original_visible
             _gate(actor)
-            record = _room_record(room.store.root, operation[:10]); capture['room'] = record
+            record = _room_record(room.store.root, operation[:10],allow_sent=generic)
+            snapshot=record.pop('_journal_snapshot',None)
+            capture['room'] = record
+            if snapshot is not None:capture['room_initial_state']=snapshot['state']
             capture['stage'] = 'CURRENT_NATIVE_STATUS'
             # Native maintenance helper cannot click when its predicate is false.
             capture['status'] = raw.status(maintenance_allowed=lambda: False)
@@ -392,7 +501,7 @@ def observe(actor, delegated, value):
             capture['stage'] = 'INITIAL_NATIVE_ROWS'
             rows = room.full_turns(); capture['rows'] = rows
             _save(room.store.root, capture)
-            if not rows and capture['status'] == 'CONNECTED':
+            if not rows and capture['status'] == 'CONNECTED' and (snapshot is None or snapshot['state']=='BOUND'):
                 capture['history_restore_attempted'] = True; capture['stage'] = 'BOUND_ROOM_RESTORE'
                 binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
                 if record['identifier_reconciliation'] is not None:
@@ -429,6 +538,9 @@ def observe(actor, delegated, value):
                     need(room.full_turns() == rows and raw.page.url == capture['page_url'],
                          'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
                     capture['stable_snapshot_reads'] += 1
+                if (snapshot['state']=='SENT' and capture['status']=='CONNECTED'
+                        and scope.get('verified')is True and scope.get('reply_complete')is True):
+                    _seal_sent_room(actor,room,raw,payload,capture,snapshot,screening=screening)
             _gate(actor); capture['stage'] = 'OBSERVED_WITHOUT_COMPLETION'
         except BaseException as error:
             reason = str(error)
