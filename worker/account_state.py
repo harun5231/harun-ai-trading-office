@@ -4,7 +4,9 @@ from itertools import count
 from uuid import uuid4
 import re
 import json
+import logging
 from .core import D,Review,now
+from .binance_private import BinanceCheckError,CODES
 from .neuroapi import SCREEN_SCHEMA,SCREEN_ONE_SCHEMA
 from .prompts import SCREENING
 
@@ -93,15 +95,37 @@ def open_entry_symbols(rows,*,algo=False,allow_hedge=False):
     return sorted(symbols)
 
 def account_state(client,store,today):
-    config=client.check()
-    if config.get('status')!='BINANCE_CONNECTED' or config.get('position_mode')!='ONE_WAY' or config.get('multi_assets_margin') is not False or config.get('can_trade') is not True:
-        raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
-    client.sync_time()
-    # Read potential entries first: a fill between these GETs appears in the
-    # final positions snapshot and the union still reserves that symbol once.
-    pending_symbols=sorted(set(open_entry_symbols(client.signed_get('/fapi/v1/openOrders')))|
-        set(open_entry_symbols(client.signed_get('/fapi/v1/openAlgoOrders'),algo=True)))
-    value=client.signed_get('/fapi/v3/account')
+    # Office already resynchronizes a stale signing clock once for a GET.
+    # Import lazily because its account projection imports this module too.
+    from .binance_office import _read
+    phase='CONFIG'
+    try:
+        try:config=client.check()
+        except BinanceCheckError as error:
+            if str(error)!='BINANCE_CLOCK_ERROR':raise
+            # check() is read-only and starts with sync_time() itself. Retry
+            # only this configuration read, never this function or its ledger.
+            config=client.check()
+        if config.get('status')!='BINANCE_CONNECTED' or config.get('position_mode')!='ONE_WAY' or config.get('multi_assets_margin') is not False or config.get('can_trade') is not True:
+            raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
+        phase='TIME_SYNC'
+        try:client.sync_time()
+        except BinanceCheckError as error:
+            if str(error)!='BINANCE_CLOCK_ERROR':raise
+            client.sync_time()
+        # Read potential entries first: a fill between these GETs appears in the
+        # final positions snapshot and the union still reserves that symbol once.
+        phase='OPEN_ORDERS'
+        pending=set(open_entry_symbols(_read(client,'/fapi/v1/openOrders')))
+        phase='OPEN_ALGO_ORDERS'
+        pending_symbols=sorted(pending|set(open_entry_symbols(_read(client,'/fapi/v1/openAlgoOrders'),algo=True)))
+        phase='ACCOUNT'
+        value=_read(client,'/fapi/v3/account')
+    except Exception as error:
+        code=str(error) if isinstance(error,BinanceCheckError) and str(error) in CODES else 'ROBOT_ACCOUNT_UNAVAILABLE'
+        # Fixed fields only: never log provider text, URLs or credentials.
+        logging.getLogger(__name__).warning('ROBOT_ACCOUNT_READ_FAILED phase=%s code=%s',phase,code)
+        raise
     rows=value.get('positions') if isinstance(value,dict) else None
     if not isinstance(rows,list):raise Review('ROBOT_ACCOUNT_UNAVAILABLE')
     running=set()
