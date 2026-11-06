@@ -1,0 +1,15 @@
+{
+  "operation": "2026-11-07:robot-v9:0:screening:0:1",
+  "request_sha256": "c9a32e285eb1dd60bfc791d5fbec26a16fcd6fc99bc541580f82d32f39b3c53b",
+  "reply": "PEPE lagi paling \"rate tinggi\" buat profit di Binance futures sekarang - momentum-nya bersih, bukan cuma pump doang. Selama 24 jam harganya nambah +9.6% ($0.00000512), volume nembus ratusan juta dolar, open interest ikut naik 13-18%, dan yang bikin menarik: RSI masih 57 (belum overbought) plus muncul pola Three White Soldiers dan Bullish Engulfing. Artinya ini masih lanjutan bullish, bukan puncak yang udah overheat.\n\nPENTINGNYA PULLBACK, BUKAN KEJAR HARGA\n\nUdah naik 9.6% berarti kamu nggak boleh ngejar harga sekarang. Setup scalping-nya justru masuk saat retrace ke area support $0.00000500, stop di bawah $0.00000465, target pertama $0.00000535 dan kedua $0.00000570. Ini selaras gaya day-trade kamu yang masuk di pullback - rating confidence-nya 6/10 dengan risk-reward bersih setelah fee sekitar 1.24x–1.48x tergantung alokasi TP.\n\nKENAPA BUKAN COIN LAIN\n\n$INJ (+4.5%, OI naik 10%) menarik tapi crowd-nya udah keburu ramai long (long/short 1.62) - itu sinyal contrarian. $WIF volume-nya masih tipis untuk scalping clean, dan $LINK momentumnya jauh lebih pelan (+2%). PEPE menang karena kombinasi volume besar + momentum + RSI sehat.\n\n⚖️ Neurobro cuma alat riset dan nggak kasih saran finansial! Tim kami terus upgrade akurasi, tapi tetap bisa salah - apa yang kamu trading dan risiko yang kamu ambil sepenuhnya keputusanmu.\n\nCOIN: PEPEUSDT Perpetual - alasan singkat: momentum +9.6% dengan volume dan OI naik, RSI belum jenuh (57), konfirmasi bullish continuation - paling rated untuk scalping profit hari ini.",
+  "reply_sha256": "55eeb2581b6daa1223618db1845c90a4454649678656746c00c56d86a3b48429",
+  "response_id": "dom-e4e5ec8f7449efb0c134b05445a60d493d3945ebf74cf9be3c2c0df1e67378f6",
+  "symbols": [
+    "PEPEUSDT"
+  ],
+  "catalog_symbols": [
+    "1000PEPEUSDT"
+  ],
+  "catalog_sha256": "eb556681d5834f5d9b5856126ddabf148797d371fa8979ab5aa7e545c447699e",
+  "evidence_job": "42260260058-1"
+}
