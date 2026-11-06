@@ -195,6 +195,25 @@ def parse_screening_reply(reply):
     final = list(_FINAL.finditer(text))
     if final:
         text = text[final[-1].end():].strip()
+    named = list(re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH'
+        r'[ \t]*[:=][ \t]*$', text, re.I | re.M))
+    if named:
+        if len(named) != 1:
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        heading = named[0]
+        selected = _screening_named_choices(text[heading.end():])
+        prefix = text[:heading.start()].strip()
+        # A separate explicit selection cannot silently disagree with this
+        # summary. Bare tickers in an earlier market table supply no identity.
+        if re.search(r'^[ \t]*(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)'
+                r'(?:[ \t]*\(([12])\))?[ \t]*[:=]', prefix, re.I | re.M):
+            if parse_screening_reply(prefix)['symbols'] != selected:
+                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        # A condition immediately introducing the list is not a final choice.
+        if re.search(r'\b(?:jika|apabila|bersyarat|alternatif)\b',
+                prefix.rsplit('\n\n', 1)[-1], re.I):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        return {'symbols': selected}
     labels = list(re.finditer(r'^[ \t]*(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)'
         r'(?:[ \t]*\(([12])\))?[ \t]*[:=][ \t]*([^\n]*)$', text, re.I | re.M))
     if not labels:
@@ -224,6 +243,46 @@ def parse_screening_reply(reply):
     if not 1 <= len(result) <= 2 or len(result) != len(set(result)):
         raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
     return {'symbols': result}
+
+
+def _screening_named_choices(block):
+    """Read explicit pair identities from a labelled human selection list."""
+    row = re.compile(r'^[ \t]*(?:\$?([A-Z0-9]{2,20})[ \t]*:[ \t]*)?'
+        r'\$?(' + PAIR + r')(?:[ \t]+Perpetual)?'
+        r'(?:[ \t]+[-—][ \t]+([^\n]+))?[ \t]*$', re.I)
+    selected = []
+    lines = block.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        match = row.fullmatch(line)
+        if match is None:
+            if not selected:
+                raise ReplyIncomplete('NEUROBRO_SCREENING_INCOMPLETE')
+            if (re.search(r'\b(?:jika|apabila|bersyarat|alternatif)\b', line, re.I)
+                    or (re.match(r'^[ \t]*\$?[A-Z0-9]{2,20}[ \t]*:', line, re.I)
+                        and _PAIR.search(line))
+                    or _PAIR.match(line.strip().removeprefix('$'))):
+                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+            # Do not conceal another selection after an intervening paragraph.
+            remainder = '\n'.join(lines[index:])
+            if any(row.fullmatch(item) for item in lines[index + 1:]) or re.search(
+                    r'^[ \t]*(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)'
+                    r'(?:[ \t]*\([12]\))?[ \t]*[:=]', remainder, re.I | re.M):
+                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+            break
+        base, pair, reason = match.groups()
+        choice = symbol(pair)
+        if (base is not None and (base.upper() if base.upper().endswith('USDT')
+                else base.upper() + 'USDT') != choice):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        if reason and (re.search(r'\b(?:dibanding|alternatif|jika|apabila|atau|bersyarat|skenario)\b', reason, re.I)
+                or attributed_symbols(reason) - {choice}):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        selected.append(choice)
+    if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
+        raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+    return selected
 
 
 def _screening_table(block):

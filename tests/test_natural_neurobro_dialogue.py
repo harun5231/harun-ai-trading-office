@@ -224,6 +224,48 @@ class PerCoinReplyTests(unittest.TestCase):
             'Coin pembanding: BTCUSDT, bukan pilihan.')
         self.assertEqual(parse_screening_reply(reply), {'symbols': ['RUNEUSDT']})
 
+    def test_actual_native_named_screening_summary_preserves_explicit_pair_identities(self):
+        # Exact relevant excerpt of the received Nov6 reply; the native table
+        # uses bare tickers, but the author's final list supplies actual pairs.
+        reply = (Path(__file__).parent / 'fixtures/neurobro_screening_named_choices_20261106.txt').read_text()
+        payload = {'output_schema': {'required': ['symbols'], 'properties': {
+            'symbols': {'minItems': 2, 'maxItems': 2}}}}
+        self.assertEqual(parse_reply_for_payload(reply, payload), {'symbols': ['NEARUSDT', 'ZECUSDT']})
+        self.assertEqual(parse_screening_reply('Perbandingan BTCUSDT bukan pilihan.\n\n' + reply),
+            {'symbols': ['NEARUSDT', 'ZECUSDT']})
+        with self.assertRaises(ReplyIncomplete):
+            parse_screening_reply(reply.split('COIN yang dipilih:')[0])
+        with self.assertRaises(ReplyIncomplete):
+            parse_analysis_reply(reply, 'NEARUSDT')
+        with self.assertRaisesRegex(ReplyIncomplete, 'COUNT_MISMATCH'):
+            parse_reply_for_payload(reply, {'output_schema': {'required': ['symbols'], 'properties': {
+                'symbols': {'minItems': 1, 'maxItems': 1}}}})
+
+    def test_named_screening_choices_reject_ambiguous_conditional_or_conflicting_identity(self):
+        header = 'COIN yang dipilih:\n\n'
+        valid = header + 'NEAR: NEARUSDT Perpetual - Struktur kuat.'
+        invalid = (
+            header + 'NEAR: ZECUSDT Perpetual - Struktur kuat.',
+            header + 'NEAR: NEARUSDT Perpetual - Jika support bertahan.',
+            header + 'NEAR: NEARUSDT Perpetual - Lebih kuat dibanding BTCUSDT.',
+            header + 'NEAR: NEARUSDT Perpetual - Pantau BTCUSDT.',
+            header + 'NEAR: NEARUSDT atau ZECUSDT',
+            valid + '\nZEC: ZECUSDT atau BTCUSDT',
+            valid + '\nNEAR: NEARUSDT Perpetual - Duplikat.',
+            valid + '\nZEC: ZECUSDT Perpetual - Support.\nBTC: BTCUSDT Perpetual - Liquid.',
+            valid + '\nJika support bertahan, pilihan ini berlaku.',
+            valid + '\n\nCatatan lain.\nZEC: ZECUSDT Perpetual - Pilihan tambahan.',
+            valid + '\n\nCOIN: BTCUSDT',
+            'COIN: BTCUSDT\n\n' + valid,
+            valid + '\n\n' + header + 'ZEC: ZECUSDT Perpetual - Pilihan lain.',
+            'Jika support bertahan:\n\n' + valid,
+        )
+        for reply in invalid:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_screening_reply(reply)
+        self.assertEqual(parse_screening_reply('COIN: BTCUSDT\nRingkasan akhir\n' + valid),
+            {'symbols': ['NEARUSDT']})
+
     def test_markdown_screening_table_and_final_summary_keep_current_choices(self):
         reply = ('COIN: BTCUSDT\nRingkasan akhir\n'
             'COIN PILIHAN (2):\n\n| Coin | Alasan |\n| --- | --- |\n'
