@@ -37,6 +37,14 @@ SHA = re.compile(r'[a-f0-9]{64}\Z')
 IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
 MODEL_IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,199}\Z')
 PINS = ('runtime_source_sha256', 'runtime_config_sha256', 'isolation_policy_sha256')
+DIAGNOSTIC_CODE = re.compile(r'HERMES_[A-Z0-9_]{1,100}\Z')
+BROKER_CODE = re.compile(r'HERMES_MODEL_[A-Z0-9_]{1,80}\Z')
+DIAGNOSTIC_EVENTS = frozenset({'REQUEST_SHAPE','REQUEST_ACCEPTED','REQUEST_HOOK_FAILURE','RESPONSE_RECEIVED','RESPONSE_REFUSED',
+    'RESPONSE_VERIFIED','RESPONSE_HOOK_FAILURE','TRANSPORT_ENTER','TRANSPORT_FAILURE','RUNTIME_FAILURE'})
+DIAGNOSTIC_FIELDS = frozenset({'failure_code','broker_error_code','exception_class','exception_chain',
+    'errno','http_status','accepted_request_count','content_type','body_keys','model','stream','store',
+    'background','tool_choice','tools_count','include','reasoning_effort',
+    'provider_response_id','provider_request_id','response_sha256'})
 REQUEST_FIELDS = frozenset({'schema_version', 'protocol', 'runtime', 'request_id',
     'conversation_id', 'phase', 'source_request_sha256', 'model', *PINS,
     'instructions', 'history', 'reply', 'market_context', 'source_facts',
@@ -64,6 +72,65 @@ def digest(value):
 
 def file_digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def technical_exception(exc):
+    """Class/errno/fixed codes only; exception strings can contain credentials."""
+    result, classes, seen = {}, [], set()
+    while exc is not None and id(exc) not in seen and len(classes) < 8:
+        seen.add(id(exc))
+        name = type(exc).__name__
+        if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}',name):
+            classes.append(name)
+        code = getattr(exc,'code',None)
+        if type(code) is str and DIAGNOSTIC_CODE.fullmatch(code):
+            result.setdefault('failure_code',code)
+        number = getattr(exc,'errno',None)
+        if type(number) is int and 0 <= number <= 4096:
+            result.setdefault('errno',number)
+        exc = exc.__cause__ if exc.__cause__ is not None else exc.__context__
+    if classes:
+        result.update(exception_class=classes[0],exception_chain=classes)
+    return result
+
+
+def validated_diagnostic(event, details):
+    """Small, explicit technical vocabulary. No raw body, header or message field."""
+    require(event in DIAGNOSTIC_EVENTS and type(details) is dict and set(details) <= DIAGNOSTIC_FIELDS,
+        'HERMES_DIAGNOSTIC_INVALID',state='UNKNOWN')
+    for key,value in details.items():
+        if key in ('failure_code','broker_error_code'):
+            pattern = BROKER_CODE if key == 'broker_error_code' else DIAGNOSTIC_CODE
+            valid = type(value) is str and pattern.fullmatch(value)
+        elif key in ('exception_class','exception_chain','body_keys'):
+            values = value if key != 'exception_class' else [value]
+            pattern = r'[a-z][a-z0-9_]{0,63}' if key == 'body_keys' else r'[A-Za-z_][A-Za-z0-9_]{0,79}'
+            valid = type(values) is list and len(values) <= (128 if key == 'body_keys' else 8)
+            valid = valid and all(type(item) is str and re.fullmatch(pattern,item) for item in values)
+        elif key in ('errno','http_status','accepted_request_count','tools_count'):
+            bounds = {'errno':(0,4096),'http_status':(100,599),'accepted_request_count':(0,1),'tools_count':(-1,10000)}
+            valid = type(value) is int and bounds[key][0] <= value <= bounds[key][1]
+        elif key == 'content_type':
+            valid = value in ('application/json','text/event-stream','application/octet-stream','text/plain','UNKNOWN')
+        elif key == 'model':
+            valid = type(value) is str and MODEL_IDENTITY.fullmatch(value)
+        elif key in ('provider_response_id','provider_request_id'):
+            valid = type(value) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,255}',value)
+        elif key == 'response_sha256':
+            valid = type(value) is str and SHA.fullmatch(value)
+        elif key in ('stream','store','background'):
+            valid = value is None or type(value) is bool or value == 'INVALID_TYPE'
+        elif key == 'tool_choice':
+            valid = value in (None,'none','auto','required','STRUCTURED','INVALID_TYPE')
+        elif key == 'include':
+            valid = type(value) is list and len(value) <= 16 and all(item in (
+                'reasoning.encrypted_content','message.output_text.logprobs','code_interpreter_call.outputs',
+                'UNRECOGNIZED_VALUE') for item in value)
+        else:
+            valid = value in (None,'none','minimal','low','medium','high','xhigh','max','ultra','UNRECOGNIZED_VALUE')
+        require(valid,'HERMES_DIAGNOSTIC_INVALID',state='UNKNOWN')
+    require(len(canonical(details).encode()) <= 8192,'HERMES_DIAGNOSTIC_INVALID',state='UNKNOWN')
+    return {'event':event,'details':deepcopy(details)}
 
 
 def _pairs(items):
@@ -325,6 +392,13 @@ class RequestJournal:
             CREATE TABLE IF NOT EXISTS runtime_sessions (
                 conversation_id TEXT PRIMARY KEY, session_id TEXT NOT NULL,
                 history TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS runtime_diagnostics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL,
+                created_at REAL NOT NULL, event TEXT NOT NULL, details TEXT NOT NULL);
+            CREATE TRIGGER IF NOT EXISTS runtime_diagnostics_no_update BEFORE UPDATE ON runtime_diagnostics
+                BEGIN SELECT RAISE(ABORT,'append-only diagnostics'); END;
+            CREATE TRIGGER IF NOT EXISTS runtime_diagnostics_no_delete BEFORE DELETE ON runtime_diagnostics
+                BEGIN SELECT RAISE(ABORT,'append-only diagnostics'); END;
         ''')
 
     def lookup(self, request_id, request_sha256):
@@ -364,6 +438,17 @@ class RequestJournal:
 
     def close(self):
         self.db.close()
+
+    def append_diagnostics(self, request_id, events):
+        require(type(request_id) is str and SHA.fullmatch(request_id)
+            and type(events) is list and len(events) <= 64,'HERMES_DIAGNOSTIC_INVALID',state='UNKNOWN')
+        rows = []
+        for item in events:
+            require(type(item) is dict and set(item) == {'event','details'},'HERMES_DIAGNOSTIC_INVALID',state='UNKNOWN')
+            value = validated_diagnostic(item['event'],item['details'])
+            rows.append((request_id,time.time(),value['event'],canonical(value['details'])))
+        # Independent append-only rows; custody and UNKNOWN/completion rows are untouched.
+        self.db.executemany('INSERT INTO runtime_diagnostics(request_id,created_at,event,details) VALUES (?,?,?,?)',rows)
 
 
 class NativeEvaluationMemory:
@@ -486,7 +571,8 @@ class HermesRuntime:
                 agent.close()
             finally:
                 raise RuntimeFailure('HERMES_RUNTIME_CAPABILITY_MISMATCH')
-        # Exact pinned Hermes source documents this opt-out in turn_api_call.py.
+        # Disable optional display streaming. The pinned native Responses path
+        # still uses SSE internally; ProviderEvidence validates that wire format.
         agent._disable_streaming = True
         return agent
 
@@ -558,13 +644,21 @@ class HermesRuntime:
             self.journal.complete(request, envelope, history)
             return envelope
         except RuntimeFailure as exc:
+            recorder=getattr(self.provider_evidence,'record_failure',None)
+            if reserved and callable(recorder):recorder('RUNTIME_FAILURE',exc)
             if reserved:
                 raise RuntimeFailure(exc.code, state='UNKNOWN') from None
             raise
-        except BaseException:
+        except BaseException as exc:
+            recorder=getattr(self.provider_evidence,'record_failure',None)
+            if reserved and callable(recorder):recorder('RUNTIME_FAILURE',exc)
             # The already committed UNKNOWN row is deliberately never retried.
             raise
         finally:
+            snapshot=getattr(self.provider_evidence,'diagnostic_snapshot',None)
+            if reserved and callable(snapshot):
+                try:self.journal.append_diagnostics(request['request_id'],snapshot())
+                except Exception:sys.stderr.write('HERMES_RUNTIME_DIAGNOSTIC_PERSIST_FAILED\n')
             self.provider_evidence.end()
             agent.close()
 
@@ -574,13 +668,56 @@ class ProviderEvidence:
     def __init__(self, model, model_base_url='http://hermes-model/v1'):
         self.model, self.active, self.sent, self.proof = model, False, 0, None
         self.base_url = urlsplit(model_base_url.rstrip('/'))
+        self.diagnostics = []
 
     def begin(self, request):
         self.active, self.sent, self.proof = True, 0, None
         self.maximum = request['max_output_tokens']
         self.wire_reasoning_effort = None
+        self.streaming = False
+        self.diagnostics = []
+
+    def note(self, event, **details):
+        if len(self.diagnostics) < 64:
+            self.diagnostics.append(validated_diagnostic(event,{
+                'accepted_request_count':self.sent,**details}))
+
+    def record_failure(self, event, exc):
+        self.note(event,**technical_exception(exc))
+
+    def diagnostic_snapshot(self):
+        return deepcopy(self.diagnostics)
+
+    def _request_summary(self, value):
+        summary = {'body_keys':sorted(key for key in value if type(key) is str
+            and re.fullmatch(r'[a-z][a-z0-9_]{0,63}',key))[:128],
+            'model':self.model if value.get('model') == self.model else 'UNEXPECTED_MODEL',
+            'tools_count':min(len(value['tools']),10000) if type(value.get('tools')) is list else
+                0 if value.get('tools') is None else -1}
+        for key in ('stream','store','background'):
+            item=value.get(key)
+            summary[key]=item if item is None or type(item) is bool else 'INVALID_TYPE'
+        choice=value.get('tool_choice')
+        summary['tool_choice']=(choice if choice in (None,'none','auto','required') else
+            'STRUCTURED' if type(choice) is dict else 'INVALID_TYPE')
+        include=value.get('include')
+        summary['include']=([item if item in ('reasoning.encrypted_content','message.output_text.logprobs',
+            'code_interpreter_call.outputs') else 'UNRECOGNIZED_VALUE' for item in include[:16]]
+            if type(include) is list else [])
+        effort=value.get('reasoning_effort')
+        if effort is None and type(value.get('reasoning')) is dict:effort=value['reasoning'].get('effort')
+        summary['reasoning_effort']=effort if effort in (None,'none','minimal','low','medium','high',
+            'xhigh','max','ultra') else 'UNRECOGNIZED_VALUE'
+        return summary
 
     def request_hook(self, request):
+        try:
+            self._request_hook(request)
+        except BaseException as exc:
+            self.record_failure('REQUEST_HOOK_FAILURE',exc)
+            raise
+
+    def _request_hook(self, request):
         require(self.active and self.sent == 0, 'HERMES_PROVIDER_REPEAT_REFUSED', state='UNKNOWN')
         require(request.method == 'POST' and request.url.host == self.base_url.hostname
             and request.url.scheme == self.base_url.scheme
@@ -589,23 +726,60 @@ class ProviderEvidence:
             and request.url.path in ('/v1/responses','/v1/chat/completions'),
             'HERMES_PROVIDER_ROUTE_REFUSED', state='UNKNOWN')
         value = decode(request.content)
+        if type(value) is dict:
+            self.note('REQUEST_SHAPE',**self._request_summary(value))
         require(type(value) is dict and value.get('model') == self.model
-            and value.get('tools') in (None, []) and value.get('stream') is not True,
+            and value.get('tools') in (None, []) and type(value.get('stream',False)) is bool
+            and (value.get('stream') is not True or request.url.path == '/v1/responses'),
             'HERMES_PROVIDER_CAPABILITY_REFUSED', state='UNKNOWN')
+        # The pinned native Responses runtime always requests SSE, including
+        # when the outer agent's optional streaming display has been disabled.
+        self.streaming = value.get('stream',False)
         reasoning = value.get('reasoning')
         self.wire_reasoning_effort = value.get('reasoning_effort')
         if self.wire_reasoning_effort is None and type(reasoning) is dict:
             self.wire_reasoning_effort = reasoning.get('effort')
         self.sent += 1
+        self.note('REQUEST_ACCEPTED')
 
     def response_hook(self, response):
+        content_type = response.headers.get('content-type','').split(';',1)[0].lower()
+        self.note('RESPONSE_RECEIVED',http_status=response.status_code,content_type=content_type if content_type in
+            ('application/json','text/event-stream','application/octet-stream','text/plain') else 'UNKNOWN')
+        try:
+            self._response_hook(response)
+        except BaseException as exc:
+            self.record_failure('RESPONSE_HOOK_FAILURE',exc)
+            raise
+
+    def _response_hook(self, response):
         raw = bytearray()
         for block in response.iter_bytes():
             raw.extend(block)
             require(len(raw) <= 2 * 1024 * 1024, 'HERMES_PROVIDER_RESPONSE_LIMIT', state='UNKNOWN')
         response._content = bytes(raw)
-        require(response.status_code == 200, 'HERMES_PROVIDER_FAILED', state='UNKNOWN')
-        value = decode(bytes(raw))
+        content_type = response.headers.get('content-type','').split(';',1)[0].lower()
+        details={'http_status':response.status_code,'content_type':content_type if content_type in
+            ('application/json','text/event-stream','application/octet-stream','text/plain') else 'UNKNOWN'}
+        if response.status_code != 200:
+            try:
+                failure=decode(bytes(raw))
+                code=failure.get('error',{}).get('code') if type(failure) is dict and type(failure.get('error')) is dict else None
+                if type(code) is str and BROKER_CODE.fullmatch(code):details['broker_error_code']=code
+            except RuntimeFailure:
+                pass
+            details['failure_code']='HERMES_PROVIDER_HTTP_REFUSED'
+        if response.status_code != 200:
+            self.note('RESPONSE_REFUSED',**details)
+            # Preserve real HTTP classification. Throwing from an HTTPX response
+            # hook is wrapped by OpenAI as APIConnectionError and hides 400/502.
+            return
+        if self.streaming:
+            require(content_type == 'text/event-stream', 'HERMES_PROVIDER_RESPONSE_INVALID', state='UNKNOWN')
+            value = self._completed_sse_response(bytes(raw))
+        else:
+            require(content_type == 'application/json', 'HERMES_PROVIDER_RESPONSE_INVALID', state='UNKNOWN')
+            value = decode(bytes(raw))
         response_id = value.get('id') if type(value) is dict else None
         require(type(value) is dict and value.get('model') == self.model
             and type(response_id) is str and 0 < len(response_id) <= 256
@@ -616,8 +790,77 @@ class ProviderEvidence:
             'HERMES_PROVIDER_REQUEST_ID_MISSING', state='UNKNOWN')
         self.proof = dict(model=value['model'], provider_response_id=response_id,
             provider_request_id=request_id, broker_model_verified=True,
+            response_content_type=content_type,
             requested_reasoning_effort=self.wire_reasoning_effort,
             response_sha256=hashlib.sha256(bytes(raw)).hexdigest())
+        # Persisted by execute's finally block even if SDK/control parsing later fails.
+        self.note('RESPONSE_VERIFIED',**{key:self.proof[key] for key in
+            ('provider_response_id','provider_request_id','model','response_sha256')})
+
+    def _completed_sse_response(self, raw):
+        """Authenticate the actual terminal Responses object, retaining SSE bytes."""
+        try:
+            wire = raw.decode('utf-8').replace('\r\n','\n')
+        except UnicodeError:
+            raise RuntimeFailure('HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN') from None
+        require('\r' not in wire and wire.endswith('\n\n'),
+            'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+        events = wire.split('\n\n')
+        require(len(events) <= 4097,'HERMES_PROVIDER_RESPONSE_LIMIT',state='UNKNOWN')
+        completed, done, response_ids = None, False, set()
+        for event in events:
+            data, event_type = [], None
+            for line in event.split('\n'):
+                if not line or line.startswith(':'):
+                    continue
+                if line.startswith('data:'):
+                    data.append(line[5:].removeprefix(' '))
+                elif line.startswith('event:'):
+                    require(event_type is None,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                    event_type = line[6:].strip()
+                else:
+                    raise RuntimeFailure('HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            if not data:
+                continue
+            require(not done,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            encoded = '\n'.join(data)
+            if encoded == '[DONE]':
+                done = True
+                continue
+            require(completed is None,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            value = decode(encoded)
+            require(type(value) is dict and type(value.get('type')) is str
+                and (event_type is None or event_type == value['type'])
+                and value['type'] not in ('error','response.failed','response.incomplete','response.cancelled')
+                and not value.get('error'),'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            stack = [value]
+            while stack:
+                child = stack.pop()
+                if type(child) is dict:
+                    require(('model' not in child or child['model'] == self.model)
+                        and not child.get('error')
+                        and child.get('status') not in ('failed','incomplete','cancelled'),
+                        'HERMES_PROVIDER_MODEL_UNVERIFIED',state='UNKNOWN')
+                    stack.extend(child.values())
+                elif type(child) is list:
+                    stack.extend(child)
+            observed = value.get('response')
+            if type(observed) is dict and observed.get('id'):
+                require(type(observed['id']) is str and len(observed['id']) <= 256,
+                    'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                response_ids.add(observed['id'])
+            if value.get('response_id'):
+                require(type(value['response_id']) is str,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                response_ids.add(value['response_id'])
+            if value['type'] == 'response.completed':
+                require(type(observed) is dict and observed.get('status') == 'completed'
+                    and observed.get('model') == self.model and type(observed.get('id')) is str
+                    and 0 < len(observed['id']) <= 256,
+                    'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+                completed = observed
+        require(completed is not None and response_ids == {completed['id']},
+            'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+        return completed
 
     def finish(self):
         require(self.active and self.sent == 1 and self.proof is not None,
@@ -692,7 +935,7 @@ def configured_reasoning(config):
     return deepcopy(value)
 
 
-def broker_uds_transport(httpx, socket_path, model_base_url):
+def broker_uds_transport(httpx, socket_path, model_base_url, *, diagnostics=None):
     """Keep SDK provider identity intact while sending only fixed-path Unix HTTP."""
     upstream_route = urlsplit(model_base_url.rstrip('/'))
     class BrokerUDSTransport(httpx.BaseTransport):
@@ -700,6 +943,14 @@ def broker_uds_transport(httpx, socket_path, model_base_url):
             self.transport = httpx.HTTPTransport(uds=socket_path)
 
         def handle_request(self, request):
+            try:
+                if diagnostics is not None:diagnostics.note('TRANSPORT_ENTER')
+                return self._handle_request(request)
+            except BaseException as exc:
+                if diagnostics is not None:diagnostics.record_failure('TRANSPORT_FAILURE',exc)
+                raise
+
+        def _handle_request(self, request):
             require(request.url.scheme == upstream_route.scheme
                 and request.url.host == upstream_route.hostname
                 and (request.url.port or 443) == (upstream_route.port or 443)
@@ -775,6 +1026,7 @@ def load_installed_sdk(config, pins):
         'streaming':False},
         'fallback_model':{}, 'mcp_servers':{}, 'plugins':{'enabled':[]}, 'hooks':{},
         'compression':{'enabled':False}, 'memory':{'enabled':False},
+        'auxiliary':{'title_generation':{'enabled':True,'model_upgrade_enabled':False}},
         'skills':{'enabled':False}, 'agent':{'toolsets':[], 'disabled_toolsets':[],
             'api_max_retries':1, 'auto_recovery_cycles':0, 'environment_probe':False,
             'reasoning_effort':deepcopy(reasoning_config)}}
@@ -797,7 +1049,8 @@ def load_installed_sdk(config, pins):
     evidence = ProviderEvidence(config['model'], model_base_url)
     def broker_http_client(base_url='', *, verify=True):
         require(base_url.rstrip('/') == model_base_url, 'HERMES_PROVIDER_ROUTE_REFUSED')
-        return httpx.Client(transport=broker_uds_transport(httpx, config['model_socket_path'], model_base_url),
+        return httpx.Client(transport=broker_uds_transport(httpx, config['model_socket_path'], model_base_url,
+                diagnostics=evidence),
             event_hooks={'request':[evidence.request_hook], 'response':[evidence.response_hook]},
             timeout=45, trust_env=False)
     # Actual pinned SDK construction seam: create_openai_client calls this

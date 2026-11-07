@@ -57,6 +57,74 @@ STARTUP_CODES = frozenset({'HERMES_MODEL_ROOT_REFUSED', 'HERMES_MODEL_CONFIG_INV
     'HERMES_MODEL_OS_ERROR', 'HERMES_MODEL_ERROR_UNCLASSIFIED'})
 STARTUP_PHASES = frozenset({'PROCESS_IDENTITY', 'CONFIG_READ', 'CONFIG_VALIDATE',
     'CREDENTIAL_READ', 'CREDENTIAL_VALIDATE', 'UPSTREAM', 'SOCKET', 'SERVE', 'UNCLASSIFIED'})
+REQUEST_CODES = STARTUP_CODES | frozenset({'HERMES_MODEL_REQUEST_INVALID',
+    'HERMES_MODEL_BODY_LIMIT', 'HERMES_MODEL_PATH_REFUSED', 'HERMES_MODEL_IDENTITY_REFUSED',
+    'HERMES_MODEL_TOOLS_REFUSED', 'HERMES_MODEL_STATE_REFUSED', 'HERMES_MODEL_RESPONSE_LIMIT',
+    'HERMES_MODEL_TIMEOUT', 'HERMES_MODEL_UPSTREAM_UNAVAILABLE', 'HERMES_MODEL_UPSTREAM_REFUSED',
+    'HERMES_MODEL_REQUEST_ID_MISSING', 'HERMES_MODEL_RESPONSE_INVALID',
+    'HERMES_MODEL_IDENTITY_MISSING', 'HERMES_MODEL_STREAM_INCOMPLETE',
+    'HERMES_MODEL_PEER_UNAVAILABLE', 'HERMES_MODEL_PEER_REFUSED',
+    'HERMES_MODEL_HTTP_INVALID', 'HERMES_MODEL_UNAVAILABLE'})
+DIAGNOSTIC_FIELDS = CHAT_FIELDS | RESPONSES_FIELDS | frozenset({'context_management',
+    'prompt_cache_retention', 'prompt_cache_options', 'extra_body', 'extra_headers',
+    'timeout', 'metadata', 'safety_identifier', 'max_tool_calls', 'n', 'modalities', 'audio', 'prediction'})
+DIAGNOSTIC_INCLUDES = frozenset({'reasoning.encrypted_content', 'message.output_text.logprobs',
+    'web_search_call.action.sources', 'file_search_call.results', 'code_interpreter_call.outputs',
+    'computer_call_output.output.image_url'})
+SEMANTIC_RESPONSE_HEADERS = frozenset({'content-type', 'content-encoding', 'content-length',
+    'transfer-encoding', 'x-request-id', 'request-id'})
+DIAGNOSTIC_HEADER_NAMES = SEMANTIC_RESPONSE_HEADERS | frozenset({'set-cookie', 'server',
+    'date', 'vary', 'cache-control', 'strict-transport-security', 'cf-cache-status', 'cf-ray',
+    'openai-version', 'openai-processing-ms', 'x-content-type-options', 'alt-svc',
+    'x-envoy-upstream-service-time', 'access-control-expose-headers'})
+_diagnostic_context = threading.local()
+
+
+def _journal_event(row):
+    print(json.dumps(row, sort_keys=True, separators=(',', ':')), flush=True)
+
+
+def _transport_event(event, **metadata):
+    sink = getattr(_diagnostic_context, 'sink', None)
+    if sink is not None:
+        sink(event, **metadata)
+
+
+def _safe_error(error):
+    classes = ((ssl.SSLCertVerificationError, 'SSLCertVerificationError'),
+        (ssl.SSLError, 'SSLError'), (socket.gaierror, 'gaierror'),
+        (TimeoutError, 'TimeoutError'), (OSError, 'OSError'),
+        (http.client.HTTPException, 'HTTPException'))
+    kind = next((name for cls, name in classes if isinstance(error, cls)), 'OTHER')
+    number = getattr(error, 'errno', None)
+    return {'error_class': kind, 'errno': number if type(number) is int and -32768 <= number <= 65535 else None}
+
+
+def _safe_provider_id(headers):
+    value = headers.get('x-request-id') or headers.get('request-id')
+    return value if type(value) is str and REQUEST_ID.fullmatch(value) else None
+
+
+def request_metadata(value, config):
+    """Only fixed field names and technical flags, never model input content."""
+    if type(value) is not dict:
+        return {'json_object': False}
+    def flag(name):
+        item = value.get(name)
+        return item if item is None or type(item) is bool else 'INVALID'
+    choice = value.get('tool_choice')
+    choice = choice if choice in (None, 'none', 'auto', 'required') else 'STRUCTURED_OR_INVALID'
+    tools = value.get('tools')
+    includes = value.get('include')
+    return {'json_object': True, 'body_fields': sorted(set(value) & DIAGNOSTIC_FIELDS),
+        'unknown_field_count': len(set(value) - DIAGNOSTIC_FIELDS),
+        'model': config.model if value.get('model') == config.model else 'MISMATCH_OR_ABSENT',
+        'stream': flag('stream'), 'tools_count': len(tools) if type(tools) is list else 0 if tools is None else -1,
+        'tool_choice': choice, 'background': flag('background'), 'store': flag('store'),
+        'include': sorted({item for item in includes if type(item) is str and item in DIAGNOSTIC_INCLUDES})
+            if type(includes) is list else [],
+        'unknown_include_count': sum(type(item) is not str or item not in DIAGNOSTIC_INCLUDES for item in includes)
+            if type(includes) is list else 0 if includes is None else -1}
 
 
 class BrokerError(Exception):
@@ -136,11 +204,13 @@ class BrokerConfig:
         return self.upstream_base_url.rstrip('/') + path.removeprefix('/v1')
 
 
-def validate_request(body, path, config):
+def validate_request(body, path, config, *, observer=None):
     need(path in config.allowed_paths, 'HERMES_MODEL_PATH_REFUSED', 404)
     need(type(body) is bytes and 0 < len(body) <= config.max_request_bytes,
          'HERMES_MODEL_BODY_LIMIT', 413)
     value = decode_json(body)
+    if observer is not None:
+        observer(request_metadata(value, config))
     fields = CHAT_FIELDS if path.endswith('/chat/completions') else RESPONSES_FIELDS
     need(type(value) is dict and set(value) <= fields)
     need(value.get('model') == config.model, 'HERMES_MODEL_IDENTITY_REFUSED')
@@ -237,16 +307,27 @@ class HttpsModelUpstream:
                 'Content-Type': 'application/json', 'Accept-Encoding': 'identity'})
             remaining()
             response = connection.getresponse()
+            _transport_event('UPSTREAM_STATUS', status=response.status,
+                provider_request_id=_safe_provider_id({'x-request-id':response.getheader('x-request-id'),
+                    'request-id':response.getheader('request-id')}))
             if response.status != 200:
                 return UpstreamResponse(response.status, {}, b'')
             headers = response.getheaders()
             need(len(headers) <= 100 and sum(len(k) + len(v) for k, v in headers) <= MAX_HEADERS,
                  'HERMES_MODEL_RESPONSE_LIMIT', 502)
+            names = [key.lower() for key, _ in headers]
+            duplicates = {key for key in names if names.count(key) > 1}
+            _transport_event('UPSTREAM_HEADERS',
+                duplicate_header_names=sorted(duplicates & DIAGNOSTIC_HEADER_NAMES),
+                unknown_duplicate_header_count=len(duplicates - DIAGNOSTIC_HEADER_NAMES))
             lower = {}
             for key, value in headers:
                 key = key.lower()
-                need(key not in lower, 'HERMES_MODEL_RESPONSE_INVALID', 502)
-                lower[key] = value
+                # Repeated nonsemantic headers such as Set-Cookie are valid
+                # HTTP. They are neither consumed nor forwarded by this broker.
+                if key in SEMANTIC_RESPONSE_HEADERS:
+                    need(key not in lower, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                    lower[key] = value
             need(lower.get('content-encoding', 'identity').lower() == 'identity',
                  'HERMES_MODEL_RESPONSE_INVALID', 502)
             chunks = []
@@ -263,10 +344,12 @@ class HttpsModelUpstream:
             return UpstreamResponse(response.status, lower, b''.join(chunks))
         except BrokerError:
             raise
-        except (TimeoutError, socket.timeout):
+        except (TimeoutError, socket.timeout) as error:
+            _transport_event('TRANSPORT_ERROR', **_safe_error(error))
             raise BrokerError('HERMES_MODEL_TIMEOUT', 504) from None
-        except Exception:
+        except Exception as error:
             # No exception string: network libraries can include URLs/headers.
+            _transport_event('TRANSPORT_ERROR', **_safe_error(error))
             if expired.is_set():
                 raise BrokerError('HERMES_MODEL_TIMEOUT', 504) from None
             raise BrokerError('HERMES_MODEL_UPSTREAM_UNAVAILABLE', 502) from None
@@ -393,6 +476,8 @@ def remove_stale_socket(path):
 
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self):
+        def event(name, **metadata):
+            self.server.event(name, connection=self.client_address, **metadata)
         def expire_input():
             try:
                 self.connection.shutdown(socket.SHUT_RDWR)
@@ -441,21 +526,42 @@ class _Handler(socketserver.StreamRequestHandler):
             need(length <= self.server.config.max_request_bytes, 'HERMES_MODEL_BODY_LIMIT', 413)
             body = self.rfile.read(length)
             need(len(body) == length, 'HERMES_MODEL_HTTP_INVALID')
-            value = validate_request(body, path, self.server.config)
+            value = validate_request(body, path, self.server.config,
+                observer=lambda metadata:event('REQUEST_OBSERVED', **metadata))
+            event('REQUEST_VALIDATED', path=path, **request_metadata(value, self.server.config))
             input_timer.cancel()
             deadline = time.monotonic() + self.server.config.timeout
-            response = self.server.upstream(path, body, deadline=deadline)
+            observed_events = set()
+            def upstream_event(name, **metadata):
+                observed_events.add(name)
+                event(name, **metadata)
+            _diagnostic_context.sink = upstream_event
+            event('UPSTREAM_STARTED', path=path)
+            try:
+                response = self.server.upstream(path, body, deadline=deadline)
+                if 'UPSTREAM_STATUS' not in observed_events and type(response) is UpstreamResponse:
+                    event('UPSTREAM_STATUS', status=response.status,
+                        provider_request_id=_safe_provider_id(response.headers))
+            finally:
+                _diagnostic_context.sink = None
             need(time.monotonic() < deadline, 'HERMES_MODEL_TIMEOUT', 504)
             headers = validate_response(response, stream=value.get('stream', False),
                 path=path, config=self.server.config)
+            event('RESPONSE_VERIFIED', provider_request_id=headers['x-request-id'])
             self._send(200, headers, response.body)
         except BrokerError as error:
+            event('REFUSED', code=str(error) if str(error) in REQUEST_CODES else 'HERMES_MODEL_ERROR_UNCLASSIFIED',
+                status=error.status)
             self._error(error)
-        except (TimeoutError, socket.timeout):
+        except (TimeoutError, socket.timeout) as error:
+            event('TRANSPORT_ERROR', **_safe_error(error))
+            event('REFUSED', code='HERMES_MODEL_TIMEOUT', status=504)
             self._error(BrokerError('HERMES_MODEL_TIMEOUT', 504))
-        except (BrokenPipeError, ConnectionError):
-            pass
-        except Exception:
+        except (BrokenPipeError, ConnectionError) as error:
+            event('TRANSPORT_ERROR', **_safe_error(error))
+        except Exception as error:
+            event('TRANSPORT_ERROR', **_safe_error(error))
+            event('REFUSED', code='HERMES_MODEL_UNAVAILABLE', status=502)
             self._error(BrokerError('HERMES_MODEL_UNAVAILABLE', 502))
         finally:
             input_timer.cancel()
@@ -480,8 +586,11 @@ class HermesModelBroker(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
     daemon_threads = True
     block_on_close = False
 
-    def __init__(self, socket_path, config, upstream, *, secure_socket=True):
+    def __init__(self, socket_path, config, upstream, *, secure_socket=True, diagnostics=None):
         self.config, self.upstream = config, upstream
+        self._diagnostics = diagnostics or _journal_event
+        self._diagnostic_lock = threading.Lock()
+        self._event_counts = {}
         self._slots = threading.BoundedSemaphore(config.max_connections)
         path = Path(socket_path)
         need(path.is_absolute(), 'HERMES_MODEL_SOCKET_INVALID')
@@ -508,11 +617,23 @@ class HermesModelBroker(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
     def get_request(self):
         connection, address = super().get_request()
         try:
-            verify_peer(connection, self.config.worker_uid)
+            pid, uid, gid = verify_peer(connection, self.config.worker_uid)
         except BrokerError:
+            self.event('REFUSED', code='HERMES_MODEL_PEER_REFUSED', status=403)
             connection.close()
             raise OSError('HERMES_MODEL_PEER_REFUSED') from None
-        return connection, address
+        sequence = self.event('PEER_ACCEPTED', pid=pid, uid=uid, gid=gid)
+        return connection, sequence
+
+    def event(self, name, **metadata):
+        with self._diagnostic_lock:
+            count = self._event_counts.get(name, 0) + 1
+            self._event_counts[name] = count
+            try:
+                self._diagnostics({'event':'HERMES_MODEL_' + name, 'count':count, **metadata})
+            except Exception:
+                pass  # A closed journal cannot change dispatch or validation.
+            return count
 
     def process_request(self, request, client_address):
         if not self._slots.acquire(blocking=False):

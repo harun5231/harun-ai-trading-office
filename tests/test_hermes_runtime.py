@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -131,6 +132,66 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(caught.exception.state, 'UNKNOWN')
         self.assertEqual(len(self.calls), 1)
 
+    def test_failure_diagnostics_are_durable_append_only_and_do_not_change_unknown_custody(self):
+        self.runtime.provider_evidence=ProviderEvidence(self.model)
+        private='PRIVATE_TOKEN_AND_PROMPT_CANARY'
+        inner=RuntimeFailure('HERMES_PROVIDER_CAPABILITY_REFUSED',state='UNKNOWN')
+        self.failure=ConnectionError(private)
+        self.failure.__cause__=inner
+        request=self.request()
+        with self.assertRaises(ConnectionError):self.runtime.execute(request)
+        custody=tuple(self.journal.db.execute('SELECT * FROM runtime_requests').fetchone())
+        self.assertEqual(custody[2],'UNKNOWN')
+        rows=self.journal.db.execute('SELECT event,details FROM runtime_diagnostics WHERE request_id=?',
+            (request['request_id'],)).fetchall()
+        self.assertEqual(rows[0][0],'RUNTIME_FAILURE')
+        details=decode(rows[0][1])
+        self.assertEqual(details['failure_code'],'HERMES_PROVIDER_CAPABILITY_REFUSED')
+        self.assertEqual(details['exception_chain'],['ConnectionError','RuntimeFailure'])
+        self.assertNotIn(private,canonical(rows))
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.journal.db.execute('UPDATE runtime_diagnostics SET details=\'{}\'')
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.journal.db.execute('DELETE FROM runtime_diagnostics')
+        self.journal.close()
+        self.journal=RequestJournal(self.path/'journal.sqlite3')
+        self.assertEqual(tuple(self.journal.db.execute('SELECT * FROM runtime_requests').fetchone()),custody)
+        self.assertEqual(self.journal.db.execute('SELECT event,details FROM runtime_diagnostics').fetchall(),rows)
+
+    def test_verified_provider_identity_survives_later_control_json_failure(self):
+        import httpx
+        evidence=ProviderEvidence(self.model)
+        self.runtime.provider_evidence=evidence
+        original_factory=self.factory
+        private='PRIVATE_PROVIDER_BODY_AND_HEADER_CANARY'
+        raw=canonical({'id':'resp_verified_provider_fixture','model':self.model,
+            'output':[{'type':'message','content':[{'type':'output_text','text':private}]}]}).encode()
+        def factory(**kwargs):
+            agent=original_factory(**kwargs)
+            original_turn=agent.run_conversation
+            def turn(**values):
+                evidence.request_hook(httpx.Request('POST','http://hermes-model/v1/responses',json={
+                    'model':self.model,'input':private,'stream':False}))
+                evidence.response_hook(httpx.Response(200,content=raw,headers={
+                    'content-type':'application/json','x-request-id':'req_verified_provider_fixture',
+                    'x-hermes-verified-model':self.model,'authorization':private}))
+                return original_turn(**values)
+            agent.run_conversation=turn
+            return agent
+        self.runtime.agent_factory=factory
+        self.output={'COIN':'BTCUSDT','ARAH':'LONG','ENTRY':100,'TP':102,'SL':99}
+        with self.assertRaisesRegex(RuntimeFailure,'CONTROL_RESULT_INVALID'):
+            self.runtime.execute(self.request())
+        rows=self.journal.db.execute('SELECT event,details FROM runtime_diagnostics ORDER BY id').fetchall()
+        verified=[decode(details) for event,details in rows if event=='RESPONSE_VERIFIED']
+        self.assertEqual(len(verified),1)
+        self.assertEqual(verified[0]['provider_response_id'],'resp_verified_provider_fixture')
+        self.assertEqual(verified[0]['provider_request_id'],'req_verified_provider_fixture')
+        self.assertEqual(verified[0]['model'],self.model)
+        self.assertEqual(verified[0]['response_sha256'],hashlib.sha256(raw).hexdigest())
+        self.assertNotIn(private,canonical(rows))
+        self.assertEqual(self.journal.db.execute('SELECT state FROM runtime_requests').fetchone()[0],'UNKNOWN')
+
     def test_unknown_remains_unknown_for_invalid_control_or_unverified_model(self):
         self.output = {'COIN':'BTC', 'ARAH':'LONG', 'ENTRY':100, 'TP':102, 'SL':99}
         with self.assertRaises(RuntimeFailure) as caught:
@@ -252,6 +313,24 @@ class ProviderEvidenceTests(unittest.TestCase):
         return self.httpx.Response(200, json=payload, headers={
             'x-hermes-verified-model':'explicit-model','x-request-id':'provider-request-fixture'})
 
+    def native_stream(self, *, model='explicit-model', response_id='resp_provider_real_fixture',
+                      terminal='response.completed', terminal_status='completed'):
+        events = [dict(type='response.created',response={
+            'id':response_id,'model':model,'status':'in_progress'}),
+            dict(type='response.output_text.delta',delta='{"action":"PROMPT","symbols":[],"question":"Uji sintetis."}'),
+            dict(type=terminal,response={'id':response_id,'model':model,'status':terminal_status,'output':[]})]
+        return ''.join('event: '+value['type']+'\ndata: '+canonical(value)+'\n\n' for value in events).encode()
+
+    def native_request(self):
+        return self.httpx.Request('POST','http://hermes-model/v1/responses',json={
+            'model':'explicit-model','input':'synthetic health check','stream':True,
+            'max_output_tokens':512,'reasoning':{'effort':'medium'}})
+
+    def native_response(self, raw):
+        return self.httpx.Response(200,stream=self.httpx.ByteStream(raw),headers={
+            'content-type':'text/event-stream','x-hermes-verified-model':'explicit-model',
+            'x-request-id':'provider-request-fixture'})
+
     def test_observes_actual_provider_model_and_id_from_sdk_http_response(self):
         self.evidence.request_hook(self.request(reasoning_effort='medium'))
         self.evidence.response_hook(self.response())
@@ -275,19 +354,96 @@ class ProviderEvidenceTests(unittest.TestCase):
         with self.assertRaises(RuntimeFailure):
             self.evidence.response_hook(response)
 
+    def test_native_responses_sse_terminal_proof_and_sdk_readable_wire_are_preserved(self):
+        self.evidence.request_hook(self.native_request())
+        raw=self.native_stream()
+        response=self.native_response(raw)
+        self.evidence.response_hook(response)
+        # HTTPX/OpenAI streaming consumers still receive the original SSE bytes.
+        self.assertEqual(b''.join(response.iter_bytes()),raw)
+        self.assertIn('event: response.completed',list(response.iter_lines()))
+        proof=self.evidence.finish()
+        self.assertEqual(proof['provider_response_id'],'resp_provider_real_fixture')
+        self.assertEqual(proof['response_content_type'],'text/event-stream')
+        self.assertEqual(proof['requested_reasoning_effort'],'medium')
+        with self.assertRaisesRegex(RuntimeFailure,'REPEAT_REFUSED'):
+            self.evidence.request_hook(self.native_request())
+
+    def test_incomplete_foreign_or_conflicting_sse_never_becomes_verified(self):
+        raw=self.native_stream()
+        incomplete=raw[:raw.index(b'event: response.completed')]
+        mismatch=raw.replace(b'"id":"resp_provider_real_fixture","model":"explicit-model","output":[]',
+            b'"id":"resp_foreign","model":"explicit-model","output":[]')
+        for bad in (incomplete,raw[:-1],self.native_stream(model='foreign-model'),
+                self.native_stream(terminal='response.incomplete',terminal_status='incomplete'),mismatch,
+                raw+raw[raw.index(b'event: response.completed'):]):
+            self.evidence.begin({'max_output_tokens':512})
+            self.evidence.request_hook(self.native_request())
+            with self.subTest(body=bad[-80:]),self.assertRaises(RuntimeFailure):
+                self.evidence.response_hook(self.native_response(bad))
+            with self.assertRaises(RuntimeFailure):self.evidence.finish()
+
+    def test_http_refusal_preserves_status_and_fixed_broker_code_without_logging_error_text(self):
+        private='PRIVATE_PROVIDER_MESSAGE_TOKEN_AND_PROMPT'
+        for status,code in ((400,'HERMES_MODEL_REQUEST_INVALID'),(502,'HERMES_MODEL_UPSTREAM_REFUSED'),
+                (502,private)):
+            self.evidence.begin({'max_output_tokens':512})
+            self.evidence.request_hook(self.native_request())
+            response=self.httpx.Response(status,json={'error':{'code':code,'message':private}},
+                headers={'authorization':private},request=self.native_request())
+            self.evidence.response_hook(response)  # Let the real SDK classify this HTTP response.
+            with self.assertRaises(self.httpx.HTTPStatusError):response.raise_for_status()
+            diagnostic=self.evidence.diagnostic_snapshot()[-1]
+            self.assertEqual(diagnostic['event'],'RESPONSE_REFUSED')
+            self.assertEqual(diagnostic['details']['http_status'],status)
+            if code.startswith('HERMES_MODEL_'):
+                self.assertEqual(diagnostic['details']['broker_error_code'],code)
+            else:self.assertNotIn('broker_error_code',diagnostic['details'])
+            self.assertNotIn(private,canonical(self.evidence.diagnostic_snapshot()))
+            with self.assertRaises(RuntimeFailure):self.evidence.finish()
+
+    def test_hook_and_unix_transport_errors_preserve_fixed_code_errno_and_no_exception_text(self):
+        private='PRIVATE_HEADER_TOKEN_AND_PROMPT'
+        bad=self.request(stream=True,instructions=private,messages=[{'role':'user','content':private}])
+        with self.assertRaises(RuntimeFailure):self.evidence.request_hook(bad)
+        diagnostic=self.evidence.diagnostic_snapshot()[-1]
+        self.assertEqual(diagnostic['details']['failure_code'],'HERMES_PROVIDER_CAPABILITY_REFUSED')
+        self.assertEqual(diagnostic['details']['accepted_request_count'],0)
+        self.assertNotIn(private,canonical(self.evidence.diagnostic_snapshot()))
+        with tempfile.TemporaryDirectory() as directory:
+            evidence=ProviderEvidence('explicit-model','https://api.openai.com/v1')
+            evidence.begin({'max_output_tokens':512})
+            transport_error=self.httpx.ConnectError(private)
+            transport_error.__cause__=FileNotFoundError(2,private)
+            with patch.object(self.httpx.HTTPTransport,'handle_request',side_effect=transport_error), \
+                    self.httpx.Client(transport=broker_uds_transport(self.httpx,
+                    str(Path(directory)/private),'https://api.openai.com/v1',diagnostics=evidence),
+                    event_hooks={'request':[evidence.request_hook],'response':[evidence.response_hook]}) as client:
+                with self.assertRaises(self.httpx.ConnectError):
+                    client.post('https://api.openai.com/v1/responses',json={
+                        'model':'explicit-model','input':private,'stream':True})
+            failed=evidence.diagnostic_snapshot()[-1]
+            self.assertEqual(failed['event'],'TRANSPORT_FAILURE')
+            self.assertEqual(failed['details']['accepted_request_count'],1)
+            self.assertEqual(failed['details']['errno'],2)
+            self.assertIn('ConnectError',failed['details']['exception_chain'])
+            self.assertNotIn(private,canonical(evidence.diagnostic_snapshot()))
+
     def test_actual_provider_url_is_preserved_until_fixed_unix_transport(self):
         from agent.hermes_model_broker import BrokerConfig, HermesModelBroker, UpstreamResponse
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'model.sock'
             calls = []
             def upstream(route,body,*,deadline):
-                calls.append((route,decode(body)))
-                return UpstreamResponse(200,{'content-type':'application/json','x-request-id':'provider-fixture'},
+                value=decode(body)
+                calls.append((route,value))
+                return UpstreamResponse(200,{'content-type':'text/event-stream' if value.get('stream') else
+                    'application/json','x-request-id':'provider-fixture'}, self.native_stream() if value.get('stream') else
                     canonical({'model':'explicit-model','id':'chatcmpl-model-fixture','choices':[]}).encode())
             config = BrokerConfig(worker_uid=max(os.getuid(),1),upstream_base_url='https://api.openai.com/v1',
                 model='explicit-model',allowed_paths=('/v1/chat/completions','/v1/responses'))
-            with patch('agent.hermes_model_broker.verify_peer'):
-                server = HermesModelBroker(str(path),config,upstream,secure_socket=False)
+            with patch('agent.hermes_model_broker.verify_peer',return_value=(os.getpid(),max(os.getuid(),1),os.getgid())):
+                server = HermesModelBroker(str(path),config,upstream,secure_socket=False,diagnostics=lambda _:None)
                 thread = threading.Thread(target=server.serve_forever,kwargs={'poll_interval':0.01},daemon=True)
                 thread.start()
                 try:
@@ -295,14 +451,17 @@ class ProviderEvidenceTests(unittest.TestCase):
                             'model':'explicit-model','messages':[{'role':'user','content':'synthetic health check'}],
                             'max_completion_tokens':512}),('/v1/responses',{
                             'model':'explicit-model','input':'synthetic health check','max_output_tokens':512,
-                            'reasoning':{'effort':'medium'},'store':False})):
+                            'reasoning':{'effort':'medium'},'store':False,'stream':True})):
                         evidence = ProviderEvidence('explicit-model','https://api.openai.com/v1')
                         evidence.begin({'max_output_tokens':512})
                         with self.httpx.Client(transport=broker_uds_transport(self.httpx,str(path),
                                 'https://api.openai.com/v1'), event_hooks={
                                 'request':[evidence.request_hook],'response':[evidence.response_hook]}) as client:
-                            response = client.post('https://api.openai.com'+route,json=body)
+                            response = client.send(client.build_request('POST','https://api.openai.com'+route,json=body),
+                                stream=body.get('stream',False))
                             self.assertEqual(response.request.url.host,'api.openai.com')
+                            if body.get('stream'):
+                                self.assertEqual(b''.join(response.iter_bytes()),self.native_stream())
                         self.assertEqual(calls[-1][0],route)
                         self.assertEqual(evidence.finish()['model'],'explicit-model')
                     self.assertEqual(calls[0][1]['max_completion_tokens'],512)
