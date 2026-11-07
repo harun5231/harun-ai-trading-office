@@ -14,6 +14,7 @@ from . import secure_sqlite_snapshot as snapshot_storage
 
 FILENAME = 'trade_evaluation.sqlite3'
 LOCK_TIMEOUT_SECONDS = 5
+NOT_SENT_PROTOCOL = 'POST_TRADE_EVALUATION_NOT_SENT_V1'
 
 
 def _json(value):
@@ -41,8 +42,10 @@ def _snapshot(db):
     trades = _latest(db, 'trade')
     scope = _latest(db, 'scope').get('calendar', {})
     completed = {row['operation'] for row in _latest(db, 'analyst_evaluation').values()}
+    closed_not_sent = set(_latest(db, 'evaluation_not_sent'))
     unresolved = [{key:row[key] for key in ('job_id','operation','input_evidence_sha256','reserved_at')}
-        for row in _latest(db, 'evaluation_intent').values() if row['operation'] not in completed]
+        for row in _latest(db, 'evaluation_intent').values()
+        if row['operation'] not in completed and row['operation'] not in closed_not_sent]
     return dict(status='OBSERVATION_ONLY', processed_trade_ids=sorted(trades),
                 consecutive_losses=scope.get('consecutive_losses', 0),
                 streak_complete=scope.get('streak_complete', False),
@@ -169,6 +172,7 @@ def _validated_binding(binding):
 def _project_evaluations(db, jobs):
     from .trade_evaluation_evidence import digest
     bindings=_latest(db,'binding');results=_latest(db,'analyst_evaluation');intents=_latest(db,'evaluation_intent');trades=_latest(db,'trade')
+    closed_not_sent=_latest(db,'evaluation_not_sent')
     for job in jobs:
         if job['status']=='SUPERSEDED_HISTORY_REVISION':continue
         valid={}
@@ -191,9 +195,14 @@ def _project_evaluations(db, jobs):
         if result is not None and result['input_evidence_sha256']==evidence_sha:
             job.update(status='EVALUATED'if result['assessment']!='INCONCLUSIVE'else'EVALUATED_INCONCLUSIVE',
                 missing_reasons=[],analyst_evaluation=result)
+        elif (intent is not None and intent['operation'] in closed_not_sent
+                and intent['input_evidence_sha256']==evidence_sha):
+            job.update(status='EVALUATION_NOT_SENT',missing_reasons=['NEUROBRO_EVALUATION_NOT_SENT'],
+                evaluation_not_sent=closed_not_sent[intent['operation']])
         elif intent is not None and intent['operation']not in {r['operation']for r in results.values()}:
-            job.update(status='EVALUATION_OUTCOME_UNKNOWN',
-                missing_reasons=['NATIVE_EVALUATION_RECEIPT_NOT_CONFIRMED'])
+            if intent['operation'] not in closed_not_sent:
+                job.update(status='EVALUATION_OUTCOME_UNKNOWN',
+                    missing_reasons=['NATIVE_EVALUATION_RECEIPT_NOT_CONFIRMED'])
     return jobs
 
 
@@ -231,8 +240,11 @@ def claim_evaluation(directory, job_id, room_id, *, now=None):
         old=_latest(db,'evaluation_intent').get(job_id)
         if old is not None:
             done=_latest(db,'analyst_evaluation').get(job_id)
-            need(done is not None and done['operation']==old['operation'],'EVALUATION_OUTCOME_UNKNOWN_NO_REPLAY')
+            closed=old['operation'] in _latest(db,'evaluation_not_sent')
+            need(closed or done is not None and done['operation']==old['operation'],
+                'EVALUATION_OUTCOME_UNKNOWN_NO_REPLAY')
             need(old['operation']!=request['operation'],'EVALUATION_ALREADY_COMPLETED_NO_REPLAY')
+        need(request['operation'] not in _latest(db,'evaluation_not_sent'),'EVALUATION_NOT_SENT_NO_REPLAY')
         value=dict(request=request,operation=request['operation'],job_id=job_id,
             request_sha256=digest(request),input_evidence_sha256=request['input_evidence_sha256'],reserved_at=at)
         db.execute('BEGIN IMMEDIATE')
@@ -258,6 +270,7 @@ def complete_evaluation(directory, operation, *, native_receipt_reader):
     with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
         values=[]if db is None else [v for v in _latest(db,'evaluation_intent').values()if v['operation']==operation]
         need(len(values)==1,'EVALUATION_INTENT_NOT_UNIQUE');intent=values[0]
+        need(operation not in _latest(db,'evaluation_not_sent'),'EVALUATION_ALREADY_CLOSED_NOT_SENT')
     receipt=native_receipt_reader(operation)
     request=intent['request']
     need(type(receipt)is dict and set(receipt)=={'protocol','phase','provider','operation','request_sha256',
@@ -281,6 +294,7 @@ def complete_evaluation(directory, operation, *, native_receipt_reader):
         experiment_outcome=dict(status='NOT_RUN',reason='ANALYST_PROPOSALS_ARE_NOT_EXPERIMENT_RESULTS'))
     with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
         need(_latest(db,'evaluation_intent').get(intent['job_id'])==intent,'EVALUATION_INTENT_CHANGED')
+        need(operation not in _latest(db,'evaluation_not_sent'),'EVALUATION_ALREADY_CLOSED_NOT_SENT')
         # Native completion belongs to the exact original once-request even if
         # backfill later superseded its trigger or changed the source rows.
         # Retain that actual receipt and clear the room's unknown outcome; the
@@ -297,6 +311,100 @@ def complete_evaluation(directory, operation, *, native_receipt_reader):
             db.execute('ROLLBACK');raise
 
 
+def _validated_not_sent_proof(proof, intent):
+    """Validate positive pre-Send failure evidence, never mere receipt absence.
+
+    The trusted reader verifies the sealed source records and deployed source
+    hashes. These checks bind those actual worker/browser/room facts to the
+    exact once-claim; they do not accept a provider or Office assertion.
+    """
+    import math,re
+    from .trade_evaluation_evidence import need
+    sha=lambda value:type(value)is str and re.fullmatch('[a-f0-9]{64}',value)is not None
+    at=lambda value:type(value)in(int,float)and math.isfinite(value)and value>=intent['reserved_at']
+    need(type(proof)is dict and set(proof)=={'protocol','operation','job_id','request_sha256',
+        'input_evidence_sha256','room_id','sent_this_request','evidence_sha256','source_sha256',
+        'native_failure','room_parity','wire_request_sha256','worker','browser','observed_at'}
+        and proof.get('protocol')==NOT_SENT_PROTOCOL
+        and all(proof.get(k)==intent[k] for k in
+            ('operation','job_id','request_sha256','input_evidence_sha256'))
+        and proof.get('room_id')==intent['request']['room_id']
+        and proof.get('sent_this_request')is False
+        and sha(proof.get('wire_request_sha256')) and sha(proof.get('evidence_sha256'))
+        and type(proof.get('source_sha256'))is dict and bool(proof['source_sha256'])
+        and all(type(k)is str and bool(k) and sha(v)for k,v in proof['source_sha256'].items())
+        and at(proof.get('observed_at')),'EVALUATION_NOT_SENT_PROOF_INVALID')
+    worker=proof['worker'];browser=proof['browser']
+    need(type(worker)is dict and set(worker)=={'api','request_present','response_present'}
+        and worker['api']is None and worker['request_present']is False and worker['response_present']is False
+        and type(browser)is dict and set(browser)=={'scan_complete','send_intents','marker_seen'}
+        and browser['scan_complete']is True and browser['send_intents']==[] and browser['marker_seen']is False,
+        'EVALUATION_NOT_SENT_PROOF_INSUFFICIENT')
+    failure=proof['native_failure'];parity=proof['room_parity']
+    need(type(failure)is dict and failure.get('schema_version')==1
+        and failure.get('phase')=='INITIAL' and failure.get('accepted_reply_sha256')is None
+        and 'accepted_reply_sha256'in failure and failure.get('followup_intent_sha256')==[]
+        and type(parity)is dict and set(parity)=={'before','after'},
+        'EVALUATION_NOT_SENT_PROOF_INSUFFICIENT')
+    chain=failure.get('chain')
+    need(type(chain)is list and len(chain)==2 and all(type(row)is dict for row in chain)
+        and chain[0].get('class')=='NotSubmitted' and chain[0].get('reason')=='UNAVAILABLE'
+        and chain[1].get('class')=='DialogueError'
+        and chain[1].get('reason')=='DIALOGUE_PRICE_PROPOSAL_REFUSED'
+        and type(chain[1].get('frames'))is list
+        and any(type(frame)is dict and frame.get('function')=='compose'
+            and type(frame.get('file'))is str and frame['file'].endswith('/agent/dialogue_client.py')
+            for frame in chain[1]['frames']),'EVALUATION_NOT_SENT_PROOF_INSUFFICIENT')
+    before=parity['before'];after=parity['after']
+    need(all(type(row)is dict and row.get('schema_version')==1
+            and row.get('operation')==intent['operation']
+            and row.get('request_sha256')==proof['wire_request_sha256'] and at(row.get('at'))
+            for row in (before,failure,after))
+        and before.get('phase')=='PARITY' and after.get('phase')=='FAILURE'
+        and before.get('parity_verified')is True and after.get('parity_verified')is True
+        and sha(before.get('native_source_sha256'))
+        and before['native_source_sha256']==after.get('native_source_sha256')
+        and type(before.get('row_count'))is int and before['row_count']>=0
+        and type(after.get('row_count'))is int
+        and before['row_count']==after.get('row_count')
+        and before['at']<=failure['at']<=after['at']<=proof['observed_at'],
+        'EVALUATION_NOT_SENT_PROOF_INSUFFICIENT')
+    return proof
+
+
+def close_evaluation_not_sent(directory, operation, *, native_proof_reader):
+    """Append a terminal, source-proved NOT_SENT outcome without an analysis.
+
+    Only a trusted internal reader of actual sealed worker/browser/room records
+    may establish the pre-Send boundary. Missing receipts alone remain unknown.
+    The original claim remains intact and this operation can never be replayed.
+    A cached closure survives restart without another evidence read or append.
+    """
+    from .trade_evaluation_evidence import digest,need
+    with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        need(db is not None,'EVALUATION_INTENT_NOT_UNIQUE')
+        if operation in _latest(db,'evaluation_not_sent'):return _snapshot(db)
+        intents=[v for v in _latest(db,'evaluation_intent').values()if v['operation']==operation]
+        need(len(intents)==1,'EVALUATION_INTENT_NOT_UNIQUE');intent=intents[0]
+        need(not any(v['operation']==operation for v in _latest(db,'analyst_evaluation').values()),
+            'EVALUATION_ALREADY_COMPLETED')
+    need(callable(native_proof_reader),'EVALUATION_NATIVE_NOT_SENT_READER_REQUIRED')
+    proof=_validated_not_sent_proof(native_proof_reader(operation),intent)
+    record=dict(operation=operation,job_id=intent['job_id'],request_sha256=intent['request_sha256'],
+        input_evidence_sha256=intent['input_evidence_sha256'],proof=proof,proof_sha256=digest(proof))
+    with snapshot_storage.snapshot_database(directory,FILENAME,write=True,lock_timeout=LOCK_TIMEOUT_SECONDS)as db:
+        if operation in _latest(db,'evaluation_not_sent'):return _snapshot(db)
+        need(_latest(db,'evaluation_intent').get(intent['job_id'])==intent,'EVALUATION_INTENT_CHANGED')
+        need(not any(v['operation']==operation for v in _latest(db,'analyst_evaluation').values()),
+            'EVALUATION_ALREADY_COMPLETED')
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _append(db,'evaluation_not_sent',operation,record)
+            result=_snapshot(db);db.execute('COMMIT');return result
+        except BaseException:
+            db.execute('ROLLBACK');raise
+
+
 def read_evaluation_claim(directory, operation):
     """Only an unresolved, current evidence claim can authorize native Send.
 
@@ -306,6 +414,7 @@ def read_evaluation_claim(directory, operation):
     from .trade_evaluation_evidence import need, digest
     with snapshot_storage.snapshot_database(directory,FILENAME,lock_timeout=LOCK_TIMEOUT_SECONDS) as db:
         if db is None:return None
+        if operation in _latest(db,'evaluation_not_sent'):return None
         intents=[v for v in _latest(db,'evaluation_intent').values() if v['operation']==operation]
         if not intents:return None
         need(len(intents)==1,'EVALUATION_INTENT_NOT_UNIQUE')
