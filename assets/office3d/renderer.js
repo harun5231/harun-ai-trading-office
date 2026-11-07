@@ -6,24 +6,23 @@ import { createAvatar } from './avatars.js';
 import { NavigationMesh } from './navigation.js';
 import { createStatusController } from './status-controller.js';
 import { OfficeAnimationController } from './animation-controller.js';
-import { createAvatarBatch } from './avatar-batch.js';
 
 // Everything below belongs to the visual canvas. The dashboard and transport own their state.
 const host = document.getElementById('scene');
 const mobile = matchMedia('(max-width:700px)').matches;
 const reducedMotion = matchMedia('(prefers-reduced-motion:reduce)').matches;
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#dfe8e9');
+scene.background = new THREE.Color('#e8dfd2');
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: mobile ? 'low-power' : 'high-performance' });
 renderer.setPixelRatio(Math.min(devicePixelRatio || 1, mobile ? 1.4 : 1.8));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.03;
+renderer.toneMappingExposure = 1.12;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.domElement.className = 'office-webgl';
-renderer.domElement.setAttribute('aria-label', 'Trading Office 3D: pemilik dan enam staf maskot di workstation kantor');
+renderer.domElement.setAttribute('aria-label', 'Trading Office 3D: Kantor A dengan lima workstation, area kopi, sofa, dan kolam');
 host.append(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(39, innerWidth / innerHeight, .1, 220);
@@ -34,9 +33,9 @@ controls.minDistance = 12;
 controls.maxDistance = 130;
 controls.minPolarAngle = .34;
 controls.maxPolarAngle = Math.PI * .47;
-controls.target.set(0, 1.25, 1.25);
-scene.add(new THREE.HemisphereLight('#e9f7ff', '#a7937e', 2.0));
-const key = new THREE.DirectionalLight('#fff2de', 2.4);
+controls.target.set(0, 1.65, -.2);
+scene.add(new THREE.HemisphereLight('#fff7e8', '#88715b', 1.8));
+const key = new THREE.DirectionalLight('#fff1d9', 3.0);
 key.position.set(-12, 20, 12);
 key.castShadow = true;
 key.shadow.mapSize.set(mobile ? 1024 : 2048, mobile ? 1024 : 2048);
@@ -45,7 +44,7 @@ key.shadow.camera.updateProjectionMatrix();
 key.shadow.bias = -.00025;
 key.shadow.normalBias = .025;
 scene.add(key);
-const fill = new THREE.DirectionalLight('#afdcf2', 1.0);
+const fill = new THREE.DirectionalLight('#d9e8ef', .85);
 fill.position.set(13, 11, -8);
 scene.add(fill);
 
@@ -54,25 +53,43 @@ const office = createOfficeScene(THREE, { scene, monitors, mobile });
 const status = createStatusController();
 const navigation = new NavigationMesh({ bounds: office.bounds, colliders: office.colliders, cellSize: .32, radius: .46 });
 const stations = Array.isArray(office.stations) ? office.stations : Object.values(office.stations);
-// One visible colleague handles execution and position monitoring. Both backend
-// roles and both workstations remain intact; this is a read-only display alias.
+// Five visible colleagues aggregate all eight existing backend roles. This
+// mapping reads the bridge only; backend employees and their contracts are intact.
+const visualRoleAliases = Object.freeze({
+  market: ['market', 'reviewer'], neuro: ['neuro'], risk: ['risk'],
+  trading: ['trading', 'position'], boss: ['boss', 'report'],
+});
 const displayStatus = {
   getRole(role) {
-    const primary = status.getRole(role);
-    if (role !== 'trading') return { ...primary, displayRole: role };
-    const monitoring = status.getRole('position');
-    return monitoring.active && !primary.active ? { ...monitoring, displayRole: 'position' }
-      : { ...primary, displayRole: role };
+    const candidates = (visualRoleAliases[role] || [role]).map(id => ({ ...status.getRole(id), displayRole: id }));
+    return candidates.find(candidate => candidate.active) ||
+      candidates.find(candidate => candidate.known) || candidates[0];
   },
 };
-const actors = stations.filter(station => station.role !== 'position').map((station, index) => {
+const actors = stations.map((station, index) => {
   const avatar = createAvatar({ id: station.role, role: station.role, name: station.name, accent: station.accent, index });
   scene.add(avatar.root);
   return { id: station.role, role: station.role, station, avatar };
 });
 const animation = new OfficeAnimationController({ actors, navigation,
-  loungeSlots: office.loungeSlots, socialSlots: office.socialSlots, status: displayStatus, reducedMotion });
-const avatarBatch = createAvatarBatch(THREE, { scene, actors });
+  loungeSlots: office.loungeSlots, socialSlots: office.socialSlots, idleSlots: office.idleSlots,
+  status: displayStatus, reducedMotion });
+
+// A missing licensed human model stays absent, with an honest visible notice.
+// Never substitute the former procedural mascots or show invisible work/chat.
+const assetNotice = document.createElement('div');
+assetNotice.className = 'office-asset-notice';
+assetNotice.setAttribute('role', 'status');
+host.append(assetNotice);
+function refreshAssetNotice() {
+  const missing = actors.filter(actor => !actor.avatar.available);
+  assetNotice.hidden = missing.length === 0;
+  assetNotice.textContent = missing.length
+    ? `Karakter belum tersedia · ${missing.length} model manusia berizin belum terpasang`
+    : '';
+}
+refreshAssetNotice();
+for (const actor of actors) actor.avatar.ready?.then(refreshAssetNotice, refreshAssetNotice);
 
 const speechLayer = document.createElement('div');
 speechLayer.className = 'office-speech-layer';
@@ -86,18 +103,41 @@ for (const actor of actors) {
   actor.bubble = bubble; actor.screen = null;
 }
 
+const cameraViews = document.createElement('nav');
+cameraViews.className = 'office-camera-views';
+cameraViews.setAttribute('aria-label', 'Sudut pandang kantor');
+host.append(cameraViews);
+function cameraButton(label, action) {
+  const button = document.createElement('button');
+  button.type = 'button'; button.textContent = label;
+  button.setAttribute('aria-pressed', 'false');
+  button.addEventListener('click', () => {
+    action();
+    for (const child of cameraViews.children) child.setAttribute('aria-pressed', String(child === button));
+  });
+  cameraViews.append(button);
+  return button;
+}
+const overviewButton = cameraButton('KANTOR', frameOffice);
+overviewButton.setAttribute('aria-pressed', 'true');
+for (const station of stations) cameraButton(station.name, () => {
+  controls.target.set(station.x, 1.2, station.z);
+  camera.position.set(station.x + (mobile ? 1.5 : 3.5), mobile ? 8.7 : 7.3, station.z + (mobile ? 13 : 10.5));
+  controls.update(); camera.updateMatrixWorld(true);
+});
+
 function frameOffice() {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  controls.target.set(0, 1.25, 1.25);
+  controls.target.set(0, 1.65, -.2);
   const top = document.querySelector('.top')?.getBoundingClientRect().bottom || 0;
   const maxTop = Math.max(.45, 1 - 2 * (top + 12) / innerHeight);
   const points = [];
-  for (const x of [-11.2, 11.2]) for (const z of [-9.8, 11.7]) points.push(new THREE.Vector3(x, 0, z));
-  points.push(new THREE.Vector3(-10, 5.15, -9.4), new THREE.Vector3(10, 5.15, -9.4));
-  let distance = 27;
+  for (const x of [-11, 11]) for (const z of [-8.6, 9]) points.push(new THREE.Vector3(x, 0, z));
+  points.push(new THREE.Vector3(-10.6, 5.35, -8.4), new THREE.Vector3(10.6, 5.35, -8.4));
+  let distance = 23;
   for (let attempt = 0; attempt < 22; attempt++) {
-    camera.position.set(distance * .66, distance * .81, distance * .86 + 1.25);
+    camera.position.set(distance * (mobile ? .12 : .32), distance * .62, distance * 1.02 - .2);
     camera.lookAt(controls.target); camera.updateMatrixWorld(true);
     if (points.every(point => {
       const projected = point.clone().project(camera);
@@ -107,29 +147,24 @@ function frameOffice() {
   }
   controls.update();
   camera.updateMatrixWorld(true);
+  for (const child of cameraViews.children) child.setAttribute('aria-pressed', String(child === overviewButton));
 }
 frameOffice();
 
 const projectedHead = new THREE.Vector3();
 let labelDiagnostics = { visible: 0, hiddenForSpace: 0, overlaps: 0 };
 function activityLabel(actor, role) {
-  if (actor.mode === 'SOCIAL') return 'Diskusi tim';
-  if (actor.mode === 'RESTING') return 'Istirahat sebentar';
-  if (['WALKING', 'DOCKING'].includes(actor.mode)) return 'Pindah meja';
-  if (['STANDING_UP', 'SITTING_DOWN'].includes(actor.mode)) return 'Bersiap';
-  if (!role.known) return 'Menunggu worker';
-  if (role.active) return ({ market: 'Analisa market', neuro: 'Cek chart', risk: 'Review risiko',
-    trading: 'Proses order', position: 'Pantau posisi', reviewer: 'Review transaksi',
-    report: 'Mengetik laporan', boss: 'Pantau kantor' })[role.displayRole] || 'Bekerja';
-  if (role.speech.startsWith('Robot OFF')) return 'Robot OFF';
-  if (role.speech.startsWith('HOLD')) return 'Tunggu coin berikut';
-  if (role.speech.includes('belum terhubung')) return 'Menunggu koneksi';
-  return 'Menunggu tugas';
+  if (role.active) return actor.mode === 'AT_DESK' ? role.speech : 'Kembali ke workstation';
+  if (!role.known) return 'Status worker belum tersedia';
+  const activity = ({ COFFEE: 'Kopi', SOCIAL: 'Diskusi', LOUNGE: 'Sofa', POOL: 'Tepi kolam', VISIT: 'Kunjungi Harun' })[actor.destination?.kind];
+  if (activity) return `Rehat visual · ${activity}`;
+  return role.speech;
 }
 function projectSpeech(dt) {
   const viewport = renderer.domElement.getBoundingClientRect();
   const candidates = [];
   for (const actor of actors) {
+    if (!actor.avatar.available) { actor.bubble.hidden = true; actor.screen = null; continue; }
     const role = displayStatus.getRole(actor.role);
     const text = activityLabel(actor, role);
     if (actor.bubble.textContent !== text) {
@@ -197,8 +232,8 @@ function render(now) {
   controls.update();
   camera.updateMatrixWorld(true);
   scene.updateMatrixWorld(true);
-  avatarBatch.update();
   projectSpeech(dt);
+  office.update?.(reducedMotion ? 0 : elapsed);
   renderer.render(scene, camera);
 }
 function pause() { cancelAnimationFrame(raf); raf = 0; }
@@ -226,10 +261,9 @@ function dispose() {
   document.getElementById('resetCamera')?.removeEventListener('click', frameOffice);
   renderer.domElement.removeEventListener('webglcontextlost', contextLost);
   controls.dispose(); status.dispose();
-  avatarBatch.dispose();
   for (const actor of actors) actor.avatar.dispose();
   office.dispose(); monitors.dispose(); renderer.dispose();
-  speechLayer.remove(); renderer.domElement.remove();
+  speechLayer.remove(); assetNotice.remove(); cameraViews.remove(); renderer.domElement.remove();
 }
 addEventListener('resize', resize);
 document.addEventListener('visibilitychange', visibility);
@@ -242,15 +276,17 @@ addEventListener('pageshow', event => { if (event.persisted) resume(); });
 window.officeDiagnostics = () => {
   const motion = animation.diagnostics();
   const violations = [];
-  const heads = actors.map(actor => actor.avatar.headAnchor.parent.getWorldPosition(new THREE.Vector3()));
+  const heads = actors.map(actor => actor.avatar.headAnchor.getWorldPosition(new THREE.Vector3()));
   for (let index = 0; index < actors.length; index++) {
     const actor = actors[index];
+    if (!actor.avatar.available) continue;
     const ignoreIds = actor.currentSeat && (actor.sit > 0 || actor.exiting ||
       ['STANDING_UP', 'SITTING_DOWN', 'DOCKING'].includes(actor.mode))
       ? [actor.currentSeat.colliderId] : [];
     if (!navigation.isWalkable(actor.avatar.root.position, { ignoreIds })) violations.push(`obstacle:${actor.id}`);
     for (let next = index + 1; next < actors.length; next++) {
       const other = actors[next];
+      if (!other.avatar.available) continue;
       if (actor.avatar.root.position.distanceTo(other.avatar.root.position) < navigation.radius * 2 - .001)
         violations.push(`avatar:${actor.id}:${other.id}`);
       if (heads[index].distanceTo(heads[next]) < .75)
@@ -263,13 +299,14 @@ window.officeDiagnostics = () => {
       return [position.x, position.y, position.z, actor.sit].every(Number.isFinite);
     }), collisionViolations: violations, navigation: navigation.getDiagnostics(),
     monitorTextures: monitors.diagnostics(), office: { ...office.diagnostics }, status: status.diagnostics(),
-    avatarBatch: avatarBatch.diagnostics(), labels: { ...labelDiagnostics },
-    visualRoleAliases: { trading: ['trading', 'position'] },
+    avatars: actors.map(actor => ({ id: actor.id, ...actor.avatar.diagnostics() })),
+    modelsReady: actors.every(actor => actor.avatar.available), labels: { ...labelDiagnostics },
+    visualRoleAliases,
     pathsRejected: motion.pathsRejected, blockedFrames: motion.blockedFrames,
     renderer: { mobile, reducedMotion, pixelRatio: renderer.getPixelRatio() } };
 };
 animation.update(0, 0);
 monitors.update(0, status.getTelemetry());
-scene.updateMatrixWorld(true); avatarBatch.update(); projectSpeech(0); renderer.render(scene, camera);
+scene.updateMatrixWorld(true); projectSpeech(0); renderer.render(scene, camera);
 document.getElementById('loading').style.display = 'none';
 resume();
