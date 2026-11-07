@@ -1,0 +1,189 @@
+{
+  "checked_at": "2026-11-07T23:07:30.817331+00:00",
+  "source_repository": "harun5231/harun-ai-trading-office",
+  "source_branch": "feat/office-kantor-a",
+  "starting_pr_head": "b9c42af2a1a2724410231c6ad9c9a9c7e8b9b25d",
+  "validation_status": "PASS_LOCAL_VISUAL_AND_MOTION",
+  "restoration": {
+    "status": "already_restored_and_verified",
+    "output": "/workspace/harun-avatar-install/avatar-assets-restored",
+    "files_verified": 42,
+    "all_original_bytes_preserved": true,
+    "network_used": false,
+    "repository_or_trading_changed": false
+  },
+  "asset_review": "avatar-reference-review.json",
+  "physical_contact_review": "physical-contact-review.json",
+  "unit_tests": {
+    "unique_tests": 90,
+    "result": "PASS",
+    "modules": [
+      "test_avatar_status",
+      "test_monitor_textures",
+      "test_dashboard_contract",
+      "test_dashboard_final_ui",
+      "test_office_animation",
+      "test_office_navigation",
+      "test_office_avatar_assets"
+    ]
+  },
+  "browser_checks": [
+    {
+      "name": "desktop",
+      "viewport": {
+        "width": 1536,
+        "height": 1024,
+        "scrollWidth": 1536,
+        "scrollHeight": 1024
+      },
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
+    },
+    {
+      "name": "mobile",
+      "viewport": {
+        "width": 390,
+        "height": 844,
+        "scrollWidth": 390,
+        "scrollHeight": 844
+      },
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
+    },
+    {
+      "name": "mobile-landscape",
+      "viewport": {
+        "width": 844,
+        "height": 390,
+        "scrollWidth": 844,
+        "scrollHeight": 390
+      },
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
+    },
+    {
+      "name": "reduced-motion",
+      "viewport": {
+        "width": 1440,
+        "height": 900,
+        "scrollWidth": 1440,
+        "scrollHeight": 900
+      },
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
+    }
+  ],
+  "motion": {
+    "source": "Local synthetic read-only fixtures; no worker connection",
+    "all_five_simultaneous_departure": true,
+    "work_requested_at_simulated_seconds": 60,
+    "all_five_back_at_own_pc_seconds": 101.89999999999678,
+    "swept_body_head_overlap_violations": 0,
+    "modes_observed": {
+      "market": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "neuro": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "risk": [
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY"
+      ],
+      "trading": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "boss": [
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ]
+    }
+  },
+  "screenshots": {
+    "source": "Actual repository Office page, no worker connection and no synthetic telemetry in these four screenshots",
+    "files": [
+      "desktop.png",
+      "mobile.png",
+      "mobile-workstation.png",
+      "mobile-landscape.png"
+    ]
+  },
+  "publication_mechanism": {
+    "service": "existing GitHub Pages",
+    "branch": "main",
+    "path": "/",
+    "audited_prior_successful_run": 42361777856,
+    "backend_workflows": "Only backend path-filtered PR checks and explicit manual image publish; no push/workflow_run backend deployment",
+    "user_authorized_frontend_publication": true
+  },
+  "scope": {
+    "protected_paths_changed": [],
+    "dashboard_change": "publish() display projection only; all other dashboard bytes unchanged",
+    "extra_polling": false,
+    "vps_or_trading_runtime_access": false
+  },
+  "limitations": [
+    "Chromium mobile emulation, not a physical iPhone/Safari test.",
+    "Mesh contacts use sampled deformed vertices and rounded boxes at 1.5 mm tolerance; not a proof for every continuous pose or cloth simulation.",
+    "Portrait likeness remains stylized, as recorded in the actual reference review.",
+    "Unavailable candles, complete dialogue and structured final Neurobro decisions are explicitly identified, never synthesized."
+  ]
+}

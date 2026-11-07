@@ -201,6 +201,32 @@ assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTel
 document.getElementById('apiDisconnect').click();assert.equal(bridge.getTelemetry().balance,null);assert.equal(bridge.getRole('position').active,false);bridge.dispose();
 """)
 
+    def test_office_projection_uses_existing_pending_fill_and_protection_records(self):
+        self.run_dom(r"""
+data.account.open_entry_symbols=['ETHUSDT'];
+data.robot.protection_observations={entry:{source:'BINANCE_FUTURES',state:'PROTECTION_INCOMPLETE',symbol:'ETHUSDT',sl_confirmed:false,tp_confirmed:false,observed_at:now()}};
+data.robot.risk_estimates={entry:{source:'RISK_MANAGER',kind:'MONITORING_ESTIMATE_ONLY',symbol:'ETHUSDT',status:'WITHIN_BUDGET',observed_at:now()}};
+await connect();const projected=snapshots.at(-1);
+assert.equal(JSON.stringify(projected.pending_entry_symbols),JSON.stringify(['ETHUSDT']));assert.equal(projected.pending_orders,undefined);
+assert.equal(projected.recent_fills[0].symbol,'BTCUSDT');assert.equal(projected.recent_fills[0].side,'SELL');assert.equal(projected.fills_checked_at,data.position_history.checked_at);
+assert.equal(projected.protection_observations[0].state,'PROTECTION_INCOMPLETE');assert.match(projected.protection_observations[0].label,/SL BELUM TERKONFIRMASI/);
+assert.equal(projected.risk_observations[0].source,'RISK_MANAGER');assert.equal(calls.some(call=>call.method==='POST'),false);
+document.getElementById('apiDisconnect').click();const lost=snapshots.at(-1);assert.equal(lost.pending_entry_symbols,null);assert.equal(lost.recent_fills.length,0);assert.equal(lost.protection_observations.length,0);assert.equal(lost.risk_observations.length,0);
+""")
+
+    def test_office_fill_projection_ignores_malformed_rows_and_keeps_newest_twenty(self):
+        self.run_dom(r"""
+const template=data.position_history.items[0];
+data.position_history.items=[null,7,[],...Array.from({length:25},(_,index)=>({...template,
+ symbol:index===0?'NEWESTUSDT':index===24?'OLDESTUSDT':'BTCUSDT',time:new Date(clock-index*1000).toISOString()}))];
+await connect();const projected=snapshots.at(-1);
+assert.equal(projected.status,'OFF');assert.equal(projected.balance,'116.928');
+assert.equal(projected.recent_fills.length,20);assert.equal(projected.recent_fills[0].symbol,'NEWESTUSDT');
+assert.equal(projected.recent_fills.at(-1).time,new Date(clock-19000).toISOString());
+assert.equal(projected.recent_fills.some(row=>row.symbol==='OLDESTUSDT'),false);
+assert.equal(calls.some(call=>call.method==='POST'),false);
+""")
+
     def test_post_refresh_wins_over_inflight_older_poll(self):
         self.run_dom(r"""
 await connect();const previous=structuredClone(data);let finish;let intercepted=false;responseOverride=url=>url.endsWith('/office/status')&&!intercepted?(intercepted=true,new Promise(resolve=>{finish=()=>resolve(response(previous));})):null;[...intervals.values()][0]();await flush();document.getElementById('robotToggle').click();await flush();finish();await flush();assert.match(document.getElementById('robotToggle').textContent,/: ON/);assert.equal(calls.filter(call=>call.url.endsWith('/office/status')).length,3);assert.equal(snapshots.at(-1).robot_on,true);
