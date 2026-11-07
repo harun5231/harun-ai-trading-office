@@ -1,5 +1,6 @@
 from contextlib import ExitStack
 import errno
+import io
 import json
 import os
 from pathlib import Path
@@ -203,6 +204,7 @@ class PeerCredentialTests(unittest.TestCase):
         connection.getsockopt.return_value = struct.pack('3i', 77, 99999, 99999)
         broker = object.__new__(b.HermesModelBroker)
         broker.config = config()
+        broker.event = Mock()
         with patch.object(b.socketserver.UnixStreamServer, 'get_request',
                 return_value=(connection, '')):
             with self.assertRaises(OSError):
@@ -279,6 +281,79 @@ class UpstreamTests(unittest.TestCase):
             capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'--credential-file', result.stdout)
+
+    def test_upstream_status_and_transport_errors_never_log_private_text(self):
+        factory, connection, received = self.fake_connection(b.UpstreamResponse(429,
+            {'x-request-id': 'provider-genuine-429'}, b'PRIVATE_PROVIDER_ERROR_BODY'))
+        received.getheader.side_effect = lambda name: {'x-request-id': 'provider-genuine-429'}.get(name)
+        events = []
+        b._diagnostic_context.sink = lambda event, **metadata: events.append({'event': event, **metadata})
+        try:
+            upstream = b.HttpsModelUpstream(config(), 'PRIVATE_MODEL_CREDENTIAL', connection_factory=factory)
+            result = upstream('/v1/chat/completions', request(), deadline=time.monotonic() + 5)
+            self.assertEqual((result.status, result.body), (429, b''))
+            self.assertEqual(events, [{'event': 'UPSTREAM_STATUS', 'status': 429,
+                'provider_request_id': 'provider-genuine-429'}])
+            connection.connect.side_effect = OSError(errno.ENETUNREACH, 'PRIVATE_NETWORK_ERROR_URL_TOKEN')
+            with self.assertRaises(b.BrokerError):
+                upstream('/v1/chat/completions', request(), deadline=time.monotonic() + 5)
+            self.assertEqual(events[-1], {'event': 'TRANSPORT_ERROR',
+                'error_class': 'OSError', 'errno': errno.ENETUNREACH})
+            self.assertNotIn('PRIVATE_', json.dumps(events))
+        finally:
+            b._diagnostic_context.sink = None
+
+    def test_request_metadata_has_only_fixed_field_names_and_technical_values(self):
+        value = {'model': 'PRIVATE_MODEL_VALUE', 'input': 'PRIVATE_INPUT',
+            'instructions': 'PRIVATE_INSTRUCTIONS', 'PRIVATE_UNKNOWN_FIELD': 'PRIVATE_VALUE',
+            'tools': [{'name': 'PRIVATE_TOOL_NAME'}], 'tool_choice': 'PRIVATE_TOOL_CHOICE',
+            'stream': 'PRIVATE_STREAM', 'background': True, 'store': False,
+            'include': ['reasoning.encrypted_content', 'PRIVATE_INCLUDE']}
+        metadata = b.request_metadata(value, config())
+        self.assertNotIn('PRIVATE_', json.dumps(metadata))
+        self.assertEqual(metadata['unknown_field_count'], 1)
+        self.assertEqual(metadata['include'], ['reasoning.encrypted_content'])
+        self.assertEqual(metadata['unknown_include_count'], 1)
+        self.assertEqual(metadata['tools_count'], 1)
+        self.assertEqual(metadata['model'], 'MISMATCH_OR_ABSENT')
+        self.assertEqual(metadata['stream'], 'INVALID')
+        with patch('sys.stdout', new_callable=io.StringIO) as output:
+            b._journal_event({'event': 'HERMES_MODEL_REQUEST_OBSERVED', **metadata})
+        self.assertEqual(len(output.getvalue().splitlines()), 1)
+        self.assertEqual(json.loads(output.getvalue())['unknown_field_count'], 1)
+
+    def test_repeated_set_cookie_is_accepted_without_cookie_values_or_unknown_names_in_diagnostics(self):
+        factory, connection, received = self.fake_connection()
+        received.getheaders.return_value = [*response().headers.items(),
+            ('Set-Cookie', 'PRIVATE_COOKIE_ONE'), ('set-cookie', 'PRIVATE_COOKIE_TWO'),
+            ('PRIVATE_HEADER_NAME', 'PRIVATE_VALUE_ONE'), ('PRIVATE_HEADER_NAME', 'PRIVATE_VALUE_TWO')]
+        events = []
+        b._diagnostic_context.sink = lambda event, **metadata: events.append({'event': event, **metadata})
+        try:
+            upstream = b.HttpsModelUpstream(config(), 'PRIVATE_MODEL_CREDENTIAL', connection_factory=factory)
+            result = upstream('/v1/chat/completions', request(), deadline=time.monotonic() + 5)
+            b.validate_response(result, stream=False, path='/v1/chat/completions', config=config())
+        finally:
+            b._diagnostic_context.sink = None
+        self.assertEqual(result.body, response().body)
+        self.assertNotIn('set-cookie', result.headers)
+        self.assertNotIn('PRIVATE_HEADER_NAME', result.headers)
+        self.assertEqual(events[-1], {'event': 'UPSTREAM_HEADERS',
+            'duplicate_header_names': ['set-cookie'], 'unknown_duplicate_header_count': 1})
+        self.assertNotIn('PRIVATE_', json.dumps(events))
+
+    def test_repeated_semantic_response_headers_still_refuse(self):
+        for name, value in (('Content-Type', 'application/json'),
+                ('X-Request-Id', 'another-provider-id'), ('Content-Encoding', 'identity'),
+                ('Content-Length', '100')):
+            with self.subTest(header=name):
+                factory, _, received = self.fake_connection()
+                received.getheaders.return_value = [*response().headers.items(),
+                    (name.lower(), value), (name, value)]
+                upstream = b.HttpsModelUpstream(config(), 'test-model-token', connection_factory=factory)
+                with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_RESPONSE_INVALID$'):
+                    upstream('/v1/chat/completions', request(), deadline=time.monotonic() + 5)
+                received.read1.assert_not_called()
 
 
 class StartupDiagnosticTests(unittest.TestCase):
@@ -446,11 +521,13 @@ class UnixHttpIntegrationTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.socket_path = str(Path(self.temp.name) / 'model.sock')
         self.calls = []
+        self.events = []
         self.output = response()
         def upstream(path, body, *, deadline):
             self.calls.append((path, body))
             return self.output
-        self.server = b.HermesModelBroker(self.socket_path, config(), upstream, secure_socket=False)
+        self.server = b.HermesModelBroker(self.socket_path, config(), upstream, secure_socket=False,
+            diagnostics=self.events.append)
         self.thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': .01}, daemon=True)
         self.thread.start()
 
@@ -477,6 +554,32 @@ class UnixHttpIntegrationTests(unittest.TestCase):
         self.assertEqual(self.calls, [('/v1/chat/completions', request())])
         self.assertNotIn(b'isolated-dummy-key', result.content)
         self.assertEqual(os.stat(self.socket_path).st_mode & 0o777, 0o660)
+
+    def test_request_journal_correlates_safe_events_and_never_logs_input_or_headers(self):
+        result = self.send(request(messages=[{'role': 'user', 'content': 'PRIVATE_PROMPT_CONTENT'}]),
+            headers={'authorization': 'Bearer PRIVATE_WORKER_AUTHORIZATION'})
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual([row['event'] for row in self.events], [
+            'HERMES_MODEL_PEER_ACCEPTED', 'HERMES_MODEL_REQUEST_OBSERVED',
+            'HERMES_MODEL_REQUEST_VALIDATED', 'HERMES_MODEL_UPSTREAM_STARTED',
+            'HERMES_MODEL_UPSTREAM_STATUS', 'HERMES_MODEL_RESPONSE_VERIFIED'])
+        self.assertTrue(all(row.get('connection') == 1 for row in self.events[1:]))
+        self.assertTrue(all(row['count'] == 1 for row in self.events))
+        self.assertNotIn('PRIVATE_', json.dumps(self.events))
+        result = self.send(json.dumps({'model': 'hermes-fixed-model', 'messages': [
+            {'role': 'user', 'content': 'PRIVATE_REJECTED_PROMPT'}],
+            'PRIVATE_UNKNOWN_FIELD': 'PRIVATE_UNKNOWN_VALUE'}).encode())
+        self.assertEqual(result.status_code, 400)
+        self.assertEqual(self.events[-1]['code'], 'HERMES_MODEL_REQUEST_INVALID')
+        self.assertEqual(self.events[-2]['unknown_field_count'], 1)
+        self.assertNotIn('PRIVATE_', json.dumps(self.events))
+
+    def test_journal_failure_does_not_change_single_dispatch_or_guards(self):
+        self.server._diagnostics = Mock(side_effect=OSError('PRIVATE_JOURNAL_FAILURE'))
+        self.assertEqual(self.send(request()).status_code, 200)
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(self.send(request(tools=[{'type': 'function'}])).status_code, 400)
+        self.assertEqual(len(self.calls), 1)
 
     def test_nonempty_tools_or_wrong_path_make_no_upstream_call(self):
         self.assertEqual(self.send(request(tools=[{'type': 'function'}])).status_code, 400)
