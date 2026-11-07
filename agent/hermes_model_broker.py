@@ -8,6 +8,7 @@ original finite event stream is then returned to the SDK without alteration.
 """
 import argparse
 from dataclasses import dataclass
+import errno
 import http.client
 import json
 import math
@@ -42,6 +43,20 @@ RESPONSES_FIELDS = frozenset({'model', 'input', 'instructions', 'stream', 'tempe
 TOOL_TYPES = frozenset({'function_call', 'tool_call', 'computer_call', 'web_search_call',
     'file_search_call', 'code_interpreter_call', 'image_generation_call', 'mcp_call',
     'mcp_list_tools', 'mcp_approval_request'})
+STARTUP_CODES = frozenset({'HERMES_MODEL_ROOT_REFUSED', 'HERMES_MODEL_CONFIG_INVALID',
+    'HERMES_MODEL_JSON_INVALID', 'HERMES_MODEL_UID_INVALID', 'HERMES_MODEL_CREDENTIAL_INVALID',
+    'HERMES_MODEL_SOCKET_INVALID', 'HERMES_MODEL_SOCKET_EXISTS', 'HERMES_MODEL_SOCKET_CHANGED',
+    'HERMES_MODEL_FILE_PATH_REFUSED',
+    'HERMES_MODEL_FILE_PARENT_OWNER_REFUSED', 'HERMES_MODEL_FILE_PARENT_MODE_REFUSED',
+    'HERMES_MODEL_FILE_TYPE_REFUSED', 'HERMES_MODEL_FILE_OWNER_REFUSED',
+    'HERMES_MODEL_FILE_MODE_REFUSED', 'HERMES_MODEL_FILE_SIZE_REFUSED',
+    'HERMES_MODEL_CREDENTIAL_MODE_REFUSED', 'HERMES_MODEL_FILE_OPEN_EACCES',
+    'HERMES_MODEL_FILE_OPEN_EPERM', 'HERMES_MODEL_FILE_MISSING',
+    'HERMES_MODEL_FILE_LINK_REFUSED', 'HERMES_MODEL_FILE_PARENT_INVALID',
+    'HERMES_MODEL_FILE_IO_FAILED', 'HERMES_MODEL_TYPE_ERROR', 'HERMES_MODEL_VALUE_ERROR',
+    'HERMES_MODEL_OS_ERROR', 'HERMES_MODEL_ERROR_UNCLASSIFIED'})
+STARTUP_PHASES = frozenset({'PROCESS_IDENTITY', 'CONFIG_READ', 'CONFIG_VALIDATE',
+    'CREDENTIAL_READ', 'CREDENTIAL_VALIDATE', 'UPSTREAM', 'SOCKET', 'SERVE', 'UNCLASSIFIED'})
 
 
 class BrokerError(Exception):
@@ -349,6 +364,33 @@ def verify_peer(connection, expected_uid):
     return pid, uid, gid
 
 
+def remove_stale_socket(path):
+    """Recover only an owned, unchanged socket with no listening process."""
+    path = Path(path)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return
+    need(stat.S_ISSOCK(before.st_mode) and before.st_uid == os.geteuid(),
+         'HERMES_MODEL_SOCKET_EXISTS')
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+        probe.settimeout(0.2)
+        try:
+            probe.connect(str(path))
+        except OSError as error:
+            need(error.errno == errno.ECONNREFUSED, 'HERMES_MODEL_SOCKET_EXISTS')
+        else:
+            raise BrokerError('HERMES_MODEL_SOCKET_EXISTS')
+    try:
+        after = path.lstat()
+    except FileNotFoundError:
+        raise BrokerError('HERMES_MODEL_SOCKET_CHANGED') from None
+    need(stat.S_ISSOCK(after.st_mode) and after.st_uid == os.geteuid()
+         and (before.st_dev, before.st_ino) == (after.st_dev, after.st_ino),
+         'HERMES_MODEL_SOCKET_CHANGED')
+    path.unlink()
+
+
 class _Handler(socketserver.StreamRequestHandler):
     def handle(self):
         def expire_input():
@@ -448,7 +490,7 @@ class HermesModelBroker(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
                 parent = directory.lstat()
                 need(parent.st_uid in (0, os.geteuid()) and stat.S_ISDIR(parent.st_mode)
                      and not parent.st_mode & 0o022, 'HERMES_MODEL_SOCKET_INVALID')
-        need(not path.exists() and not path.is_symlink(), 'HERMES_MODEL_SOCKET_EXISTS')
+        remove_stale_socket(path)
         super().__init__(str(path), _Handler, bind_and_activate=False)
         self._socket_identity = None
         try:
@@ -505,36 +547,52 @@ class HermesModelBroker(socketserver.ThreadingMixIn, socketserver.UnixStreamServ
 def _read_protected_file(path, *, credential=False):
     """Open every component without following links; config stays root sealed."""
     path = Path(path)
-    need(path.is_absolute(), 'HERMES_MODEL_CONFIG_INVALID')
-    directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    need(path.is_absolute(), 'HERMES_MODEL_FILE_PATH_REFUSED')
+    directory = None
     descriptor = None
     try:
+        directory = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
         for name in path.parts[1:-1]:
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             os.close(directory)
             directory = child
             info = os.fstat(directory)
             owners = (0, os.geteuid()) if credential else (0,)
-            need(info.st_uid in owners and not info.st_mode & 0o022,
-                 'HERMES_MODEL_CONFIG_INVALID')
+            need(info.st_uid in owners, 'HERMES_MODEL_FILE_PARENT_OWNER_REFUSED')
+            need(not info.st_mode & 0o022, 'HERMES_MODEL_FILE_PARENT_MODE_REFUSED')
         descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
         info = os.fstat(descriptor)
         owners = (0, os.geteuid()) if credential else (0,)
         maximum = 8193 if credential else 16384
-        need(stat.S_ISREG(info.st_mode) and info.st_uid in owners
-             and not info.st_mode & 0o022 and info.st_size <= maximum
-             and (not credential or not info.st_mode & 0o077), 'HERMES_MODEL_CONFIG_INVALID')
+        need(stat.S_ISREG(info.st_mode), 'HERMES_MODEL_FILE_TYPE_REFUSED')
+        need(info.st_uid in owners, 'HERMES_MODEL_FILE_OWNER_REFUSED')
+        need(not info.st_mode & 0o022, 'HERMES_MODEL_FILE_MODE_REFUSED')
+        need(info.st_size <= maximum, 'HERMES_MODEL_FILE_SIZE_REFUSED')
+        need(not credential or not info.st_mode & 0o077, 'HERMES_MODEL_CREDENTIAL_MODE_REFUSED')
         with os.fdopen(descriptor, 'rb', closefd=True) as stream:
             descriptor = None
             body = stream.read(maximum + 1)
-        need(0 < len(body) <= maximum, 'HERMES_MODEL_CONFIG_INVALID')
+        need(0 < len(body) <= maximum, 'HERMES_MODEL_FILE_SIZE_REFUSED')
         return body
-    except OSError:
-        raise BrokerError('HERMES_MODEL_CONFIG_INVALID') from None
+    except OSError as error:
+        code = {errno.EACCES:'HERMES_MODEL_FILE_OPEN_EACCES',
+            errno.EPERM:'HERMES_MODEL_FILE_OPEN_EPERM', errno.ENOENT:'HERMES_MODEL_FILE_MISSING',
+            errno.ELOOP:'HERMES_MODEL_FILE_LINK_REFUSED',
+            errno.ENOTDIR:'HERMES_MODEL_FILE_PARENT_INVALID'}.get(error.errno, 'HERMES_MODEL_FILE_IO_FAILED')
+        raise BrokerError(code) from None
     finally:
         if descriptor is not None:
             os.close(descriptor)
-        os.close(directory)
+        if directory is not None:
+            os.close(directory)
+
+
+def _startup_refusal(phase, code):
+    if phase not in STARTUP_PHASES:
+        phase = 'UNCLASSIFIED'
+    if code not in STARTUP_CODES:
+        code = 'HERMES_MODEL_ERROR_UNCLASSIFIED'
+    return SystemExit('HERMES_MODEL_BROKER_START_REFUSED phase=' + phase + ' code=' + code)
 
 
 def main(argv=None):
@@ -544,22 +602,37 @@ def main(argv=None):
     parser.add_argument('--socket-path', required=True)
     args = parser.parse_args(argv)
     upstream = None
+    phase = 'PROCESS_IDENTITY'
     try:
         need(os.geteuid() != 0, 'HERMES_MODEL_ROOT_REFUSED')
-        value = decode_json(_read_protected_file(args.config))
+        phase = 'CONFIG_READ'
+        raw = _read_protected_file(args.config)
+        phase = 'CONFIG_VALIDATE'
+        value = decode_json(raw)
         need(type(value) is dict, 'HERMES_MODEL_CONFIG_INVALID')
         config = BrokerConfig(**value)
         need(config.worker_uid != os.geteuid(), 'HERMES_MODEL_UID_INVALID')
+        phase = 'CREDENTIAL_READ'
+        raw = _read_protected_file(args.credential_file, credential=True)
+        phase = 'CREDENTIAL_VALIDATE'
         try:
-            credential = _read_protected_file(args.credential_file, credential=True).decode('ascii').strip()
+            credential = raw.decode('ascii').strip()
         except UnicodeError:
             raise BrokerError('HERMES_MODEL_CREDENTIAL_INVALID') from None
+        phase = 'UPSTREAM'
         upstream = HttpsModelUpstream(config, credential)
+        phase = 'SOCKET'
         with HermesModelBroker(args.socket_path, config, upstream) as server:
+            phase = 'SERVE'
             server.serve_forever(poll_interval=0.25)
-    except (BrokerError, TypeError, ValueError):
-        # Fixed diagnostics, independent of JSON, credentials, and provider errors.
-        raise SystemExit('HERMES_MODEL_BROKER_START_REFUSED') from None
+    except BrokerError as error:
+        raise _startup_refusal(phase, str(error)) from None
+    except TypeError:
+        raise _startup_refusal(phase, 'HERMES_MODEL_TYPE_ERROR') from None
+    except ValueError:
+        raise _startup_refusal(phase, 'HERMES_MODEL_VALUE_ERROR') from None
+    except OSError:
+        raise _startup_refusal(phase, 'HERMES_MODEL_OS_ERROR') from None
     finally:
         if upstream is not None:
             upstream.close()

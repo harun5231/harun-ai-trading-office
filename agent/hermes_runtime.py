@@ -244,28 +244,48 @@ class HermesRuntimeClient:
             return False
 
     def __call__(self, payload):
-        from .models import AmbiguousOperation, NotSent
+        from .models import NotSent
         if not self.ready():
             raise NotSent('HERMES_RUNTIME_UNAVAILABLE')
         self._last_attestation = {}
         envelope = self._exchange('execute', payload, deadline=payload.get('deadline_epoch', 0))
+        return self._validated_completed(envelope, payload)
+
+    def _validated_completed(self, envelope, binding):
+        """One validator for a new response and a journal-backed recovery read."""
+        from .models import AmbiguousOperation
         try:
+            require(type(binding) is dict and all(type(binding.get(key)) is str and SHA.fullmatch(binding[key])
+                for key in ('request_id','request_sha256')), 'HERMES_RUNTIME_PROOF_INVALID', state='UNKNOWN')
             require(type(envelope) is dict and set(envelope) == {'receipt', 'provider_evidence'},
                 'HERMES_RUNTIME_PROOF_INVALID', state='UNKNOWN')
             receipt, proof = envelope['receipt'], envelope['provider_evidence']
+            fields = {'schema_version','protocol','runtime','request_id','request_sha256',
+                'conversation_id','phase','model',*PINS,'status','trace_id','session_id','observed_at','decision'}
             require(type(receipt) is dict and type(proof) is dict
+                and set(receipt) == fields and type(receipt['schema_version']) is int
+                and receipt['schema_version'] == 1 and receipt['protocol'] == PROTOCOL
+                and receipt['status'] == 'completed'
                 and proof.get('model') == self.model and proof.get('broker_model_verified') is True
-                and isinstance(proof.get('provider_response_id'), str) and proof['provider_response_id']
-                and isinstance(proof.get('provider_request_id'), str) and proof['provider_request_id']
+                and all(type(proof.get(key)) is str and 0 < len(proof[key]) <= 256
+                    for key in ('provider_response_id','provider_request_id'))
+                and all(type(receipt[key]) is str and IDENTITY.fullmatch(receipt[key])
+                    and not receipt[key].startswith('resp_') for key in ('trace_id','session_id'))
+                and type(receipt['observed_at']) in (int,float) and math.isfinite(receipt['observed_at'])
+                and 0 < receipt['observed_at'] <= self.clock()+5
+                and all(self._exchange_attestation.get(key) is True
+                    for key in ('verified','kernel_peer_verified','isolation_verified'))
                 and all(receipt.get(key) == value for key,value in
                     {**self.pins, 'model':self.model, 'runtime':RUNTIME,
-                     'request_id':payload['request_id'], 'request_sha256':payload['request_sha256']}.items()),
+                     'request_id':binding['request_id'],'request_sha256':binding['request_sha256'],
+                     **{key:binding[key] for key in ('conversation_id','phase')
+                        if key in binding}}.items()),
                 'HERMES_RUNTIME_PROOF_INVALID', state='UNKNOWN')
             self._last_attestation = {**self._exchange_attestation, **self.pins,
                 'runtime':RUNTIME, 'model':self.model,
                 **{key:receipt[key] for key in ('request_id', 'request_sha256', 'trace_id', 'session_id')},
                 'provider_evidence':deepcopy(proof)}
-            return receipt
+            return deepcopy(receipt)
         except Exception:
             self._last_attestation = {}
             raise AmbiguousOperation('HERMES_RUNTIME_PROOF_INVALID') from None
@@ -274,10 +294,22 @@ class HermesRuntimeClient:
         return deepcopy(self._last_attestation)
 
     def lookup(self, request_id, request_sha256):
-        from .models import NotSent
-        if not self.ready():
-            raise NotSent('HERMES_RUNTIME_UNAVAILABLE')
-        return self._exchange('lookup', {'request_id':request_id, 'request_sha256':request_sha256})
+        """Read a completed receipt; absence never authorizes another execution."""
+        from .models import AmbiguousOperation
+        self._last_attestation = {}
+        try:
+            require(all(type(value) is str and SHA.fullmatch(value)
+                for value in (request_id,request_sha256)), 'HERMES_RUNTIME_PROOF_INVALID', state='UNKNOWN')
+            if not self.ready():
+                raise AmbiguousOperation('HERMES_RUNTIME_OPERATION_UNKNOWN')
+            binding = {'request_id':request_id, 'request_sha256':request_sha256}
+            envelope = self._exchange('lookup', binding)
+            if envelope is None:
+                return None
+            return self._validated_completed(envelope, binding)
+        except Exception:
+            self._last_attestation = {}
+            raise AmbiguousOperation('HERMES_RUNTIME_OPERATION_UNKNOWN') from None
 
 
 class RequestJournal:

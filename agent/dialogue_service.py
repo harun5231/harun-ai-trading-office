@@ -32,7 +32,7 @@ from .llm import (OpenAIDialogue, read_api_key, validated_market_context,
                   web_prompt_allowed)
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
-from .hermes_dialogue import HermesDialogue
+from .hermes_dialogue import HermesDialogue, MODEL_IDENTITY, RECOVERY_PREFIX
 
 # The exact 400-candle payload plus bounded Neurobro reply no longer fits the
 # former 64 KiB request. The response and HTTP-header limits remain unchanged.
@@ -64,6 +64,7 @@ PUBLIC_ERRORS = frozenset({'DIALOGUE_REQUEST_INVALID', 'DIALOGUE_BODY_LIMIT', 'D
 SCREENING_RECOVERY_POLICY = 'ORIGINAL_SCREENING_KNOWN_REJECTION_V1'
 SCREENING_INTERPRETATION_POLICY = 'RECEIVED_SCREENING_KNOWN_REJECTION_V1'
 SCREENING_RECEIPT_LOOKUP = 'SCREENING_RECEIPT_LOOKUP'
+HERMES_RECEIPT_RECOVERY = 'HERMES_RECEIPT_RECOVERY'
 SCREENING_LOOKUP_BINDING = ('request_id', 'conversation_id', 'phase', 'reply_sha256')
 MINI_BACKEND = 'OPENAI_MINI'
 HERMES_BACKEND = 'HERMES_AGENT'
@@ -475,7 +476,7 @@ def validate_runtime_config(value, legacy, *, backend=None):
         and value['backend'] == HERMES_BACKEND and backend in (None, HERMES_BACKEND)
         and all(value[name] == child for name,child in legacy.items()
             if name not in {'schema_version','model'})
-        and type(value['model']) is str and IDENTITY.fullmatch(value['model'])
+        and type(value['model']) is str and MODEL_IDENTITY.fullmatch(value['model'])
         and not re.search(r'gpt-5-mini(?:$|-)', value['model'], re.I),
         'DIALOGUE_AUTHENTICATION_FAILED')
     hermes = value['hermes']
@@ -506,7 +507,8 @@ def create_dialogue_engine(memory, key_file, *, backend=MINI_BACKEND, config=Non
     need(backend in BACKENDS, 'DIALOGUE_AUTHENTICATION_FAILED')
     if backend == MINI_BACKEND:
         need(config is None or config.get('schema_version') == 2, 'DIALOGUE_AUTHENTICATION_FAILED')
-        return DialogueEngine(memory, key_file, clock=clock)
+        return (DialogueEngine(memory, key_file) if clock is time.time
+            else DialogueEngine(memory, key_file, clock=clock))
     need(type(config) is dict and config.get('backend') == HERMES_BACKEND,
         'DIALOGUE_AUTHENTICATION_FAILED')
     from .hermes_runtime import HermesRuntimeClient
@@ -514,6 +516,7 @@ def create_dialogue_engine(memory, key_file, *, backend=MINI_BACKEND, config=Non
     hermes = config['hermes']
     model = HermesDialogue(key_file, memory, model=config['model'], transport=bridge,
         attestation=bridge.attestation, runtime_ready=bridge.ready, require_verified_transport=True,
+        receipt_lookup=bridge.lookup,
         **{name:hermes[name] for name in ('runtime_source_sha256','runtime_config_sha256',
             'isolation_policy_sha256')}, clock=clock)
     return DialogueEngine(memory, key_file, model=model, backend=backend, clock=clock)
@@ -759,11 +762,103 @@ class DialogueEngine:
             self.memory.put(checkpoint_key, record)
         return child_id, child_payload
 
+    def _hermes_history_once(self, archive, result, observed_at):
+        """The original pair and its marker commit together, including recovery."""
+        request = archive['request']
+        key = 'hermes-history-v1:'+request['request_id']
+        identity = dict(request_sha256=archive['rpc_payload']['request_sha256'],
+            result_sha256=hashlib.sha256(canonical(result).encode()).hexdigest(),
+            conversation_id=request['conversation_id'],history_anchor=archive['history_anchor'])
+        expected = [('user',request['reply']),('assistant',canonical(result['decision']))]
+        with self.memory.transaction():
+            marker = self.memory.get(key)
+            if marker is not None:
+                need(type(marker) is dict and all(marker.get(name) == value for name,value in identity.items())
+                    and marker.get('status') in {'APPENDED','RECEIPT_ONLY_HISTORY_ADVANCED'}
+                    and type(marker.get('sequences')) is list,'DIALOGUE_OPERATION_UNKNOWN')
+                if marker['status'] == 'APPENDED':
+                    need(len(marker['sequences']) == 2 and all(type(seq) is int for seq in marker['sequences']),
+                        'DIALOGUE_OPERATION_UNKNOWN')
+                    for seq,(role,content) in zip(marker['sequences'],expected):
+                        row = self.memory.db.execute('SELECT conversation_id,role,text FROM messages WHERE seq=?',(seq,)).fetchone()
+                        need(row == (request['conversation_id'],role,content),'DIALOGUE_OPERATION_UNKNOWN')
+                else:
+                    need(marker['sequences'] == [],'DIALOGUE_OPERATION_UNKNOWN')
+                return
+            tail = self.memory.db.execute('SELECT COALESCE(MAX(seq),0) FROM messages WHERE conversation_id=?',
+                (request['conversation_id'],)).fetchone()[0]
+            need(tail >= archive['history_anchor'],'DIALOGUE_OPERATION_UNKNOWN')
+            sequences = []
+            if tail == archive['history_anchor']:
+                for role,content in expected:
+                    self.memory.append(request['conversation_id'],role,content,observed_at)
+                    sequences.append(self.memory.db.execute('SELECT last_insert_rowid()').fetchone()[0])
+            # A later turn must not acquire an older question at its tail.
+            # Its completed receipt still has custody without rewriting history.
+            self.memory.put(key,{**identity,'status':'APPENDED' if sequences else 'RECEIPT_ONLY_HISTORY_ADVANCED',
+                'sequences':sequences})
+
+    def recover_hermes(self, request_id, *, incoming=None):
+        """Only authenticated receipt lookup can finish these existing rows."""
+        need(self.backend == HERMES_BACKEND,'DIALOGUE_OPERATION_UNKNOWN')
+        with self.lock,self.memory.lock:
+            try:
+                need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_OPERATION_UNKNOWN')
+                try:
+                    archive = self.model.recovery_archive(request_id)
+                except Exception:
+                    raise DialogueError('DIALOGUE_OPERATION_UNKNOWN') from None
+                original = archive['request']
+                if incoming is not None:
+                    validate_request(incoming,now=self.clock())
+                    need({key:value for key,value in incoming.items() if key != 'deadline_epoch'}
+                        == {key:value for key,value in original.items() if key != 'deadline_epoch'},
+                        'DIALOGUE_OPERATION_UNKNOWN')
+                payload = ({key:value for key,value in original.items() if key != 'deadline_epoch'}
+                    if original['phase'].startswith('COMPOSE_') else original)
+                operation_id = 'delegated-model:'+request_id
+                row = self.memory.db.execute('SELECT kind,request_hash,state,result FROM operations WHERE operation_id=?',
+                    (operation_id,)).fetchone()
+                need(row is not None and row[:2] == ('DELEGATED_MODEL_DIALOGUE',
+                    hashlib.sha256(canonical(payload).encode()).hexdigest())
+                    and row[2] in {'STARTED','UNKNOWN','DONE'},'DIALOGUE_OPERATION_UNKNOWN')
+                if row[2] == 'DONE':
+                    completed = decode_json(row[3].encode())
+                    need(not (type(completed) is dict and set(completed) == {'_agent_not_sent'}),
+                        'DIALOGUE_MODEL_NOT_SENT')
+                archive,receipt = self.model.recover(request_id)
+                value = validate_decision(receipt['decision'],original)
+                result = {'schema_version':1,'ok':True,
+                    **{key:original[key] for key in ('request_id','conversation_id','phase','reply_sha256')},
+                    'authority':'DIALOGUE_CONTROL_ONLY','trading_authority':False,
+                    'decision':value,'needs_followup':value['action']=='CLARIFY' and bool(value['question']),
+                    'reason':'DIALOGUE_DECISION'}
+                validate_result(result,original)
+                if row[2] == 'DONE':
+                    need(decode_json(row[3].encode()) == result,'DIALOGUE_OPERATION_UNKNOWN')
+                self._hermes_history_once(archive,result,receipt['observed_at'])
+                if row[2] != 'DONE':
+                    self.memory.reconcile(operation_id,'DELEGATED_MODEL_DIALOGUE',payload,result,receipt_verified=True)
+                if incoming is not None:
+                    validate_request(incoming,now=self.clock())
+                    validate_result(result,incoming)
+                return result
+            except DialogueError:
+                raise
+            except Exception:
+                raise DialogueError('DIALOGUE_OPERATION_UNKNOWN') from None
+
     def process(self, request):
         request = decode_json(canonical(request).encode())
         if type(request) is dict and request.get('kind') == SCREENING_RECEIPT_LOOKUP:
             need(set(request) == {'kind', 'request'}, 'DIALOGUE_REQUEST_INVALID')
             return self.completed_screening(request['request'])
+        if type(request) is dict and request.get('kind') == HERMES_RECEIPT_RECOVERY:
+            need(set(request) == {'kind','request_id'} and type(request['request_id']) is str
+                and SHA.fullmatch(request['request_id']),'DIALOGUE_REQUEST_INVALID')
+            result = self.recover_hermes(request['request_id'])
+            return dict(schema_version=1,ok=True,kind=HERMES_RECEIPT_RECOVERY,request_id=request['request_id'],
+                receipt=result,dispatch_authorized=False,trading_authority=False)
         # This precedes Memory.operation: OFF/expired gates reject even DONE replays.
         request = validate_request(request, now=self.clock())
         with self.lock:
@@ -775,6 +870,8 @@ class DialogueEngine:
                 else 'DIALOGUE_MODEL_KEY_MISSING' if state == 'MISSING'
                 else 'DIALOGUE_MODEL_KEY_UNAVAILABLE')
             operation_id = 'delegated-model:' + request['request_id']
+            if self.backend == HERMES_BACKEND and self.memory.get(RECOVERY_PREFIX+request['request_id']) is not None:
+                return self.recover_hermes(request['request_id'],incoming=request)
             def execute():
                 validate_request(request, now=self.clock())
                 remaining = min(45.0, request['deadline_epoch'] - self.clock())
@@ -826,8 +923,12 @@ class DialogueEngine:
                     'decision':value,'needs_followup':value['action']=='CLARIFY' and bool(value['question']),
                     'reason':'DIALOGUE_DECISION'}
                 validate_result(result, request)
-                self.memory.append(conversation, 'user', request['reply'], self.clock())
-                self.memory.append(conversation, 'assistant', canonical(value), self.clock())
+                if self.backend == HERMES_BACKEND:
+                    archive = self.model.recovery_archive(request['request_id'])
+                    self._hermes_history_once(archive,result,self.model.evidence()['observed_at'])
+                else:
+                    self.memory.append(conversation, 'user', request['reply'], self.clock())
+                    self.memory.append(conversation, 'assistant', canonical(value), self.clock())
                 return result
             try:
                 # A completed draft is a deterministic rendering receipt for

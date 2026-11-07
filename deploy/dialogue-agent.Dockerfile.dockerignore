@@ -1,11 +1,9 @@
 **
 !agent
 !agent/dialogue_service.py
-!agent/dialogue_client.py
-!agent/native_market_context.py
-!agent/native_status_bridge.py
-!agent/llm.py
+!agent/hermes_dialogue.py
+!agent/hermes_runtime.py
+!agent/hermes_trading_isolation.py
 !deploy
 !deploy/dialogue-agent.Dockerfile
 !deploy/dialogue-agent.Dockerfile.dockerignore
-!deploy/neurobro-dialogue.contract.json

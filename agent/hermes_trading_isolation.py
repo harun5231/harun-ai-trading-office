@@ -296,6 +296,7 @@ def write_host_attestation(policy_file: str, policy_sha256: str, pid: int) -> di
     temporary = target.with_name(target.name + "." + uuid.uuid4().hex)
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
     try:
+        os.fchmod(fd, 0o644)  # root-task umask077 must not hide public kernel metadata
         os.write(fd, (json.dumps(receipt, sort_keys=True) + "\n").encode())
         os.fsync(fd)
     finally:

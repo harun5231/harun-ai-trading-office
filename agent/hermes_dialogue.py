@@ -14,12 +14,15 @@ import time
 
 from .llm import (MAX_MODEL_INPUT_BYTES, dialogue_schema, validated_market_context,
                   web_prompt_allowed, PRIVATE_BUDGET)
-from .models import AgentError, DialogueDecision, NotSent
+from .models import AgentError, AmbiguousOperation, DialogueDecision, NotSent
 
 RUNTIME = 'HERMES_AGENT'
 PROTOCOL = 'HERMES_DIALOGUE_RPC_V1'
 SHA = re.compile(r'[a-f0-9]{64}\Z')
 IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
+MODEL_IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:/+-]{0,199}\Z')
+RECOVERY_PREFIX = 'hermes-recovery-v1:'
+ARCHIVE_CHUNK = 65536
 PUBLIC_FACTS = frozenset({'symbol','side','entry_price','stop_loss','neurobro_tp',
     'accepted_at','age_seconds','order_ref','observed_at','last_review_at','next_review_at'})
 PRIVATE_KEY = re.compile(r'(?:risk_(?:usdt|target|budget|amount)|quantity|qty|filled_quantity|'
@@ -100,6 +103,48 @@ def public_value(value):
     return public_text(value) if isinstance(value, str) else value
 
 
+def _save_archive(memory, request_id, value):
+    """Immutable prospective checkpoint, split within Memory's metadata limit."""
+    key = RECOVERY_PREFIX+request_id
+    encoded = canonical(value)
+    manifest = dict(schema_version=1,sha256=digest(value),length=len(encoded),
+        chunks=math.ceil(len(encoded)/ARCHIVE_CHUNK))
+    need(manifest['length'] <= 2*1024*1024 and 1 <= manifest['chunks'] <= 32,
+        'HERMES_RECOVERY_ARCHIVE_INVALID')
+    with memory.lock:
+        existing = memory.get(key)
+        need(existing is None or existing == manifest,'HERMES_RECOVERY_ARCHIVE_MISMATCH')
+        for index in range(manifest['chunks']):
+            child = key+':'+manifest['sha256']+':'+str(index)
+            chunk = encoded[index*ARCHIVE_CHUNK:(index+1)*ARCHIVE_CHUNK]
+            old = memory.get(child)
+            need(old is None or old == chunk,'HERMES_RECOVERY_ARCHIVE_MISMATCH')
+            if old is None:
+                memory.put(child,chunk)
+        if existing is None:
+            memory.put(key,manifest)  # Publish only after every durable chunk.
+
+
+def _load_archive(memory, request_id):
+    key = RECOVERY_PREFIX+request_id
+    with memory.lock:
+        manifest = memory.get(key)
+        need(type(manifest) is dict and set(manifest) == {'schema_version','sha256','length','chunks'}
+            and type(manifest['schema_version']) is int and manifest['schema_version'] == 1 and type(manifest['length']) is int
+            and 0 < manifest['length'] <= 2*1024*1024 and type(manifest['chunks']) is int
+            and 1 <= manifest['chunks'] <= 32 and type(manifest['sha256']) is str
+            and SHA.fullmatch(manifest['sha256']),'HERMES_RECOVERY_ARCHIVE_INVALID')
+        chunks = [memory.get(key+':'+manifest['sha256']+':'+str(index)) for index in range(manifest['chunks'])]
+        need(all(type(chunk) is str and len(chunk) <= ARCHIVE_CHUNK for chunk in chunks),
+            'HERMES_RECOVERY_ARCHIVE_INVALID')
+        encoded = ''.join(chunks)
+        need(len(encoded) == manifest['length'] and hashlib.sha256(encoded.encode()).hexdigest() == manifest['sha256'],
+            'HERMES_RECOVERY_ARCHIVE_MISMATCH')
+        value = json.loads(encoded)
+        need(canonical(value) == encoded,'HERMES_RECOVERY_ARCHIVE_INVALID')
+        return value
+
+
 class HermesDialogue:
     """Compatible model boundary, with once-only RPC receipts in agent Memory.
 
@@ -109,14 +154,14 @@ class HermesDialogue:
     """
     def __init__(self, key_file, memory, *, model, transport,
                  runtime_source_sha256, runtime_config_sha256, isolation_policy_sha256,
-                 attestation=None, runtime_ready=None, require_verified_transport=True,
+                 attestation=None, runtime_ready=None, require_verified_transport=True, receipt_lookup=None,
                  timeout=45, max_output_tokens=1024, clock=time.time,
                  daily_requests=math.inf, daily_input_tokens=math.inf,
                  daily_output_tokens=math.inf):
         need(callable(transport) and (attestation is None or callable(attestation)), 'HERMES_TRANSPORT_REQUIRED')
         need(type(require_verified_transport) is bool and (not require_verified_transport
             or callable(attestation) and callable(runtime_ready)), 'HERMES_VERIFICATION_REQUIRED')
-        need(isinstance(model, str) and IDENTITY.fullmatch(model)
+        need(isinstance(model, str) and MODEL_IDENTITY.fullmatch(model)
              and not re.search(r'gpt-5-mini(?:$|-)', model, re.I), 'HERMES_MODEL_IDENTITY_INVALID')
         need(all(isinstance(v, str) and SHA.fullmatch(v) and v != '0'*64
             for v in (runtime_source_sha256, runtime_config_sha256, isolation_policy_sha256)),
@@ -126,6 +171,8 @@ class HermesDialogue:
         self.transport, self.attestation, self.clock = transport, attestation, clock
         self._runtime_ready = runtime_ready
         self.require_verified_transport = require_verified_transport
+        need(receipt_lookup is None or callable(receipt_lookup),'HERMES_VERIFICATION_REQUIRED')
+        self.receipt_lookup = receipt_lookup
         self.timeout, self.max_output_tokens = timeout, max_output_tokens
         self.pins = dict(runtime_source_sha256=runtime_source_sha256,
             runtime_config_sha256=runtime_config_sha256, isolation_policy_sha256=isolation_policy_sha256)
@@ -201,20 +248,15 @@ class HermesDialogue:
             and not PRIVATE_BUDGET.search(question), 'HERMES_PRIVATE_DISCUSSION_REFUSED')
         return value
 
-    def plan(self, history, reply, *, phase, jakarta_day, context=None, source_facts=None):
+    def _prepare(self, history, binding, *, now):
         from .dialogue_service import validate_request
-        need(self._binding is not None, 'HERMES_REQUEST_BINDING_REQUIRED')
-        binding=deepcopy(self._binding)
-        validate_request(binding, now=self.clock())
-        need(binding['phase'] == phase and binding['reply'] == reply
-            and binding['market_context'] == context
-            and binding.get('source_facts') == source_facts, 'HERMES_REQUEST_BINDING_MISMATCH')
-        try:date.fromisoformat(jakarta_day)
-        except (TypeError,ValueError):raise AgentError('HERMES_DAY_INVALID') from None
+        validate_request(binding, now=now)
+        phase,reply,context = (binding[key] for key in ('phase','reply','market_context'))
+        source_facts = binding.get('source_facts')
         need(isinstance(history, list) and len(history) <= 12 and all(type(item) is dict
             and set(item) == {'role','content'} and item['role'] in ('user','assistant')
             and isinstance(item['content'], str) for item in history), 'HERMES_HISTORY_INVALID')
-        market=None if context is None else validated_market_context(context, now=self.clock())
+        market=None if context is None else validated_market_context(context, now=now)
         facts=[]
         for item in source_facts or []:
             facts.append(dict(producer=item['producer'], operation=item['operation'],
@@ -240,17 +282,89 @@ class HermesDialogue:
             output_schema=schema, max_output_tokens=self.max_output_tokens)
         payload['request_sha256']=digest(payload)
         need(len(canonical(payload).encode()) <= MAX_MODEL_INPUT_BYTES, 'HERMES_INPUT_TOO_LARGE')
+        return payload
+
+    def recovery_archive(self, request_id):
+        need(type(request_id) is str and SHA.fullmatch(request_id),'HERMES_RECOVERY_ARCHIVE_INVALID')
+        archive = _load_archive(self.memory,request_id)
+        need(type(archive) is dict and set(archive) == {'schema_version','request','rpc_payload','prepared_at','history_anchor'}
+            and type(archive['schema_version']) is int and archive['schema_version'] == 1
+            and type(archive['prepared_at']) in (int,float) and math.isfinite(archive['prepared_at'])
+            and 0 < archive['prepared_at'] <= self.clock()+5 and type(archive['history_anchor']) is int
+            and archive['history_anchor'] >= 0 and type(archive['rpc_payload']) is dict,
+            'HERMES_RECOVERY_ARCHIVE_INVALID')
+        wire = archive['rpc_payload']
+        binding = archive['request']
+        need(type(binding) is dict and binding.get('request_id') == request_id
+            and type(wire.get('deadline_epoch')) in (int,float) and math.isfinite(wire['deadline_epoch'])
+            and archive['prepared_at'] <= wire['deadline_epoch'] <= binding['deadline_epoch'],
+            'HERMES_RECOVERY_ARCHIVE_INVALID')
+        payload = {key:value for key,value in wire.items() if key != 'deadline_epoch'}
+        expected = self._prepare(payload.get('history'),binding,now=archive['prepared_at'])
+        need(payload == expected,'HERMES_RECOVERY_ARCHIVE_MISMATCH')
+        row = self.memory.db.execute('SELECT kind,request_hash,state FROM operations WHERE operation_id=?',
+            ('hermes-runtime:'+request_id,)).fetchone()
+        need(row is not None and row[:2] == ('HERMES_DIALOGUE_RPC',digest(payload))
+            and row[2] in ('STARTED','UNKNOWN','DONE'),'HERMES_RECOVERY_ARCHIVE_MISMATCH')
+        self._binding = deepcopy(binding)
+        return archive
+
+    def recover(self, request_id):
+        """Reconcile a completed RPC receipt only; no dispatch boundary exists."""
+        try:
+            archive = self.recovery_archive(request_id)
+            need(self.require_verified_transport and callable(self.receipt_lookup)
+                and self.runtime_ready(),'HERMES_RUNTIME_UNVERIFIED')
+            wire = archive['rpc_payload']
+            payload = {key:value for key,value in wire.items() if key != 'deadline_epoch'}
+            receipt = self.receipt_lookup(request_id,payload['request_sha256'])
+            need(receipt is not None,'HERMES_RUNTIME_OPERATION_UNKNOWN')
+            self._validate_receipt(receipt,payload)
+            need(archive['prepared_at']-5 <= receipt['observed_at'] <= wire['deadline_epoch']+5
+                and self._verified_receipt(receipt),'HERMES_RUNTIME_UNVERIFIED')
+            operation_id = 'hermes-runtime:'+request_id
+            row = self.memory.db.execute('SELECT state,result FROM operations WHERE operation_id=?',(operation_id,)).fetchone()
+            if row[0] == 'DONE':
+                need(json.loads(row[1]) == receipt,'HERMES_RECOVERY_RECEIPT_MISMATCH')
+            else:
+                self.memory.reconcile(operation_id,'HERMES_DIALOGUE_RPC',payload,receipt,receipt_verified=True)
+            self._receipt = deepcopy(receipt)
+            return archive,receipt
+        except Exception:
+            raise AmbiguousOperation('HERMES_RUNTIME_OPERATION_UNKNOWN') from None
+
+    def plan(self, history, reply, *, phase, jakarta_day, context=None, source_facts=None):
+        need(self._binding is not None, 'HERMES_REQUEST_BINDING_REQUIRED')
+        binding=deepcopy(self._binding)
+        need(binding['phase'] == phase and binding['reply'] == reply
+            and binding['market_context'] == context
+            and binding.get('source_facts') == source_facts, 'HERMES_REQUEST_BINDING_MISMATCH')
+        try:date.fromisoformat(jakarta_day)
+        except (TypeError,ValueError):raise AgentError('HERMES_DAY_INVALID') from None
+        prepared_at = self.clock()
+        payload = self._prepare(history,binding,now=prepared_at)
+        with self.memory.lock:
+            history_anchor = self.memory.db.execute('SELECT COALESCE(MAX(seq),0) FROM messages WHERE conversation_id=?',
+                (binding['conversation_id'],)).fetchone()[0]
         def execute():
             remaining=min(self.timeout,float(self._remaining_budget()),binding['deadline_epoch']-self.clock())
             if not math.isfinite(remaining) or remaining <= 0:
                 raise NotSent('HERMES_DEADLINE_BEFORE_DISPATCH')
             if self.require_verified_transport and not self.runtime_ready():
                 raise NotSent('HERMES_RUNTIME_UNVERIFIED')
+            # Peer/policy readiness can consume time. Its latency must never
+            # extend the native request or the engine's monotonic budget.
+            remaining=min(self.timeout,float(self._remaining_budget()),binding['deadline_epoch']-self.clock())
+            if not math.isfinite(remaining) or remaining <= 0:
+                raise NotSent('HERMES_DEADLINE_BEFORE_DISPATCH')
+            started=self.clock();deadline=min(binding['deadline_epoch'],started+remaining)
             self.memory.reserve_budget(jakarta_day,len(canonical(payload).encode()),self.max_output_tokens,**self.limits)
-            started=self.clock();deadline=started+remaining
+            wire = {**deepcopy(payload),'deadline_epoch':deadline}
+            _save_archive(self.memory,binding['request_id'],dict(schema_version=1,request=binding,
+                rpc_payload=wire,prepared_at=prepared_at,history_anchor=history_anchor))
             # Existing DialogueEngine can wrap this exact boundary with its last
             # owner/deadline check. There is no direct API or alternate transport.
-            response=self.transport({**deepcopy(payload),'deadline_epoch':deadline})
+            response=self.transport(wire)
             receipt=self._validate_receipt(response,payload,started=started,deadline=deadline)
             need(not self.require_verified_transport or self._verified_receipt(receipt),
                 'HERMES_RUNTIME_UNVERIFIED')

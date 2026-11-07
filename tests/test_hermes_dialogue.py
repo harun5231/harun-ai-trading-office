@@ -65,6 +65,12 @@ class HermesDialogueCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError,'MODEL_IDENTITY_INVALID'):self.make(model='gpt-5-mini')
         with self.assertRaisesRegex(AgentError,'TRANSPORT_REQUIRED'):self.make(transport=None)
 
+    def test_explicit_provider_model_names_do_not_expand_runtime_trace_identity(self):
+        model=self.make(model='provider/model-v1+reasoning')
+        self.assertEqual(model.model,'provider/model-v1+reasoning')
+        with self.assertRaisesRegex(AgentError,'MODEL_IDENTITY_INVALID'):
+            self.make(model='provider/model with whitespace')
+
     def test_every_existing_phase_uses_the_same_rpc_and_indonesian_json_request_policy(self):
         phases=('SCREENING','ANALYSIS','PENDING_REVIEW','POST_TRADE_EVALUATION',
             'COMPOSE_SCREENING','COMPOSE_ANALYSIS','COMPOSE_PENDING_REVIEW','COMPOSE_POST_TRADE_EVALUATION')
@@ -176,6 +182,19 @@ class HermesDialogueCandidateTests(unittest.TestCase):
         with self.assertRaises(AmbiguousOperation):
             self.plan(model=model)
         self.assertEqual(len(self.calls),1)
+
+    def test_readiness_latency_cannot_extend_native_dispatch_deadline(self):
+        request=self.request()
+        now=[time.time()]
+        request['deadline_epoch']=now[0]+3
+        def ready():
+            now[0]+=4
+            return True
+        model=self.make(require_verified_transport=True,attestation=lambda:{},runtime_ready=ready,
+            clock=lambda:now[0])
+        with self.assertRaisesRegex(NotSent,'DEADLINE_BEFORE_DISPATCH'):
+            self.plan(request,model=model)
+        self.assertEqual(self.calls,[])
 
     def test_private_schema_enum_or_nested_public_fact_never_reaches_runtime(self):
         request=self.request('COMPOSE_SCREENING','Pilih BTCUSDT. Risiko Office 918.25 USDT.')

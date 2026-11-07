@@ -161,6 +161,12 @@ class HermesServiceTests(unittest.TestCase):
             with self.subTest(field=field,alias=alias),self.assertRaises(d.DialogueError):
                 d.read_runtime_config(path,references)
 
+    def test_schema_three_accepts_exact_provider_model_namespace(self):
+        path, references, value = self.configuration()
+        value['model']='provider/model-v1+reasoning'
+        path.write_text(json.dumps(value))
+        self.assertEqual(d.read_runtime_config(path,references)[0]['model'],value['model'])
+
     def test_mini_does_not_receive_hermes_bind_request_hook(self):
         key = self.base/'model.key'
         key.write_text('unit-model-key-value-01234567890123456789')

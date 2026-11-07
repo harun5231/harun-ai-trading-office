@@ -1,13 +1,17 @@
+from contextlib import ExitStack
+import errno
 import json
 import os
 from pathlib import Path
 import socket
+import stat
 import struct
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -275,6 +279,165 @@ class UpstreamTests(unittest.TestCase):
             capture_output=True, timeout=3)
         self.assertEqual(result.returncode, 0)
         self.assertIn(b'--credential-file', result.stdout)
+
+
+class StartupDiagnosticTests(unittest.TestCase):
+    ARGS = ['--config', '/sealed/config.json', '--credential-file', '/sealed/model.key',
+        '--socket-path', '/run/hermes-model/model.sock']
+
+    def test_startup_reports_only_fixed_phase_and_broker_code(self):
+        raw = json.dumps(vars(config(worker_uid=10003))).encode()
+        token = b'PRIVATE_CREDENTIAL_SENTINEL'
+        cases = [
+            ('CONFIG_READ', 'HERMES_MODEL_FILE_PARENT_MODE_REFUSED',
+                {'_read_protected_file': [b.BrokerError('HERMES_MODEL_FILE_PARENT_MODE_REFUSED')]}),
+            ('CONFIG_VALIDATE', 'HERMES_MODEL_JSON_INVALID', {'_read_protected_file': [b'not-json']}),
+            ('CREDENTIAL_READ', 'HERMES_MODEL_FILE_OPEN_EACCES',
+                {'_read_protected_file': [raw, b.BrokerError('HERMES_MODEL_FILE_OPEN_EACCES')]}),
+            ('CREDENTIAL_VALIDATE', 'HERMES_MODEL_CREDENTIAL_INVALID',
+                {'_read_protected_file': [raw, b'\xff']}),
+            ('UPSTREAM', 'HERMES_MODEL_CREDENTIAL_INVALID',
+                {'HttpsModelUpstream': b.BrokerError('HERMES_MODEL_CREDENTIAL_INVALID')}),
+            ('SOCKET', 'HERMES_MODEL_SOCKET_INVALID',
+                {'HermesModelBroker': b.BrokerError('HERMES_MODEL_SOCKET_INVALID')}),
+        ]
+        for phase, code, failures in cases:
+            with self.subTest(phase=phase), ExitStack() as stack:
+                stack.enter_context(patch.object(b.os, 'geteuid', return_value=10004))
+                reader = stack.enter_context(patch.object(b, '_read_protected_file', side_effect=[raw, token]))
+                upstream = stack.enter_context(patch.object(b, 'HttpsModelUpstream'))
+                broker = stack.enter_context(patch.object(b, 'HermesModelBroker'))
+                targets = {'_read_protected_file': reader, 'HttpsModelUpstream': upstream,
+                    'HermesModelBroker': broker}
+                for name, failure in failures.items():
+                    targets[name].side_effect = failure
+                with self.assertRaises(SystemExit) as caught:
+                    b.main(self.ARGS)
+                self.assertEqual(str(caught.exception),
+                    'HERMES_MODEL_BROKER_START_REFUSED phase=' + phase + ' code=' + code)
+                self.assertNotIn(token.decode(), str(caught.exception))
+                self.assertNotIn('/sealed', str(caught.exception))
+                self.assertTrue(caught.exception.__suppress_context__)
+
+    def test_type_value_os_and_unknown_error_text_cannot_escape(self):
+        raw = json.dumps(vars(config(worker_uid=10003))).encode()
+        cases = [(TypeError('PRIVATE_TYPE_MESSAGE'), 'HERMES_MODEL_TYPE_ERROR'),
+            (ValueError('PRIVATE_VALUE_MESSAGE'), 'HERMES_MODEL_VALUE_ERROR'),
+            (OSError('PRIVATE_OS_MESSAGE'), 'HERMES_MODEL_OS_ERROR'),
+            (b.BrokerError('PRIVATE_CREDENTIAL_SENTINEL'), 'HERMES_MODEL_ERROR_UNCLASSIFIED')]
+        for error, code in cases:
+            with self.subTest(code=code), patch.object(b.os, 'geteuid', return_value=10004), \
+                    patch.object(b, '_read_protected_file', return_value=raw), \
+                    patch.object(b, 'BrokerConfig', side_effect=error):
+                with self.assertRaises(SystemExit) as caught:
+                    b.main(self.ARGS)
+                self.assertEqual(str(caught.exception),
+                    'HERMES_MODEL_BROKER_START_REFUSED phase=CONFIG_VALIDATE code=' + code)
+                self.assertNotIn('PRIVATE_', str(caught.exception))
+        self.assertEqual(str(b._startup_refusal('PRIVATE_PHASE', 'PRIVATE_CODE')),
+            'HERMES_MODEL_BROKER_START_REFUSED phase=UNCLASSIFIED code=HERMES_MODEL_ERROR_UNCLASSIFIED')
+
+    def test_file_parent_and_credential_permissions_keep_their_exact_refusal(self):
+        parent = dict(st_uid=0, st_mode=stat.S_IFDIR | 0o755)
+        leaf = dict(st_uid=10004, st_mode=stat.S_IFREG | 0o600, st_size=20)
+        cases = [({**parent, 'st_uid': 10003}, leaf, 'HERMES_MODEL_FILE_PARENT_OWNER_REFUSED'),
+            ({**parent, 'st_mode': stat.S_IFDIR | 0o775}, leaf, 'HERMES_MODEL_FILE_PARENT_MODE_REFUSED'),
+            (parent, {**leaf, 'st_uid': 10003}, 'HERMES_MODEL_FILE_OWNER_REFUSED'),
+            (parent, {**leaf, 'st_mode': stat.S_IFREG | 0o620}, 'HERMES_MODEL_FILE_MODE_REFUSED'),
+            (parent, {**leaf, 'st_mode': stat.S_IFREG | 0o640}, 'HERMES_MODEL_CREDENTIAL_MODE_REFUSED')]
+        for observed_parent, observed_leaf, code in cases:
+            with self.subTest(code=code), patch.object(b.os, 'geteuid', return_value=10004), \
+                    patch.object(b.os, 'open', side_effect=[91, 92, 93]), \
+                    patch.object(b.os, 'close'), patch.object(b.os, 'fstat', side_effect=[
+                        SimpleNamespace(**observed_parent), SimpleNamespace(**observed_leaf)]):
+                with self.assertRaises(b.BrokerError) as caught:
+                    b._read_protected_file('/sealed/model.key', credential=True)
+                self.assertEqual(str(caught.exception), code)
+
+    def test_open_permission_error_reports_fixed_errno_without_path_or_message(self):
+        error = PermissionError(errno.EACCES, 'PRIVATE_CREDENTIAL_SENTINEL', '/private/model.key')
+        with patch.object(b.os, 'open', side_effect=error):
+            with self.assertRaises(b.BrokerError) as caught:
+                b._read_protected_file('/sealed/model.key', credential=True)
+        self.assertEqual(str(caught.exception), 'HERMES_MODEL_FILE_OPEN_EACCES')
+
+
+class StaleSocketRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / 'model.sock'
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def stale_socket(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.bind(str(self.path))
+
+    def test_owned_stale_socket_is_recovered_by_next_broker_bind(self):
+        self.stale_socket()
+        broker = b.HermesModelBroker(str(self.path), config(), Mock(), secure_socket=False)
+        try:
+            self.assertTrue(self.path.is_socket())
+            self.assertEqual(self.path.stat().st_uid, os.geteuid())
+            self.assertEqual(self.path.stat().st_mode & 0o777, 0o660)
+        finally:
+            broker.server_close()
+        self.assertFalse(self.path.exists())
+
+    def test_live_socket_is_never_unlinked(self):
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(self.path))
+            listener.listen(1)
+            before = self.path.lstat()
+            with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_EXISTS$'):
+                b.remove_stale_socket(self.path)
+            after = self.path.lstat()
+            self.assertEqual((before.st_dev, before.st_ino), (after.st_dev, after.st_ino))
+
+    def test_foreign_socket_is_refused_before_probe(self):
+        observed = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660,
+            st_uid=os.geteuid() + 1, st_dev=1, st_ino=2)
+        with patch.object(Path, 'lstat', return_value=observed), patch.object(b.socket, 'socket') as probe:
+            with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_EXISTS$'):
+                b.remove_stale_socket(self.path)
+            probe.assert_not_called()
+
+    def test_symlink_and_regular_file_are_never_removed_or_followed(self):
+        target = self.path.with_name('keep.txt')
+        target.write_text('keep')
+        self.path.symlink_to(target)
+        with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_EXISTS$'):
+            b.remove_stale_socket(self.path)
+        self.assertTrue(self.path.is_symlink())
+        self.assertEqual(target.read_text(), 'keep')
+        self.path.unlink()
+        self.path.write_text('keep regular file')
+        with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_EXISTS$'):
+            b.remove_stale_socket(self.path)
+        self.assertEqual(self.path.read_text(), 'keep regular file')
+
+    def test_timeout_and_other_connect_errors_do_not_unlink(self):
+        self.stale_socket()
+        for error in (TimeoutError(), PermissionError(errno.EACCES, 'private path')):
+            with self.subTest(error=type(error).__name__), patch.object(b.socket, 'socket') as factory:
+                factory.return_value.__enter__.return_value.connect.side_effect = error
+                with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_EXISTS$'):
+                    b.remove_stale_socket(self.path)
+                self.assertTrue(self.path.is_socket())
+
+    def test_changed_inode_owner_or_type_after_refused_connect_is_never_unlinked(self):
+        initial = dict(st_mode=stat.S_IFSOCK | 0o660, st_uid=os.geteuid(), st_dev=1, st_ino=2)
+        for changed in ({**initial, 'st_ino': 3}, {**initial, 'st_uid': os.geteuid() + 1},
+                {**initial, 'st_mode': stat.S_IFREG | 0o600}):
+            with self.subTest(changed=changed), patch.object(Path, 'lstat', side_effect=[
+                    SimpleNamespace(**initial), SimpleNamespace(**changed)]), \
+                    patch.object(Path, 'unlink') as unlink, patch.object(b.socket, 'socket') as factory:
+                factory.return_value.__enter__.return_value.connect.side_effect = ConnectionRefusedError(
+                    errno.ECONNREFUSED, 'refused')
+                with self.assertRaisesRegex(b.BrokerError, '^HERMES_MODEL_SOCKET_CHANGED$'):
+                    b.remove_stale_socket(self.path)
+                unlink.assert_not_called()
 
 
 @unittest.skipIf(os.getuid() == 0, 'production worker UID must be nonroot')

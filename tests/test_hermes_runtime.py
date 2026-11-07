@@ -399,7 +399,9 @@ class ClientTests(unittest.TestCase):
             return deepcopy(self.hello)
         return dict(receipt=dict(runtime=RUNTIME,model='explicit-model',**self.pins,
             request_id=payload['request_id'],request_sha256=payload['request_sha256'],
-            trace_id='sdk-turn:api:1',session_id='sdk-session'),
+            trace_id='sdk-turn:api:1',session_id='sdk-session',schema_version=1,protocol=PROTOCOL,
+            conversation_id=payload.get('conversation_id','fixture-room'),phase=payload.get('phase','SCREENING'),
+            status='completed',observed_at=time.time(),decision={'action':'SCREENING','symbols':['BTCUSDT'],'question':''}),
             provider_evidence=dict(model='explicit-model',broker_model_verified=True,
                 provider_response_id='provider-fixture',provider_request_id='request-fixture'))
 
@@ -416,6 +418,102 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(attestation['trace_id'], receipt['trace_id'])
             self.assertTrue(client.ready())
             self.assertEqual(client.attestation(), attestation)
+
+    def test_lookup_recovers_durable_completed_receipt_after_lost_response_and_client_restart(self):
+        client = self.make()
+        request = dict(request_id='1'*64,request_sha256='2'*64,conversation_id='fixture-room',
+            phase='SCREENING',deadline_epoch=time.time()+20)
+        journal_path = self.path/'runtime.sqlite3'
+        journal = RequestJournal(journal_path)
+        saved = {}
+        def lost_response(operation,payload=None,**kwargs):
+            value = self.exchange_fixture(operation,payload,**kwargs)
+            if operation == 'execute':
+                saved.update(deepcopy(value))
+                journal.reserve(payload)
+                journal.complete(payload,value,[])
+                raise AmbiguousOperation('response lost after durable completion')
+            return value
+        try:
+            with patch.object(client,'_exchange',side_effect=lost_response):
+                with self.assertRaises(AmbiguousOperation):client(request)
+            self.assertEqual(self.calls.count('execute'),1)
+            journal.close()
+            journal = RequestJournal(journal_path)
+            client = self.make()  # No cached receipt or attestation survives this restart.
+            def recovery(operation,payload=None,**kwargs):
+                if operation == 'ready':return self.exchange_fixture(operation,payload,**kwargs)
+                self.assertEqual(operation,'lookup')
+                self.calls.append(operation)
+                client._exchange_attestation = self.verifier(server_nonce='f'*64)
+                return journal.lookup(**payload)
+            with patch.object(client,'_exchange',side_effect=recovery):
+                receipt = client.lookup(request['request_id'],request['request_sha256'])
+            self.assertEqual(receipt,saved['receipt'])
+            attestation = client.attestation()
+            self.assertTrue(all(attestation[key] for key in
+                ('verified','kernel_peer_verified','isolation_verified')))
+            for key in ('request_id','request_sha256','trace_id','session_id'):
+                self.assertEqual(attestation[key],receipt[key])
+            self.assertEqual(self.calls.count('execute'),1)
+            self.assertEqual(self.calls.count('lookup'),1)
+        finally:
+            journal.close()
+
+    def test_missing_unknown_and_mismatched_lookup_never_authorize_execute(self):
+        client = self.make()
+        request = dict(request_id='1'*64,request_sha256='2'*64)
+        journal = RequestJournal(self.path/'runtime.sqlite3')
+        def recovery(operation,payload=None,**kwargs):
+            if operation == 'ready':return self.exchange_fixture(operation,payload,**kwargs)
+            self.assertEqual(operation,'lookup')
+            self.calls.append(operation)
+            client._exchange_attestation = self.verifier(server_nonce='f'*64)
+            return journal.lookup(**payload)
+        try:
+            with patch.object(client,'_exchange',side_effect=recovery):
+                self.assertIsNone(client.lookup(**request))
+                self.assertEqual(client.attestation(),{})
+                journal.reserve(request)
+                with self.assertRaises(AmbiguousOperation):client.lookup(**request)
+                with self.assertRaises(AmbiguousOperation):client.lookup(request['request_id'],'3'*64)
+            self.assertEqual(self.calls.count('execute'),0)
+            self.assertEqual(journal.db.execute('SELECT state FROM runtime_requests').fetchone()[0],'UNKNOWN')
+        finally:
+            journal.close()
+
+    def test_lookup_rejects_foreign_receipt_proof_and_unverified_peer(self):
+        client = self.make()
+        request = dict(request_id='1'*64,request_sha256='2'*64)
+        for index,(container,key,value) in enumerate((
+                ('receipt','request_sha256','4'*64),('receipt','runtime_config_sha256','5'*64),
+                ('receipt','status','UNKNOWN'),('receipt','trace_id','resp_fabricated_trace'),
+                ('provider_evidence','model','foreign-model'),('provider_evidence','broker_model_verified',False))):
+            def recovery(operation,payload=None,**kwargs):
+                value_envelope = self.exchange_fixture(operation,payload,**kwargs)
+                if operation == 'lookup':value_envelope[container][key]=value
+                return value_envelope
+            with self.subTest(index=index),patch.object(client,'_exchange',side_effect=recovery):
+                with self.assertRaises(AmbiguousOperation):client.lookup(**request)
+                self.assertEqual(client.attestation(),{})
+        def unverified(operation,payload=None,**kwargs):
+            value = self.exchange_fixture(operation,payload,**kwargs)
+            if operation == 'lookup':client._exchange_attestation={'verified':True}
+            return value
+        with patch.object(client,'_exchange',side_effect=unverified):
+            with self.assertRaises(AmbiguousOperation):client.lookup(**request)
+        self.assertNotIn('execute',self.calls)
+
+    def test_failed_lookup_transport_is_ambiguous_for_the_original_operation(self):
+        client = self.make()
+        def unavailable(operation,payload=None,**kwargs):
+            if operation == 'ready':return self.exchange_fixture(operation,payload,**kwargs)
+            self.calls.append(operation)
+            raise NotSent('lookup socket unavailable')
+        with patch.object(client,'_exchange',side_effect=unavailable):
+            with self.assertRaises(AmbiguousOperation):client.lookup('1'*64,'2'*64)
+        self.assertNotIn('execute',self.calls)
+        self.assertEqual(client.attestation(),{})
 
     def test_missing_or_foreign_runtime_readiness_never_executes(self):
         client = self.make()
