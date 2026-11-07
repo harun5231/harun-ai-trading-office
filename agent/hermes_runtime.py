@@ -486,7 +486,8 @@ class HermesRuntime:
                 agent.close()
             finally:
                 raise RuntimeFailure('HERMES_RUNTIME_CAPABILITY_MISMATCH')
-        # Exact pinned Hermes source documents this opt-out in turn_api_call.py.
+        # Disable optional display streaming. The pinned native Responses path
+        # still uses SSE internally; ProviderEvidence validates that wire format.
         agent._disable_streaming = True
         return agent
 
@@ -579,6 +580,7 @@ class ProviderEvidence:
         self.active, self.sent, self.proof = True, 0, None
         self.maximum = request['max_output_tokens']
         self.wire_reasoning_effort = None
+        self.streaming = False
 
     def request_hook(self, request):
         require(self.active and self.sent == 0, 'HERMES_PROVIDER_REPEAT_REFUSED', state='UNKNOWN')
@@ -590,8 +592,12 @@ class ProviderEvidence:
             'HERMES_PROVIDER_ROUTE_REFUSED', state='UNKNOWN')
         value = decode(request.content)
         require(type(value) is dict and value.get('model') == self.model
-            and value.get('tools') in (None, []) and value.get('stream') is not True,
+            and value.get('tools') in (None, []) and type(value.get('stream',False)) is bool
+            and (value.get('stream') is not True or request.url.path == '/v1/responses'),
             'HERMES_PROVIDER_CAPABILITY_REFUSED', state='UNKNOWN')
+        # The pinned native Responses runtime always requests SSE, including
+        # when the outer agent's optional streaming display has been disabled.
+        self.streaming = value.get('stream',False)
         reasoning = value.get('reasoning')
         self.wire_reasoning_effort = value.get('reasoning_effort')
         if self.wire_reasoning_effort is None and type(reasoning) is dict:
@@ -605,7 +611,13 @@ class ProviderEvidence:
             require(len(raw) <= 2 * 1024 * 1024, 'HERMES_PROVIDER_RESPONSE_LIMIT', state='UNKNOWN')
         response._content = bytes(raw)
         require(response.status_code == 200, 'HERMES_PROVIDER_FAILED', state='UNKNOWN')
-        value = decode(bytes(raw))
+        content_type = response.headers.get('content-type','').split(';',1)[0].lower()
+        if self.streaming:
+            require(content_type == 'text/event-stream', 'HERMES_PROVIDER_RESPONSE_INVALID', state='UNKNOWN')
+            value = self._completed_sse_response(bytes(raw))
+        else:
+            require(content_type == 'application/json', 'HERMES_PROVIDER_RESPONSE_INVALID', state='UNKNOWN')
+            value = decode(bytes(raw))
         response_id = value.get('id') if type(value) is dict else None
         require(type(value) is dict and value.get('model') == self.model
             and type(response_id) is str and 0 < len(response_id) <= 256
@@ -616,8 +628,74 @@ class ProviderEvidence:
             'HERMES_PROVIDER_REQUEST_ID_MISSING', state='UNKNOWN')
         self.proof = dict(model=value['model'], provider_response_id=response_id,
             provider_request_id=request_id, broker_model_verified=True,
+            response_content_type=content_type,
             requested_reasoning_effort=self.wire_reasoning_effort,
             response_sha256=hashlib.sha256(bytes(raw)).hexdigest())
+
+    def _completed_sse_response(self, raw):
+        """Authenticate the actual terminal Responses object, retaining SSE bytes."""
+        try:
+            wire = raw.decode('utf-8').replace('\r\n','\n')
+        except UnicodeError:
+            raise RuntimeFailure('HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN') from None
+        require('\r' not in wire and wire.endswith('\n\n'),
+            'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+        events = wire.split('\n\n')
+        require(len(events) <= 4097,'HERMES_PROVIDER_RESPONSE_LIMIT',state='UNKNOWN')
+        completed, done, response_ids = None, False, set()
+        for event in events:
+            data, event_type = [], None
+            for line in event.split('\n'):
+                if not line or line.startswith(':'):
+                    continue
+                if line.startswith('data:'):
+                    data.append(line[5:].removeprefix(' '))
+                elif line.startswith('event:'):
+                    require(event_type is None,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                    event_type = line[6:].strip()
+                else:
+                    raise RuntimeFailure('HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            if not data:
+                continue
+            require(not done,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            encoded = '\n'.join(data)
+            if encoded == '[DONE]':
+                done = True
+                continue
+            require(completed is None,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            value = decode(encoded)
+            require(type(value) is dict and type(value.get('type')) is str
+                and (event_type is None or event_type == value['type'])
+                and value['type'] not in ('error','response.failed','response.incomplete','response.cancelled')
+                and not value.get('error'),'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+            stack = [value]
+            while stack:
+                child = stack.pop()
+                if type(child) is dict:
+                    require(('model' not in child or child['model'] == self.model)
+                        and not child.get('error')
+                        and child.get('status') not in ('failed','incomplete','cancelled'),
+                        'HERMES_PROVIDER_MODEL_UNVERIFIED',state='UNKNOWN')
+                    stack.extend(child.values())
+                elif type(child) is list:
+                    stack.extend(child)
+            observed = value.get('response')
+            if type(observed) is dict and observed.get('id'):
+                require(type(observed['id']) is str and len(observed['id']) <= 256,
+                    'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                response_ids.add(observed['id'])
+            if value.get('response_id'):
+                require(type(value['response_id']) is str,'HERMES_PROVIDER_STREAM_INVALID',state='UNKNOWN')
+                response_ids.add(value['response_id'])
+            if value['type'] == 'response.completed':
+                require(type(observed) is dict and observed.get('status') == 'completed'
+                    and observed.get('model') == self.model and type(observed.get('id')) is str
+                    and 0 < len(observed['id']) <= 256,
+                    'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+                completed = observed
+        require(completed is not None and response_ids == {completed['id']},
+            'HERMES_PROVIDER_STREAM_INCOMPLETE',state='UNKNOWN')
+        return completed
 
     def finish(self):
         require(self.active and self.sent == 1 and self.proof is not None,
@@ -775,6 +853,7 @@ def load_installed_sdk(config, pins):
         'streaming':False},
         'fallback_model':{}, 'mcp_servers':{}, 'plugins':{'enabled':[]}, 'hooks':{},
         'compression':{'enabled':False}, 'memory':{'enabled':False},
+        'auxiliary':{'title_generation':{'enabled':True,'model_upgrade_enabled':False}},
         'skills':{'enabled':False}, 'agent':{'toolsets':[], 'disabled_toolsets':[],
             'api_max_retries':1, 'auto_recovery_cycles':0, 'environment_probe':False,
             'reasoning_effort':deepcopy(reasoning_config)}}

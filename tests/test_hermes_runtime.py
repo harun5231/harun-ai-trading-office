@@ -252,6 +252,24 @@ class ProviderEvidenceTests(unittest.TestCase):
         return self.httpx.Response(200, json=payload, headers={
             'x-hermes-verified-model':'explicit-model','x-request-id':'provider-request-fixture'})
 
+    def native_stream(self, *, model='explicit-model', response_id='resp_provider_real_fixture',
+                      terminal='response.completed', terminal_status='completed'):
+        events = [dict(type='response.created',response={
+            'id':response_id,'model':model,'status':'in_progress'}),
+            dict(type='response.output_text.delta',delta='{"action":"PROMPT","symbols":[],"question":"Uji sintetis."}'),
+            dict(type=terminal,response={'id':response_id,'model':model,'status':terminal_status,'output':[]})]
+        return ''.join('event: '+value['type']+'\ndata: '+canonical(value)+'\n\n' for value in events).encode()
+
+    def native_request(self):
+        return self.httpx.Request('POST','http://hermes-model/v1/responses',json={
+            'model':'explicit-model','input':'synthetic health check','stream':True,
+            'max_output_tokens':512,'reasoning':{'effort':'medium'}})
+
+    def native_response(self, raw):
+        return self.httpx.Response(200,stream=self.httpx.ByteStream(raw),headers={
+            'content-type':'text/event-stream','x-hermes-verified-model':'explicit-model',
+            'x-request-id':'provider-request-fixture'})
+
     def test_observes_actual_provider_model_and_id_from_sdk_http_response(self):
         self.evidence.request_hook(self.request(reasoning_effort='medium'))
         self.evidence.response_hook(self.response())
@@ -275,14 +293,45 @@ class ProviderEvidenceTests(unittest.TestCase):
         with self.assertRaises(RuntimeFailure):
             self.evidence.response_hook(response)
 
+    def test_native_responses_sse_terminal_proof_and_sdk_readable_wire_are_preserved(self):
+        self.evidence.request_hook(self.native_request())
+        raw=self.native_stream()
+        response=self.native_response(raw)
+        self.evidence.response_hook(response)
+        # HTTPX/OpenAI streaming consumers still receive the original SSE bytes.
+        self.assertEqual(b''.join(response.iter_bytes()),raw)
+        self.assertIn('event: response.completed',list(response.iter_lines()))
+        proof=self.evidence.finish()
+        self.assertEqual(proof['provider_response_id'],'resp_provider_real_fixture')
+        self.assertEqual(proof['response_content_type'],'text/event-stream')
+        self.assertEqual(proof['requested_reasoning_effort'],'medium')
+        with self.assertRaisesRegex(RuntimeFailure,'REPEAT_REFUSED'):
+            self.evidence.request_hook(self.native_request())
+
+    def test_incomplete_foreign_or_conflicting_sse_never_becomes_verified(self):
+        raw=self.native_stream()
+        incomplete=raw[:raw.index(b'event: response.completed')]
+        mismatch=raw.replace(b'"id":"resp_provider_real_fixture","model":"explicit-model","output":[]',
+            b'"id":"resp_foreign","model":"explicit-model","output":[]')
+        for bad in (incomplete,raw[:-1],self.native_stream(model='foreign-model'),
+                self.native_stream(terminal='response.incomplete',terminal_status='incomplete'),mismatch,
+                raw+raw[raw.index(b'event: response.completed'):]):
+            self.evidence.begin({'max_output_tokens':512})
+            self.evidence.request_hook(self.native_request())
+            with self.subTest(body=bad[-80:]),self.assertRaises(RuntimeFailure):
+                self.evidence.response_hook(self.native_response(bad))
+            with self.assertRaises(RuntimeFailure):self.evidence.finish()
+
     def test_actual_provider_url_is_preserved_until_fixed_unix_transport(self):
         from agent.hermes_model_broker import BrokerConfig, HermesModelBroker, UpstreamResponse
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)/'model.sock'
             calls = []
             def upstream(route,body,*,deadline):
-                calls.append((route,decode(body)))
-                return UpstreamResponse(200,{'content-type':'application/json','x-request-id':'provider-fixture'},
+                value=decode(body)
+                calls.append((route,value))
+                return UpstreamResponse(200,{'content-type':'text/event-stream' if value.get('stream') else
+                    'application/json','x-request-id':'provider-fixture'}, self.native_stream() if value.get('stream') else
                     canonical({'model':'explicit-model','id':'chatcmpl-model-fixture','choices':[]}).encode())
             config = BrokerConfig(worker_uid=max(os.getuid(),1),upstream_base_url='https://api.openai.com/v1',
                 model='explicit-model',allowed_paths=('/v1/chat/completions','/v1/responses'))
@@ -295,14 +344,17 @@ class ProviderEvidenceTests(unittest.TestCase):
                             'model':'explicit-model','messages':[{'role':'user','content':'synthetic health check'}],
                             'max_completion_tokens':512}),('/v1/responses',{
                             'model':'explicit-model','input':'synthetic health check','max_output_tokens':512,
-                            'reasoning':{'effort':'medium'},'store':False})):
+                            'reasoning':{'effort':'medium'},'store':False,'stream':True})):
                         evidence = ProviderEvidence('explicit-model','https://api.openai.com/v1')
                         evidence.begin({'max_output_tokens':512})
                         with self.httpx.Client(transport=broker_uds_transport(self.httpx,str(path),
                                 'https://api.openai.com/v1'), event_hooks={
                                 'request':[evidence.request_hook],'response':[evidence.response_hook]}) as client:
-                            response = client.post('https://api.openai.com'+route,json=body)
+                            response = client.send(client.build_request('POST','https://api.openai.com'+route,json=body),
+                                stream=body.get('stream',False))
                             self.assertEqual(response.request.url.host,'api.openai.com')
+                            if body.get('stream'):
+                                self.assertEqual(b''.join(response.iter_bytes()),self.native_stream())
                         self.assertEqual(calls[-1][0],route)
                         self.assertEqual(evidence.finish()['model'],'explicit-model')
                     self.assertEqual(calls[0][1]['max_completion_tokens'],512)
