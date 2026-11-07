@@ -1,0 +1,1461 @@
+{
+  "generatedAt": "2026-11-07T21:11:36.967313+00:00",
+  "mpfbSourceCommit": "6ff1eb358f6c1959ced77e79e6dd2406d9a71f49",
+  "coreSources": [
+    {
+      "path": "src/mpfb/data/3dobjs/base.obj",
+      "sha256": "8e761e6624b8f54536409135d1636da63b32486a90d4897f84e121d144f6fb4c",
+      "sourceUrl": "https://github.com/makehumancommunity/mpfb2/blob/6ff1eb358f6c1959ced77e79e6dd2406d9a71f49/src/mpfb/data/3dobjs/base.obj"
+    },
+    {
+      "path": "src/mpfb/data/rigs/standard/rig.game_engine.json",
+      "sha256": "b324ddb4b707721c19630bfadb87c3e3b38eed3b6e4590bb3cead43ea918f799",
+      "sourceUrl": "https://github.com/makehumancommunity/mpfb2/blob/6ff1eb358f6c1959ced77e79e6dd2406d9a71f49/src/mpfb/data/rigs/standard/rig.game_engine.json"
+    },
+    {
+      "path": "src/mpfb/data/rigs/standard/weights.game_engine.json",
+      "sha256": "9f4a773e74ce5ba08415b4f30070338e9f75bae5971b5075b10cd6b9caa58473",
+      "sourceUrl": "https://github.com/makehumancommunity/mpfb2/blob/6ff1eb358f6c1959ced77e79e6dd2406d9a71f49/src/mpfb/data/rigs/standard/weights.game_engine.json"
+    },
+    {
+      "path": "LICENSE.md",
+      "sha256": "5cefb60680cb9efd4550a2e65d719021cfbec9dad3658481d11d48ae863ce04d",
+      "sourceUrl": "https://github.com/makehumancommunity/mpfb2/blob/6ff1eb358f6c1959ced77e79e6dd2406d9a71f49/LICENSE.md"
+    },
+    {
+      "path": "LICENSE.ASSETS.md",
+      "sha256": "f6089cba01cb570a24712b41ab8a586ccd3cc5ef53dc266ca50b95c288956d2c",
+      "sourceUrl": "https://github.com/makehumancommunity/mpfb2/blob/6ff1eb358f6c1959ced77e79e6dd2406d9a71f49/LICENSE.ASSETS.md"
+    }
+  ],
+  "sourceAssets": [
+    {
+      "path": "clothes/cortu_t-bar/cortu_t-bar.mhclo",
+      "sourcePack": "shoes01",
+      "sha256": "6379ee1c2f6f203de916ad26cd3006b6e51ae6e53bf715d54e4dfb12e1a1e04e",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/cortu_t-bar/tbar.mhmat",
+      "sourcePack": "shoes01",
+      "sha256": "f803bc09b6a0ccd906fd2fe4ab0bebf493fd1cb0c78f5620e5caa017b2e1574c",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/cortu_t-bar/tbar.obj",
+      "sourcePack": "shoes01",
+      "sha256": "0ce547cf67b4c024a531dce7c621296ab9e2ad93f8444c576f512426e34cb248",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/cortu_t-bar/tbar_diff.png",
+      "sourcePack": "shoes01",
+      "sha256": "292b0c0908566378ea93cf5c45f30f732bb6ca64709235356191666472176bf5",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/cortu_t-bar/tbar_mask.png",
+      "sourcePack": "shoes01",
+      "sha256": "fafd80716dedbb1623a0a149e09752d1eeccc8b45323c05423fe13de4a7f6781",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/cortu_t-bar/tbar_norm.png",
+      "sourcePack": "shoes01",
+      "sha256": "41c20255eaeee1445d2c3ca41d32f0d6d27aed1d3cdd3cd904eebbdb326bf620",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/shoes01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "88223bf0c6168e85fd118015e4ca61612c6b35f42a79d7ce5df1864f1a6f715e",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "dafb73d722453798f4d501f2bf2d668ba41c34fc252cd76d0716ea23baef8753",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04.mhw",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "02ef7fcd42d6063f3a8b4d22a79bceb02ab9a67e23ee9f2252a63ec3e53e0f27",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "eac355a842a8eb8ae2f09fac8dd18a877a24ef2521ed2d6bf38559b42ce4b49a",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "dc3d3c294ba5bf4a47a7840172154ce7ab587ff0737ace0712c4cc310089c232",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/shoes04/shoes04_normal.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "a9bfd7223e98b8f93100e89596135e3a94e6044f9db11b4d23cec625c37a4599",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/MHSuitsFem-bump.png",
+      "sourcePack": "suits01",
+      "sha256": "6ee0b07619f2124734bdd1ec9f22582264452d92144cb54e4a3c4f69aeb552ae",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/MHSuitsFem-diff.png",
+      "sourcePack": "suits01",
+      "sha256": "f1d15f99341184f87d9657e0ef754150b51f4d00d503e393beb6e11cf1c60507",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/MHSuitsFem-spec.png",
+      "sourcePack": "suits01",
+      "sha256": "5fc68a680a283085f31d978ab3013a1009147bd705d2868d5bbd6e245c1ae1cc",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/fem_suit.mhmat",
+      "sourcePack": "suits01",
+      "sha256": "921c5abd123790d4bdb4df25920c20e48fb607dbabd606633054cde96f626da1",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/fem_suit.obj",
+      "sourcePack": "suits01",
+      "sha256": "6c4380d0fb78e2b523d3b0a78519c5d6da71432314a6d84a67ccde3d2a77e87d",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_female_suit/toigo_female_suit.mhclo",
+      "sourcePack": "suits01",
+      "sha256": "60c5e83133dbca9419e383b34d8354c3b2276890e94cafac4347ecfd7c1969bf",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-bump.png",
+      "sourcePack": "suits01",
+      "sha256": "82323b583a893feb3ec8fb37d91c338865c42fb659d30805eb2a9c4d42cda581",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-diff.png",
+      "sourcePack": "suits01",
+      "sha256": "27d98ecf5500f89d1bf363510def211e9e8c74f4ecc44daad7a7916e32dfc250",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-spec.png",
+      "sourcePack": "suits01",
+      "sha256": "f8f66b5ed833f8ef2418f340f42e6b5d7bf75f31ae5bf3e593ba6cdacfa9f81b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.mhmat",
+      "sourcePack": "suits01",
+      "sha256": "88074bc1c5f9d7fe09bbffd84fe0a4bad3e2930c02911103a112cea917159e4e",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.obj",
+      "sourcePack": "suits01",
+      "sha256": "7d80f673d1645bfcf6b6747f4a9e418c0cab65ac6330718cfc760962497ccb7d",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "clothes/toigo_male_suit_tie_and_jacket/toigo_male_suit_tie_and_jacket.mhclo",
+      "sourcePack": "suits01",
+      "sha256": "7f927081c996cf42014ed2c78b9f10914740c7503eeaf9e176df0fc250dc2803",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/suits01.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyebrows/eyebrow001/eyebrow001.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "54c8892c2ba577f4152d779ce1f20f7cd323beb8cbd9cb701796165c221b4f5b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyebrows/eyebrow001/eyebrow001.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "976e5f4f1d3922d7a11c6e2db233f8b4584b068d00619d5749687e81c92d61fc",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyebrows/eyebrow001/eyebrow001.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "88b13146395133f3901715e11706cdfd293e5d6087ad7c5e01efe1485a26b513",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyebrows/eyebrow001/eyebrow001.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyelashes/eyelashes01/eyelashes01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "5a86b29c15649273d723084954b7fa7bf199112571d4f58539b46734d397ee6b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyelashes/eyelashes01/eyelashes01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "8029c99d94f3d87a1e81825fad6b90eec773ae6955a5b2592222ef237377e190",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyelashes/eyelashes01/eyelashes01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "f78f5b93fea1946fcae103d32c4f082dd9612a1ec2e7e2f90b03ebe59b0baf20",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyelashes/eyelashes01/eyelashes01.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyes/low-poly/low-poly.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "68582e28e9176cba7cfcf35208f671b6201b8d1bc95c32decff61a3160ec34d8",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyes/low-poly/low-poly.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "783fe1e6331162c876520b4c2bed7a8ca06354ca15497e8ebd68bb1b59f4d3de",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyes/materials/brown.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "4abad93ce50541c08127721e77bce035640c9f16bed16cd0f5524b1cd5908465",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "eyes/materials/brown_eye.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "4659691c7295ad6206c78b003e5fd0e5f91dcd53032fa914a229bb48cabe424b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/bob01/bob01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "a295b11ab6c7808afa1e01d0c79fb595bbbd7885f65252766486c9fcf6d158c5",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/bob01/bob01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "9c3015044a832fb9a72a5d2f28218914ebfbdf6725cfd237cc53a3d95f054e3b",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/bob01/bob01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "d7fb73806f47ee37ba3c37bcfadff40a91ba99635d08c3e02d94b4acbf97c231",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/bob01/bob01_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "2b38bc7a028e06e8e633accb7fe2dd1b2bacbb9d32463df73f39f82e63ef9009",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/long01/long01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "94ecbebfd834da2cbee2ce90b730972590eb22a252ecd9592038ea736e063646",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/long01/long01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "74ec88267e679d316f8037a074511ffc887b27e198ea381d0ae4a3f180f96760",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/long01/long01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "7f1d6dadbdf9e96435251955d6657e77ea5433c9bc7c85a5c5f5e4eae0cb9a8c",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/long01/long01_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "e8dc25d90f8f62467e8630420e1240a400d070054fb7c3f1d3f7bf3e457d6c2c",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/ponytail01/ponytail01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "97fc50b12bcb3b1c7b33edddd8d427a2604ffb06fe79b31132bf47f82d7afbac",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/ponytail01/ponytail01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "b145f5a7c9606859ad523f5113482a1cf989cf0e26dccc2ea95c377cb1c2557f",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/ponytail01/ponytail01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "d9f5fe96fbedbc8006220d87aad0e4a33d15286eb6b21f5929661cdc490ebf5a",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/ponytail01/ponytail01_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "dcb364300cac06ce8bef91b2f7c0970baf310898bbdd06b0c6b884ee9306eb97",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/short01/short01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "ae1ffaa98da5753b803b3a173bede4895d2215e6bb94763f3765a71f0e984f35",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/short01/short01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "01e2e12ce3f3d3c859225456660acadcdd27d4f4b4d888bcbd6f11998cadd975",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/short01/short01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "d998d8416f9b5d5591f1d756f4d292288d000a6951bc0f4d2e8e72727bbc44fa",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "hair/short01/short01_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "f34a0957184e3d1e911ed59245f874f8d4843f61ee44ff49f43edb4be0196949",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "skins/young_asian_female/young_asian_female.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "2baeded5fdfd31acc187e83b278f9c4e4cbb59a7ffedf50ebcffcc44e4eab220",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "skins/young_asian_female/young_lightskinned_female_diffuse3.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "1d82f782b7d2da732229633bd2d14754d873fff53cdb1d088977bcf67ae19dde",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "skins/young_asian_male/young_asian_male.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "9fdfc9863cd15d1359311435f2da7de3906f81d6eea549fba6bf14cd82ceb6a0",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "skins/young_asian_male/young_lightskinned_male_diffuse3.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "f50016a5507fc687dc8df06599c8ea48de950cd185de33a71cafc1319ddab4d5",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "teeth/teeth_base/teeth.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "3baeff72d9eb06ca16c3cff7ca2ab304216717dee247e0d88f1dc33037c8320e",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "teeth/teeth_base/teeth.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "d0afb57869c6fbb56b98f5efc4aec629ee7593e70d8dd2bfb9de923acfb65f43",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "teeth/teeth_base/teeth_base.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "9edc3deff3bb97a95c791878064dd069a74a38f95ea6d9707a9ba68d888b3b5c",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "teeth/teeth_base/teeth_base.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "f55198069e55d360c4b4cc7ecb1cc292b2c7665753ab8b65eabf46a8783f2875",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "tongue/tongue01/tongue01.mhclo",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "61d825899cd78ff3146fa1324118060cb44b095fae1427d408c199ade74e3c9e",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "tongue/tongue01/tongue01.mhmat",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "7769df66c69b8c09a0ec713d70d8381abbb08ac82207369f5413970495cd4340",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "tongue/tongue01/tongue01.obj",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "12f4a6a9f85abae2ce3b4aa42d8119e1f679a437e0e89cb928ec68b29a7a1587",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    },
+    {
+      "path": "tongue/tongue01/tongue01_diffuse.png",
+      "sourcePack": "makehuman_system_assets",
+      "sha256": "3150be398e48e8ba1feac164c3143c16c0b2e959d9ffb6155f0171f59cfb4ea9",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "license": "CC0-1.0"
+    }
+  ],
+  "outputs": [
+    {
+      "role": "market",
+      "name": "HERMES AGENT",
+      "packageFile": "hermes-agent.glb",
+      "inputFile": "/workspace/scratch/ceba1e6f4beb/blender-avatar-work/output/hermes-agent-animated.glb",
+      "sha256": "73d5640fba5678288f84606c164ca73627de2b229dd3a0f38ae3c043fa42107e",
+      "bytes": 7400204,
+      "sourceFiles": [
+        "clothes/shoes04/shoes04.mhclo",
+        "clothes/shoes04/shoes04.mhmat",
+        "clothes/shoes04/shoes04.mhw",
+        "clothes/shoes04/shoes04.obj",
+        "clothes/shoes04/shoes04_diffuse.png",
+        "clothes/shoes04/shoes04_normal.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-bump.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-diff.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-spec.png",
+        "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.mhmat",
+        "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.obj",
+        "clothes/toigo_male_suit_tie_and_jacket/toigo_male_suit_tie_and_jacket.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhmat",
+        "eyebrows/eyebrow001/eyebrow001.obj",
+        "eyebrows/eyebrow001/eyebrow001.png",
+        "eyelashes/eyelashes01/eyelashes01.mhclo",
+        "eyelashes/eyelashes01/eyelashes01.mhmat",
+        "eyelashes/eyelashes01/eyelashes01.obj",
+        "eyelashes/eyelashes01/eyelashes01.png",
+        "eyes/low-poly/low-poly.mhclo",
+        "eyes/low-poly/low-poly.obj",
+        "eyes/materials/brown.mhmat",
+        "eyes/materials/brown_eye.png",
+        "hair/short01/short01.mhclo",
+        "hair/short01/short01.mhmat",
+        "hair/short01/short01.obj",
+        "hair/short01/short01_diffuse.png",
+        "skins/young_asian_male/young_asian_male.mhmat",
+        "skins/young_asian_male/young_lightskinned_male_diffuse3.png",
+        "teeth/teeth_base/teeth.mhmat",
+        "teeth/teeth_base/teeth.png",
+        "teeth/teeth_base/teeth_base.mhclo",
+        "teeth/teeth_base/teeth_base.obj",
+        "tongue/tongue01/tongue01.mhclo",
+        "tongue/tongue01/tongue01.mhmat",
+        "tongue/tongue01/tongue01.obj",
+        "tongue/tongue01/tongue01_diffuse.png"
+      ],
+      "embeddedTextureSources": [
+        {
+          "name": "young_lightskinned_male_diffuse3",
+          "mimeType": "image/png",
+          "size": [
+            2048,
+            2048
+          ],
+          "bytes": 3593099,
+          "sha256": "f50016a5507fc687dc8df06599c8ea48de950cd185de33a71cafc1319ddab4d5",
+          "sourcePaths": [
+            "skins/young_asian_male/young_lightskinned_male_diffuse3.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyebrow001",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 89619,
+          "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+          "sourcePaths": [
+            "eyebrows/eyebrow001/eyebrow001.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyelashes01",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 91600,
+          "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+          "sourcePaths": [
+            "eyelashes/eyelashes01/eyelashes01.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "brown_eye",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 246739,
+          "sha256": "c40c9a61da6fedae018279efe78e9d3e224656180f10f9e0acd1dd14719b4929",
+          "sourcePaths": [
+            "eyes/materials/brown_eye.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "shoes04_normal",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 331624,
+          "sha256": "19b899b89ca9d536b87585e2701b4880ac2d33bf684661222b5ed56b48ae57b1",
+          "sourcePaths": [
+            "clothes/shoes04/shoes04_normal.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "shoes04_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 209959,
+          "sha256": "34b6af2e972795fe635fd717d5026a5ed69e26ed1ee648ee9ba9561e02ffd0fe",
+          "sourcePaths": [
+            "clothes/shoes04/shoes04_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "short01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            1024,
+            1024
+          ],
+          "bytes": 998699,
+          "sha256": "fbaccde879dceabb241fe3016b0ff4ff7758a04956aa4d497d57f57cbf642aaa",
+          "sourcePaths": [
+            "hair/short01/short01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "teeth",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 96549,
+          "sha256": "fac6a8cae5beb7f1db720e5dd5c14af6468cf32de4e634a09391097168e83019",
+          "sourcePaths": [
+            "teeth/teeth_base/teeth.mhmat",
+            "teeth/teeth_base/teeth.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tongue01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 54570,
+          "sha256": "8526318966f0a8b1d388f827a1a2cf64a55914cac1379ea9ce1eec7bf41d7abd",
+          "sourcePaths": [
+            "tongue/tongue01/tongue01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        }
+      ],
+      "headBone": "head",
+      "clipNames": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "runtimeWalkSpeedMetresPerSecond": 0.7563353249620031,
+      "structuralCheck": "pass",
+      "referenceReviewed": false,
+      "visualAndApplicationApproval": "not claimed by this provenance report"
+    },
+    {
+      "role": "neuro",
+      "name": "NEUROBRO",
+      "packageFile": "neurobro.glb",
+      "inputFile": "/workspace/scratch/ceba1e6f4beb/blender-avatar-work/output/neurobro-animated.glb",
+      "sha256": "907cb4311237f369c64b9596cc4abf4f8f49eceade2fa121265fe9a1dcf60406",
+      "bytes": 7825976,
+      "sourceFiles": [
+        "clothes/cortu_t-bar/cortu_t-bar.mhclo",
+        "clothes/cortu_t-bar/tbar.mhmat",
+        "clothes/cortu_t-bar/tbar.obj",
+        "clothes/cortu_t-bar/tbar_diff.png",
+        "clothes/cortu_t-bar/tbar_mask.png",
+        "clothes/cortu_t-bar/tbar_norm.png",
+        "clothes/toigo_female_suit/MHSuitsFem-bump.png",
+        "clothes/toigo_female_suit/MHSuitsFem-diff.png",
+        "clothes/toigo_female_suit/MHSuitsFem-spec.png",
+        "clothes/toigo_female_suit/fem_suit.mhmat",
+        "clothes/toigo_female_suit/fem_suit.obj",
+        "clothes/toigo_female_suit/toigo_female_suit.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhmat",
+        "eyebrows/eyebrow001/eyebrow001.obj",
+        "eyebrows/eyebrow001/eyebrow001.png",
+        "eyelashes/eyelashes01/eyelashes01.mhclo",
+        "eyelashes/eyelashes01/eyelashes01.mhmat",
+        "eyelashes/eyelashes01/eyelashes01.obj",
+        "eyelashes/eyelashes01/eyelashes01.png",
+        "eyes/low-poly/low-poly.mhclo",
+        "eyes/low-poly/low-poly.obj",
+        "eyes/materials/brown.mhmat",
+        "eyes/materials/brown_eye.png",
+        "hair/long01/long01.mhclo",
+        "hair/long01/long01.mhmat",
+        "hair/long01/long01.obj",
+        "hair/long01/long01_diffuse.png",
+        "skins/young_asian_female/young_asian_female.mhmat",
+        "skins/young_asian_female/young_lightskinned_female_diffuse3.png",
+        "teeth/teeth_base/teeth.mhmat",
+        "teeth/teeth_base/teeth.png",
+        "teeth/teeth_base/teeth_base.mhclo",
+        "teeth/teeth_base/teeth_base.obj",
+        "tongue/tongue01/tongue01.mhclo",
+        "tongue/tongue01/tongue01.mhmat",
+        "tongue/tongue01/tongue01.obj",
+        "tongue/tongue01/tongue01_diffuse.png"
+      ],
+      "embeddedTextureSources": [
+        {
+          "name": "young_lightskinned_female_diffuse3",
+          "mimeType": "image/png",
+          "size": [
+            2048,
+            2048
+          ],
+          "bytes": 3884420,
+          "sha256": "1d82f782b7d2da732229633bd2d14754d873fff53cdb1d088977bcf67ae19dde",
+          "sourcePaths": [
+            "skins/young_asian_female/young_lightskinned_female_diffuse3.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "tbar_norm",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 348371,
+          "sha256": "c353e310181e47bb5ac8fd5fb0fcdde25a64edd28c809dbb51b5a1b86011994f",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_norm.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tbar_diff",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 163764,
+          "sha256": "30555886ae3e128bb6f87fdf0363c7152d5d105c48a6c52c49de89f631c153fd",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_diff.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "eyebrow001",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 89619,
+          "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+          "sourcePaths": [
+            "eyebrows/eyebrow001/eyebrow001.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyelashes01",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 91600,
+          "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+          "sourcePaths": [
+            "eyelashes/eyelashes01/eyelashes01.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "long01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            1024,
+            1024
+          ],
+          "bytes": 1065694,
+          "sha256": "570af6d522fbe6581c37d929af9bc419bd5b3c5761e8c9616198e8acce3129ac",
+          "sourcePaths": [
+            "hair/long01/long01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "brown_eye",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 246739,
+          "sha256": "c40c9a61da6fedae018279efe78e9d3e224656180f10f9e0acd1dd14719b4929",
+          "sourcePaths": [
+            "eyes/materials/brown_eye.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "teeth",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 96549,
+          "sha256": "fac6a8cae5beb7f1db720e5dd5c14af6468cf32de4e634a09391097168e83019",
+          "sourcePaths": [
+            "teeth/teeth_base/teeth.mhmat",
+            "teeth/teeth_base/teeth.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tongue01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 54570,
+          "sha256": "8526318966f0a8b1d388f827a1a2cf64a55914cac1379ea9ce1eec7bf41d7abd",
+          "sourcePaths": [
+            "tongue/tongue01/tongue01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        }
+      ],
+      "headBone": "head",
+      "clipNames": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "runtimeWalkSpeedMetresPerSecond": 0.702753197386598,
+      "structuralCheck": "pass",
+      "referenceReviewed": false,
+      "visualAndApplicationApproval": "not claimed by this provenance report"
+    },
+    {
+      "role": "risk",
+      "name": "RISK MANAGER",
+      "packageFile": "risk-manager.glb",
+      "inputFile": "/workspace/scratch/ceba1e6f4beb/blender-avatar-work/output/risk-manager-animated.glb",
+      "sha256": "1b09ae5f1f151b9ab0b1aa2b0d4c4595d07e63f16606f7d91f4aee3ce0684800",
+      "bytes": 7825248,
+      "sourceFiles": [
+        "clothes/cortu_t-bar/cortu_t-bar.mhclo",
+        "clothes/cortu_t-bar/tbar.mhmat",
+        "clothes/cortu_t-bar/tbar.obj",
+        "clothes/cortu_t-bar/tbar_diff.png",
+        "clothes/cortu_t-bar/tbar_mask.png",
+        "clothes/cortu_t-bar/tbar_norm.png",
+        "clothes/toigo_female_suit/MHSuitsFem-bump.png",
+        "clothes/toigo_female_suit/MHSuitsFem-diff.png",
+        "clothes/toigo_female_suit/MHSuitsFem-spec.png",
+        "clothes/toigo_female_suit/fem_suit.mhmat",
+        "clothes/toigo_female_suit/fem_suit.obj",
+        "clothes/toigo_female_suit/toigo_female_suit.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhmat",
+        "eyebrows/eyebrow001/eyebrow001.obj",
+        "eyebrows/eyebrow001/eyebrow001.png",
+        "eyelashes/eyelashes01/eyelashes01.mhclo",
+        "eyelashes/eyelashes01/eyelashes01.mhmat",
+        "eyelashes/eyelashes01/eyelashes01.obj",
+        "eyelashes/eyelashes01/eyelashes01.png",
+        "eyes/low-poly/low-poly.mhclo",
+        "eyes/low-poly/low-poly.obj",
+        "eyes/materials/brown.mhmat",
+        "eyes/materials/brown_eye.png",
+        "hair/bob01/bob01.mhclo",
+        "hair/bob01/bob01.mhmat",
+        "hair/bob01/bob01.obj",
+        "hair/bob01/bob01_diffuse.png",
+        "skins/young_asian_female/young_asian_female.mhmat",
+        "skins/young_asian_female/young_lightskinned_female_diffuse3.png",
+        "teeth/teeth_base/teeth.mhmat",
+        "teeth/teeth_base/teeth.png",
+        "teeth/teeth_base/teeth_base.mhclo",
+        "teeth/teeth_base/teeth_base.obj",
+        "tongue/tongue01/tongue01.mhclo",
+        "tongue/tongue01/tongue01.mhmat",
+        "tongue/tongue01/tongue01.obj",
+        "tongue/tongue01/tongue01_diffuse.png"
+      ],
+      "embeddedTextureSources": [
+        {
+          "name": "bob01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            1024,
+            1024
+          ],
+          "bytes": 1085406,
+          "sha256": "a6b86e8e3b65f04f6fa78835d7b78699107e36bd27018ceb56b63e4ffdb0f14a",
+          "sourcePaths": [
+            "hair/bob01/bob01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "young_lightskinned_female_diffuse3",
+          "mimeType": "image/png",
+          "size": [
+            2048,
+            2048
+          ],
+          "bytes": 3884420,
+          "sha256": "1d82f782b7d2da732229633bd2d14754d873fff53cdb1d088977bcf67ae19dde",
+          "sourcePaths": [
+            "skins/young_asian_female/young_lightskinned_female_diffuse3.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "tbar_norm",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 348371,
+          "sha256": "c353e310181e47bb5ac8fd5fb0fcdde25a64edd28c809dbb51b5a1b86011994f",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_norm.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tbar_diff",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 163764,
+          "sha256": "30555886ae3e128bb6f87fdf0363c7152d5d105c48a6c52c49de89f631c153fd",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_diff.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "eyebrow001",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 89619,
+          "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+          "sourcePaths": [
+            "eyebrows/eyebrow001/eyebrow001.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyelashes01",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 91600,
+          "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+          "sourcePaths": [
+            "eyelashes/eyelashes01/eyelashes01.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "brown_eye",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 246739,
+          "sha256": "c40c9a61da6fedae018279efe78e9d3e224656180f10f9e0acd1dd14719b4929",
+          "sourcePaths": [
+            "eyes/materials/brown_eye.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "teeth",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 96549,
+          "sha256": "fac6a8cae5beb7f1db720e5dd5c14af6468cf32de4e634a09391097168e83019",
+          "sourcePaths": [
+            "teeth/teeth_base/teeth.mhmat",
+            "teeth/teeth_base/teeth.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tongue01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 54570,
+          "sha256": "8526318966f0a8b1d388f827a1a2cf64a55914cac1379ea9ce1eec7bf41d7abd",
+          "sourcePaths": [
+            "tongue/tongue01/tongue01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        }
+      ],
+      "headBone": "head",
+      "clipNames": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "runtimeWalkSpeedMetresPerSecond": 0.698754254420114,
+      "structuralCheck": "pass",
+      "referenceReviewed": false,
+      "visualAndApplicationApproval": "not claimed by this provenance report"
+    },
+    {
+      "role": "trading",
+      "name": "BINANCE",
+      "packageFile": "binance.glb",
+      "inputFile": "/workspace/scratch/ceba1e6f4beb/blender-avatar-work/output/binance-animated.glb",
+      "sha256": "a03634fa8870157ff2097541adc9c01b242859a57741f984b914d83ac81c2705",
+      "bytes": 8126624,
+      "sourceFiles": [
+        "clothes/cortu_t-bar/cortu_t-bar.mhclo",
+        "clothes/cortu_t-bar/tbar.mhmat",
+        "clothes/cortu_t-bar/tbar.obj",
+        "clothes/cortu_t-bar/tbar_diff.png",
+        "clothes/cortu_t-bar/tbar_mask.png",
+        "clothes/cortu_t-bar/tbar_norm.png",
+        "clothes/toigo_female_suit/MHSuitsFem-bump.png",
+        "clothes/toigo_female_suit/MHSuitsFem-diff.png",
+        "clothes/toigo_female_suit/MHSuitsFem-spec.png",
+        "clothes/toigo_female_suit/fem_suit.mhmat",
+        "clothes/toigo_female_suit/fem_suit.obj",
+        "clothes/toigo_female_suit/toigo_female_suit.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhmat",
+        "eyebrows/eyebrow001/eyebrow001.obj",
+        "eyebrows/eyebrow001/eyebrow001.png",
+        "eyelashes/eyelashes01/eyelashes01.mhclo",
+        "eyelashes/eyelashes01/eyelashes01.mhmat",
+        "eyelashes/eyelashes01/eyelashes01.obj",
+        "eyelashes/eyelashes01/eyelashes01.png",
+        "eyes/low-poly/low-poly.mhclo",
+        "eyes/low-poly/low-poly.obj",
+        "eyes/materials/brown.mhmat",
+        "eyes/materials/brown_eye.png",
+        "hair/ponytail01/ponytail01.mhclo",
+        "hair/ponytail01/ponytail01.mhmat",
+        "hair/ponytail01/ponytail01.obj",
+        "hair/ponytail01/ponytail01_diffuse.png",
+        "skins/young_asian_female/young_asian_female.mhmat",
+        "skins/young_asian_female/young_lightskinned_female_diffuse3.png",
+        "teeth/teeth_base/teeth.mhmat",
+        "teeth/teeth_base/teeth.png",
+        "teeth/teeth_base/teeth_base.mhclo",
+        "teeth/teeth_base/teeth_base.obj",
+        "tongue/tongue01/tongue01.mhclo",
+        "tongue/tongue01/tongue01.mhmat",
+        "tongue/tongue01/tongue01.obj",
+        "tongue/tongue01/tongue01_diffuse.png"
+      ],
+      "embeddedTextureSources": [
+        {
+          "name": "young_lightskinned_female_diffuse3",
+          "mimeType": "image/png",
+          "size": [
+            2048,
+            2048
+          ],
+          "bytes": 3884420,
+          "sha256": "1d82f782b7d2da732229633bd2d14754d873fff53cdb1d088977bcf67ae19dde",
+          "sourcePaths": [
+            "skins/young_asian_female/young_lightskinned_female_diffuse3.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "tbar_norm",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 348371,
+          "sha256": "c353e310181e47bb5ac8fd5fb0fcdde25a64edd28c809dbb51b5a1b86011994f",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_norm.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tbar_diff",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 163764,
+          "sha256": "30555886ae3e128bb6f87fdf0363c7152d5d105c48a6c52c49de89f631c153fd",
+          "sourcePaths": [
+            "clothes/cortu_t-bar/tbar_diff.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "eyebrow001",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 89619,
+          "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+          "sourcePaths": [
+            "eyebrows/eyebrow001/eyebrow001.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyelashes01",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 91600,
+          "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+          "sourcePaths": [
+            "eyelashes/eyelashes01/eyelashes01.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "brown_eye",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 246739,
+          "sha256": "c40c9a61da6fedae018279efe78e9d3e224656180f10f9e0acd1dd14719b4929",
+          "sourcePaths": [
+            "eyes/materials/brown_eye.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "ponytail01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            1024,
+            1024
+          ],
+          "bytes": 1378946,
+          "sha256": "c55d1ef36bd73932e5df45ee4d501d4fed43403bdb69faa9cc69831ecb237269",
+          "sourcePaths": [
+            "hair/ponytail01/ponytail01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "teeth",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 96549,
+          "sha256": "fac6a8cae5beb7f1db720e5dd5c14af6468cf32de4e634a09391097168e83019",
+          "sourcePaths": [
+            "teeth/teeth_base/teeth.mhmat",
+            "teeth/teeth_base/teeth.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tongue01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 54570,
+          "sha256": "8526318966f0a8b1d388f827a1a2cf64a55914cac1379ea9ce1eec7bf41d7abd",
+          "sourcePaths": [
+            "tongue/tongue01/tongue01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        }
+      ],
+      "headBone": "head",
+      "clipNames": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "runtimeWalkSpeedMetresPerSecond": 0.7035393328110267,
+      "structuralCheck": "pass",
+      "referenceReviewed": false,
+      "visualAndApplicationApproval": "not claimed by this provenance report"
+    },
+    {
+      "role": "boss",
+      "name": "HARUN",
+      "packageFile": "harun.glb",
+      "inputFile": "/workspace/scratch/ceba1e6f4beb/blender-avatar-work/output/harun-animated.glb",
+      "sha256": "84ab4d85fedaee089a2bca302cb7edc6171da50cce005c9822550102b3a02cb2",
+      "bytes": 7396652,
+      "sourceFiles": [
+        "clothes/shoes04/shoes04.mhclo",
+        "clothes/shoes04/shoes04.mhmat",
+        "clothes/shoes04/shoes04.mhw",
+        "clothes/shoes04/shoes04.obj",
+        "clothes/shoes04/shoes04_diffuse.png",
+        "clothes/shoes04/shoes04_normal.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-bump.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-diff.png",
+        "clothes/toigo_male_suit_tie_and_jacket/Suit-tie-Jacket-spec.png",
+        "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.mhmat",
+        "clothes/toigo_male_suit_tie_and_jacket/jacket_tie_pants.obj",
+        "clothes/toigo_male_suit_tie_and_jacket/toigo_male_suit_tie_and_jacket.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhclo",
+        "eyebrows/eyebrow001/eyebrow001.mhmat",
+        "eyebrows/eyebrow001/eyebrow001.obj",
+        "eyebrows/eyebrow001/eyebrow001.png",
+        "eyelashes/eyelashes01/eyelashes01.mhclo",
+        "eyelashes/eyelashes01/eyelashes01.mhmat",
+        "eyelashes/eyelashes01/eyelashes01.obj",
+        "eyelashes/eyelashes01/eyelashes01.png",
+        "eyes/low-poly/low-poly.mhclo",
+        "eyes/low-poly/low-poly.obj",
+        "eyes/materials/brown.mhmat",
+        "eyes/materials/brown_eye.png",
+        "hair/short01/short01.mhclo",
+        "hair/short01/short01.mhmat",
+        "hair/short01/short01.obj",
+        "hair/short01/short01_diffuse.png",
+        "skins/young_asian_male/young_asian_male.mhmat",
+        "skins/young_asian_male/young_lightskinned_male_diffuse3.png",
+        "teeth/teeth_base/teeth.mhmat",
+        "teeth/teeth_base/teeth.png",
+        "teeth/teeth_base/teeth_base.mhclo",
+        "teeth/teeth_base/teeth_base.obj",
+        "tongue/tongue01/tongue01.mhclo",
+        "tongue/tongue01/tongue01.mhmat",
+        "tongue/tongue01/tongue01.obj",
+        "tongue/tongue01/tongue01_diffuse.png"
+      ],
+      "embeddedTextureSources": [
+        {
+          "name": "young_lightskinned_male_diffuse3",
+          "mimeType": "image/png",
+          "size": [
+            2048,
+            2048
+          ],
+          "bytes": 3593099,
+          "sha256": "f50016a5507fc687dc8df06599c8ea48de950cd185de33a71cafc1319ddab4d5",
+          "sourcePaths": [
+            "skins/young_asian_male/young_lightskinned_male_diffuse3.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyebrow001",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 89619,
+          "sha256": "9940f7d0b1b223709a19b05156ba6f6e9e4dbdbced02d7574f4d51d72c58967b",
+          "sourcePaths": [
+            "eyebrows/eyebrow001/eyebrow001.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "eyelashes01",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 91600,
+          "sha256": "4b69c0fff2648874460e9caf80c31413c444218a5c50afebc425aeaa65484a35",
+          "sourcePaths": [
+            "eyelashes/eyelashes01/eyelashes01.png"
+          ],
+          "relation": "identical source bytes"
+        },
+        {
+          "name": "brown_eye",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 246739,
+          "sha256": "c40c9a61da6fedae018279efe78e9d3e224656180f10f9e0acd1dd14719b4929",
+          "sourcePaths": [
+            "eyes/materials/brown_eye.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "shoes04_normal",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 331624,
+          "sha256": "19b899b89ca9d536b87585e2701b4880ac2d33bf684661222b5ed56b48ae57b1",
+          "sourcePaths": [
+            "clothes/shoes04/shoes04_normal.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "shoes04_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            512,
+            512
+          ],
+          "bytes": 209959,
+          "sha256": "34b6af2e972795fe635fd717d5026a5ed69e26ed1ee648ee9ba9561e02ffd0fe",
+          "sourcePaths": [
+            "clothes/shoes04/shoes04_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "short01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            1024,
+            1024
+          ],
+          "bytes": 998699,
+          "sha256": "fbaccde879dceabb241fe3016b0ff4ff7758a04956aa4d497d57f57cbf642aaa",
+          "sourcePaths": [
+            "hair/short01/short01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "teeth",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 96549,
+          "sha256": "fac6a8cae5beb7f1db720e5dd5c14af6468cf32de4e634a09391097168e83019",
+          "sourcePaths": [
+            "teeth/teeth_base/teeth.mhmat",
+            "teeth/teeth_base/teeth.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        },
+        {
+          "name": "tongue01_diffuse",
+          "mimeType": "image/png",
+          "size": [
+            256,
+            256
+          ],
+          "bytes": 54570,
+          "sha256": "8526318966f0a8b1d388f827a1a2cf64a55914cac1379ea9ce1eec7bf41d7abd",
+          "sourcePaths": [
+            "tongue/tongue01/tongue01_diffuse.png"
+          ],
+          "relation": "builder-downsampled derivative by source image name"
+        }
+      ],
+      "headBone": "head",
+      "clipNames": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "runtimeWalkSpeedMetresPerSecond": 0.7562422138614007,
+      "structuralCheck": "pass",
+      "referenceReviewed": false,
+      "visualAndApplicationApproval": "not claimed by this provenance report"
+    }
+  ],
+  "authoredAdditions": [
+    "Character shaping and material assignments in builder.py",
+    "Original animation curves and procedural coffee mug in animation.py"
+  ],
+  "contractHeadCommit": "b9c42af2a1a2724410231c6ad9c9a9c7e8b9b25d",
+  "integrationPerformed": false,
+  "productionChanges": false,
+  "manifestGate": "referenceReviewed remains false until visual comparison is actually approved"
+}

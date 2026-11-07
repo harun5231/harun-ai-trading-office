@@ -11,7 +11,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
   const staticRoot = new THREE.Group(); root.add(staticRoot);
   const displays = new THREE.Group(); displays.name = 'office-displays'; root.add(displays);
   const materials = new Map(), geometries = new Map(), ownTextures = new Set();
-  const stationary = {}, displayMeshes = [];
+  const stationary = {}, displayMeshes = [], chairGroups = new Map(), keyboardGroups = new Map(), movingGeometries = [];
   const geo = (key, factory) => { if (!geometries.has(key)) geometries.set(key, factory()); return geometries.get(key); };
   const mat = (color, roughness = .65, metalness = 0) => {
     const key = `${color}:${roughness}:${metalness}`;
@@ -117,7 +117,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
 
   // Open-front cutaway with real geometry and softly reflective oak flooring.
   block(staticRoot, [0, -.25, .2], [22.2, .5, 17.7], M.paleStone, .12);
-  block(staticRoot, [0, .025, .2], [21.8, .05, 17.3], M.floor, 0);
+  block(staticRoot, [0, -.025, .2], [21.8, .05, 17.3], M.floor, 0);
   block(staticRoot, [0, 2.67, -8.43], [22, 5.35, .22], M.stone, .02);
   block(staticRoot, [10.87, .35, .2], [.2, .7, 17.3], M.paleStone, .02);
   block(staticRoot, [-10.87, .13, .2], [.2, .25, 17.3], M.paleStone, .02);
@@ -159,71 +159,92 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     block(staticRoot, [-1.0, 5.19, z], [12.8, .028, .115], M.glow, .006);
   }
 
-  function chair(x, z) {
-    const group = new THREE.Group(); group.position.set(x, 0, z); group.rotation.y = Math.PI; staticRoot.add(group);
-    rod(group, [0, .14, 0], [0, .69, 0], .055, M.chrome);
-    for (let index = 0; index < 5; index++) {
-      const angle = index * Math.PI * 2 / 5, px = Math.cos(angle) * .37, pz = Math.sin(angle) * .37;
-      rod(group, [0, .17, 0], [px, .12, pz], .026, M.chrome);
-      ellipse(group, [px, .08, pz], [.065, .045, .065], M.dark);
+  function batchMoving(group) {
+    const pieces = new Map();
+    for (const mesh of group.children) {
+      mesh.updateMatrix();
+      const geometry = mesh.geometry.index ? mesh.geometry.toNonIndexed() : mesh.geometry.clone();
+      geometry.applyMatrix4(mesh.matrix);
+      if (!pieces.has(mesh.material)) pieces.set(mesh.material, []);
+      pieces.get(mesh.material).push(geometry);
     }
-    block(group, [0, .72, 0], [.70, .12, .65], M.teal, .075);
-    block(group, [0, 1.09, .31], [.70, .69, .14], M.teal, .09).rotation.x = -.10;
-    block(group, [0, 1.46, .33], [.52, .17, .14], M.cushion, .065);
-    for (const x of [-.22, 0, .22]) block(group, [x, 1.10, .22], [.015, .54, .014], M.cushion, .004);
-    for (const side of [-1, 1]) {
-      rod(group, [side * .28, .64, .12], [side * .39, .98, -.02], .022, M.chrome);
-      block(group, [side * .39, .99, -.02], [.075, .05, .35], M.teal, .027);
+    group.clear();
+    for (const [material, parts] of pieces) {
+      const geometry = mergeGeometries(parts, false); parts.forEach(part => part.dispose());
+      movingGeometries.push(geometry);
+      const mesh = new THREE.Mesh(geometry, material); mesh.castShadow = true; mesh.receiveShadow = true; group.add(mesh);
     }
   }
-  function monitor(role, variant, center, angle = 0, width = 1.47) {
+  function chair(station) {
+    const { x, z, y, backZ, depth } = station.seat;
+    const back = backZ - z;
+    const group = new THREE.Group(); group.name = `chair-${station.role}`; group.position.set(x, 0, z); root.add(group);
+    rod(group, [0, .12, 0], [0, y - .07, 0], .045, M.chrome);
+    for (let index = 0; index < 5; index++) {
+      const angle = index * Math.PI * 2 / 5 + Math.PI / 2, px = Math.cos(angle) * .32, pz = Math.sin(angle) * .32;
+      rod(group, [0, .12, 0], [px, .075, pz], .022, M.chrome);
+      ellipse(group, [px, .045, pz], [.055, .035, .055], M.dark);
+    }
+    block(group, [0, y - .045, 0], [.70, .09, depth], M.teal, .045);
+    // Armless task chairs leave the side approach clear; the back is a separate
+    // permanent collider, so a docking exemption never removes its protection.
+    block(group, [0, y + .30, back], [.70, .60, .14], M.teal, .06);
+    block(group, [0, y + .62, back], [.49, .14, .12], M.cushion, .045);
+    for (const dx of [-.22, 0, .22]) block(group, [dx, y + .30, back + .078], [.012, .47, .012], M.cushion, .003);
+    batchMoving(group);
+    chairGroups.set(station.role, group);
+  }
+  function monitor(role, variant, center, angle = 0, width = 1.35, height = .48) {
     const [x, y, z] = center, group = new THREE.Group(); group.position.set(x, y, z); group.rotation.y = angle; staticRoot.add(group);
-    block(group, [0, -.49, -.02], [.42, .035, .29], M.metal, .018);
-    rod(group, [0, -.48, -.06], [0, -.05, -.06], .029, M.metal);
-    block(group, [0, 0, -.035], [width + .065, .84, .075], M.dark, .025);
-    display(role, variant, [x + Math.sin(angle) * .012, y, z + Math.cos(angle) * .012], width, .755, angle);
-    // Rear-facing screen lets the seated colleague read the same existing telemetry.
-    display(role, variant, [x - Math.sin(angle) * .082, y, z - Math.cos(angle) * .082], width, .755, angle + Math.PI);
-    ellipse(group, [width * .44, -.395, .011], [.008, .008, .008], M.glow);
+    const rise = height / 2 + .08;
+    block(group, [0, -rise + .018, -.02], [.30, .025, .20], M.metal, .012);
+    rod(group, [0, -rise + .03, -.04], [0, -.04, -.04], .023, M.metal);
+    block(group, [0, 0, -.025], [width + .045, height + .04, .05], M.dark, .018);
+    display(role, variant, [x + Math.sin(angle) * .004, y, z + Math.cos(angle) * .004], width, height, angle);
+    ellipse(group, [width * .44, -height / 2 - .01, .003], [.005, .005, .005], M.glow);
   }
   function mug(parent, x, y, z) {
-    add(parent, geo('mug', () => new THREE.CylinderGeometry(.075, .066, .17, 14)), M.white, [x, y + .085, z]);
-    add(parent, geo('mug-coffee', () => new THREE.CylinderGeometry(.064, .064, .006, 14)), M.coffee, [x, y + .164, z]);
-    add(parent, geo('mug-handle', () => new THREE.TorusGeometry(.049, .012, 6, 14)), M.white, [x + .083, y + .09, z]);
+    add(parent, geo('mug', () => new THREE.CylinderGeometry(.052, .047, .11, 14)), M.white, [x, y + .055, z]);
+    add(parent, geo('mug-coffee', () => new THREE.CylinderGeometry(.044, .044, .004, 14)), M.coffee, [x, y + .106, z]);
+    add(parent, geo('mug-handle', () => new THREE.TorusGeometry(.034, .009, 6, 14)), M.white, [x + .057, y + .06, z]);
   }
   function workstation(station) {
-    const { role, x, z } = station, boss = role === 'boss', width = boss ? 4.8 : 3.65, depth = boss ? 1.8 : 1.55;
-    // A rounded walnut pedestal and full-width warm light line replace cubicles.
-    block(staticRoot, [x, 1.035, z], [width, .14, depth], M.wood, .14);
-    block(staticRoot, [x, .46, z - .08], [width - .18, .87, depth - .17], M.wood, .18);
-    block(staticRoot, [x, .095, z - .02], [width - .26, .12, depth - .24], M.edge, .05);
-    block(staticRoot, [x, .90, z + depth / 2 - .075], [width - .28, .036, .045], M.glow, .008);
-    block(staticRoot, [x, .125, z + depth / 2 - .08], [width - .35, .022, .035], M.glow, .005);
-    // Metal physical plate plus separate high-resolution lettering surface.
-    const plaqueWidth = boss ? 3.15 : 2.72;
-    block(staticRoot, [x, .65, z + depth / 2 - .012], [plaqueWidth + .10, .36, .065], M.paleBrass, .026);
-    label([x, .65, z + depth / 2 + .026], plaqueWidth, .285, station.name, { size: boss ? 220 : 164 });
-    if (boss) {
-      monitor(role, 0, [x - 1.36, 1.66, z + .15], .16, 1.18);
-      monitor(role, 1, [x, 1.66, z + .29], 0, 1.42);
-      monitor(role, 0, [x + 1.36, 1.66, z + .15], -.16, 1.18);
-    } else {
-      monitor(role, 0, [x - .78, 1.64, z + .15], .07, 1.47);
-      monitor(role, 1, [x + .78, 1.64, z + .15], -.07, 1.47);
-    }
-    block(staticRoot, [x - .07, 1.119, z - .46], [.79, .026, .26], M.dark, .022);
-    if (!mobile) for (let row = 0; row < 4; row++) for (let col = 0; col < 11; col++) block(staticRoot, [x - .40 + col * .062, 1.138, z - .55 + row * .051], [.044, .005, .032], M.metal, .002);
-    block(staticRoot, [x + .58, 1.119, z - .45], [.32, .01, .32], M.teal, .02);
-    ellipse(staticRoot, [x + .58, 1.15, z - .45], [.069, .034, .10], M.dark);
-    block(staticRoot, [x - 1.28, 1.125, z - .45], [.34, .035, .43], M.edge, .013);
-    block(staticRoot, [x - 1.28, 1.146, z - .45], [.30, .006, .39], M.linen, .006);
-    rod(staticRoot, [x - 1.38, 1.155, z - .56], [x - 1.25, 1.155, z - .33], .009, M.brass);
-    mug(staticRoot, x + (boss ? 2.03 : 1.51), 1.11, z - .45);
-    // Compact workstation tower remains on the desktop, not another station.
-    block(staticRoot, [x + (boss ? 2.08 : 1.54), 1.34, z + .37], [.23, .47, .40], M.dark, .03);
-    block(staticRoot, [x + (boss ? 2.20 : 1.66), 1.34, z + .37], [.009, .34, .025], M.brass, .003);
-    chair(x, station.dock.z);
-    stationary[role] = { ...station, seat: { ...station.seat }, dock: { ...station.dock }, entry: { ...station.entry }, deskWidth: width, deskDepth: depth };
+    const { role, x, z, deskWidth: width, deskDepth: depth, deskTop: top, keyTop } = station;
+    const boss = role === 'boss', rootZ = station.dock.z;
+    // Thin real desktop and open kneehole: knees/feet are never buried in the
+    // old full-width pedestal. All four legs have matching navigation bounds.
+    block(staticRoot, [x, top - .035, z], [width, .07, depth], M.wood, .035);
+    for (const side of [-1, 1]) for (const end of [-1, 1])
+      block(staticRoot, [x + side * (width / 2 - .22), (top - .07) / 2, z + end * (depth / 2 - .20)], [.10, top - .07, .10], M.edge, .012);
+    block(staticRoot, [x, top - .24, z + depth / 2 - .06], [width - .20, .37, .06], M.wood, .018);
+    block(staticRoot, [x, top - .10, z + depth / 2 + .001], [width - .28, .022, .02], M.glow, .006);
+    const plaqueWidth = boss ? 2.9 : 2.55;
+    block(staticRoot, [x, top - .24, z + depth / 2 - .012], [plaqueWidth + .08, .26, .065], M.paleBrass, .022);
+    label([x, top - .24, z + depth / 2 + .026], plaqueWidth, .22, station.name, { size: boss ? 200 : 156 });
+    // Exactly one fixed PC per owner. The panel faces the person (-Z); its rear
+    // is a normal opaque case, not an impossible second screen for the camera.
+    monitor(role, 0, [x, top + (boss ? .355 : .32), z + .08], Math.PI, boss ? 1.65 : 1.35, boss ? .55 : .48);
+    const keyboardZ = rootZ + .19, keyboard = new THREE.Group();
+    keyboard.name = `keyboard-${role}`; root.add(keyboard);
+    block(keyboard, [x, top - .005, rootZ + .3075], [.61, .018, .505], M.wood, .012);
+    block(keyboard, [x, keyTop - .013, keyboardZ], [.52, .020, .20], M.dark, .018);
+    for (let row = 0; row < 4; row++) for (let col = 0; col < 11; col++)
+      block(keyboard, [x - .21 + col * .042, keyTop - .0025, keyboardZ - .06 + row * .040], [.032, .005, .027], M.metal, .002);
+    batchMoving(keyboard); keyboardGroups.set(role, keyboard);
+    block(staticRoot, [x + .58, top + .008, rootZ + .62], [.30, .01, .30], M.teal, .02);
+    ellipse(staticRoot, [x + .58, top + .035, rootZ + .62], [.065, .027, .09], M.dark);
+    block(staticRoot, [x - 1.28, top + .02, z - .28], [.34, .035, .40], M.edge, .013);
+    block(staticRoot, [x - 1.28, top + .041, z - .28], [.30, .006, .36], M.linen, .006);
+    mug(staticRoot, x + (boss ? 1.78 : 1.41), top + .004, z - .28);
+    block(staticRoot, [x + (boss ? 2.08 : 1.57), top + .235, z + .20], [.23, .47, .40], M.dark, .03);
+    block(staticRoot, [x + (boss ? 2.20 : 1.69), top + .235, z + .20], [.009, .34, .025], M.brass, .003);
+    chair(station);
+    stationary[role] = { ...station, seat: { ...station.seat }, dock: { ...station.dock }, entry: { ...station.entry },
+      setChairOffset(offset, keyboardOffset = .42) {
+        const travel = Math.max(0, Math.min(.42, offset));
+        chairGroups.get(role).position.z = station.seat.z - travel;
+        keyboardGroups.get(role).position.z = Math.max(0, Math.min(.42, keyboardOffset));
+      } };
   }
   STATION_CONFIG.forEach(workstation);
 
@@ -253,13 +274,14 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
   block(staticRoot, [-6.6, .06, 5.25], [5.6, .025, 4.3], M.rug, .12);
   for (const sofa of SOFA_CONFIG) {
     const { x, z, width, depth } = sofa;
-    block(staticRoot, [x, .33, z], [width, .40, depth], M.linen, .14);
-    block(staticRoot, [x, .86, z + .49], [width, .85, .25], M.linen, .13);
+    block(staticRoot, [x, .18, z + .02], [width, .30, depth - .12], M.linen, .10);
+    block(staticRoot, [x, .70, z + .35], [width, .70, .20], M.linen, .09);
     for (const side of [-1, 1]) {
-      block(staticRoot, [x + side * (width / 2 - .13), .66, z], [.26, .64, depth], M.linen, .10);
-      block(staticRoot, [x + side * 1.0, .59, z - .07], [1.82, .16, 1.02], M.linen, .08);
-      const cushion = block(staticRoot, [x + side * 1.35, .91, z + .28], [.66, .59, .16], M.teal, .09); cushion.rotation.z = side * .09;
-      for (const dz of [-.47, .47]) rod(staticRoot, [x + side * (width / 2 - .30), .05, z + dz], [x + side * (width / 2 - .30), .19, z + dz], .035, M.brass);
+      block(staticRoot, [x + side * (width / 2 - .13), .48, z], [.26, .60, depth], M.linen, .09);
+      const cushionTop = side === -1 ? .421 : .366;
+      block(staticRoot, [x + side * 1.05, cushionTop - .04, z - .08], [1.82, .08, .64], M.linen, .035);
+      const cushion = block(staticRoot, [x + side * 1.35, .73, z + .18], [.58, .48, .12], M.teal, .06); cushion.rotation.z = side * .09;
+      for (const dz of [-.30, .30]) rod(staticRoot, [x + side * (width / 2 - .30), .02, z + dz], [x + side * (width / 2 - .30), .12, z + dz], .03, M.brass);
     }
   }
   const table = COLLIDERS.find(value => value.id === 'coffee-table-left');
@@ -298,6 +320,12 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     rod(staticRoot, [pool.x + side * .33, .87, pool.z - 3.45], [pool.x + side * .33, .87, pool.z - 2.98], .026, M.chrome);
   }
 
+  for (const [index, z] of [1.55, 5.8].entries()) {
+    const top = index === 0 ? .421 : .366;
+    block(staticRoot, [4.92, top - .055, z], [.50, .11, 1.25], M.paleStone, .04);
+    for (const dz of [-.43, .43]) block(staticRoot, [5.05, (top - .11) / 2, z + dz], [.22, top - .11, .15], M.paleStone, .02);
+  }
+
   function plant(config) {
     const { x, z, scale = 1 } = config, group = new THREE.Group(); group.position.set(x, 0, z); group.scale.setScalar(scale); staticRoot.add(group);
     add(group, geo('plant-pot', () => new THREE.CylinderGeometry(.32, .24, .62, 18)), M.paleStone, [0, .33, 0]);
@@ -332,10 +360,10 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     colliderCount: COLLIDERS.length, loungeSeatCount: LOUNGE_SLOTS.length,
     idleActivities: [...new Set(IDLE_SLOTS.map(slot => slot.kind))],
     staticSourceMeshes: sourceMeshes, staticDrawCalls: batches.size,
-    estimatedDrawCalls: batches.size + displays.children.length,
-    monitorCount: STATION_CONFIG.reduce((count, station) => count + (station.role === 'boss' ? 3 : 2), 4),
+    estimatedDrawCalls: batches.size + displays.children.length + [...chairGroups.values(), ...keyboardGroups.values()].reduce((sum, group) => sum + group.children.length, 0),
+    monitorCount: STATION_CONFIG.length + 4, computerCount: STATION_CONFIG.length,
     screenSurfaceCount: displayMeshes.length,
-    fixedChairs: true, pool: true, coffeeNook: true, floorBounds: { ...BOUNDS }, mobile,
+    fixedChairOwnership: true, rollingChairs: true, pool: true, coffeeNook: true, floorBounds: { ...BOUNDS }, mobile,
     textureSources: 'locally generated office materials; existing read-only monitor telemetry',
   };
   return {
@@ -346,7 +374,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     update(time) { if (!disposed && !mobile) { ripples.offset.x = time * .003; ripples.offset.y = time * .002; } },
     dispose() {
       if (disposed) return; disposed = true; scene.remove(root);
-      geometries.forEach(geometry => geometry.dispose()); mergedGeometries.forEach(geometry => geometry.dispose());
+      geometries.forEach(geometry => geometry.dispose()); mergedGeometries.forEach(geometry => geometry.dispose()); movingGeometries.forEach(geometry => geometry.dispose());
       materials.forEach(material => material.dispose()); ownTextures.forEach(value => value.dispose());
     },
   };

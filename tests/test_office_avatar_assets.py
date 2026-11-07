@@ -54,7 +54,7 @@ class Bone extends Group { constructor(){super();this.isBone=true;} }
 class LoadingManager { setURLModifier(fn) { this.modify=fn; } }
 class Box3 { setFromObject(){this.min={y:0};this.max={y:1.82};return this;} }
 class AnimationMixer {
-  constructor(root){this.root=root;this.actions=new Map();}
+  constructor(root){this.root=root;this.actions=new Map();globalThis.__lastOfficeMixer=this;}
   clipAction(clip) {
     if(this.actions.has(clip.name)) return this.actions.get(clip.name);
     const action={reset(){return this;},setLoop(){return this;},setEffectiveWeight(){return this;},
@@ -109,11 +109,10 @@ class OfficeAvatarAssets(unittest.TestCase):
                                 cwd=ROOT, text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_five_missing_models_stay_invisible_and_ignore_poses_without_requests(self):
+    def test_missing_models_stay_invisible_and_ignore_poses_without_requests(self):
         self.run_node(r"""
-assert.equal(manifest.avatarAssetReadiness().ready,false);
 for(const role of ['market','neuro','risk','trading','boss']) {
-  const avatar=createAvatar({id:role,role}); await avatar.ready;
+  const avatar=createAvatar({id:role,role,model:descriptor({url:''})}); await avatar.ready;
   assert.equal(avatar.available,false); assert.equal(avatar.root.visible,false);
   assert.equal(avatar.diagnostics().assetState,'MISSING_ASSET');
   assert.equal(avatar.diagnostics().meshes,0);
@@ -126,6 +125,24 @@ for(const role of ['market','neuro','risk','trading','boss']) {
   assert.equal(avatar.root.children.length,0);assert.equal(parent.children.length,0);
 }
 assert.equal(loadCalls,0);
+""")
+
+    def test_installed_manifest_has_local_rigged_assets_with_all_ten_clips(self):
+        self.run_node(r"""
+assert.equal(manifest.avatarAssetReadiness().ready,true);
+assert.deepEqual(Object.keys(manifest.AVATAR_MODELS).sort(),['boss','market','neuro','risk','trading']);
+for(const spec of Object.values(manifest.AVATAR_MODELS)) {
+  const data=fs.readFileSync(path.resolve('assets/office3d',spec.url));
+  assert.equal(data.toString('utf8',0,4),'glTF');
+  const gltf=JSON.parse(data.toString('utf8',20,20+data.readUInt32LE(12)));
+  assert.equal(gltf.animations.length,10);
+  assert.deepEqual(gltf.animations.map(value=>value.name).sort(),[...manifest.REQUIRED_MODEL_CLIPS].sort());
+  assert.ok(gltf.nodes.some(node=>node.name===spec.headBone));
+  assert.ok(gltf.skins.some(skin=>skin.joints.length>=54));
+  assert.ok(gltf.images.length>0 && gltf.images.every(image=>image.bufferView!==undefined));
+  assert.ok(gltf.meshes.some(mesh=>mesh.extras?.targetNames?.includes('officeBlink')));
+  assert.ok(fs.existsSync(spec.license.file));
+}
 """)
 
     def test_head_bone_name_is_required_before_loading(self):
@@ -179,6 +196,29 @@ for(const [overrides,code] of [[{license:null},'LICENSE_REQUIRED'],[{url:'https:
   assert.equal(avatar.diagnostics().failureCode,code);assert.equal(avatar.available,false);avatar.dispose();
 }
 assert.equal(loadCalls,0);
+""")
+
+    def test_desk_rest_holds_keyboard_pose_without_claiming_work_or_resetting_hands(self):
+        self.run_node(r"""
+loadModel=async()=>fixture();
+const avatar=createAvatar({role:'market',model:descriptor()});await avatar.ready;
+const actions=globalThis.__lastOfficeMixer.actions;
+avatar.pose(.016,1,{state:'WORKING',sit:1});
+const working=actions.get('WORKING');working.time=.72;
+avatar.pose(.016,2,{state:'IDLE',sit:1,deskRest:true});
+assert.equal(working.time,.72);assert.equal(working.paused,true);
+assert.equal(avatar.diagnostics().state,'IDLE');
+assert.equal(avatar.diagnostics().clipState,'WORKING');
+avatar.pose(.016,3,{state:'WORKING',sit:1});
+assert.equal(working.paused,false);assert.equal(working.time,.72);
+avatar.pose(.016,4,{state:'IDLE',sit:1});
+assert.equal(avatar.diagnostics().clipState,'SEATED_IDLE');
+avatar.pose(.016,5,{state:'IDLE',sit:1,deskHands:true});
+assert.equal(working.time,.4);assert.equal(working.paused,true);
+assert.equal(avatar.diagnostics().state,'IDLE');
+avatar.pose(.016,6,{state:'STAND_UP',sit:.5,deskRest:true,transitionProgress:.3});
+assert.equal(avatar.diagnostics().clipState,'STAND_UP');
+avatar.dispose();
 """)
 
     def test_disposal_during_load_never_restores_a_character(self):

@@ -348,6 +348,9 @@
   function publish() {
     const account = accountCurrent() ? snapshot.account : null;
     const reports = reportsCurrent() ? snapshot.reports : null;
+    const fills = online && snapshot?.position_history?.kind === 'BINANCE_FILLS' &&
+      ['AVAILABLE', 'PARTIAL'].includes(snapshot.position_history.status) && fresh(snapshot.position_history.checked_at)
+      ? snapshot.position_history : null;
     const detail = {
       source: 'BINANCE_FUTURES', schema_version: 2, status: online ? snapshot?.robot.bot_status ?? 'WAITING' : 'OFFLINE',
       robot_on: online ? snapshot?.robot.robot_on ?? null : null,
@@ -366,7 +369,21 @@
       active_positions: account?.active_positions ?? null, pnl_today: reports?.pnl_today_usdt ?? null,
       trades_today: reports?.trades_today ?? null, generated_at: online ? snapshot?.generated_at : new Date().toISOString(),
       events: online ? snapshot?.activity ?? [] : [], trades: [],
-      employees: online ? snapshot?.employees ?? [] : [], execution_gateway: online ? snapshot?.robot.execution_gateway ?? null : null
+      employees: online ? snapshot?.employees ?? [] : [], execution_gateway: online ? snapshot?.robot.execution_gateway ?? null : null,
+      // Office screens consume the existing snapshot only. Symbol counts are not order counts.
+      fills_checked_at: fills?.checked_at ?? null,
+      recent_fills: fills ? fills.items.filter(row => row && typeof row === 'object' && !Array.isArray(row)).slice(0, 20).map(row => ({ symbol: row.symbol, side: row.side,
+        quantity: row.quantity, price: row.price, time: row.time })) : [],
+      pending_entry_symbols: account && Array.isArray(account.open_entry_symbols) ? [...account.open_entry_symbols] : null,
+      protection_observations: online ? protectionObservations(snapshot?.robot).slice(0, 30).map(row => ({
+        symbol: row.symbol, state: row.state, observed_at: row.observed_at, label: protectionLabel(row)
+      })) : [],
+      risk_observations: online && snapshot?.robot?.risk_estimates && typeof snapshot.robot.risk_estimates === 'object'
+        ? Object.values(snapshot.robot.risk_estimates).filter(row => row?.source === 'RISK_MANAGER' &&
+          row.kind === 'MONITORING_ESTIMATE_ONLY').slice(0, 30).map(row => ({
+            source: row.source, symbol: row.symbol, status: row.status,
+            observed_at: row.observed_at, failure_code: row.failure_code ?? null
+          })) : []
     };
     window.dispatchEvent(new CustomEvent('workerSnapshot', { detail }));
   }

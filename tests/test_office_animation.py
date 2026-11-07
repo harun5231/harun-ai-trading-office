@@ -89,7 +89,15 @@ assert.ok(Math.hypot(a.avatar.root.position.x-a.station.dock.x,a.avatar.root.pos
         self.run_node(r"""
 for(const mode of ['DOCKING','SITTING_DOWN']){
   const env=office({loungeSlots:[sofa]});const a=env.actors[0];
-  env.until(()=>a.mode===mode);env.activity.set(a.role,true);env.tick();
+  env.until(()=>a.mode===mode);
+  if(mode==='SITTING_DOWN')for(let i=0;i<7;i++)env.tick();
+  const beforeSit=a.sit;
+  env.activity.set(a.role,true);env.tick();
+  if(a.mode==='STANDING_UP'){
+    const t=a.avatar.lastPose.transitionProgress, sourceSit=1-t*t*(3-2*t);
+    assert.ok(Math.abs(sourceSit-a.sit)<1e-8,'reverse clip must start at actual partial seated pose');
+    assert.ok(a.sit<=beforeSit,'work preemption cannot drop pelvis into a full seated pose');
+  }
   assert.equal(a.destination.kind,'DESK');
   assert.notEqual(a.mode,'RESTING');
   env.until(()=>a.mode==='AT_DESK');
@@ -131,15 +139,15 @@ const {BOUNDS,COLLIDERS,STATION_CONFIG,IDLE_SLOTS,LOUNGE_SLOTS}=
   await import('./assets/office3d/layout.js');
 const nav=new NavigationMesh({bounds:BOUNDS,colliders:COLLIDERS,radius:.46,cellSize:.32});
 for(const station of STATION_CONFIG){
-  const ignoreIds=[`chair-${station.role}`];
-  const exit=nav.findPath(station.dock,station.entry,{ignoreIds});
+  const ignoreIds=station.ignoreIds;
+  const exit=[station.dock,station.approach,station.entry];
   assert.ok(nav.validatePath(exit,{ignoreIds}),`blocked workstation: ${station.name}`);
   for(const slot of [...IDLE_SLOTS,...LOUNGE_SLOTS]){
     const path=nav.findPath(station.entry,slot.entry||slot.position);
     assert.ok(nav.validatePath(path),`${station.name} cannot reach ${slot.id}`);
     if(slot.colliderId){
-      const seating=nav.findPath(slot.entry,slot.position,{ignoreIds:[slot.colliderId]});
-      assert.ok(nav.validatePath(seating,{ignoreIds:[slot.colliderId]}),`blocked seating: ${slot.id}`);
+      const seating=nav.findPath(slot.entry,slot.position,{ignoreIds:slot.ignoreIds||[slot.colliderId]});
+      assert.ok(nav.validatePath(seating,{ignoreIds:slot.ignoreIds||[slot.colliderId]}),`blocked seating: ${slot.id}`);
     }
   }
 }

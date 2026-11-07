@@ -1,8 +1,10 @@
 # Office human assets
 
-No usable human model is included in the repository. `manifest.js` therefore
-contains five empty model URLs. The loader shows no substitute character and
-makes no model request until a complete asset is configured.
+Five reviewed human GLBs are installed and mapped in `manifest.js`. Each has
+embedded textures, a deforming skeleton, the `head` bone, all ten office clips
+and an authored eyelid morph. The loader keeps malformed or unavailable assets
+isolated from the rest of the Office. See `../review/avatar-reference-review.json`
+for actual visual comparisons, limitations, source paths and final checksums.
 
 ## Required delivery
 
@@ -39,7 +41,7 @@ Set the exact nonempty `headBone` name. It must identify a Bone belonging to
 the loaded skin skeleton; labels and pedestrian head avoidance follow this
 animated bone through seated, typing, and walking poses.
 
-## Audit evidence
+## Earlier asset audit (before installation)
 
 - Existing assets consisted of procedural mascot geometry, without GLB/glTF/FBX
   models or human-model license files.

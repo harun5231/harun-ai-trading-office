@@ -35,7 +35,7 @@ class AvatarStatus(unittest.TestCase):
 
     def test_unknown_state_has_no_fabricated_activity_or_account(self):
         self.run_node(r"""
-for(const role of roles){assert.equal(bridge.getRole(role).state,'IDLE');assert.equal(bridge.getRole(role).known,false);assert.equal(bridge.getRole(role).active,false);}
+for(const role of roles){assert.equal(bridge.getRole(role).state,'UNKNOWN');assert.equal(bridge.getRole(role).known,false);assert.equal(bridge.getRole(role).active,false);}
 assert.equal(bridge.getTelemetry().balance,null);assert.equal(bridge.getTelemetry().active_positions,null);assert.equal(bridge.getTelemetry().connected,false);
 emit({...data(),schema_version:1});emit({...data(),status:'FORGED_ORDER_SENT'});assert.equal(bridge.diagnostics().malformedPayloads,2);assert.equal(bridge.getRole('trading').active,false);assert.equal(bridge.getRole('toString').known,false);
 bridge.dispose();assert.equal(handlers.size,0);assert.equal(timers.size,0);
@@ -43,8 +43,8 @@ bridge.dispose();assert.equal(handlers.size,0);assert.equal(timers.size,0);
 
     def test_real_phases_and_employee_work_are_read_only(self):
         self.run_node(r"""
-emit({...data(),status:'SCREENING'});assert.equal(bridge.getRole('market').state,'WORKING');assert.equal(bridge.getRole('neuro').state,'IDLE');assert.equal(bridge.getRole('position').state,'WORKING');assert.equal(bridge.getRole('boss').state,'WORKING');
-emit({...data(),status:'ANALYZING'});assert.equal(bridge.getRole('market').state,'IDLE');assert.equal(bridge.getRole('neuro').state,'WORKING');
+emit({...data(),status:'SCREENING'});assert.equal(bridge.getRole('market').state,'WORKING');assert.equal(bridge.getRole('neuro').state,'UNKNOWN');assert.equal(bridge.getRole('position').state,'WORKING');assert.equal(bridge.getRole('boss').state,'WORKING');
+emit({...data(),status:'ANALYZING'});assert.equal(bridge.getRole('market').state,'UNKNOWN');assert.equal(bridge.getRole('neuro').state,'WORKING');
 emit({...data(),status:'VALIDATING'});assert.equal(bridge.getRole('risk').state,'WORKING');
 emit({...data(),employees:[{id:'report',name:'Report Manager',status:'WORKING'}]});assert.equal(bridge.getRole('report').state,'WORKING');
 const copy=bridge.getTelemetry();copy.execution_gateway.connected=true;copy.employees[0].status='IDLE';assert.equal(bridge.getTelemetry().execution_gateway.connected,false);assert.equal(bridge.getTelemetry().employees[0].status,'WORKING');
@@ -63,7 +63,7 @@ bridge.dispose();
         self.run_node(r"""
 emit({...data(),status:'OFF',robot_on:false,employees:roles.map(id=>({id,status:'WORKING'}))});for(const role of roles){assert.equal(bridge.getRole(role).state,'IDLE');assert.equal(bridge.getRole(role).active,false);assert.equal(bridge.getRole(role).known,true);}assert.match(bridge.getRole('position').speech,/Robot OFF/);assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTelemetry().active_positions,1);assert.ok(bridge.getTelemetry().employees.every(employee=>employee.status==='OFF'));
 emit({...data(),status:'OFF',robot_on:false,active_positions:0});assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getRole('position').known,true);assert.equal(bridge.getRole('boss').active,false);
-emit({...data(),status:'OFF',robot_on:false,active_positions:null});assert.equal(bridge.getRole('position').known,true);assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().active_positions,null);
+emit({...data(),status:'OFF',robot_on:false,active_positions:null});assert.equal(bridge.getRole('position').known,false);assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().active_positions,null);
 emit({...data(),status:'ANALYZING',robot_on:false,employees:roles.map(id=>({id,status:'WORKING'}))});assert.ok(roles.every(role=>!bridge.getRole(role).active));
 emit({...data(),status:'OFFLINE',active_positions:2});assert.equal(bridge.getRole('position').active,false);assert.equal(bridge.getTelemetry().balance,null);bridge.dispose();
 """)
@@ -85,6 +85,45 @@ clock=original+121000;emit({...payload,generated_at:iso()});assert.equal(bridge.
         self.run_node(r"""
 emit({...data(),active_positions:0,employees:[{id:'report',status:'WORKING',checked_at:iso(clock-121000)}],events:[{at:iso(clock-1000),agent:'Trading Agent',state:'EXECUTING',message:'Historical adapter event'}]});assert.equal(bridge.getRole('report').active,false);assert.equal(bridge.getRole('trading').active,false);assert.equal(bridge.getRole('boss').active,false);assert.equal(bridge.getTelemetry().events.length,1);
 const copied=bridge.getTelemetry();copied.events[0].message='changed';assert.equal(bridge.getTelemetry().events[0].message,'Historical adapter event');clock+=121000;assert.equal(bridge.getTelemetry().events.length,0);bridge.dispose();
+""")
+
+    def test_unknown_and_stale_role_observations_do_not_confirm_leisure(self):
+        self.run_node(r"""
+emit({...data(),active_positions:0,employees:[{id:'market',status:'IDLE'},{id:'neuro',status:'UNKNOWN'},{id:'risk',status:'IDLE',checked_at:iso(clock-121000)}]});
+assert.equal(bridge.getRole('market').known,true);assert.equal(bridge.getRole('market').active,false);
+for(const role of ['neuro','risk','reviewer']){assert.equal(bridge.getRole(role).known,false);assert.equal(bridge.getRole(role).state,'UNKNOWN');}
+emit({...data(),status:'ANALYZING'});assert.equal(bridge.getRole('neuro').active,true);
+emit({...data(),status:'ANALYZING',employees:[{id:'neuro',status:'UNKNOWN'}]});assert.equal(bridge.getRole('neuro').known,false);assert.equal(bridge.getRole('neuro').active,false);
+emit({...data(),status:'UNKNOWN',employees:roles.map(id=>({id,status:'WORKING'}))});
+for(const role of roles){assert.equal(bridge.getRole(role).known,false);assert.equal(bridge.getRole(role).active,false);}
+assert.equal(bridge.getTelemetry().status,'UNKNOWN');assert.equal(bridge.getTelemetry().balance,'116.928');
+emit({...data(),status:'EXECUTING',execution_gateway:null,employees:[{id:'trading',status:'WORKING'}]});
+assert.equal(bridge.getRole('trading').known,false);assert.equal(bridge.getRole('trading').active,false);assert.equal(bridge.getTelemetry().execution_gateway,null);
+bridge.dispose();
+""")
+
+    def test_robot_off_does_not_confirm_missing_unknown_or_stale_roles(self):
+        self.run_node(r"""
+emit({...data(),status:'OFF',robot_on:false,active_positions:1,employees:[
+ {id:'market',status:'UNKNOWN'}, {id:'neuro',status:'IDLE',checked_at:iso(clock-121000)},
+ {id:'risk',status:'IDLE'}, {id:'position',status:'UNKNOWN'}]});
+for(const role of ['market','neuro','trading','position','reviewer','report','boss']){
+ assert.equal(bridge.getRole(role).known,false);assert.equal(bridge.getRole(role).state,'UNKNOWN');assert.equal(bridge.getRole(role).active,false);
+}
+assert.equal(bridge.getRole('risk').known,true);assert.equal(bridge.getRole('risk').state,'IDLE');
+assert.equal(bridge.getTelemetry().balance,'116.928');assert.equal(bridge.getTelemetry().active_positions,1);
+assert.equal(bridge.getTelemetry().employees.find(row=>row.id==='market').status,'UNKNOWN');
+assert.equal(bridge.getTelemetry().employees.find(row=>row.id==='neuro').status,'UNKNOWN');
+assert.equal(bridge.getTelemetry().employees.find(row=>row.id==='risk').status,'OFF');bridge.dispose();
+""")
+
+    def test_visual_observations_preserve_timestamps_and_defensive_copies(self):
+        self.run_node(r"""
+emit({...data(),pending_entry_symbols:['ETHUSDT'],protection_observations:[{symbol:'ETHUSDT',state:'PROTECTION_INCOMPLETE',observed_at:iso(),label:'SL belum terkonfirmasi'}],risk_observations:[{source:'RISK_MANAGER',symbol:'ETHUSDT',status:'WITHIN_BUDGET',observed_at:iso()}]});
+const copy=bridge.getTelemetry();copy.pending_entry_symbols.push('FAKEUSDT');copy.protection_observations[0].label='changed';copy.risk_observations[0].status='changed';
+assert.deepEqual(bridge.getTelemetry().pending_entry_symbols,['ETHUSDT']);assert.equal(bridge.getTelemetry().protection_observations[0].label,'SL belum terkonfirmasi');assert.equal(bridge.getTelemetry().risk_observations[0].status,'WITHIN_BUDGET');
+clock+=45001;assert.equal(bridge.getTelemetry().pending_entry_symbols,null);clock+=75000;
+assert.equal(bridge.getTelemetry().risk_observations.length,0);assert.equal(bridge.getTelemetry().protection_observations.length,0);bridge.dispose();
 """)
 
     def test_legacy_dom_and_order_speech_are_absent(self):

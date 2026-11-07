@@ -1,26 +1,175 @@
-// Deliberately empty model URLs: the reference images are art direction, not
-// redistributable rigged 3D assets. Never replace a missing human with a mascot.
+// Verified local human assets; reference review is recorded in review/avatar-reference-review.json.
 export const REQUIRED_MODEL_CLIPS = Object.freeze([
   'WORKING', 'IDLE', 'SEATED_IDLE', 'WALKING', 'SOCIAL',
   'SIT_DOWN', 'STAND_UP', 'COFFEE', 'POOL', 'VISITING',
 ]);
 
-const model = (name, gender, appearance, height) => Object.freeze({
-  name, gender, appearance, height,
-  url: '',
-  license: null,
-  referenceReviewed: false,
-  forwardRotation: 0,
-  headBone: '',
-  clips: Object.freeze(Object.fromEntries(REQUIRED_MODEL_CLIPS.map(state => [state, '']))),
-});
-
 export const AVATAR_MODELS = Object.freeze({
-  market: model('HERMES AGENT', 'male', 'Black suit, ivory shirt, teal tie; swept black hair, clean-shaven face.', 1.82),
-  neuro: model('NEUROBRO', 'female', 'Black fitted blazer and skirt, ivory blouse, black heels; long side-parted dark hair.', 1.70),
-  risk: model('RISK MANAGER', 'female', 'Black fitted blazer and skirt, ivory blouse, black heels; dark bob haircut.', 1.70),
-  trading: model('BINANCE', 'female', 'Black fitted blazer and skirt, ivory blouse, black heels; dark high ponytail.', 1.70),
-  boss: model('HARUN', 'male', 'Black suit, ivory shirt, black tie; swept black hair and light stubble.', 1.82),
+  "market": {
+    "name": "HERMES AGENT",
+    "gender": "male",
+    "height": 1.82,
+    "url": "./models/hermes-agent.glb",
+    "license": {
+      "name": "CC0-1.0 source assets + project-authored additions",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "file": "assets/office3d/models/LICENSE-PROVENANCE.md",
+      "allowsWebUse": true,
+      "allowsPublicRedistribution": true
+    },
+    "referenceReviewed": true,
+    "forwardRotation": 0,
+    "walkSpeed": 0.7563353249620031,
+    "headBone": "head",
+    "clips": {
+      "WORKING": "WORKING",
+      "IDLE": "IDLE",
+      "SEATED_IDLE": "SEATED_IDLE",
+      "WALKING": "WALKING",
+      "SOCIAL": "SOCIAL",
+      "SIT_DOWN": "SIT_DOWN",
+      "STAND_UP": "STAND_UP",
+      "COFFEE": "COFFEE",
+      "POOL": "POOL",
+      "VISITING": "VISITING"
+    },
+    "standingHeightMetres": 1.7982171408366412,
+    "groundOffsetMetres": 0.0031923882197588682,
+    "blinkMorph": "officeBlink",
+    "reviewFile": "assets/office3d/review/avatar-reference-review.json"
+  },
+  "neuro": {
+    "name": "NEUROBRO",
+    "gender": "female",
+    "height": 1.7,
+    "url": "./models/neurobro.glb",
+    "license": {
+      "name": "CC0-1.0 source assets + project-authored additions",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "file": "assets/office3d/models/LICENSE-PROVENANCE.md",
+      "allowsWebUse": true,
+      "allowsPublicRedistribution": true
+    },
+    "referenceReviewed": true,
+    "forwardRotation": 0,
+    "walkSpeed": 0.702753197386598,
+    "headBone": "head",
+    "clips": {
+      "WORKING": "WORKING",
+      "IDLE": "IDLE",
+      "SEATED_IDLE": "SEATED_IDLE",
+      "WALKING": "WALKING",
+      "SOCIAL": "SOCIAL",
+      "SIT_DOWN": "SIT_DOWN",
+      "STAND_UP": "STAND_UP",
+      "COFFEE": "COFFEE",
+      "POOL": "POOL",
+      "VISITING": "VISITING"
+    },
+    "standingHeightMetres": 1.6007912512868643,
+    "groundOffsetMetres": 0.011021649464964867,
+    "blinkMorph": "officeBlink",
+    "reviewFile": "assets/office3d/review/avatar-reference-review.json"
+  },
+  "risk": {
+    "name": "RISK MANAGER",
+    "gender": "female",
+    "height": 1.7,
+    "url": "./models/risk-manager.glb",
+    "license": {
+      "name": "CC0-1.0 source assets + project-authored additions",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "file": "assets/office3d/models/LICENSE-PROVENANCE.md",
+      "allowsWebUse": true,
+      "allowsPublicRedistribution": true
+    },
+    "referenceReviewed": true,
+    "forwardRotation": 0,
+    "walkSpeed": 0.698754254420114,
+    "headBone": "head",
+    "clips": {
+      "WORKING": "WORKING",
+      "IDLE": "IDLE",
+      "SEATED_IDLE": "SEATED_IDLE",
+      "WALKING": "WALKING",
+      "SOCIAL": "SOCIAL",
+      "SIT_DOWN": "SIT_DOWN",
+      "STAND_UP": "STAND_UP",
+      "COFFEE": "COFFEE",
+      "POOL": "POOL",
+      "VISITING": "VISITING"
+    },
+    "standingHeightMetres": 1.5901569733396173,
+    "groundOffsetMetres": 0.011084259487688541,
+    "blinkMorph": "officeBlink",
+    "reviewFile": "assets/office3d/review/avatar-reference-review.json"
+  },
+  "trading": {
+    "name": "BINANCE",
+    "gender": "female",
+    "height": 1.7,
+    "url": "./models/binance.glb",
+    "license": {
+      "name": "CC0-1.0 source assets + project-authored additions",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "file": "assets/office3d/models/LICENSE-PROVENANCE.md",
+      "allowsWebUse": true,
+      "allowsPublicRedistribution": true
+    },
+    "referenceReviewed": true,
+    "forwardRotation": 0,
+    "walkSpeed": 0.7035393328110267,
+    "headBone": "head",
+    "clips": {
+      "WORKING": "WORKING",
+      "IDLE": "IDLE",
+      "SEATED_IDLE": "SEATED_IDLE",
+      "WALKING": "WALKING",
+      "SOCIAL": "SOCIAL",
+      "SIT_DOWN": "SIT_DOWN",
+      "STAND_UP": "STAND_UP",
+      "COFFEE": "COFFEE",
+      "POOL": "POOL",
+      "VISITING": "VISITING"
+    },
+    "standingHeightMetres": 1.6244501890614629,
+    "groundOffsetMetres": 0.011175376363098621,
+    "blinkMorph": "officeBlink",
+    "reviewFile": "assets/office3d/review/avatar-reference-review.json"
+  },
+  "boss": {
+    "name": "HARUN",
+    "gender": "male",
+    "height": 1.82,
+    "url": "./models/harun.glb",
+    "license": {
+      "name": "CC0-1.0 source assets + project-authored additions",
+      "sourceUrl": "https://static.makehumancommunity.org/assets/assetpacks/makehuman_system_assets.html",
+      "file": "assets/office3d/models/LICENSE-PROVENANCE.md",
+      "allowsWebUse": true,
+      "allowsPublicRedistribution": true
+    },
+    "referenceReviewed": true,
+    "forwardRotation": 0,
+    "walkSpeed": 0.7562422138614007,
+    "headBone": "head",
+    "clips": {
+      "WORKING": "WORKING",
+      "IDLE": "IDLE",
+      "SEATED_IDLE": "SEATED_IDLE",
+      "WALKING": "WALKING",
+      "SOCIAL": "SOCIAL",
+      "SIT_DOWN": "SIT_DOWN",
+      "STAND_UP": "STAND_UP",
+      "COFFEE": "COFFEE",
+      "POOL": "POOL",
+      "VISITING": "VISITING"
+    },
+    "standingHeightMetres": 1.7607387138996273,
+    "groundOffsetMetres": 0.0034115149173885584,
+    "blinkMorph": "officeBlink",
+    "reviewFile": "assets/office3d/review/avatar-reference-review.json"
+  }
 });
 
 export function avatarAssetReadiness() {

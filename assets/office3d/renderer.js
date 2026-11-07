@@ -29,7 +29,7 @@ const camera = new THREE.PerspectiveCamera(39, innerWidth / innerHeight, .1, 220
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = .08;
-controls.minDistance = 12;
+controls.minDistance = 3;
 controls.maxDistance = 130;
 controls.minPolarAngle = .34;
 controls.maxPolarAngle = Math.PI * .47;
@@ -63,7 +63,7 @@ const displayStatus = {
   getRole(role) {
     const candidates = (visualRoleAliases[role] || [role]).map(id => ({ ...status.getRole(id), displayRole: id }));
     return candidates.find(candidate => candidate.active) ||
-      candidates.find(candidate => candidate.known) || candidates[0];
+      candidates.find(candidate => !candidate.known) || candidates[0];
   },
 };
 const actors = stations.map((station, index) => {
@@ -120,13 +120,42 @@ function cameraButton(label, action) {
 }
 const overviewButton = cameraButton('KANTOR', frameOffice);
 overviewButton.setAttribute('aria-pressed', 'true');
-for (const station of stations) cameraButton(station.name, () => {
-  controls.target.set(station.x, 1.2, station.z);
-  camera.position.set(station.x + (mobile ? 1.5 : 3.5), mobile ? 8.7 : 7.3, station.z + (mobile ? 13 : 10.5));
-  controls.update(); camera.updateMatrixWorld(true);
+let focusedStation = null;
+// Magnify the same live canvas texture on touch screens; no separate data feed.
+const monitorDetail = document.createElement('figure');
+monitorDetail.className = 'office-monitor-detail'; monitorDetail.hidden = true;
+const monitorCaption = document.createElement('figcaption');
+const monitorClose = document.createElement('button');
+monitorClose.type = 'button'; monitorClose.textContent = 'Tutup layar';
+monitorClose.addEventListener('click', () => { monitorDetail.hidden = true; });
+const monitorZoom = document.createElement('button');
+monitorZoom.className = 'office-monitor-zoom'; monitorZoom.type = 'button'; monitorZoom.textContent = '2×';
+monitorZoom.setAttribute('aria-label', 'Perbesar teks layar PC'); monitorZoom.setAttribute('aria-pressed', 'false');
+monitorZoom.addEventListener('click', () => {
+  const zoomed = monitorDetail.classList.toggle('is-zoomed');
+  monitorZoom.setAttribute('aria-pressed', String(zoomed));
 });
+const monitorViewport = document.createElement('div'); monitorViewport.className = 'office-monitor-viewport';
+monitorDetail.append(monitorCaption, monitorZoom, monitorClose, monitorViewport); host.append(monitorDetail);
+function focusStation(station) {
+  focusedStation = station;
+  // Look over the owner's shoulder at the real screen, from inside the room.
+  controls.target.set(station.x, 1.05, station.z - .6);
+  camera.position.set(station.x + (mobile ? 1.7 : 2.5), mobile ? 3.6 : 3.1, station.z - 3.5);
+  controls.update(); camera.updateMatrixWorld(true);
+  if (mobile) {
+    monitorDetail.querySelector('canvas')?.remove();
+    const screen = monitors.get(station.role).image;
+    screen.setAttribute('aria-label', `Layar ${station.name}, data existing hanya baca`);
+    monitorCaption.textContent = station.name;
+    monitorViewport.append(screen); monitorViewport.scrollTo(0, 0); monitorDetail.hidden = false;
+  }
+}
+for (const station of stations) cameraButton(station.name, () => focusStation(station));
 
 function frameOffice() {
+  focusedStation = null;
+  monitorDetail.hidden = true;
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   controls.target.set(0, 1.65, -.2);
@@ -155,7 +184,7 @@ const projectedHead = new THREE.Vector3();
 let labelDiagnostics = { visible: 0, hiddenForSpace: 0, overlaps: 0 };
 function activityLabel(actor, role) {
   if (role.active) return actor.mode === 'AT_DESK' ? role.speech : 'Kembali ke workstation';
-  if (!role.known) return 'Status worker belum tersedia';
+  if (!role.known) return 'Status tugas belum terkonfirmasi';
   const activity = ({ COFFEE: 'Kopi', SOCIAL: 'Diskusi', LOUNGE: 'Sofa', POOL: 'Tepi kolam', VISIT: 'Kunjungi Harun' })[actor.destination?.kind];
   if (activity) return `Rehat visual · ${activity}`;
   return role.speech;
@@ -165,6 +194,9 @@ function projectSpeech(dt) {
   const candidates = [];
   for (const actor of actors) {
     if (!actor.avatar.available) { actor.bubble.hidden = true; actor.screen = null; continue; }
+    if (mobile && focusedStation?.role !== actor.role) {
+      actor.bubble.hidden = true; actor.screen = null; continue;
+    }
     const role = displayStatus.getRole(actor.role);
     const text = activityLabel(actor, role);
     if (actor.bubble.textContent !== text) {
@@ -246,7 +278,8 @@ function resize() {
   renderer.setSize(innerWidth, innerHeight);
   for (const actor of actors) { actor.labelWidth = null; actor.labelHeight = null; }
   // Framing affects the canvas camera only, never the dashboard layout.
-  frameOffice();
+  if (focusedStation) focusStation(focusedStation);
+  else frameOffice();
 }
 function visibility() { if (document.hidden) pause(); else resume(); }
 function contextLost(event) {
@@ -263,7 +296,7 @@ function dispose() {
   controls.dispose(); status.dispose();
   for (const actor of actors) actor.avatar.dispose();
   office.dispose(); monitors.dispose(); renderer.dispose();
-  speechLayer.remove(); assetNotice.remove(); cameraViews.remove(); renderer.domElement.remove();
+  speechLayer.remove(); assetNotice.remove(); cameraViews.remove(); monitorDetail.remove(); renderer.domElement.remove();
 }
 addEventListener('resize', resize);
 document.addEventListener('visibilitychange', visibility);
@@ -281,8 +314,8 @@ window.officeDiagnostics = () => {
     const actor = actors[index];
     if (!actor.avatar.available) continue;
     const ignoreIds = actor.currentSeat && (actor.sit > 0 || actor.exiting ||
-      ['STANDING_UP', 'SITTING_DOWN', 'DOCKING'].includes(actor.mode))
-      ? [actor.currentSeat.colliderId] : [];
+      ['STANDING_UP', 'SITTING_DOWN', 'DOCKING', 'ALIGNING'].includes(actor.mode))
+      ? (actor.currentSeat.ignoreIds || [actor.currentSeat.colliderId]) : [];
     if (!navigation.isWalkable(actor.avatar.root.position, { ignoreIds })) violations.push(`obstacle:${actor.id}`);
     for (let next = index + 1; next < actors.length; next++) {
       const other = actors[next];

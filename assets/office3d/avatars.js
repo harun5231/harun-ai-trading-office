@@ -146,14 +146,72 @@ export function createAvatar({ id, role = 'TEAM', name = '', index = 0, model: d
   let lastPose = { state: 'IDLE', sit: 1, walkSpeed: 0, reducedMotion: false };
   const actions = new Map();
   const headPosition = new THREE.Vector3();
+  // Per-person timing keeps idle, gaze and eyelids independent. These values
+  // only animate the local rig; they never read or write operational controls.
+  let seed = .137;
+  for (const char of String(id || role)) seed = (seed * 31 + char.charCodeAt(0) / 127) % 1;
+  const blinkMeshes = [], additiveBones = [];
+  let visualTime = seed * 7, nextBlink = visualTime + 1.8 + seed * 3;
+  let blinkStarted = -Infinity, gazeYaw = 0, gazePitch = 0;
+
+  function restoreAdditivePose() {
+    for (const entry of additiveBones) if (entry.previous) entry.bone.quaternion.copy(entry.previous);
+  }
+
+  function secondaryMotion(delta, input, reduced, target) {
+    visualTime += delta;
+    let blink = 0;
+    if (!reduced) {
+      if (visualTime >= nextBlink) {
+        blinkStarted = visualTime;
+        nextBlink += 3.3 + seed * 2.1 + .65 * Math.sin(visualTime * .57 + seed * 19);
+      }
+      const age = visualTime - blinkStarted;
+      if (age < .075) blink = ease(age / .075);
+      else if (age < .12) blink = 1;
+      else if (age < .23) blink = 1 - ease((age - .12) / .11);
+    }
+    for (const { mesh, index: morphIndex } of blinkMeshes) mesh.morphTargetInfluences[morphIndex] = blink;
+    const isCup = target === 'COFFEE';
+    let desiredYaw = reduced || isCup ? 0 : .025 * Math.sin(visualTime * .47 + seed * 11);
+    let desiredPitch = reduced || isCup ? 0 : .012 * Math.sin(visualTime * .71 + seed * 23);
+    if (!reduced && !isCup && input.gazeTarget && headBone) {
+      headBone.getWorldPosition(headPosition);
+      const dx = input.gazeTarget.x - headPosition.x, dz = input.gazeTarget.z - headPosition.z;
+      const angle = Math.atan2(dx, dz) - root.rotation.y;
+      desiredYaw = clamp(Math.atan2(Math.sin(angle), Math.cos(angle)), -.34, .34);
+      desiredPitch = clamp(-Math.atan2((input.gazeTarget.y ?? headPosition.y) - headPosition.y,
+        Math.max(.2, Math.hypot(dx, dz))), -.13, .13);
+    }
+    const response = reduced ? 1 : 1 - Math.exp(-delta * 3.4);
+    gazeYaw += (desiredYaw - gazeYaw) * response;
+    gazePitch += (desiredPitch - gazePitch) * response;
+    for (const entry of additiveBones) {
+      entry.previous = entry.bone.quaternion.clone();
+      if (entry.kind === 'head') {
+        entry.bone.rotateY(gazeYaw);
+        entry.bone.rotateX(gazePitch);
+      } else if (!reduced && !isCup) {
+        // Ribcage motion below one quarter degree does not displace planted
+        // feet or substantially disturb the authored hand contact poses.
+        entry.bone.rotateX(.003 * Math.sin(visualTime * 1.47 + seed * 13));
+      }
+    }
+  }
 
   function pose(dt, time, input = {}) {
     if (disposed || !available) return;
     const delta = clamp(Number.isFinite(dt) ? dt : 0, 0, .1);
     const reduced = input.reducedMotion === true;
     let target = stateName(input.state);
+    const deskHands = (input.deskRest === true || input.deskHands === true) &&
+      !['WALKING', 'SIT_DOWN', 'STAND_UP'].includes(target);
     const activity = String(input.activity || '').toUpperCase();
-    if ((target === 'IDLE' || target === 'SOCIAL') && ['COFFEE', 'POOL', 'VISITING'].includes(activity)) target = activity;
+    // A relaxed desk worker rests the hands where the keyboard already is.
+    // Playing the lap-idle pose here would sweep fingers through the keyboard.
+    // The controller keeps the tray retracted while deskHands aligns the arms.
+    if (deskHands) target = 'WORKING';
+    else if ((target === 'IDLE' || target === 'SOCIAL') && ['COFFEE', 'POOL', 'VISITING'].includes(activity)) target = activity;
     else if (target === 'IDLE' && input.sit > .5) target = 'SEATED_IDLE';
     const action = actions.get(target);
     if (!action) return; // Every supported action was checked at load time.
@@ -166,18 +224,24 @@ export function createAvatar({ id, role = 'TEAM', name = '', index = 0, model: d
       action.enabled = true;
       action.setEffectiveWeight(1);
       action.play();
+      if (!transition && target !== 'COFFEE' && target !== 'WALKING') {
+        action.time = deskHands ? Math.min(.4, action.getClip().duration) : seed * action.getClip().duration;
+      }
       if (previous && previous !== action) action.crossFadeFrom(previous, reduced ? 0 : .28, false);
       current = target;
     }
-    action.paused = reduced && !['WALKING', 'SIT_DOWN', 'STAND_UP'].includes(target);
+    action.paused = (reduced || deskHands) && !['WALKING', 'SIT_DOWN', 'STAND_UP'].includes(target);
     if (target === 'WALKING') {
-      action.timeScale = clamp((input.walkSpeed || .9) / (spec.walkSpeed || .9), .15, 2);
-    } else action.timeScale = 1;
+      // A yielded/stopped actor must not keep marching in place.
+      action.timeScale = clamp((input.walkSpeed ?? 0) / (spec.walkSpeed || .9), 0, 2);
+    } else action.timeScale = target === 'COFFEE' ? 1 : .96 + seed * .08;
     if ((target === 'SIT_DOWN' || target === 'STAND_UP') && Number.isFinite(input.transitionProgress)) {
       action.paused = true;
       action.time = clamp(input.transitionProgress) * action.getClip().duration;
     }
+    restoreAdditivePose();
     mixer.update(delta);
+    secondaryMotion(delta, input, reduced, target);
     if (headBone) {
       root.updateMatrixWorld(true);
       headBone.getWorldPosition(headPosition);
@@ -186,8 +250,10 @@ export function createAvatar({ id, role = 'TEAM', name = '', index = 0, model: d
       headAnchor.position.y += .21;
     }
     blender.update(delta, stateName(input.state), reduced);
-    lastPose = { state: target, sit: clamp(input.sit ?? 0),
-      seatHeight: input.seatHeight ?? .78, walkSpeed: input.walkSpeed ?? 0, reducedMotion: reduced };
+    lastPose = { state: deskHands ? stateName(input.state) : target,
+      clipState: target, handsRestingAtDesk: deskHands, animationPaused: action.paused,
+      sit: clamp(input.sit ?? 0),
+      seatHeight: input.seatHeight ?? .43, walkSpeed: input.walkSpeed ?? 0, reducedMotion: reduced };
   }
 
   function diagnostics() {
@@ -243,14 +309,34 @@ export function createAvatar({ id, role = 'TEAM', name = '', index = 0, model: d
       const bounds = new THREE.Box3().setFromObject(model);
       const height = bounds.max.y - bounds.min.y;
       if (!(height > .1) || !Number.isFinite(height)) throw assetError('INVALID_SCALE', 'Ukuran model tidak valid.');
-      const scale = (spec.height || 1.75) / height;
+      // Reviewed standing bounds remain stable when a GLB's default pose is
+      // seated or a hidden hand prop has a nonzero bounding box.
+      const standingHeight = spec.standingHeightMetres || height;
+      const scale = (spec.height || 1.75) / standingHeight;
       model.scale.multiplyScalar(scale);
-      model.position.y -= bounds.min.y * scale;
+      model.position.y += Number.isFinite(spec.groundOffsetMetres)
+        ? spec.groundOffsetMetres * scale : -bounds.min.y * scale;
       model.traverse(node => {
-        if (node.isMesh) { node.castShadow = true; node.receiveShadow = true; }
+        if (!node.isMesh) return;
+        node.castShadow = true; node.receiveShadow = true;
+        const blinkIndex = node.morphTargetDictionary?.officeBlink;
+        if (Number.isInteger(blinkIndex)) blinkMeshes.push({ mesh: node, index: blinkIndex });
+        for (const mat of Array.isArray(node.material) ? node.material : [node.material]) {
+          if (!mat) continue;
+          // Cut out transparent hair-card texels to prevent depth-sorting
+          // holes through the scalp and jacket on mobile renderers.
+          if (/long01|bob|ponytail|short|eyebrow|eyelashes/i.test(node.name) && mat.map) {
+            mat.transparent = false; mat.alphaTest = .32; mat.depthWrite = true;
+            mat.needsUpdate = true;
+          }
+        }
       });
       root.add(model);
       headBone = validation.headBone;
+      for (const [boneName, kind] of [[spec.headBone, 'head'], ['spine_03', 'breath']]) {
+        const bone = model.getObjectByName(boneName);
+        if (bone?.isBone && bone.quaternion?.clone && bone.rotateX) additiveBones.push({ bone, kind, previous: null });
+      }
       mixer = new THREE.AnimationMixer(model);
       for (const state of REQUIRED_MODEL_CLIPS) actions.set(state, mixer.clipAction(validation.clips.get(spec.clips[state])));
       available = true;

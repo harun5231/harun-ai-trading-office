@@ -1,0 +1,163 @@
+{
+  "date": "2026-11-07",
+  "referenceReviewed": true,
+  "reviewMeaning": "Actual 3D renders were manually compared against all five supplied reference PNGs. This records visual inspection, not identical face likeness or photorealism.",
+  "references": [
+    "hermes-agent.png",
+    "neurobro.png",
+    "risk-manager.png",
+    "binance.png",
+    "harun.png"
+  ],
+  "viewsReviewed": [
+    "all five IDLE front",
+    "male and female WORKING front and side",
+    "male and female COFFEE",
+    "male and female POOL side",
+    "female WALKING front",
+    "Neurobro, Risk Manager and Harun facial closeups",
+    "eyelids open and closed"
+  ],
+  "fixes": [
+    "Added actual eyelid/lash blink morphs without scaling eyeballs.",
+    "Moved female resting wrists clear of jacket, regenerated all ten clips with zero IK reach warnings.",
+    "Swept Risk Manager fringe away from both eyes.",
+    "Removed dark female collar material remnants, retaining closed ivory blouse geometry.",
+    "Added subtle head-skinned Harun stubble.",
+    "Preserved original texture image bytes, head bones and all ten clips.",
+    "Use masked hair alpha, per-avatar animation/blink phase, restrained gaze and breathing; no walking cycle while stopped."
+  ],
+  "remainingDifferences": [
+    "Faces remain stylized interpretations of the references, not exact portrait likenesses.",
+    "Women retain the licensed T-bar heels rather than the reference plain pumps."
+  ],
+  "evidenceDirectory": "/workspace/harun-avatar-install/model-review",
+  "refinedEvidenceDirectory": "/workspace/harun-avatar-install/asset-work",
+  "assets": {
+    "hermes-agent": {
+      "glbSHA256": "70d2be052672769c7aba95c8b7b5bb761f36f87776350eeb89e5201a2006042b",
+      "blendSHA256": "0ee49f8b843146aea147ac918db6e4eb2a6e8534ee3c84840454bf72f7909bc9",
+      "sourceBlend": "/workspace/harun-avatar-install/asset-work/hermes-agent.blend",
+      "clips": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "embeddedTextureBytesPreserved": true,
+      "blinkMorphMeshes": [
+        "base.001",
+        "eyelashes01.001"
+      ],
+      "skinJoints": [
+        54
+      ]
+    },
+    "neurobro": {
+      "glbSHA256": "c0a730feb645e1ff01be5a36369351fe403302381f9b74ba098fc18d1ab1286d",
+      "blendSHA256": "af656549564db4cb35306376a1187698d421559209c9e4daa9500c05d62d2f20",
+      "sourceBlend": "/workspace/harun-avatar-install/asset-work/neurobro.blend",
+      "clips": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "embeddedTextureBytesPreserved": true,
+      "blinkMorphMeshes": [
+        "base.001",
+        "eyelashes01.001"
+      ],
+      "skinJoints": [
+        54
+      ]
+    },
+    "risk-manager": {
+      "glbSHA256": "02b1ba948b56c1a198e7090519e6b52cdd8591156408279c466f12d71d72cd3b",
+      "blendSHA256": "554036d6c30f9e2c4d02e4dc917e2e602a9789bbfa7a89a6fc08bc2b41bee6a4",
+      "sourceBlend": "/workspace/harun-avatar-install/asset-work/risk-manager.blend",
+      "clips": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "embeddedTextureBytesPreserved": true,
+      "blinkMorphMeshes": [
+        "base.001",
+        "eyelashes01.001"
+      ],
+      "skinJoints": [
+        54
+      ]
+    },
+    "binance": {
+      "glbSHA256": "0bc975331a5acc04b05c77ba8bca25ec3529a063bd54c4204f4b26f857ad005b",
+      "blendSHA256": "68956efe18e1e3adc0392f00a9fe194df45f44a77e1facfd03292932cc9db5cf",
+      "sourceBlend": "/workspace/harun-avatar-install/asset-work/binance.blend",
+      "clips": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "embeddedTextureBytesPreserved": true,
+      "blinkMorphMeshes": [
+        "base.001",
+        "eyelashes01.001"
+      ],
+      "skinJoints": [
+        54
+      ]
+    },
+    "harun": {
+      "glbSHA256": "fb2d585c9b151f368c8b9fa02238cf1acda3fdd6c7a31655ab5aaf0ee172a735",
+      "blendSHA256": "25e4294dded7db4ce6d3cb565d1d205ca704be3b78ea82c87c7e3fb688e23d5e",
+      "sourceBlend": "/workspace/harun-avatar-install/asset-work/harun.blend",
+      "clips": [
+        "IDLE",
+        "WORKING",
+        "SEATED_IDLE",
+        "WALKING",
+        "SOCIAL",
+        "SIT_DOWN",
+        "STAND_UP",
+        "COFFEE",
+        "POOL",
+        "VISITING"
+      ],
+      "embeddedTextureBytesPreserved": true,
+      "blinkMorphMeshes": [
+        "base.001",
+        "eyelashes01.001"
+      ],
+      "skinJoints": [
+        54
+      ]
+    }
+  }
+}

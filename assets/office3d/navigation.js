@@ -353,6 +353,9 @@ export class NavigationMesh {
     }
     if (!staticClear && !blockers.length) return save(start, true, 'STATIC_BLOCKED');
     const blocker = blockers[0];
+    // Contact paths are deliberately narrow. Wait for clearance rather than
+    // sidestepping through a desk whose top is ignored for the seated kneehole.
+    if (opts.allowDetour === false) return save(start, true, 'CONTACT_WAIT', blocker);
     const lowerPriority = actor.priority > blocker.priority || (actor.priority === blocker.priority && id > blocker.id);
     const previousWait = this.waits.get(id);
     const wait = previousWait?.blockerId === blocker.id ? previousWait.count + 1 : 1;

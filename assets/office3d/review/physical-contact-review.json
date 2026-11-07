@@ -1,0 +1,165 @@
+{
+  "scope": "Local frontend only; synthetic read-only status fixtures, no trading operations or production access.",
+  "method": "Actual Chromium Three.js SkinnedMesh.getVertexPosition (including AnimationMixer, morph targets and frontend secondary motion), transformed into world space; rounded-box signed-distance tests against chair pad/back/headrest, desktop, keyboard tray/base and all keys. Every third simulated frame sampled with per-mode caps.",
+  "penetrationToleranceMetres": 0.0015,
+  "runtime": {
+    "simulatedSeconds": 183.0,
+    "avatarFrameSamples": 769,
+    "samplesByRole": {
+      "market": 153,
+      "neuro": 154,
+      "risk": 154,
+      "trading": 154,
+      "boss": 154
+    },
+    "penetrationsOverTolerance": 0,
+    "browserErrors": [],
+    "modesObserved": {
+      "market": [
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY",
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING"
+      ],
+      "neuro": [
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY",
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN"
+      ],
+      "risk": [
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY",
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN"
+      ],
+      "trading": [
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY",
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING"
+      ],
+      "boss": [
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY",
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN"
+      ]
+    },
+    "allFiveReturnedToOwnDesk": true,
+    "final": [
+      {
+        "role": "market",
+        "mode": "AT_DESK",
+        "tray": 0,
+        "sit": 1
+      },
+      {
+        "role": "neuro",
+        "mode": "AT_DESK",
+        "tray": 0,
+        "sit": 1
+      },
+      {
+        "role": "risk",
+        "mode": "AT_DESK",
+        "tray": 0,
+        "sit": 1
+      },
+      {
+        "role": "trading",
+        "mode": "AT_DESK",
+        "tray": 0,
+        "sit": 1
+      },
+      {
+        "role": "boss",
+        "mode": "AT_DESK",
+        "tray": 0,
+        "sit": 1
+      }
+    ]
+  },
+  "sourcePoseReview": {
+    "method": "Blender evaluated source meshes, actual runtime normalization and rounded furniture bounds.",
+    "officePoseSamples": 660,
+    "loungePoseSamples": 390,
+    "retractedHandBlendSamples": 130,
+    "penetrationsOverTolerance": 0,
+    "officeStates": [
+      "WORKING",
+      "SEATED_IDLE",
+      "SIT_DOWN",
+      "STAND_UP",
+      "IDLE",
+      "WALKING"
+    ],
+    "loungeStates": [
+      "POOL",
+      "SEATED_IDLE",
+      "SIT_DOWN",
+      "STAND_UP"
+    ],
+    "egressYawDegrees": [
+      0,
+      30,
+      60,
+      90
+    ],
+    "egressRootXMetres": [
+      0,
+      0.1,
+      0.3,
+      0.55
+    ]
+  },
+  "correctionsVerified": [
+    "Female hands clear jacket; fringe opens Risk Manager face.",
+    "Chair pad depths and heights fit evaluated seated cloth; chair rolls back before walking.",
+    "Desktop setback clears skirts and turning bodies.",
+    "Keyboard retracts before standing; hands align before extension; desk idle keeps resting hands above keys without typing.",
+    "Keyboard tray connects to desktop and keycaps clear fingertip pads.",
+    "Sofa/pool tops fit male and female poses; narrower pool bench clears rising trouser legs."
+  ],
+  "modelSha256": {
+    "binance.glb": "0bc975331a5acc04b05c77ba8bca25ec3529a063bd54c4204f4b26f857ad005b",
+    "harun.glb": "fb2d585c9b151f368c8b9fa02238cf1acda3fdd6c7a31655ab5aaf0ee172a735",
+    "hermes-agent.glb": "70d2be052672769c7aba95c8b7b5bb761f36f87776350eeb89e5201a2006042b",
+    "neurobro.glb": "c0a730feb645e1ff01be5a36369351fe403302381f9b74ba098fc18d1ab1286d",
+    "risk-manager.glb": "02b1ba948b56c1a198e7090519e6b52cdd8591156408279c466f12d71d72cd3b"
+  },
+  "limitations": [
+    "Finite vertex samples with 1.5 mm contact tolerance; not a proof for every continuous instant, exact triangle pairs or cloth simulation.",
+    "Office runtime probe covers local desk furniture; sofa and pool use separately evaluated source poses.",
+    "Does not establish physical iPhone/Safari performance or photorealistic likeness."
+  ]
+}

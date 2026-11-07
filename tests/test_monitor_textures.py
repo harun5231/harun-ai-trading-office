@@ -49,7 +49,7 @@ clock+=71000;monitors.update(3,data);assert.ok(!words('risk').includes('5.00'));
 
     def test_static_screens_preserve_reduced_motion_and_refresh_real_status(self):
         self.run_node(r"""
-const staticMonitors=createMonitorTextures(THREE,{mobile:true,reducedMotion:true});assert.equal(staticMonitors.diagnostics().width,384);assert.equal(staticMonitors.diagnostics().fps,8);assert.equal(staticMonitors.update(1,data),true);assert.equal(staticMonitors.update(2,data),false);assert.equal(staticMonitors.update(3,{...data,last_decision:{symbol:'SOLUSDT',status:'HOLD'}}),true);assert.match(staticMonitors.get('reviewer').image.ctx.drawn.join(' | '),/SOLUSDT/);staticMonitors.dispose();monitors.dispose();
+const staticMonitors=createMonitorTextures(THREE,{mobile:true,reducedMotion:true});assert.equal(staticMonitors.diagnostics().width,768);assert.equal(staticMonitors.diagnostics().fps,8);assert.equal(staticMonitors.update(1,data),true);assert.equal(staticMonitors.update(2,data),false);assert.equal(staticMonitors.update(3,{...data,last_decision:{symbol:'SOLUSDT',status:'HOLD'}}),true);assert.match(staticMonitors.get('reviewer').image.ctx.drawn.join(' | '),/SOLUSDT/);staticMonitors.dispose();monitors.dispose();
 """)
 
     def test_events_are_dated_real_messages_not_character_dialogue(self):
@@ -60,6 +60,38 @@ const stale=new Date(clock-120001).toISOString();
 monitors.update(2,{...data,events:[{at:stale,agent:'Coordinator',message:'Do not display old message'}]});assert.doesNotMatch(text('market'),/Do not display/);
 monitors.update(3,{...data,events:[{agent:'Coordinator',message:'Do not display undated message'}]});assert.doesNotMatch(text('market'),/Do not display/);
 monitors.update(4,{...data,connected:false});assert.doesNotMatch(text('market'),/Analysis has not started/);monitors.dispose();
+""")
+
+    def test_each_workstation_keeps_its_role_and_missing_data_is_explicit(self):
+        self.run_node(r"""
+const rows=[{at:now(),agent:'Hermes Agent',state:'ANALYZING',message:'Recorded Hermes clarification'},
+ {at:now(),agent:'Risk Manager',state:'VALIDATING',message:'Recorded risk validation'},
+ {at:now(),agent:'Neurobro',state:'ANALYZING',message:'Recorded Neurobro result'}];
+monitors.update(1,{...data,events:rows});
+assert.match(text('market'),/Recorded Hermes clarification/);assert.doesNotMatch(text('market'),/Recorded risk validation/);
+assert.match(text('risk'),/Recorded risk validation/);assert.doesNotMatch(text('risk'),/Recorded Hermes clarification/);
+assert.match(text('neuro'),/Recorded Neurobro result/);assert.match(text('neuro'),/Chart 1H \/ 15M: data candle belum tersedia/);
+assert.match(text('neuro'),/Keputusan final Neurobro: belum ada data terstruktur/);
+assert.match(text('neuro'),/HASIL PIPELINE/);assert.match(text('market'),/Transkrip dialog lengkap belum tersedia/);
+monitors.dispose();
+""")
+
+    def test_pending_symbols_are_not_orders_and_stale_protection_is_not_healthy(self):
+        self.run_node(r"""
+const observation={symbol:'ETHUSDT',state:'POSITION_PROTECTED',label:'SL DAN TP TERKONFIRMASI',observed_at:now()};
+monitors.update(1,{...data,pending_entry_symbols:['ETHUSDT','SOLUSDT'],protection_observations:[observation]});
+assert.match(text('trading'),/Coin entry tertunda: ETHUSDT \/ SOLUSDT/);assert.match(text('trading'),/SL DAN TP TERKONFIRMASI/);
+assert.ok(!words('trading').includes('2')); // Two symbols cannot be promoted to an order count.
+clock+=120001;monitors.update(2,{...data,robot_checked_at:now(),protection_observations:[observation]});
+assert.doesNotMatch(text('trading'),/SL DAN TP TERKONFIRMASI/);assert.match(text('trading'),/perlu pembaruan/);
+monitors.update(3,{...data,robot_checked_at:now(),protection_observations:[]});assert.match(text('trading'),/Proteksi belum terkonfirmasi/);monitors.dispose();
+""")
+
+    def test_actual_fills_keep_their_source_and_expiry_without_becoming_order_counts(self):
+        self.run_node(r"""
+const fill={symbol:'ETHUSDT',side:'BUY',quantity:'0.015',price:'2500',time:now()};
+monitors.update(1,{...data,fills_checked_at:now(),recent_fills:[fill]});assert.match(text('trading'),/Fill tercatat: ETHUSDT BUY/);assert.match(text('trading'),/0.0150 @ 2500.00/);
+clock+=120001;monitors.update(2,{...data,robot_checked_at:now(),fills_checked_at:data.robot_checked_at,recent_fills:[fill]});assert.doesNotMatch(text('trading'),/Fill tercatat/);monitors.dispose();
 """)
 
     def test_five_visible_names_do_not_remove_backend_texture_roles(self):

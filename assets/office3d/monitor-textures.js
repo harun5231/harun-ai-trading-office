@@ -1,6 +1,7 @@
 /** Office screens are a read-only projection of existing worker telemetry. */
 export function createMonitorTextures(THREE, { mobile = false, reducedMotion = false } = {}) {
-  const WIDTH = mobile ? 384 : 768, HEIGHT = mobile ? 192 : 384;
+  // Keep text sharp in the touch screen magnifier; redraw only when facts change.
+  const WIDTH = 768, HEIGHT = 384;
   const FPS = mobile ? 8 : 12;
   const palette = { bg: '#111b22', panel: '#192731', border: '#3b4545', gold: '#d2b67f',
     text: '#f0ede4', muted: '#9da9ac', green: '#8bc5ab', red: '#e69b90' };
@@ -27,13 +28,33 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   const balance = data => accountCurrent(data) ? data.usdt_wallet_balance ?? data.balance : null;
   const positions = data => accountCurrent(data) ? data.active_positions : null;
   const pnl = data => reportsCurrent(data) ? data.pnl_today : null;
-  const status = data => phaseCurrent(data) && typeof data.status === 'string' ? short(data.status, 36) : 'MENUNGGU DATA WORKER';
+  const status = data => phaseCurrent(data) && typeof data.status === 'string' && data.status !== 'UNKNOWN' ? short(data.status, 36) : 'MENUNGGU DATA WORKER';
   const gateway = data => phaseCurrent(data) && data.execution_gateway && typeof data.execution_gateway === 'object' ? data.execution_gateway : null;
   const decision = data => phaseCurrent(data) && data.last_decision && typeof data.last_decision === 'object' ? data.last_decision : null;
-  const events = data => {
+  const fills = data => data.connected === true && fresh(data.fills_checked_at, 120000) && Array.isArray(data.recent_fills)
+    ? data.recent_fills : [];
+  const relevant = (event, role) => {
+    if (!role || role === 'boss' || role === 'report') return true;
+    const agent = clean(event.agent).toLowerCase(), phase = clean(event.state).toUpperCase();
+    const agents = {
+      market: /hermes|market|reviewer|neurobro/,
+      neuro: /neurobro|neuroapi|analyst/,
+      risk: /risk/,
+      trading: /binance|trading|position|gateway/,
+    };
+    const phases = { market: ['SCREENING', 'NEEDS_REVIEW'], neuro: ['SCREENING', 'ANALYZING', 'HOLD'],
+      risk: ['VALIDATING', 'REJECTED'], trading: ['EXECUTING', 'EXECUTION_BLOCKED', 'ENTRY_PENDING', 'POSITION_PROTECTED', 'PROTECTION_INCOMPLETE', 'CLOSED'] };
+    return !agents[role] || agents[role].test(agent) ||
+      (/coordinator/.test(agent) && phases[role]?.includes(phase));
+  };
+  const protections = data => phaseCurrent(data) && Array.isArray(data.protection_observations)
+    ? data.protection_observations.filter(row => row && typeof row.label === 'string' && typeof row.symbol === 'string') : [];
+  const risks = data => phaseCurrent(data) && Array.isArray(data.risk_observations)
+    ? data.risk_observations.filter(row => row?.source === 'RISK_MANAGER' && fresh(row.observed_at, 120000)) : [];
+  const events = (data, role) => {
     if (data.connected !== true || !fresh(data.receivedAt ?? data.generated_at ?? data.robot_checked_at, 120000)) return [];
     return (Array.isArray(data.events) ? data.events : []).filter(event => event &&
-      typeof event.message === 'string' && typeof event.agent === 'string' && fresh(event.at, 120000)).slice(-4).reverse();
+      typeof event.message === 'string' && typeof event.agent === 'string' && fresh(event.at, 120000) && relevant(event, role)).slice(-4).reverse();
   };
   const timestamp = value => fresh(value, 120000) ? value.slice(11, 19) + ' UTC' : '—';
   const text = (ctx, value, x, y, color = palette.text, size = 11, weight = '400') => {
@@ -66,8 +87,8 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     text(ctx, 'DATA WORKER · READ ONLY', 14, 247, palette.muted, 9);
     text(ctx, timestamp(data.robot_checked_at), 402, 247, palette.muted, 9);
   }
-  function activity(ctx, data, { y = 119, count = 3 } = {}) {
-    const recent = events(data).slice(0, count);
+  function activity(ctx, data, { y = 119, count = 3, role = null } = {}) {
+    const recent = events(data, role).slice(0, count);
     text(ctx, 'AKTIVITAS WORKER', 25, y, palette.gold, 10, '600');
     if (!recent.length) {
       text(ctx, 'Belum ada aktivitas terbaru.', 25, y + 23, palette.muted, 11);
@@ -81,29 +102,49 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
       text(ctx, short(event.message, 79), 25, top + 13, palette.muted, 10);
     }
   }
-  function analysis(ctx, data) {
-    box(ctx, 13, 46, 486, 62);
-    row(ctx, 'FASE WORKER', status(data), 68, palette.gold);
-    row(ctx, 'SIMBOL TERAKHIR', decision(data)?.symbol ?? '—', 94);
-    activity(ctx, data, { y: 126, count: 3 });
+  function market(ctx, data) {
+    box(ctx, 13, 46, 486, 58);
+    row(ctx, 'DIALOG / EVALUASI', status(data), 68, palette.gold);
+    text(ctx, 'Transkrip dialog lengkap belum tersedia di snapshot.', 25, 92, palette.muted, 10);
+    // Hermes/Neurobro/Coordinator events retain their recorded author and timestamp.
+    activity(ctx, data, { y: 123, count: 3, role: 'market' });
+  }
+  function neuro(ctx, data) {
+    box(ctx, 13, 46, 486, 112);
+    row(ctx, 'SCREENING / ANALISIS', status(data), 68, palette.gold);
+    row(ctx, 'HASIL PIPELINE', decision(data)?.status ?? 'Belum tersedia', 91);
+    row(ctx, 'SIMBOL', decision(data)?.symbol ?? '—', 112);
+    text(ctx, 'Keputusan final Neurobro: belum ada data terstruktur.', 25, 133, palette.muted, 10);
+    text(ctx, 'Chart 1H / 15M: data candle belum tersedia.', 25, 148, palette.muted, 10);
+    activity(ctx, data, { y: 177, count: 1, role: 'neuro' });
   }
   function risk(ctx, data) {
     stat(ctx, 'RISIKO / SL · USDT', number(phaseCurrent(data) ? data.risk_target_usdt : null), 13, 46);
     stat(ctx, 'SLOT TERSEDIA', number(phaseCurrent(data) ? data.available_slots : null, 0), 178, 46);
     stat(ctx, 'POSISI AKTIF', number(positions(data), 0), 343, 46, 156);
-    box(ctx, 13, 107, 486, 43);
-    row(ctx, 'KEPUTUSAN TERAKHIR', decision(data)?.status ?? '—', 134);
-    activity(ctx, data, { y: 169, count: 1 });
+    box(ctx, 13, 107, 486, 53);
+    row(ctx, 'FASE WORKER', status(data), 126);
+    const observation = risks(data).at(-1);
+    text(ctx, observation ? `Estimasi ${observation.symbol} · ${observation.status}` : 'Hasil validasi Risk Manager belum tersedia.', 25, 148, palette.muted, 10);
+    activity(ctx, data, { y: 179, count: 1, role: 'risk' });
   }
   function trading(ctx, data) {
-    box(ctx, 13, 46, 486, 98);
+    stat(ctx, 'POSISI AKTIF', number(positions(data), 0), 13, 46);
+    stat(ctx, 'ORDER TERTUNDA', number(phaseCurrent(data) ? data.pending_orders : null, 0), 178, 46);
+    stat(ctx, 'TRANSAKSI HARI INI', number(reportsCurrent(data) ? data.trades_today : null, 0), 343, 46, 156);
+    box(ctx, 13, 107, 486, 127);
     const adapter = gateway(data);
-    row(ctx, 'GATEWAY', adapter?.status ?? 'BELUM ADA DATA GATEWAY', 70, palette.gold);
-    row(ctx, 'FASE WORKER', status(data), 99);
-    row(ctx, 'KODE KENDALA', adapter?.failure_code ?? '—', 127, palette.muted);
-    stat(ctx, 'POSISI AKTIF', number(positions(data), 0), 13, 157, 238);
-    stat(ctx, 'ORDER TERTUNDA', number(phaseCurrent(data) ? data.pending_orders : null, 0), 261, 157, 238);
-    text(ctx, 'STATUS BERASAL DARI WORKER', 25, 226, palette.muted, 9);
+    row(ctx, 'GATEWAY', adapter?.status ?? 'BELUM ADA DATA GATEWAY', 127, palette.gold);
+    row(ctx, 'FASE WORKER', status(data), 148);
+    const symbols = accountCurrent(data) && Array.isArray(data.pending_entry_symbols) ? data.pending_entry_symbols : null;
+    text(ctx, symbols ? `Coin entry tertunda: ${symbols.length ? short(symbols.join(' / '), 48) : 'tidak ada'}`
+      : 'Rincian entry tertunda belum tersedia.', 25, 169, palette.muted, 10);
+    const item = protections(data).sort((a, b) => Date.parse(a.observed_at) - Date.parse(b.observed_at)).at(-1);
+    const protection = item ? (fresh(item.observed_at, 120000) ? item.label : 'Proteksi terakhir; perlu pembaruan.') : 'Proteksi belum terkonfirmasi.';
+    text(ctx, item ? `${item.symbol} · ${short(protection, 66)}` : protection, 25, 190, palette.muted, 10);
+    const fill = fills(data).sort((a, b) => Date.parse(a.time) - Date.parse(b.time)).at(-1);
+    text(ctx, fill ? `Fill tercatat: ${short(fill.symbol, 18)} ${short(fill.side, 4)} · ${number(fill.quantity, 4)} @ ${number(fill.price)}`
+      : adapter?.failure_code ?? 'Rincian fill belum tersedia.', 25, 214, palette.muted, 9);
   }
   function position(ctx, data) {
     stat(ctx, 'WALLET FUTURES · USDT', number(balance(data)), 13, 46, 189);
@@ -126,7 +167,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   }
   function report(ctx, data) {
     stat(ctx, 'PNL HARI INI · USDT', number(pnl(data)), 13, 46);
-    stat(ctx, 'FILL HARI INI', number(reportsCurrent(data) ? data.trades_today : null, 0), 178, 46);
+    stat(ctx, 'TRANSAKSI HARI INI', number(reportsCurrent(data) ? data.trades_today : null, 0), 178, 46);
     stat(ctx, 'WALLET · USDT', number(balance(data)), 343, 46, 156);
     activity(ctx, data, { y: 121, count: 3 });
   }
@@ -144,7 +185,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     text(ctx, decision(data)?.status ?? '—', 265, 174, palette.text, 11, '600');
     activity(ctx, data, { y: 196, count: 1 });
   }
-  const painters = { market: analysis, neuro: analysis, risk, trading, position, reviewer, report, boss };
+  const painters = { market, neuro, risk, trading, position, reviewer, report, boss };
   for (const role of roles) {
     const variants = [];
     for (let variant = 0; variant < 2; variant++) {
@@ -169,8 +210,9 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   function signature(data) {
     return JSON.stringify([balance(data), pnl(data), positions(data), status(data),
       phaseCurrent(data) ? [data.risk_target_usdt, data.available_slots, data.pending_orders, data.robot_on ?? data.robotOn, data.robot_checked_at] : null,
-      reportsCurrent(data) ? data.trades_today : null, gateway(data), decision(data), events(data),
-      accountCurrent(data) ? data.manual_exposure : null]);
+      reportsCurrent(data) ? data.trades_today : null, gateway(data), decision(data), roles.map(role => events(data, role)),
+      accountCurrent(data) ? [data.manual_exposure, data.pending_entry_symbols] : null,
+      fills(data), protections(data).map(row => [row.symbol, row.label, fresh(row.observed_at, 120000)]), risks(data)]);
   }
   render({});
   return {

@@ -25,6 +25,14 @@ button:focus-visible{outline-color:#caa663}
 #scene .office-camera-views{position:absolute;top:104px;left:50%;transform:translateX(-50%);z-index:1;display:flex;gap:4px;max-width:calc(100% - 250px);padding:4px;border:1px solid #c5a46555;border-radius:10px;background:#fff8e9e6;overflow-x:auto;scrollbar-width:thin}
 #scene .office-camera-views button{flex:0 0 auto;min-height:36px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:#5b574a;font:600 9px/1.3 Inter,system-ui,sans-serif;letter-spacing:.04em;white-space:nowrap}
 #scene .office-camera-views button[aria-pressed="true"]{background:#2b4842;color:#fff4dd}
+#scene .office-monitor-detail{position:absolute;left:10px;right:10px;bottom:64px;z-index:2;margin:0;padding:6px;border:1px solid #c5a46588;border-radius:10px;background:#101e25;box-shadow:0 8px 25px #102d3c33}
+#scene .office-monitor-detail[hidden]{display:none}
+#scene .office-monitor-detail figcaption{padding:5px 7px;color:#e6c991;font:600 10px/1.4 Inter,system-ui,sans-serif}
+#scene .office-monitor-detail canvas{display:block;width:100%;height:auto;border-radius:5px}
+#scene .office-monitor-detail button{position:absolute;right:6px;top:0;min-height:32px;border:0;background:transparent;color:#d8e4e8;font-size:10px}
+#scene .office-monitor-detail button.office-monitor-zoom{right:82px;min-width:44px;font-size:12px}
+#scene .office-monitor-viewport{overflow:auto;max-height:240px;overscroll-behavior:contain}
+#scene .office-monitor-detail.is-zoomed canvas{width:200%;max-width:none}
 @media(max-width:700px){
  #scene .office-speech{max-width:150px;font-size:8px}
  #scene .office-asset-notice{left:10px;bottom:62px;max-width:calc(100% - 20px);padding:8px 10px;font-size:10px}

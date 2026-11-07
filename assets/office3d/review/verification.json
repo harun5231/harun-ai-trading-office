@@ -1,50 +1,30 @@
 {
-  "checked_at": "2026-11-08T02:52:44.402820+07:00",
+  "checked_at": "2026-11-07T23:07:30.817331+00:00",
   "source_repository": "harun5231/harun-ai-trading-office",
   "source_branch": "feat/office-kantor-a",
-  "baseline_commit": "57d65226e44c671ebe9d76c90087170be0c433e9",
-  "recovery_tag": "office-frontend-before-kantor-a-57d6522",
-  "publication_status": "NOT_PUBLISHED_MISSING_REQUIRED_HUMAN_ASSETS",
-  "production_mechanism": {
-    "service": "existing GitHub Pages",
-    "branch": "main",
-    "path": "/"
+  "starting_pr_head": "b9c42af2a1a2724410231c6ad9c9a9c7e8b9b25d",
+  "validation_status": "PASS_LOCAL_VISUAL_AND_MOTION",
+  "restoration": {
+    "status": "already_restored_and_verified",
+    "output": "/workspace/harun-avatar-install/avatar-assets-restored",
+    "files_verified": 42,
+    "all_original_bytes_preserved": true,
+    "network_used": false,
+    "repository_or_trading_changed": false
   },
-  "production_before": {
-    "index.html": {
-      "url": "https://harun5231.github.io/harun-ai-trading-office/index.html",
-      "http_status": 200,
-      "matches_backup": true,
-      "sha256": "a7cfd11608ee55f18bd4894f9b55b042a9df47b175ccbb738afbfc1cfc8e5233"
-    },
-    "assets/office3d/renderer.js": {
-      "url": "https://harun5231.github.io/harun-ai-trading-office/assets/office3d/renderer.js",
-      "http_status": 200,
-      "matches_backup": true,
-      "sha256": "9512db00e1de37a1062596936a9339a8592faefc819f92892b6a12e7b04e8b30"
-    }
-  },
-  "changed_scope": "Office visual assets, animation and frontend regression tests only",
-  "operational_and_backend_paths_changed": [],
+  "asset_review": "avatar-reference-review.json",
+  "physical_contact_review": "physical-contact-review.json",
   "unit_tests": {
-    "count": 72,
+    "unique_tests": 90,
     "result": "PASS",
     "modules": [
       "test_avatar_status",
+      "test_monitor_textures",
       "test_dashboard_contract",
       "test_dashboard_final_ui",
-      "test_monitor_textures",
       "test_office_animation",
+      "test_office_navigation",
       "test_office_avatar_assets"
-    ]
-  },
-  "screenshots": {
-    "source": "actual repository frontend served locally, no worker connection or synthetic telemetry",
-    "files": [
-      "desktop.png",
-      "mobile.png",
-      "mobile-workstation.png",
-      "mobile-landscape.png"
     ]
   },
   "browser_checks": [
@@ -52,127 +32,158 @@
       "name": "desktop",
       "viewport": {
         "width": 1536,
-        "scrollWidth": 1536,
         "height": 1024,
+        "scrollWidth": 1536,
         "scrollHeight": 1024
       },
-      "modules_and_assets_loaded": 18,
-      "page_errors": [],
-      "request_failures": [],
-      "worker_requests": [],
-      "menu_reset_and_station_camera_views": "PASS",
-      "station_names": [
-        "HERMES AGENT",
-        "NEUROBRO",
-        "RISK MANAGER",
-        "BINANCE",
-        "HARUN"
-      ],
-      "collision_violations": [],
-      "models_ready": false,
-      "model_states": {
-        "market": "MISSING_ASSET",
-        "neuro": "MISSING_ASSET",
-        "risk": "MISSING_ASSET",
-        "trading": "MISSING_ASSET",
-        "boss": "MISSING_ASSET"
-      }
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
     },
     {
       "name": "mobile",
       "viewport": {
         "width": 390,
-        "scrollWidth": 390,
         "height": 844,
+        "scrollWidth": 390,
         "scrollHeight": 844
       },
-      "modules_and_assets_loaded": 18,
-      "page_errors": [],
-      "request_failures": [],
-      "worker_requests": [],
-      "menu_reset_and_station_camera_views": "PASS",
-      "station_names": [
-        "HERMES AGENT",
-        "NEUROBRO",
-        "RISK MANAGER",
-        "BINANCE",
-        "HARUN"
-      ],
-      "collision_violations": [],
-      "models_ready": false,
-      "model_states": {
-        "market": "MISSING_ASSET",
-        "neuro": "MISSING_ASSET",
-        "risk": "MISSING_ASSET",
-        "trading": "MISSING_ASSET",
-        "boss": "MISSING_ASSET"
-      }
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
     },
     {
       "name": "mobile-landscape",
       "viewport": {
         "width": 844,
-        "scrollWidth": 844,
         "height": 390,
+        "scrollWidth": 844,
         "scrollHeight": 390
       },
-      "modules_and_assets_loaded": 18,
-      "page_errors": [],
-      "request_failures": [],
-      "worker_requests": [],
-      "menu_reset_and_station_camera_views": "PASS",
-      "station_names": [
-        "HERMES AGENT",
-        "NEUROBRO",
-        "RISK MANAGER",
-        "BINANCE",
-        "HARUN"
-      ],
-      "collision_violations": [],
-      "models_ready": false,
-      "model_states": {
-        "market": "MISSING_ASSET",
-        "neuro": "MISSING_ASSET",
-        "risk": "MISSING_ASSET",
-        "trading": "MISSING_ASSET",
-        "boss": "MISSING_ASSET"
-      }
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
     },
     {
       "name": "reduced-motion",
       "viewport": {
         "width": 1440,
-        "scrollWidth": 1440,
         "height": 900,
+        "scrollWidth": 1440,
         "scrollHeight": 900
       },
-      "modules_and_assets_loaded": 18,
-      "page_errors": [],
-      "request_failures": [],
-      "worker_requests": [],
-      "menu_reset_and_station_camera_views": "PASS",
-      "station_names": [
-        "HERMES AGENT",
-        "NEUROBRO",
-        "RISK MANAGER",
-        "BINANCE",
-        "HARUN"
-      ],
-      "collision_violations": [],
-      "models_ready": false,
-      "model_states": {
-        "market": "MISSING_ASSET",
-        "neuro": "MISSING_ASSET",
-        "risk": "MISSING_ASSET",
-        "trading": "MISSING_ASSET",
-        "boss": "MISSING_ASSET"
-      }
+      "modelsReady": true,
+      "computers": 5,
+      "roleStatesAndUnknown": "PASS",
+      "browserErrors": [],
+      "requestFailures": [],
+      "workerRequests": [],
+      "collisionViolations": []
     }
   ],
-  "animation_validation": {
-    "scheduler_paths_priority_and_missing_states": "PASS_OFFLINE_TESTS",
-    "real_human_skeletal_animation": "BLOCKED_NO_ACCEPTABLE_MODELS",
-    "required_assets": "five reference-matching textured skinned human GLBs, office animation clips, named head bones and licenses permitting intended web use and public asset distribution"
+  "motion": {
+    "source": "Local synthetic read-only fixtures; no worker connection",
+    "all_five_simultaneous_departure": true,
+    "work_requested_at_simulated_seconds": 60,
+    "all_five_back_at_own_pc_seconds": 101.89999999999678,
+    "swept_body_head_overlap_violations": 0,
+    "modes_observed": {
+      "market": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "neuro": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "risk": [
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK",
+        "RETRACTING_TRAY"
+      ],
+      "trading": [
+        "STANDING_UP",
+        "WALKING",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "RESTING",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ],
+      "boss": [
+        "STANDING_UP",
+        "WALKING",
+        "IDLE_ACTIVITY",
+        "DOCKING",
+        "ALIGNING",
+        "SITTING_DOWN",
+        "ALIGN_HANDS",
+        "EXTENDING_TRAY",
+        "AT_DESK"
+      ]
+    }
   },
-  "data_contract": "existing workerSnapshot unchanged; original worker events only; no chat is provided by this Office payload"
+  "screenshots": {
+    "source": "Actual repository Office page, no worker connection and no synthetic telemetry in these four screenshots",
+    "files": [
+      "desktop.png",
+      "mobile.png",
+      "mobile-workstation.png",
+      "mobile-landscape.png"
+    ]
+  },
+  "publication_mechanism": {
+    "service": "existing GitHub Pages",
+    "branch": "main",
+    "path": "/",
+    "audited_prior_successful_run": 42361777856,
+    "backend_workflows": "Only backend path-filtered PR checks and explicit manual image publish; no push/workflow_run backend deployment",
+    "user_authorized_frontend_publication": true
+  },
+  "scope": {
+    "protected_paths_changed": [],
+    "dashboard_change": "publish() display projection only; all other dashboard bytes unchanged",
+    "extra_polling": false,
+    "vps_or_trading_runtime_access": false
+  },
+  "limitations": [
+    "Chromium mobile emulation, not a physical iPhone/Safari test.",
+    "Mesh contacts use sampled deformed vertices and rounded boxes at 1.5 mm tolerance; not a proof for every continuous pose or cloth simulation.",
+    "Portrait likeness remains stylized, as recorded in the actual reference review.",
+    "Unavailable candles, complete dialogue and structured final Neurobro decisions are explicitly identified, never synthesized."
+  ]
 }
