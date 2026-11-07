@@ -1,7 +1,7 @@
 name: Build and publish delegated Neurobro dialogue agent
 on:
   pull_request:
-    paths: ['agent/dialogue_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
   workflow_dispatch:
 permissions: {}
 defaults:
@@ -22,7 +22,9 @@ jobs:
           persist-credentials: false
       - name: Test delegated runtime and native data conversion without providers
         run: |
-          PYTHONPATH=.:tests python3 -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol -v
+          python3 -m venv "$RUNNER_TEMP/dialogue-agent-tests"
+          "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m pip install --disable-pip-version-check httpx==0.28.1
+          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
       - name: Build from the immutable existing agent image
         run: |
           contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"
@@ -71,7 +73,7 @@ jobs:
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
-                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:0d503b36fc5ba834a75598fe25888a903740d791489457a1675b8dd7605c9084',
+                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626',
                   'deployment_authorized':False},output,sort_keys=True)
           PY
           cat dialogue-agent-image.json >> "$GITHUB_STEP_SUMMARY"

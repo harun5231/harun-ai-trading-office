@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 PARENT_EVIDENCE=ROOT/'tests/fixtures/dialogue_agent_retained_b844.json'
-BASE=json.loads(PARENT_EVIDENCE.read_bytes())['image']
+BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 
 
 def run_blocks(workflow):
@@ -32,7 +32,7 @@ class DialoguePackagingTests(unittest.TestCase):
         self.docker=(ROOT/'deploy/dialogue-agent.Dockerfile').read_text()
         self.workflow=(ROOT/'.github/workflows/dialogue-agent-image.yml').read_text()
 
-    def test_parent_is_the_verified_b844_publication_not_its_distinct_config_id(self):
+    def test_retained_b844_publication_evidence_remains_immutable_history(self):
         raw=PARENT_EVIDENCE.read_bytes()
         self.assertEqual(hashlib.sha256(raw).hexdigest(),
             '4499e7554d92c7ab8a037f8541bb4e581aa52b2879819f0720f508d0d6d725d2')
@@ -43,15 +43,17 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertNotEqual(value['image'].rsplit('@',1)[1],value['image_id'])
         self.assertEqual((value['uid'],value['native_caller_uid']),(10002,10001))
 
-    def test_derived_image_pins_existing_base_and_uses_only_new_delegated_entrypoint(self):
+    def test_derived_image_pins_existing_base_and_inherits_its_process_contract(self):
         self.assertEqual(re.findall(r'^FROM (.+)$',self.docker,re.M),[BASE])
-        self.assertIn('ENTRYPOINT ["python", "-m", "agent.dialogue_service"]',self.docker)
-        self.assertIn('USER 10002:10002',self.docker)
-        self.assertIn('HARUN_SOURCE_COMMIT="${REVISION}"',self.docker)
-        self.assertIn('io.harun.agent.mode="NATIVE_DELEGATED_DIALOGUE"',self.docker)
+        self.assertEqual(re.findall(r'^ENV (.+)$',self.docker,re.M),
+            ['HARUN_SOURCE_COMMIT="${REVISION}"'])
         self.assertIn('org.opencontainers.image.revision="${REVISION}"',self.docker)
         self.assertIn('io.harun.agent.contract.sha256="${CONTRACT_SHA}"',self.docker)
-        self.assertNotIn('ENTRYPOINT ["python", "-m", "agent"]',self.docker)
+        contract_sha=hashlib.sha256((ROOT/'deploy/neurobro-dialogue.contract.json').read_bytes()).hexdigest()
+        self.assertEqual(contract_sha,'e761f33a1575ff404535d71dc512d959eb80aca17b34a028b78640ee74d114fd')
+        self.assertIn('ARG CONTRACT_SHA='+contract_sha,self.docker)
+        self.assertFalse(re.search(r'^(?:RUN|USER|WORKDIR|ENTRYPOINT|CMD|EXPOSE|HEALTHCHECK|VOLUME|SHELL|ONBUILD|STOPSIGNAL)\b',
+            self.docker,re.M))
         for forbidden in ('pip install','apt-get','COPY worker','COPY . ', 'agent/controller.py'):
             self.assertNotIn(forbidden,self.docker)
 
@@ -59,12 +61,16 @@ class DialoguePackagingTests(unittest.TestCase):
         rows=(ROOT/'deploy/dialogue-agent.Dockerfile.dockerignore').read_text().splitlines()
         self.assertEqual(rows[0],'**')
         allowed={row[1:] for row in rows if row.startswith('!')}
-        self.assertEqual(allowed,{'agent','agent/dialogue_service.py','agent/dialogue_client.py',
-            'agent/native_market_context.py','agent/native_status_bridge.py','agent/llm.py','deploy','deploy/dialogue-agent.Dockerfile',
-            'deploy/dialogue-agent.Dockerfile.dockerignore','deploy/neurobro-dialogue.contract.json'})
+        copied={'agent/dialogue_service.py','agent/hermes_dialogue.py',
+            'agent/hermes_runtime.py','agent/hermes_trading_isolation.py'}
+        self.assertEqual(allowed,{'agent',*copied,'deploy','deploy/dialogue-agent.Dockerfile',
+            'deploy/dialogue-agent.Dockerfile.dockerignore'})
         for path in allowed:
             self.assertTrue((ROOT/path).exists())
-        self.assertIn('agent/native_market_context.py',self.docker)
+        copies=re.findall(r'^COPY --chmod=0444 (.+) /app/agent/$',self.docker,re.M)
+        self.assertEqual(len(copies),1)
+        self.assertEqual(set(copies[0].split()),copied)
+        self.assertNotIn('hermes_model_broker.py',self.docker)
         self.assertNotIn('.env',allowed)
         self.assertFalse(any(path.startswith('worker') for path in allowed))
 
@@ -99,6 +105,12 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertNotIn('sudo ',self.workflow)
         for action in re.findall(r'uses: ([^\s#]+)',self.workflow):
             self.assertRegex(action,r'^[A-Za-z0-9_./-]+@[a-f0-9]{40}$')
+        self.assertIn("'agent/hermes_*.py'",self.workflow)
+        self.assertIn("'tests/test_hermes_*.py'",self.workflow)
+        self.assertIn('httpx==0.28.1',self.workflow)
+        for module in ('tests.test_hermes_dialogue','tests.test_hermes_dialogue_service',
+            'tests.test_hermes_runtime','tests.test_hermes_model_broker'):
+            self.assertIn(module,self.workflow)
 
     def test_actual_smoke_invocations_use_network_none_uid_group_and_resource_caps(self):
         runs=[row.strip() for row in self.workflow.splitlines() if 'docker run ' in row]
