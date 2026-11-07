@@ -34,7 +34,9 @@ class HermesDialogueCandidateTests(unittest.TestCase):
             'observed_at':time.time(),'decision':deepcopy(self.output)}
 
     def make(self,**changes):
-        args=dict(model='gpt-6.1-sol',transport=self.transport,**self.pins);args.update(changes)
+        # Offline protocol tests explicitly opt out of production verification.
+        args=dict(model='gpt-6.1-sol',transport=self.transport,
+            require_verified_transport=False,**self.pins);args.update(changes)
         return HermesDialogue('/not-read-by-offline-adapter',self.memory,**args)
 
     def request(self,phase='SCREENING',reply='BTCUSDT',index=0):
@@ -79,6 +81,10 @@ class HermesDialogueCandidateTests(unittest.TestCase):
             self.assertIn('COIN, ARAH, ENTRY, TP, SL',call['instructions'])
             self.assertIn('RISK REWARD 1:2',call['instructions'])
             self.assertIn('Jangan menulis JSON pengganti',call['instructions'])
+            if call['phase'] in ('ANALYSIS','COMPOSE_ANALYSIS'):
+                description=call['output_schema']['properties']['question']['description']
+                self.assertIn('JSON COIN, ARAH, ENTRY, TP, SL',description)
+                self.assertNotIn('Risk Manager',description)
 
     def test_private_new_inputs_are_projected_without_changing_source_or_mini_history(self):
         request=self.request();values=dict(symbol='BTCUSDT',risk_usdt='PRIVATE_BUDGET_918',quantity='PRIVATE_QTY_743',
@@ -152,5 +158,49 @@ class HermesDialogueCandidateTests(unittest.TestCase):
             self.output=dict(action='CLARIFY',symbols=['BTCUSDT'],question=question)
             with self.subTest(question=question),self.assertRaises(AgentError):
                 self.plan(self.request(index=index+90))
+
+    def test_production_default_requires_independent_runtime_verification(self):
+        with self.assertRaisesRegex(AgentError,'VERIFICATION_REQUIRED'):
+            HermesDialogue('/unused',self.memory,model='gpt-6.1-sol',transport=self.transport,**self.pins)
+        model=self.make(require_verified_transport=True,attestation=lambda:{},runtime_ready=lambda:False)
+        with self.assertRaisesRegex(NotSent,'RUNTIME_UNVERIFIED'):
+            self.plan(model=model)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':1})
+
+    def test_post_dispatch_unverified_receipt_is_unknown_and_never_replayed(self):
+        model=self.make(require_verified_transport=True,attestation=lambda:{},runtime_ready=lambda:True)
+        with self.assertRaisesRegex(AgentError,'RUNTIME_UNVERIFIED'):
+            self.plan(model=model)
+        self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+        with self.assertRaises(AmbiguousOperation):
+            self.plan(model=model)
+        self.assertEqual(len(self.calls),1)
+
+    def test_private_schema_enum_or_nested_public_fact_never_reaches_runtime(self):
+        request=self.request('COMPOSE_SCREENING','Pilih BTCUSDT. Risiko Office 918.25 USDT.')
+        with self.assertRaisesRegex(AgentError,'PRIVATE_DISCUSSION_REFUSED'):
+            self.plan(request)
+        self.assertEqual(self.calls,[])
+        request=self.request(index=301)
+        values=dict(symbol='BTCUSDT',entry_price={'quantity':'NESTED_PRIVATE_CANARY'},
+            neurobro_tp='101')
+        request['source_facts']=[dict(producer='RISK_MANAGER',operation='existing-order',values=values,
+            sha256=hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest())]
+        history=[dict(role='user',content=json.dumps(dict(COIN='BTCUSDT',ENTRY='100',
+            notional='PRIVATE_NOTIONAL_CANARY',api_key='PRIVATE_KEY_CANARY')))]
+        self.plan(request,history)
+        wire=json.dumps(self.calls[0])
+        for canary in ('NESTED_PRIVATE_CANARY','PRIVATE_NOTIONAL_CANARY','PRIVATE_KEY_CANARY'):
+            self.assertNotIn(canary,wire)
+
+    def test_private_caller_number_cannot_authorize_a_new_public_price(self):
+        request=self.request(index=401)
+        values=dict(symbol='BTCUSDT',risk_usdt='918.25')
+        request['source_facts']=[dict(producer='RISK_MANAGER',operation='existing-order',values=values,
+            sha256=hashlib.sha256(json.dumps(values,sort_keys=True,separators=(',',':')).encode()).hexdigest())]
+        self.output=dict(action='CLARIFY',symbols=['BTCUSDT'],question='ENTRY 918.25 belum sesuai.')
+        with self.assertRaisesRegex(AgentError,'PRICE_PROPOSAL_REFUSED'):
+            self.plan(request)
 
 if __name__=='__main__':unittest.main()

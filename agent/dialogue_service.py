@@ -32,6 +32,7 @@ from .llm import (OpenAIDialogue, read_api_key, validated_market_context,
                   web_prompt_allowed)
 from .memory import Memory, canonical
 from .models import AgentError, AmbiguousOperation, NotSent
+from .hermes_dialogue import HermesDialogue
 
 # The exact 400-candle payload plus bounded Neurobro reply no longer fits the
 # former 64 KiB request. The response and HTTP-header limits remain unchanged.
@@ -64,6 +65,9 @@ SCREENING_RECOVERY_POLICY = 'ORIGINAL_SCREENING_KNOWN_REJECTION_V1'
 SCREENING_INTERPRETATION_POLICY = 'RECEIVED_SCREENING_KNOWN_REJECTION_V1'
 SCREENING_RECEIPT_LOOKUP = 'SCREENING_RECEIPT_LOOKUP'
 SCREENING_LOOKUP_BINDING = ('request_id', 'conversation_id', 'phase', 'reply_sha256')
+MINI_BACKEND = 'OPENAI_MINI'
+HERMES_BACKEND = 'HERMES_AGENT'
+BACKENDS = frozenset({MINI_BACKEND, HERMES_BACKEND})
 
 
 class DialogueError(AgentError):
@@ -426,7 +430,7 @@ def key_identity(path):
         return None
 
 
-def runtime_config_sha256(path, references):
+def read_runtime_config(path, references, *, backend=None):
     """Observe exact approved app config bytes; never hash an environment claim."""
     path = Path(path)
     need(path.is_absolute(),'DIALOGUE_AUTHENTICATION_FAILED')
@@ -454,15 +458,74 @@ def runtime_config_sha256(path, references):
         'socket_path':references['socket'],'data_directory':references['data_directory'],
         'dialogue_token_file':references['token_file'],'openai_key_file':references['key_file']}
     need(all(type(value) is str and Path(value).is_absolute() and '..' not in Path(value).parts
-                 for value in references.values()) and type(value) is dict and value==expected
+                 for value in references.values()) and type(value) is dict
          and type(value.get('schema_version')) is int,'DIALOGUE_AUTHENTICATION_FAILED')
-    return hashlib.sha256(raw).hexdigest()
+    selected = validate_runtime_config(value, expected, backend=backend)
+    return value, hashlib.sha256(raw).hexdigest(), selected
+
+
+def validate_runtime_config(value, legacy, *, backend=None):
+    """Schema 2 remains byte-compatible; schema 3 explicitly selects Hermes."""
+    need(backend is None or backend in BACKENDS, 'DIALOGUE_AUTHENTICATION_FAILED')
+    if value == legacy:
+        need(backend in (None, MINI_BACKEND), 'DIALOGUE_AUTHENTICATION_FAILED')
+        return MINI_BACKEND
+    need(type(value) is dict and set(value) == set(legacy) | {'backend','hermes'}
+        and type(value.get('schema_version')) is int and value['schema_version'] == 3
+        and value['backend'] == HERMES_BACKEND and backend in (None, HERMES_BACKEND)
+        and all(value[name] == child for name,child in legacy.items()
+            if name not in {'schema_version','model'})
+        and type(value['model']) is str and IDENTITY.fullmatch(value['model'])
+        and not re.search(r'gpt-5-mini(?:$|-)', value['model'], re.I),
+        'DIALOGUE_AUTHENTICATION_FAILED')
+    hermes = value['hermes']
+    need(type(hermes) is dict and set(hermes) == {'socket_path','token_file','server_uid',
+        'runtime_source_sha256','runtime_config_sha256','isolation_policy_sha256','isolation_policy_file'},
+        'DIALOGUE_AUTHENTICATION_FAILED')
+    need(all(type(hermes[name]) is str and Path(hermes[name]).is_absolute()
+        and '..' not in Path(hermes[name]).parts
+        for name in ('socket_path','token_file','isolation_policy_file'))
+        and type(hermes['server_uid']) is int and 10000 <= hermes['server_uid'] < 2**31
+        and hermes['server_uid'] not in (10001,10002)
+        and all(type(hermes[name]) is str and SHA.fullmatch(hermes[name])
+            and hermes[name] != '0'*64 for name in ('runtime_source_sha256',
+                'runtime_config_sha256','isolation_policy_sha256'))
+        and Path(hermes['socket_path']).resolve() != Path(value['socket_path']).resolve()
+        and Path(hermes['token_file']).resolve() not in (
+            Path(value['dialogue_token_file']).resolve(),Path(value['openai_key_file']).resolve()),
+        'DIALOGUE_AUTHENTICATION_FAILED')
+    return HERMES_BACKEND
+
+
+def runtime_config_sha256(path, references, *, backend=None):
+    return read_runtime_config(path, references, backend=backend)[1]
+
+
+def create_dialogue_engine(memory, key_file, *, backend=MINI_BACKEND, config=None, clock=time.time):
+    """Select one backend. A failed Hermes bridge can never select Mini."""
+    need(backend in BACKENDS, 'DIALOGUE_AUTHENTICATION_FAILED')
+    if backend == MINI_BACKEND:
+        need(config is None or config.get('schema_version') == 2, 'DIALOGUE_AUTHENTICATION_FAILED')
+        return DialogueEngine(memory, key_file, clock=clock)
+    need(type(config) is dict and config.get('backend') == HERMES_BACKEND,
+        'DIALOGUE_AUTHENTICATION_FAILED')
+    from .hermes_runtime import HermesRuntimeClient
+    bridge = HermesRuntimeClient(config, clock=clock)
+    hermes = config['hermes']
+    model = HermesDialogue(key_file, memory, model=config['model'], transport=bridge,
+        attestation=bridge.attestation, runtime_ready=bridge.ready, require_verified_transport=True,
+        **{name:hermes[name] for name in ('runtime_source_sha256','runtime_config_sha256',
+            'isolation_policy_sha256')}, clock=clock)
+    return DialogueEngine(memory, key_file, model=model, backend=backend, clock=clock)
 
 
 class DialogueEngine:
     """Persist only this service's own conversations and model delivery receipts."""
-    def __init__(self, memory, key_file, *, model=None, clock=time.time):
+    def __init__(self, memory, key_file, *, model=None, backend=None, clock=time.time):
         self.memory, self.key_file, self.clock = memory, str(key_file), clock
+        inferred = HERMES_BACKEND if isinstance(model, HermesDialogue) else MINI_BACKEND
+        need(backend is None or backend == inferred, 'DIALOGUE_AUTHENTICATION_FAILED')
+        self.backend = inferred
         self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45,
             daily_requests=math.inf, daily_input_tokens=math.inf, daily_output_tokens=math.inf)
         self.lock = threading.RLock()
@@ -480,10 +543,17 @@ class DialogueEngine:
     def authentication_verified(self):
         evidence = self.model.evidence()
         observed = evidence.get('observed_at')
-        return (evidence.get('verified') is True and type(observed) in (int,float)
-            and math.isfinite(observed) and 0 <= self.clock()-observed <= 300
-            and self._authenticated_key_identity is not None
+        recent = (evidence.get('verified') is True and type(observed) in (int,float)
+            and math.isfinite(observed) and 0 <= self.clock()-observed <= 300)
+        if self.backend == HERMES_BACKEND:
+            return recent and self.model.runtime_ready()
+        return (recent and self._authenticated_key_identity is not None
             and key_identity(self.key_file) == self._authenticated_key_identity)
+
+    def model_state(self):
+        if self.backend == HERMES_BACKEND:
+            return 'AVAILABLE' if self.model.runtime_ready() else 'INVALID'
+        return key_state(self.key_file)
 
     def completed_screening(self, request):
         """Read an existing exact SCREENING receipt, independent of model readiness.
@@ -700,9 +770,10 @@ class DialogueEngine:
             need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
             need(self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
             validate_request(request, now=self.clock())
-            state = key_state(self.key_file)
-            need(state == 'AVAILABLE', 'DIALOGUE_MODEL_KEY_MISSING' if state == 'MISSING'
-                 else 'DIALOGUE_MODEL_KEY_UNAVAILABLE')
+            state = self.model_state()
+            need(state == 'AVAILABLE', 'DIALOGUE_MODEL_UNAVAILABLE' if self.backend == HERMES_BACKEND
+                else 'DIALOGUE_MODEL_KEY_MISSING' if state == 'MISSING'
+                else 'DIALOGUE_MODEL_KEY_UNAVAILABLE')
             operation_id = 'delegated-model:' + request['request_id']
             def execute():
                 validate_request(request, now=self.clock())
@@ -723,7 +794,11 @@ class DialogueEngine:
                     need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
                     need(self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
                     need(time.monotonic() < until, 'DIALOGUE_DEADLINE_EXPIRED')
-                    dispatched_key[0] = key_identity(self.key_file)
+                    if self.backend == HERMES_BACKEND:
+                        if not self.model.runtime_ready():
+                            raise NotSent('HERMES_RUNTIME_UNVERIFIED')
+                    else:
+                        dispatched_key[0] = key_identity(self.key_file)
                     return original_transport(payload)
                 self.model.transport = gated_transport
                 try:
@@ -731,13 +806,16 @@ class DialogueEngine:
                         context=request['market_context'])
                     if 'source_facts' in request:
                         arguments['source_facts'] = request['source_facts']
+                    if self.backend == HERMES_BACKEND:
+                        self.model.bind_request(request)
                     decision = self.model.plan(history, request['reply'], **arguments)
                 finally:
                     self.model.transport = original_transport
                 need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
                 need(self.clock() < request['deadline_epoch'] and time.monotonic() < until,
                      'DIALOGUE_DEADLINE_EXPIRED')
-                if (dispatched_key[0] is not None and key_identity(self.key_file) == dispatched_key[0]
+                if (self.backend == MINI_BACKEND and dispatched_key[0] is not None
+                        and key_identity(self.key_file) == dispatched_key[0]
                         and self.model.evidence().get('verified') is True):
                     self._authenticated_key_identity = dispatched_key[0]
                 value = validate_decision({'action':decision.action,
@@ -762,6 +840,7 @@ class DialogueEngine:
                     parent = self.memory.db.execute('SELECT state FROM operations WHERE operation_id=?',
                         (operation_id,)).fetchone()
                     if parent is not None and parent[0] == 'UNKNOWN':
+                        need(self.backend == MINI_BACKEND, 'DIALOGUE_OPERATION_UNKNOWN')
                         current_id, operation_payload = self._received_screening_child(request, create=True)
                 visited = set()
                 while True:
@@ -772,6 +851,7 @@ class DialogueEngine:
                         result = self.memory.operation(current_id, 'DELEGATED_MODEL_DIALOGUE', operation_payload, execute)
                         break
                     except AmbiguousOperation:
+                        need(self.backend == MINI_BACKEND, 'DIALOGUE_OPERATION_UNKNOWN')
                         current_id, operation_payload = self._rejected_screening_child(
                             request, current_id, operation_payload, memo_request)
             except AmbiguousOperation:
@@ -1001,7 +1081,7 @@ class DialogueHealth:
         self.thread = threading.Thread(target=self.server.serve_forever,name='dialogue-health',daemon=True)
 
     def observe(self):
-        state = key_state(self.dialogue.engine.key_file)
+        state = self.dialogue.engine.model_state()
         transport = self.dialogue.runtime_ready()
         configured = self.dialogue.engine.configuration_ready()
         ready = state == 'AVAILABLE' and transport and configured
@@ -1010,10 +1090,12 @@ class DialogueHealth:
         source = source if re.fullmatch(r'[a-f0-9]{40}',source,re.ASCII) else 'UNVERIFIED'
         image = image if re.fullmatch(r'ghcr\.io/harun5231/harun-neurobro-agent@sha256:[a-f0-9]{64}',image,re.ASCII) else 'UNVERIFIED'
         return {'service':'harun-neurobro-agent','runtime_implemented':True,
-            'mode':'NATIVE_DELEGATED_DIALOGUE','model':'gpt-5-mini','model_key_state':state,
+            'mode':'NATIVE_DELEGATED_DIALOGUE','model':self.dialogue.engine.model.model,
+            'backend':self.dialogue.engine.backend,'model_key_state':state,
             'state':'PAUSED' if ready else 'BLOCKED', 'dialogue_ready':ready,
             'reason':('RUNTIME_CONFIG_UNVERIFIED' if not configured else 'NATIVE_CALLER_GATED' if ready else 'MODEL_KEY_'+state
-                      if state != 'AVAILABLE' else 'DIALOGUE_TRANSPORT_UNAVAILABLE'),
+                      if state != 'AVAILABLE' and self.dialogue.engine.backend == MINI_BACKEND
+                      else 'DIALOGUE_TRANSPORT_UNAVAILABLE'),
             'uid':os.geteuid(),'process_generation':self.generation,'observed_at':time.time(),
             'source_commit':source,'image_digest':image,
             'runtime_config_sha256':getattr(self,'config_sha256','UNVERIFIED') if configured else 'UNVERIFIED',
@@ -1038,6 +1120,7 @@ def main(argv=None):
     for name in ('socket','data-directory','token-file','key-file'):
         parser.add_argument('--'+name,required=True)
     parser.add_argument('--runtime-config')
+    parser.add_argument('--backend', choices=sorted(BACKENDS))
     args = parser.parse_args(argv)
     # Optional Office telemetry uses this exact running module/class namespace.
     # It adds authenticated UDS GET status; the POST/model path is unchanged.
@@ -1048,12 +1131,15 @@ def main(argv=None):
     try:
         need(os.geteuid() == 10002, 'DIALOGUE_AUTHENTICATION_FAILED')
         references={key:getattr(args,key) for key in ('socket','data_directory','token_file','key_file')}
-        config_sha=(runtime_config_sha256(args.runtime_config,references)
-                    if args.runtime_config else 'UNVERIFIED')
+        config, config_sha, backend = (read_runtime_config(args.runtime_config,references,backend=args.backend)
+            if args.runtime_config else (None,'UNVERIFIED',args.backend or MINI_BACKEND))
+        need(backend != HERMES_BACKEND or args.runtime_config is not None,
+             'DIALOGUE_AUTHENTICATION_FAILED')
         memory = Memory(Path(args.data_directory)/'agent.sqlite3')
-        engine = DialogueEngine(memory,args.key_file)
+        engine = create_dialogue_engine(memory,args.key_file,backend=backend,config=config)
         if args.runtime_config:
-            engine.configuration_check=lambda:runtime_config_sha256(args.runtime_config,references)==config_sha
+            engine.configuration_check=lambda:runtime_config_sha256(
+                args.runtime_config,references,backend=backend)==config_sha
         dialogue = DialogueServer(args.socket,engine,args.token_file).start()
         health = DialogueHealth(dialogue,config_sha256=config_sha).start()
         for number in (signal.SIGTERM,signal.SIGINT):

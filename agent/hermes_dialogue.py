@@ -1,4 +1,4 @@
-"""Undeployed Hermes-only dialogue adapter; transport isolation is external.
+"""Hermes-only dialogue adapter; transport isolation is verified externally.
 
 There is no shell, HTTP client, provider fallback or exchange capability here.
 A trusted, separately isolated installed-Hermes process must implement the RPC.
@@ -23,9 +23,13 @@ IDENTITY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}\Z')
 PUBLIC_FACTS = frozenset({'symbol','side','entry_price','stop_loss','neurobro_tp',
     'accepted_at','age_seconds','order_ref','observed_at','last_review_at','next_review_at'})
 PRIVATE_KEY = re.compile(r'(?:risk_(?:usdt|target|budget|amount)|quantity|qty|filled_quantity|'
-    r'execution_quantity|execution_tp|target_(?:net|price)|fee|commission|balance|wallet|capital)', re.I)
+    r'execution_quantity|execution_tp|target_(?:net|price)|fee|commission|balance|wallet|capital|'
+    r'notional|leverage|estimated_(?:loss|profit)|cost_components|reserve_slippage|'
+    r'token|secret|password|api[_ -]?key|authorization)', re.I)
 PRIVATE_TEXT = re.compile(r'\b(?:quantity|qty|kuantitas|ukuran\s+posisi|jumlah\s+kontrak|'
-    r'fee|komisi|perhitungan\s+biaya|execution[_ ]tp|tp\s+eksekusi|'
+    r'fee|komisi|biaya|slippage|execution[_ ]tp|tp\s+eksekusi|'
+    r'balance|wallet|capital|saldo|modal|notional|leverage|'
+    r'token|secret|password|api[_ -]?key|authorization|bearer|'
     r'(?:kirim|submit|cancel|batalkan)\s+(?:order|pesanan)\s+(?:ke\s+)?binance)\b', re.I)
 INSTRUCTIONS = '''Kamu Hermes, pemimpin operasional Trading Office. Berbahasa Indonesia
 secara tegas, profesional, mandiri, singkat, dan berdasarkan bukti. Neurobro tetap
@@ -50,6 +54,10 @@ simpan pelajaran berbukti tanpa mengubah strategi, aturan pemilik atau transaksi
 Kembalikan hanya JSON kontrol dialog sesuai schema: action, symbols, question.
 Harga keputusan trading tetap diparsing dari jawaban asli Neurobro oleh sistem.
 '''
+QUESTION_DESCRIPTION = ('Bahasa Indonesia alami, hanya berdasarkan sumber publik. '
+    'Minta RISK REWARD 1:2 dan SL struktural sesuai wick, likuiditas dan invalidasi. '
+    'Sejak pesan analisis pertama minta Neurobro sendiri menutup keputusan akhir '
+    'dengan JSON COIN, ARAH, ENTRY, TP, SL; harga HOLD null.')
 
 
 def canonical(value):
@@ -101,10 +109,13 @@ class HermesDialogue:
     """
     def __init__(self, key_file, memory, *, model, transport,
                  runtime_source_sha256, runtime_config_sha256, isolation_policy_sha256,
-                 attestation=None, timeout=45, max_output_tokens=1024, clock=time.time,
+                 attestation=None, runtime_ready=None, require_verified_transport=True,
+                 timeout=45, max_output_tokens=1024, clock=time.time,
                  daily_requests=math.inf, daily_input_tokens=math.inf,
                  daily_output_tokens=math.inf):
         need(callable(transport) and (attestation is None or callable(attestation)), 'HERMES_TRANSPORT_REQUIRED')
+        need(type(require_verified_transport) is bool and (not require_verified_transport
+            or callable(attestation) and callable(runtime_ready)), 'HERMES_VERIFICATION_REQUIRED')
         need(isinstance(model, str) and IDENTITY.fullmatch(model)
              and not re.search(r'gpt-5-mini(?:$|-)', model, re.I), 'HERMES_MODEL_IDENTITY_INVALID')
         need(all(isinstance(v, str) and SHA.fullmatch(v) and v != '0'*64
@@ -113,13 +124,15 @@ class HermesDialogue:
         need(1 <= timeout <= 45 and 256 <= max_output_tokens <= 2048, 'HERMES_LIMIT_INVALID')
         self.key_file, self.memory, self.model = str(key_file), memory, model
         self.transport, self.attestation, self.clock = transport, attestation, clock
+        self._runtime_ready = runtime_ready
+        self.require_verified_transport = require_verified_transport
         self.timeout, self.max_output_tokens = timeout, max_output_tokens
         self.pins = dict(runtime_source_sha256=runtime_source_sha256,
             runtime_config_sha256=runtime_config_sha256, isolation_policy_sha256=isolation_policy_sha256)
         self.limits = dict(max_requests=daily_requests, max_input_tokens=daily_input_tokens,
             max_output_tokens=daily_output_tokens)
         self._remaining_budget = lambda:self.timeout
-        self._binding = self._receipt = None
+        self._binding = self._public_binding = self._receipt = None
 
     def set_remaining_budget(self, callback):
         need(callable(callback), 'HERMES_BUDGET_INVALID')
@@ -129,19 +142,33 @@ class HermesDialogue:
         from .dialogue_service import validate_request
         value = validate_request(deepcopy(request), now=self.clock())
         self._binding = value
+        self._public_binding = None
+        self._receipt = None
+
+    def runtime_ready(self):
+        """The bridge checks the peer and host policy without a provider call."""
+        if not self.require_verified_transport:
+            return False
+        try:
+            return self._runtime_ready() is True
+        except Exception:
+            return False
+
+    def _verified_receipt(self, receipt):
+        if receipt is None or self.attestation is None:
+            return False
+        try:
+            observed = self.attestation()
+            expected = {key:receipt[key] for key in ('request_id','request_sha256','trace_id','session_id')}
+            return (type(observed) is dict
+                and all(observed.get(key) == value for key,value in {**self.pins,**expected,'runtime':RUNTIME,'model':self.model}.items())
+                and all(observed.get(key) is True for key in ('verified','kernel_peer_verified','isolation_verified')))
+        except Exception:
+            return False
 
     def evidence(self):
         receipt = self._receipt
-        authenticated = False
-        if receipt is not None and self.attestation is not None:
-            try:
-                observed = self.attestation()
-                expected = {key:receipt[key] for key in ('request_id','request_sha256','trace_id','session_id')}
-                authenticated = (type(observed) is dict
-                    and all(observed.get(key) == value for key,value in {**self.pins,**expected,'runtime':RUNTIME,'model':self.model}.items())
-                    and all(observed.get(key) is True for key in ('verified','kernel_peer_verified','isolation_verified')))
-            except Exception:
-                authenticated = False
+        authenticated = self._verified_receipt(receipt)
         return dict(verified=authenticated, runtime_receipt_verified=receipt is not None,
             observed_at=receipt.get('observed_at') if receipt else None, model=self.model,
             runtime=RUNTIME, transport='AUTHENTICATED_ISOLATED_HERMES_RPC', **self.pins,
@@ -167,7 +194,8 @@ class HermesDialogue:
             need(started-5 <= at <= deadline+5 and self.clock() < deadline,
                 'HERMES_RESPONSE_DEADLINE_EXPIRED')
         from .dialogue_service import validate_decision
-        validate_decision(value['decision'], self._binding)
+        need(self._public_binding is not None, 'HERMES_REQUEST_BINDING_REQUIRED')
+        validate_decision(value['decision'], self._public_binding)
         question=value['decision']['question']
         need(web_prompt_allowed(question) and not PRIVATE_TEXT.search(question)
             and not PRIVATE_BUDGET.search(question), 'HERMES_PRIVATE_DISCUSSION_REFUSED')
@@ -190,27 +218,43 @@ class HermesDialogue:
         facts=[]
         for item in source_facts or []:
             facts.append(dict(producer=item['producer'], operation=item['operation'],
-                values={key:deepcopy(value) for key,value in item['values'].items() if key in PUBLIC_FACTS}))
+                values={key:public_value(value) for key,value in item['values'].items()
+                    if key in PUBLIC_FACTS and (value is None or type(value) in (str,int,float,bool))}))
         text=public_text(reply)
+        need(phase != 'COMPOSE_SCREENING' or text == reply, 'HERMES_PRIVATE_DISCUSSION_REFUSED')
+        # Private caller facts cannot authorize prices in a new public question.
+        self._public_binding={**deepcopy(binding),'reply':text,
+            'reply_sha256':hashlib.sha256(text.encode()).hexdigest()}
+        if 'source_facts' in binding:
+            self._public_binding['source_facts']=[{**deepcopy(item),'sha256':digest(item['values'])}
+                for item in facts]
+        schema=deepcopy(dialogue_schema(phase,text,context=market))
+        if phase in ('ANALYSIS','COMPOSE_ANALYSIS'):
+            schema['properties']['question']['description']=QUESTION_DESCRIPTION
         payload=dict(schema_version=1, protocol=PROTOCOL, runtime=RUNTIME,
             request_id=binding['request_id'], conversation_id=binding['conversation_id'], phase=phase,
             source_request_sha256=digest({k:v for k,v in binding.items() if k != 'deadline_epoch'}),
             model=self.model, **self.pins, instructions=INSTRUCTIONS,
             history=[dict(role=item['role'],content=public_text(item['content'])) for item in history],
             reply=text, market_context=market, source_facts=facts,
-            output_schema=dialogue_schema(phase, reply, context=context), max_output_tokens=self.max_output_tokens)
+            output_schema=schema, max_output_tokens=self.max_output_tokens)
         payload['request_sha256']=digest(payload)
         need(len(canonical(payload).encode()) <= MAX_MODEL_INPUT_BYTES, 'HERMES_INPUT_TOO_LARGE')
         def execute():
             remaining=min(self.timeout,float(self._remaining_budget()),binding['deadline_epoch']-self.clock())
             if not math.isfinite(remaining) or remaining <= 0:
                 raise NotSent('HERMES_DEADLINE_BEFORE_DISPATCH')
+            if self.require_verified_transport and not self.runtime_ready():
+                raise NotSent('HERMES_RUNTIME_UNVERIFIED')
             self.memory.reserve_budget(jakarta_day,len(canonical(payload).encode()),self.max_output_tokens,**self.limits)
             started=self.clock();deadline=started+remaining
             # Existing DialogueEngine can wrap this exact boundary with its last
             # owner/deadline check. There is no direct API or alternate transport.
             response=self.transport({**deepcopy(payload),'deadline_epoch':deadline})
-            return self._validate_receipt(response,payload,started=started,deadline=deadline)
+            receipt=self._validate_receipt(response,payload,started=started,deadline=deadline)
+            need(not self.require_verified_transport or self._verified_receipt(receipt),
+                'HERMES_RUNTIME_UNVERIFIED')
+            return receipt
         receipt=self.memory.operation('hermes-runtime:'+binding['request_id'], 'HERMES_DIALOGUE_RPC', payload, execute)
         self._receipt=deepcopy(self._validate_receipt(receipt,payload))
         value=receipt['decision']
