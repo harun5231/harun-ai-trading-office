@@ -1,2 +1,5 @@
 # Deployment manifest validation; not installed in the worker image.
 PyYAML==6.0.3
+
+# Hermes adapter transport integration tests only.
+httpx==0.28.1
