@@ -30,14 +30,9 @@ def catalog():
 
 def private_reader(transport):
     # Fixtures never read a key file or call the production transport.
-    reader = BinanceReadOnly.__new__(BinanceReadOnly)
-    reader._key = 'fixture-api-key-not-real'
-    reader._secret = 'fixture-secret-not-real'
-    reader._transport = transport
-    reader._clock = lambda: 100.0
-    reader._server = None
-    reader._synced = None
-    return reader
+    with patch('worker.binance_private.read_secret', side_effect=(
+            'fixture-api-key-not-real', 'fixture-secret-not-real')):
+        return BinanceReadOnly(transport=transport, clock=lambda: 100.0)
 
 
 class ResearchReadGuardTests(unittest.TestCase):
