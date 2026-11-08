@@ -136,10 +136,9 @@ class OrderPipelineTests(unittest.TestCase):
                 return dict(serverTime=int(datetime.now(timezone.utc).timestamp() * 1000))
             self.assertEqual(path, '/fapi/v1/openOrders')
             return []
-        reader = BinanceReadOnly.__new__(BinanceReadOnly)
-        reader._key, reader._secret = 'fixture-api-key-not-real', 'fixture-secret-not-real'
-        reader._transport, reader._clock = transport, lambda: 100.0
-        reader._server, reader._synced = None, None
+        with patch('worker.binance_private.read_secret', side_effect=(
+                'fixture-api-key-not-real', 'fixture-secret-not-real')):
+            reader = BinanceReadOnly(transport=transport, clock=lambda: 100.0)
         return reader, calls
 
     def test_off_claims_no_paid_call_or_account_read(self):

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import hashlib
 import importlib
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -51,6 +52,60 @@ _JOURNAL_SCHEMA = (
 
 class PendingReviewUnavailable(ValueError):
     pass
+
+
+_FAILURE_PHASES = frozenset((
+    'CHECK_UNRESOLVED_ORDER', 'ADVANCE_EXECUTION', 'JOURNAL_OPEN',
+    'CHECK_UNRESOLVED_REVIEW', 'RECOVER_COMPLETED', 'MONITOR_EXISTING',
+    'RECOVER_CANCEL', 'RECOVER_TERMINAL', 'SELECT_DUE',
+    'CHECK_UNRESOLVED_RESEARCH', 'VERIFY_INTENT', 'OWNED_INTENT_LOCK',
+    'GATEWAY_RECONCILE', 'GATEWAY_OBSERVATION', 'READ_CURRENT_INTENT',
+    'PENDING_ENTRY', 'CHECK_ACCEPTED_TIME', 'MARKET_CONTEXT', 'MARKET_FRESHNESS',
+    'RISK_ESTIMATE', 'MARKET_MATERIALS', 'ORDER_CONTEXT', 'CLAIM_PREPARE',
+    'REQUEST_PREPARE', 'CLAIM_WRITE', 'BROWSER_DISCUSSION', 'DECISION_VALIDATE',
+    'SOURCE_EVIDENCE', 'DECISION_RECEIPT', 'CHECK_CURRENT_AUTHORITY',
+    'SAVE_PAUSED', 'DECISION_FRESHNESS', 'SAVE_TAHAN', 'SAVE_CANCEL_PREPARED',
+    'VERIFY_CANCEL_INTENT', 'BEFORE_CANCEL_RECONCILE', 'CANCEL_ENTRY_READ',
+    'SAVE_CANCEL_NOT_APPLIED', 'CANCEL_REMAINDER', 'AFTER_CANCEL_RECONCILE',
+    'SAVE_CANCEL_RESULT', 'BROWSER_FAILURE_STATE',
+))
+
+
+def _log_review_failure(phase, error, operation=None):
+    """Log fixed stages/codes/locations, never error text, locals or traceback data.
+
+    A failing logging handler or metadata accessor cannot change a native
+    journal transition, return value, recovery, or exception boundary.
+    """
+    try:
+        phase = phase if phase in _FAILURE_PHASES else 'UNCLASSIFIED'
+        kind = type(error).__name__
+        if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,79}', kind) is None:
+            kind = 'Exception'
+        operation = (operation if type(operation) is str
+            and re.fullmatch(OPERATION_PATTERN, operation) is not None else None)
+        codes = {}
+        for name in ('code', 'sqlite_errorcode', 'errno'):
+            value = getattr(error, name, None)
+            codes[name] = value if type(value) is int else None
+        filename = function = line = None
+        trace = error.__traceback__
+        while trace is not None:
+            code = trace.tb_frame.f_code
+            basename = Path(code.co_filename).name
+            filename = (basename if re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', basename)
+                        else 'UNKNOWN')
+            function = (code.co_name if re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,99}', code.co_name)
+                        else 'UNKNOWN')
+            line = trace.tb_lineno
+            trace = trace.tb_next
+        logging.getLogger(__name__).warning(
+            'NATIVE_PENDING_REVIEW_FAILED phase=%s exception_class=%s binance_code=%s '
+            'sqlite_code=%s errno=%s source_file=%s source_function=%s source_line=%s operation=%s',
+            phase, kind, codes['code'], codes['sqlite_errorcode'], codes['errno'],
+            filename, function, line, operation)
+    except Exception:
+        pass
 
 
 def _native():
@@ -466,7 +521,8 @@ def _monitor_existing(coordinator, account, today, native):
                   guard.gateway_transaction_reads(), guard.gateway_mutations(coordinator.gateway_allowed)):
                 value = coordinator.gateway.reconcile(intent)
                 report = coordinator.record_gateway_observation(row['id'], row['candidate_id'], value, account)
-        except Exception:
+        except Exception as error:
+            _log_review_failure('MONITOR_EXISTING', error)
             return coordinator.mark_unknown(row['id'], row['candidate_id'], account)
         if report.get('bot_status') in ('NEEDS_REVIEW', 'PROTECTION_INCOMPLETE'):
             return report
@@ -642,29 +698,40 @@ def review_then_advance(coordinator, account, today):
     if not _gate(coordinator, today):
         return _report(coordinator, account)
     native, now = _native(), time.time()
+    phase, operation = 'CHECK_UNRESOLVED_ORDER', None
     try:
         # Preserve the original highest-priority unknown-order reconciliation.
         # That native branch always returns before screening or submission.
         if coordinator.db.execute("SELECT 1 FROM order_intents WHERE state IN "
                 "('SUBMITTING','NEEDS_REVIEW') LIMIT 1").fetchone():
+            phase = 'ADVANCE_EXECUTION'
             return coordinator.advance_execution(account, today)
         # Existing journal ambiguity blocks new entries; no blind chat/DELETE replay.
+        phase = 'JOURNAL_OPEN'
         with _journal(coordinator.db) as existing:
+            phase = 'CHECK_UNRESOLVED_REVIEW'
             if existing is not None and existing.execute(
                     "SELECT 1 FROM pending_reviews WHERE state='REVIEWING' "
                     "OR (state='PAUSED' AND decision='TAHAN') LIMIT 1").fetchone():
+                phase = 'RECOVER_COMPLETED'
                 with _journal(coordinator.db, create=True) as recovering:
                     _recover_completed_decisions(coordinator, recovering, native, now)
+            phase = 'CHECK_UNRESOLVED_REVIEW'
             if existing is not None and existing.execute(
                     "SELECT 1 FROM pending_reviews WHERE state IN ('REVIEWING','CANCEL_PREPARED','NEEDS_REVIEW') LIMIT 1").fetchone():
+                phase = 'MONITOR_EXISTING'
                 monitored = _monitor_existing(coordinator, account, today, native)
+                phase = 'RECOVER_CANCEL'
                 with _journal(coordinator.db, create=True) as recovering:
                     _recover_cancel_checkpoints(coordinator, recovering, today, native)
+                    phase = 'RECOVER_TERMINAL'
                     _recover_terminal_order_reviews(coordinator, recovering, account, today, native)
                 if not existing.execute("SELECT 1 FROM pending_reviews WHERE state IN "
                         "('REVIEWING','CANCEL_PREPARED','NEEDS_REVIEW') LIMIT 1").fetchone():
+                    phase = 'ADVANCE_EXECUTION'
                     return coordinator.advance_execution(account, today)
                 return monitored or _report(coordinator, account, 'NEEDS_REVIEW', 'PENDING_REVIEW_OUTCOME_UNKNOWN')
+            phase = 'SELECT_DUE'
             due = []
             for row in coordinator.db.execute(
                     "SELECT * FROM order_intents WHERE state IN ('ENTRY_PENDING','POSITION_PROTECTED') ORDER BY created,id LIMIT 3"):
@@ -685,30 +752,40 @@ def review_then_advance(coordinator, account, today):
                 if created <= now - REVIEW_SECONDS and next_due <= now:
                     due.append(dict(row))
         if not due:
+            phase = 'ADVANCE_EXECUTION'
             return coordinator.advance_execution(account, today)
         # A prior native browser send with unknown outcome must not be
         # overlapped by a new pending-review conversation. Monitoring continues.
+        phase = 'CHECK_UNRESOLVED_RESEARCH'
         if coordinator.unresolved_research():
+            phase = 'MONITOR_EXISTING'
             monitored = _monitor_existing(coordinator, account, today, native)
             return monitored or _report(coordinator, account, 'NEEDS_REVIEW', 'ROBOT_REQUEST_NEEDS_REVIEW')
         if len(due) > 2:
             raise PendingReviewUnavailable('PENDING_REVIEW_CAPACITY_UNVERIFIED')
         guard = native['research_guard']
         for row in due:
+            phase = 'VERIFY_INTENT'
             intent = coordinator.verified_intent(row)
             if not _gate(coordinator, today):
                 return _report(coordinator, account)
+            phase = 'OWNED_INTENT_LOCK'
             with (owned_intent_lock(coordinator.db, intent['client_order_id']),
                   guard.gateway_transaction_reads(), guard.gateway_mutations(coordinator.gateway_allowed)):
+                phase = 'GATEWAY_RECONCILE'
                 observation = coordinator.gateway.reconcile(intent)
+                phase = 'GATEWAY_OBSERVATION'
                 report = coordinator.record_gateway_observation(row['id'], row['candidate_id'], observation, account)
+            phase = 'READ_CURRENT_INTENT'
             fresh = _intent_row(coordinator.db, row['id'])
             if not fresh or fresh['state'] == 'NEEDS_REVIEW':
                 return report
             if (fresh['state'] in ('ENTRY_PENDING', 'POSITION_PROTECTED')
                     and observation.get('state') in ('ENTRY_PENDING', 'POSITION_PROTECTED')):
+                phase = 'PENDING_ENTRY'
                 reviewed_entry = _pending_entry(coordinator, intent, native, today)
                 if reviewed_entry is not None:
+                    phase = 'CHECK_ACCEPTED_TIME'
                     accepted_at = _accepted_at(dict(fresh), reviewed_entry, now=now)
                     if accepted_at + REVIEW_SECONDS <= now:
                         break
@@ -717,18 +794,25 @@ def review_then_advance(coordinator, account, today):
         else:
             # Fully filled protected positions have no entry remainder. Do not
             # repeatedly choose them or prevent another legitimate native task.
+            phase = 'ADVANCE_EXECUTION'
             return coordinator.advance_execution(account, today)
+        phase = 'VERIFY_INTENT'
         coordinator.verified_intent(fresh)
         if row['payload'] != fresh['payload'] or row['created'] != fresh['created']:
             raise PendingReviewUnavailable('PENDING_REVIEW_INTENT_CHANGED')
+        phase = 'MARKET_CONTEXT'
         with _maintenance_reads(coordinator, native):
             context, _ = native['analysis'].analysis_context(coordinator.market, intent['symbol'],
                 coordinator.store.settings()['risk_target_usdt'], coordinator.account_factory())
+            phase = 'MARKET_FRESHNESS'
             coordinator.market.fresh(context, intent['symbol'])
+            phase = 'RISK_ESTIMATE'
             estimate = estimate_owned_order(coordinator, fresh, coordinator.market, coordinator.account_factory())
+        phase = 'MARKET_MATERIALS'
         if not closed_review_materials(context):
             raise PendingReviewUnavailable('PENDING_REVIEW_CLOSED_CANDLES_INSUFFICIENT')
         intent_ref = _sha(row['payload'])
+        phase = 'ORDER_CONTEXT'
         order = _order_context(intent, dict(fresh), reviewed_entry, accepted_at, now=now)
         if estimate:
             order['estimate_status'] = estimate['status']
@@ -744,6 +828,7 @@ def review_then_advance(coordinator, account, today):
             pending_order_context=order, material_contract=MATERIAL_CONTRACT)
         if not _gate(coordinator, today):
             return _report(coordinator, account)
+        phase = 'CLAIM_PREPARE'
         with _journal(coordinator.db, create=True) as journal:
             sequence = journal.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM pending_reviews WHERE intent_id=?',
                                        (row['id'],)).fetchone()[0]
@@ -759,10 +844,12 @@ def review_then_advance(coordinator, account, today):
                     prompt += ('\n\nEvaluasi sebelumnya menyatakan '+prior['decision']+
                         ' tetapi belum diterapkan karena proses terputus. Tolong nilai kembali '
                         'order yang sama memakai kondisi dan lampiran terbaru ini; bukan membuat order baru.')
+            phase = 'REQUEST_PREPARE'
             body, serialized, digest = native['research_provider'].request_body(operation, prompt, REVIEW_SCHEMA, context)
             created = time.time()
             if not _context_valid(context, operation=operation, now=created, created=created):
                 raise PendingReviewUnavailable('PENDING_REVIEW_CONTEXT_UNVERIFIED')
+            phase = 'CLAIM_WRITE'
             journal.execute('INSERT INTO pending_reviews VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (operation, row['id'], intent_ref, sequence, row['created'], created,
                  created + REVIEW_SECONDS, 'REVIEWING', None, serialized, digest, None, None))
@@ -782,27 +869,35 @@ def review_then_advance(coordinator, account, today):
                 return value
 
             try:
+                phase = 'BROWSER_DISCUSSION'
                 with _maintenance_reads(coordinator, native):
                     value = coordinator.neuro.ask(operation, prompt, REVIEW_SCHEMA, validate,
                         context=context, continue_if=permitted)
+                phase = 'DECISION_VALIDATE'
                 validate(value)
+                phase = 'SOURCE_EVIDENCE'
                 evidence = native['research_provider'].source_evidence(coordinator.db, operation)
                 source = evidence.get('provider_evidence_sha256')
                 if (evidence.get('source_type') != native['research_provider'].BROWSER_SOURCE
                         or type(source) is not str or re.fullmatch(r'[a-f0-9]{64}', source) is None):
                     raise PendingReviewUnavailable('PENDING_REVIEW_SOURCE_UNVERIFIED')
+                phase = 'DECISION_RECEIPT'
                 receipt = _decision_receipt(coordinator.db, operation,
                     accepted_at=order['accepted_at'])
                 # An OFF or rollover after a completed reply never cancels anything.
+                phase = 'CHECK_CURRENT_AUTHORITY'
                 if not permitted():
+                    phase = 'SAVE_PAUSED'
                     _set_state(journal, operation, 'PAUSED', decision=value['decision'],
                         next_due=time.time() + RETRY_SECONDS, source_sha256=source)
+                    phase = 'READ_CURRENT_INTENT'
                     current = _intent_row(coordinator.db, row['id'])
                     if (_gate(coordinator, today) and current is not None
                             and current['state'] == 'PROTECTION_INCOMPLETE'):
                         return _report(coordinator, account, 'PROTECTION_INCOMPLETE',
                             'PENDING_REVIEW_WAITING_FOR_PROTECTION')
                     return _report(coordinator, account)
+                phase = 'DECISION_FRESHNESS'
                 if owner_material_request({'output_schema': REVIEW_SCHEMA, 'context': context}):
                     with _maintenance_reads(coordinator, native):
                         context = completed_decision_fresh(coordinator.db, operation, coordinator.market,
@@ -810,8 +905,10 @@ def review_then_advance(coordinator, account, today):
                             source_reader=native['research_provider'].source_evidence,
                             browser_source=native['research_provider'].BROWSER_SOURCE)
                 else:
+                    phase = 'MARKET_FRESHNESS'
                     coordinator.market.fresh(context, intent['symbol'])
                 if value['decision'] == 'TAHAN':
+                    phase = 'SAVE_TAHAN'
                     _set_state(journal, operation, 'COMPLETE', decision='TAHAN',
                         next_due=receipt['decision_at'] + REVIEW_SECONDS,
                         source_sha256=source, result=receipt)
@@ -820,34 +917,46 @@ def review_then_advance(coordinator, account, today):
                     # next analysis/scheduler interval, preserving this already
                     # completed discussion if reconciliation itself fails.
                     try:
+                        phase = 'OWNED_INTENT_LOCK'
                         with (owned_intent_lock(coordinator.db, intent['client_order_id']),
                               guard.gateway_transaction_reads(), guard.gateway_mutations(coordinator.gateway_allowed)):
+                            phase = 'GATEWAY_RECONCILE'
                             latest = coordinator.gateway.reconcile(intent)
+                            phase = 'GATEWAY_OBSERVATION'
                             return coordinator.record_gateway_observation(row['id'], row['candidate_id'], latest, account)
-                    except Exception:
+                    except Exception as error:
+                        _log_review_failure(phase, error, operation)
                         return coordinator.mark_unknown(row['id'], row['candidate_id'], account)
+                phase = 'SAVE_CANCEL_PREPARED'
                 _set_state(journal, operation, 'CANCEL_PREPARED', decision='BATALKAN', source_sha256=source)
                 # Re-prove ownership and re-read the entry immediately before the
                 # existing gateway cancels only its native client-ID remainder.
+                phase = 'VERIFY_CANCEL_INTENT'
                 current = _matching_intent(coordinator.db, dict(row,
                     intent_id=row['id'], intent_ref=intent_ref, entry_created_at=row['created']))
                 current_intent = coordinator.verified_intent(current)
                 if current_intent != intent or not permitted():
+                    phase = 'SAVE_PAUSED'
                     _set_state(journal, operation, 'PAUSED', next_due=time.time() + RETRY_SECONDS)
                     return _report(coordinator, account)
+                phase = 'OWNED_INTENT_LOCK'
                 with (owned_intent_lock(coordinator.db, intent['client_order_id']),
                       guard.gateway_transaction_reads(), guard.gateway_mutations(coordinator.gateway_allowed)):
                     # A chart discussion can outlive the first account/order
                     # observation. Re-run the ORIGINAL gateway's inventory,
                     # fill ownership and position protection immediately before
                     # cancellation; an entry may have filled during the chat.
+                    phase = 'BEFORE_CANCEL_RECONCILE'
                     before_cancel = coordinator.gateway.reconcile(intent)
+                    phase = 'GATEWAY_OBSERVATION'
                     report = coordinator.record_gateway_observation(row['id'], row['candidate_id'],
                                                                     before_cancel, account)
+                    phase = 'READ_CURRENT_INTENT'
                     current = _intent_row(coordinator.db, row['id'])
                     if (not current or current['state'] not in ('ENTRY_PENDING', 'POSITION_PROTECTED')
                             or coordinator.verified_intent(current) != intent):
                         raise PendingReviewUnavailable('PENDING_REVIEW_CANCELLATION_UNVERIFIED')
+                    phase = 'CANCEL_ENTRY_READ'
                     with coordinator.gateway._operation():
                         coordinator.gateway._validate_intent(intent)
                         coordinator.gateway._account_config()
@@ -861,23 +970,31 @@ def review_then_advance(coordinator, account, today):
                                     != _number(reviewed_entry['executedQty'], zero=True)):
                             receipt.update(decision_not_applied_after_fill=True,
                                 gateway_observation=before_cancel)
+                            phase = 'SAVE_CANCEL_NOT_APPLIED'
                             _set_state(journal, operation, 'COMPLETE', decision='BATALKAN',
                                 next_due=time.time() + RETRY_SECONDS, result=receipt)
                             return report
                         # The private native method is itself status/partial-fill
                         # aware and re-GETs after the signed DELETE. Its wire gate
                         # rechecks current ROBOT ON, including a concurrent OFF.
+                        phase = 'CANCEL_REMAINDER'
                         with guard.gateway_mutations(lambda: permitted()):
                             coordinator.gateway._cancel_entry_remainder(intent, entry)
+                    phase = 'AFTER_CANCEL_RECONCILE'
                     final = coordinator.gateway.reconcile(intent)
+                    phase = 'GATEWAY_OBSERVATION'
                     report = coordinator.record_gateway_observation(row['id'], row['candidate_id'], final, account)
+                phase = 'READ_CURRENT_INTENT'
                 current = _intent_row(coordinator.db, row['id'])
                 if not current or current['state'] == 'NEEDS_REVIEW':
                     raise PendingReviewUnavailable('PENDING_REVIEW_CANCELLATION_UNVERIFIED')
+                phase = 'SAVE_CANCEL_RESULT'
                 receipt['gateway_observation'] = final
                 _set_state(journal, operation, 'COMPLETE', next_due=time.time() + REVIEW_SECONDS, result=receipt)
                 return report
             except Exception as error:
+                _log_review_failure(phase, error, operation)
+                phase = 'BROWSER_FAILURE_STATE'
                 api = coordinator.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
                 claim = journal.execute('SELECT state FROM pending_reviews WHERE operation=?', (operation,)).fetchone()
                 if (isinstance(error, native['neuroapi'].ResearchPaused) and api is None
@@ -886,5 +1003,6 @@ def review_then_advance(coordinator, account, today):
                     return _report(coordinator, account, reason='PENDING_REVIEW_WAITING')
                 _set_state(journal, operation, 'NEEDS_REVIEW')
                 return _report(coordinator, account, 'NEEDS_REVIEW', 'PENDING_REVIEW_OUTCOME_UNKNOWN')
-    except Exception:
+    except Exception as error:
+        _log_review_failure(phase, error, operation)
         return _report(coordinator, account, 'NEEDS_REVIEW', 'PENDING_REVIEW_STATE_UNVERIFIED')
