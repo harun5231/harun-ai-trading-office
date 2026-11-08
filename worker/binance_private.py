@@ -33,16 +33,35 @@ CODES=frozenset(('BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_REST
 class BinanceCheckError(Exception):pass
 
 _time_sample=ContextVar('binance_time_sample',default=None)
+_signed_request=ContextVar('binance_signed_request',default=None)
 
 class _ClockSampleConnection(HTTPSConnection):
-    def request(self,*args,**kwargs):
+    def request(self,method,url,body=None,headers=None,*,encode_chunked=False):
         sample=_time_sample.get()
-        if sample is not None:
+        signed=_signed_request.get()
+        path=urlsplit(url).path
+        if sample is not None and path==TIME_PATH:
             # DNS/TCP/TLS precede the unsigned time request. They cannot age a
             # serverTime value that Binance has not produced yet.
             if self.sock is None:self.connect()
             sample['wire_started']=sample['clock']()
-        return super().request(*args,**kwargs)
+        elif signed is not None and path==signed['path']:
+            if method!='GET' or body is not None:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED')
+            # A signed query cannot wait through DNS/TCP/TLS with its timestamp
+            # already fixed. Recreate only the selector at the wire boundary.
+            if self.sock is None:self.connect()
+            check_research_read()
+            fresh_url,fresh_headers=signed['prepare']()
+            try:
+                parts=urlsplit(fresh_url)
+                if (parts.scheme!='https' or parts.netloc!='fapi.binance.com' or parts.fragment
+                        or parts.path!=path or fresh_headers!=signed['headers']):raise ValueError()
+                _validate_signed_query(parts.path,parts.query)
+            except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
+            url=parts.path+'?'+parts.query
+            signed['wire_timestamp_ms']=int(dict(parse_qsl(parts.query))['timestamp'])
+            signed['wire_started']=signed['clock']()
+        return super().request(method,url,body,headers or {},encode_chunked=encode_chunked)
 
 class _ClockSampleHTTPSHandler(HTTPSHandler):
     def https_open(self,request):
@@ -133,7 +152,9 @@ def read_only_get(url,headers):
     try:
         req=Request(url,headers=headers,method='GET')
         handlers=[ProxyHandler({}),NoRedirect()]
-        if parts.path==TIME_PATH:handlers.append(_ClockSampleHTTPSHandler())
+        signed=_signed_request.get()
+        if parts.path==TIME_PATH or (signed is not None and parts.path==signed['path']):
+            handlers.append(_ClockSampleHTTPSHandler())
         opener=build_opener(*handlers)
         try:response=opener.open(req,timeout=15)
         except HTTPError as error:response=error
@@ -149,6 +170,8 @@ def read_only_get(url,headers):
                 logging.getLogger(__name__).warning('BINANCE_READ_FAILED endpoint=%s http_status=%s binance_code=%s reason=%s',parts.path,status,code,reason)
             elif isinstance(data,(dict,list)):return data
     except ResearchReadPaused:raise
+    except BinanceCheckError as error:
+        reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
     except Exception:pass
     # Never chain a URL-bearing urllib exception, provider message or raw response.
     raise BinanceCheckError(reason) from None
@@ -206,15 +229,19 @@ class BinanceReadOnly:
         with self._time_lock:
             # Wait for a concurrent synchronization/request and run the local
             # admission guard before creating this request's timestamp/HMAC.
+            headers={'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'}
             def prepare():
                 timestamp=self.server_time_ms()
                 try:scoped=_query_options(path,symbol,options,timestamp)
                 except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
                 params=[('recvWindow',5000),('timestamp',timestamp)]+scoped
                 query=urlencode(params)
-                return (BASE+path+'?'+query+'&signature='+signature(self._secret,query),
-                    {'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'})
-            return self._get(None,None,prepare=prepare)
+                return BASE+path+'?'+query+'&signature='+signature(self._secret,query),headers
+            context=dict(path=path,prepare=prepare,headers=headers,clock=self._clock,
+                wire_timestamp_ms=None,wire_started=None)
+            token=_signed_request.set(context)
+            try:return self._get(None,None,prepare=prepare)
+            finally:_signed_request.reset(token)
     def commission_rate(self,symbol):
         """Fresh account/symbol commission evidence, never an assumed fee tier."""
         try:_query_options(COMMISSION_PATH,symbol,{},10**16-1)
