@@ -728,9 +728,21 @@ def observe(actor, delegated, value):
             capture['room_witness'] = _room_witness(record,rows,raw,room.store.root,cached,
                 capture['receipt_files'],payload=payload,generic=generic)
             if screening:
-                from .native_received_screening import operation_scope
+                from .native_received_screening import operation_scope,review_identity_rows
                 witness=capture['room_witness'];witness['initial_screening_user_rows']=witness.pop('initial_analysis_user_rows')
                 scope=operation_scope(rows,witness,capture.get('review_receipts',[]),payload)
+                capture['operation_scope']=scope
+                if scope.get('verified') is not True:
+                    def identity_check():
+                        _gate(actor)
+                        need(raw.clock()<raw.operation_deadline,'SCREENING_REVIEW_IDENTITY_READ_DEADLINE')
+                    identity=review_identity_rows(room.store.root,payload,rows,witness,
+                        capture.get('review_receipts',[]),cached,record,capture['page_url'],
+                        capture['observed_at'],identity_check)
+                    if identity is not None:
+                        capture['screening_review_identity']=identity
+                        scope=operation_scope(rows,witness,capture.get('review_receipts',[]),payload,
+                            identity_rows=identity['source_observation']['rows'])
                 witness['followup_user_rows']=scope['user_rows'][1:]
             else:scope = _operation_scope(rows,capture['room_witness'],capture['receipt_files'],
                 manual_contexts=capture.get('manual_context_receipts',()),payload=payload) if generic else None
@@ -772,6 +784,17 @@ def observe(actor, delegated, value):
                 if old_names is missing_names:del raw.uploaded_names
                 else:raw.uploaded_names=old_names
         capture['finished_at'] = time.time()
+        if screening:
+            # Observe the native call's first retained return only. This does
+            # not ask a model, authorize a new Send, or close any operation.
+            capture['screening_ended_return'] = None
+            try:
+                from .native_received_screening import read_ended_return
+                capture['screening_ended_return'] = read_ended_return(room.store.root,payload)
+            except Exception as error:
+                code=str(error)
+                capture['screening_ended_return_error'] = dict(exception_class=type(error).__name__,
+                    reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code) else None)
         if generic and not screening:
             # A lost HTTP return may hide a positive native NOT_SENT receipt.
             # Expose only the latest independently verified private custody;

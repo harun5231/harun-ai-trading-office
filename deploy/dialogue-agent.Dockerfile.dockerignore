@@ -1,9 +1,6 @@
 **
 !agent
-!agent/dialogue_service.py
 !agent/hermes_dialogue.py
-!agent/hermes_runtime.py
-!agent/hermes_trading_isolation.py
 !deploy
 !deploy/dialogue-agent.Dockerfile
 !deploy/dialogue-agent.Dockerfile.dockerignore

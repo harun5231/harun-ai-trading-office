@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
 PARENT_EVIDENCE=ROOT/'tests/fixtures/dialogue_agent_retained_b844.json'
-BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
+BASE='ghcr.io/harun5231/harun-neurobro-agent@sha256:41702f11e004a1bbcceb86dc09f116b920f3cccc8df9cae1356319fc09e9e2db'
 
 
 def run_blocks(workflow):
@@ -61,8 +61,7 @@ class DialoguePackagingTests(unittest.TestCase):
         rows=(ROOT/'deploy/dialogue-agent.Dockerfile.dockerignore').read_text().splitlines()
         self.assertEqual(rows[0],'**')
         allowed={row[1:] for row in rows if row.startswith('!')}
-        copied={'agent/dialogue_service.py','agent/hermes_dialogue.py',
-            'agent/hermes_runtime.py','agent/hermes_trading_isolation.py'}
+        copied={'agent/hermes_dialogue.py'}
         self.assertEqual(allowed,{'agent',*copied,'deploy','deploy/dialogue-agent.Dockerfile',
             'deploy/dialogue-agent.Dockerfile.dockerignore'})
         for path in allowed:
@@ -147,7 +146,7 @@ class DialoguePackagingTests(unittest.TestCase):
         block=run_blocks(self.workflow)[-1]
         snippet=block.split("<<'PY'\n",1)[1].split('\nPY\n',1)[0]
         env={'SOURCE_COMMIT':'a'*40,'IMAGE_DIGEST':'ghcr.io/harun5231/harun-neurobro-agent@sha256:'+'b'*64,
-             'IMAGE_ID':'sha256:'+'c'*64,'CONTRACT_SHA':'d'*64}
+             'IMAGE_ID':'sha256:'+'c'*64,'CONTRACT_SHA':'d'*64,'DIALOGUE_SHA':'e'*64}
         with tempfile.TemporaryDirectory() as temporary:
             result=subprocess.run([os.sys.executable,'-c',snippet],cwd=temporary,
                 env={**os.environ,**env},capture_output=True,text=True)
@@ -158,6 +157,9 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertEqual(value['source_commit'],env['SOURCE_COMMIT'])
         self.assertEqual(value['provider_contract_sha256'],env['CONTRACT_SHA'])
         self.assertEqual(value['base_image'],BASE)
+        self.assertEqual(value['maintenance_profile'],'ISOLATED_HERMES_DIALOGUE_MAINTENANCE_V1')
+        self.assertEqual(value['source_files'],{'agent/hermes_dialogue.py':env['DIALOGUE_SHA']})
+        self.assertTrue(value['hermes_runtime_inherited'])
         self.assertFalse(value['deployment_authorized'])
         self.assertTrue(value['missing_key_smoke_verified'])
 

@@ -130,7 +130,11 @@ function never grants a replay, initializes tables, changes state, or reads keys
         if body != rebuilt or serialized != evidence['request_body'] or request_hash != request_sha256:
             return False
         owner_material = owner_material_request(body)
-        if now - created > (NEW_OPERATION_SECONDS if owner_material else max_age):
+        # Screening selects symbols without market/chart material. Keep its
+        # multi-turn conversation inside the existing native 900s budget;
+        # setup and legacy material freshness retain their original checks.
+        screening = screening_count(body['output_schema']) is not None
+        if now - created > (NEW_OPERATION_SECONDS if owner_material or screening else max_age):
             # An observed incomplete answer may continue its original native
             # conversation under a fresh sealed followup grant. This does not
             # alter the original request clock or permit its first Send again.

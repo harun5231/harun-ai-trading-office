@@ -61,19 +61,24 @@ jobs:
           docker push "$image"
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
           image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-          SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" python3 - <<'PY'
+          dialogue_sha="$(sha256sum agent/hermes_dialogue.py | cut -d ' ' -f 1)"
+          SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" DIALOGUE_SHA="$dialogue_sha" python3 - <<'PY'
           import json, os, re
           image=os.environ['IMAGE_DIGEST']
           assert re.fullmatch(r'ghcr.io/harun5231/harun-neurobro-agent@sha256:[0-9a-f]{64}',image)
           assert re.fullmatch(r'sha256:[0-9a-f]{64}',os.environ['IMAGE_ID'])
           assert re.fullmatch(r'[0-9a-f]{40}',os.environ['SOURCE_COMMIT'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['CONTRACT_SHA'])
+          assert re.fullmatch(r'[0-9a-f]{64}',os.environ['DIALOGUE_SHA'])
           with open('dialogue-agent-image.json','w') as output:
               json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office',
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
-                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626',
+                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:41702f11e004a1bbcceb86dc09f116b920f3cccc8df9cae1356319fc09e9e2db',
+                  'maintenance_profile':'ISOLATED_HERMES_DIALOGUE_MAINTENANCE_V1',
+                  'source_files':{'agent/hermes_dialogue.py':os.environ['DIALOGUE_SHA']},
+                  'hermes_runtime_inherited':True,
                   'deployment_authorized':False},output,sort_keys=True)
           PY
           cat dialogue-agent-image.json >> "$GITHUB_STEP_SUMMARY"
