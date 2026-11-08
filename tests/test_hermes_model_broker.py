@@ -188,6 +188,91 @@ class BrokerValidationTests(unittest.TestCase):
             b.validate_response(b.UpstreamResponse(200, sse().headers, sse().body[:-1]),
                 stream=True, path='/v1/chat/completions', config=config())
 
+    def test_invalid_response_predicates_retain_original_code_status_and_only_fixed_details(self):
+        terminal={'type':'response.incomplete','response':{'model':'hermes-fixed-model','status':'incomplete',
+            'incomplete_details':{'reason':'max_output_tokens','private':'PRIVATE_PROVIDER_TEXT'}}}
+        items=((b.UpstreamResponse(200,{**response().headers,'content-type':'text/plain'},response().body),False,
+                'NONSTREAM_CONTENT_TYPE_NOT_JSON',None),
+            (response(status='incomplete',incomplete_details={'reason':'content_filter','private':'PRIVATE_PROVIDER_TEXT'}),False,
+                'JSON_STATUS_INCOMPLETE','CONTENT_FILTER'),
+            (b.UpstreamResponse(200,sse().headers,b'event: response.incomplete\ndata: '+json.dumps(terminal).encode()+b'\n\n'),True,
+                'SSE_TYPE_RESPONSE_INCOMPLETE','MAX_OUTPUT_TOKENS'),
+            (b.UpstreamResponse(200,sse().headers,b'id: PRIVATE_PROVIDER_TEXT\ndata: {}\n\n'),True,
+                'SSE_UNSUPPORTED_FIELD',None))
+        for upstream,stream,reason,detail in items:
+            with self.subTest(reason=reason),self.assertRaises(b.BrokerError)as caught:
+                b.validate_response(upstream,stream=stream,path='/v1/responses'if stream else'/v1/chat/completions',config=config())
+            self.assertEqual((str(caught.exception),caught.exception.status),('HERMES_MODEL_RESPONSE_INVALID',502))
+            self.assertEqual(getattr(caught.exception,'reason',None),reason)
+            self.assertEqual(getattr(caught.exception,'reason_detail',None),detail)
+            self.assertNotIn('PRIVATE_',str(caught.exception.__dict__))
+
+    def test_unknown_response_diagnostic_values_cannot_escape_fixed_allowlists(self):
+        error=b.BrokerError('HERMES_MODEL_RESPONSE_INVALID',502,reason='PRIVATE_PROVIDER_TEXT',reason_detail='PRIVATE_DETAIL')
+        self.assertEqual((error.reason,error.reason_detail),(None,None))
+        self.assertEqual(str(error),'HERMES_MODEL_RESPONSE_INVALID')
+        self.assertEqual(b._terminal_reason_detail({'response':{'incomplete_details':{'reason':'PRIVATE_DETAIL'}}}),'OTHER')
+        self.assertIsNone(b._terminal_reason_detail({'response':{'incomplete_details':{'reason':['PRIVATE_DETAIL']}}}))
+
+    def test_json_shape_diagnostics_do_not_add_validation_or_crash_on_container_values(self):
+        for value in (None, False, 4, 'PRIVATE_PROVIDER_TEXT', [], [{}]):
+            with self.subTest(value=value), self.assertRaises(b.BrokerError) as caught:
+                b.validate_response(b.UpstreamResponse(200, response().headers, json.dumps(value).encode()),
+                    stream=False, path='/v1/responses', config=config())
+            self.assertEqual((str(caught.exception), caught.exception.status, caught.exception.reason),
+                ('HERMES_MODEL_RESPONSE_INVALID', 502, 'JSON_ROOT_NOT_OBJECT'))
+        # These status values were not rejected by the original predicate. The
+        # metadata helper must not add a hashability error or a new refusal.
+        for status in (None, False, 4, [], {}):
+            with self.subTest(status=status):
+                result = b.validate_response(response(status=status), stream=False,
+                    path='/v1/responses', config=config())
+                self.assertEqual(result['x-hermes-verified-model'], 'hermes-fixed-model')
+
+    def test_sse_refusal_metadata_is_fixed_for_invalid_shape_and_terminal_status(self):
+        cases = (([], None, 'SSE_ROOT_NOT_OBJECT'),
+            ({'error': {'message': 'PRIVATE_PROVIDER_TEXT'}}, None, 'SSE_ERROR_PRESENT'),
+            ({'type': 'response.failed'}, None, 'SSE_TYPE_RESPONSE_FAILED'),
+            ({}, 'error', 'SSE_EVENT_ERROR'),
+            ({'type': 'response.completed', 'response': {'status': 'incomplete',
+                'incomplete_details': {'reason': 'PRIVATE_REASON'}}}, None,
+                'SSE_COMPLETED_STATUS_NOT_COMPLETED'),
+            ({'choices': {}}, None, 'SSE_CHOICES_NOT_ARRAY'),
+            ({'choices': ['PRIVATE_PROVIDER_TEXT']}, None, 'SSE_CHOICE_NOT_OBJECT'))
+        for value, event_name, reason in cases:
+            raw = ((('event: ' + event_name + '\n').encode() if event_name else b'')
+                + b'data: ' + json.dumps(value).encode() + b'\n\n')
+            with self.subTest(reason=reason), self.assertRaises(b.BrokerError) as caught:
+                b.validate_response(b.UpstreamResponse(200, sse().headers, raw),
+                    stream=True, path='/v1/responses', config=config())
+            self.assertEqual((str(caught.exception), caught.exception.status, caught.exception.reason),
+                ('HERMES_MODEL_RESPONSE_INVALID', 502, reason))
+            self.assertNotIn('PRIVATE_', str(caught.exception.__dict__))
+
+    def test_refusal_handler_logs_fixed_predicate_without_changing_error_reply_or_dispatch(self):
+        upstream=response(status='incomplete',incomplete_details={'reason':'max_output_tokens','private':'PRIVATE_PROVIDER_TEXT'})
+        body=request();calls=[];events=[]
+        server=object.__new__(b.HermesModelBroker)
+        server.config=config();server._diagnostic_lock=threading.Lock();server._event_counts={};server._diagnostics=events.append
+        def send_upstream(*args,**kwargs):calls.append(args);return upstream
+        server.upstream=send_upstream
+        def run():
+            handler=object.__new__(b._Handler);handler.server=server;handler.connection=Mock();handler.client_address=17
+            handler.rfile=io.BytesIO(b'POST /v1/chat/completions HTTP/1.1\r\nHost: hermes-model\r\nContent-Type: application/json\r\nContent-Length: '+str(len(body)).encode()+b'\r\n\r\n'+body)
+            handler.wfile=io.BytesIO();handler.handle();return handler.wfile.getvalue()
+        raw=run();refusal=events[-1]
+        self.assertEqual(refusal['event'],'HERMES_MODEL_REFUSED')
+        self.assertEqual((refusal['code'],refusal['status']),('HERMES_MODEL_RESPONSE_INVALID',502))
+        self.assertEqual((refusal['reason'],refusal['reason_detail']),('JSON_STATUS_INCOMPLETE','MAX_OUTPUT_TOKENS'))
+        self.assertEqual(refusal['connection'],17)
+        self.assertEqual(json.loads(raw.split(b'\r\n\r\n',1)[1]),{'error':{'message':'HERMES_MODEL_RESPONSE_INVALID',
+            'type':'hermes_model_broker','code':'HERMES_MODEL_RESPONSE_INVALID'}})
+        self.assertNotIn('PRIVATE_',json.dumps(events));self.assertNotIn(b'PRIVATE_',raw)
+        self.assertEqual(len(calls),1)
+        server._diagnostics=Mock(side_effect=OSError('PRIVATE_JOURNAL_ERROR'))
+        self.assertEqual(run(),raw)
+        self.assertEqual(len(calls),2)
+
 
 class PeerCredentialTests(unittest.TestCase):
     def test_kernel_peer_identity_from_real_unix_socket(self):

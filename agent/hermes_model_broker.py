@@ -77,6 +77,15 @@ DIAGNOSTIC_HEADER_NAMES = SEMANTIC_RESPONSE_HEADERS | frozenset({'set-cookie', '
     'date', 'vary', 'cache-control', 'strict-transport-security', 'cf-cache-status', 'cf-ray',
     'openai-version', 'openai-processing-ms', 'x-content-type-options', 'alt-svc',
     'x-envoy-upstream-service-time', 'access-control-expose-headers'})
+RESPONSE_REASONS = frozenset({'DUPLICATE_SEMANTIC_HEADER','CONTENT_ENCODING_NOT_IDENTITY',
+    'STREAM_CONTENT_TYPE_NOT_SSE','NONSTREAM_CONTENT_TYPE_NOT_JSON','JSON_ROOT_NOT_OBJECT',
+    'JSON_ERROR_PRESENT','JSON_STATUS_FAILED','JSON_STATUS_INCOMPLETE','JSON_STATUS_CANCELLED',
+    'SSE_UTF8_INVALID','SSE_DUPLICATE_EVENT_FIELD','SSE_UNSUPPORTED_FIELD','SSE_DATA_AFTER_DONE',
+    'SSE_ROOT_NOT_OBJECT','SSE_ERROR_PRESENT','SSE_TYPE_ERROR','SSE_TYPE_RESPONSE_FAILED',
+    'SSE_TYPE_RESPONSE_INCOMPLETE','SSE_EVENT_ERROR','SSE_EVENT_RESPONSE_FAILED',
+    'SSE_EVENT_RESPONSE_INCOMPLETE','SSE_COMPLETED_STATUS_NOT_COMPLETED',
+    'SSE_CHOICES_NOT_ARRAY','SSE_CHOICE_NOT_OBJECT'})
+RESPONSE_REASON_DETAILS = frozenset({'MAX_OUTPUT_TOKENS','CONTENT_FILTER','OTHER'})
 _diagnostic_context = threading.local()
 
 
@@ -130,14 +139,56 @@ def request_metadata(value, config):
 class BrokerError(Exception):
     """Public fixed error codes only; never provider bodies or credentials."""
 
-    def __init__(self, code, status=400):
+    def __init__(self, code, status=400, *, reason=None, reason_detail=None):
         super().__init__(code)
         self.status = status
+        self.reason = reason if type(reason) is str and reason in RESPONSE_REASONS else None
+        self.reason_detail = reason_detail if self.reason is not None and type(reason_detail) is str \
+            and reason_detail in RESPONSE_REASON_DETAILS else None
 
 
-def need(condition, code='HERMES_MODEL_REQUEST_INVALID', status=400):
+def need(condition, code='HERMES_MODEL_REQUEST_INVALID', status=400, *, reason=None, reason_detail=None):
     if not condition:
-        raise BrokerError(code, status)
+        raise BrokerError(code, status, reason=reason, reason_detail=reason_detail)
+
+
+def _terminal_reason_detail(value):
+    """Only fixed terminal metadata can accompany a refusal, never model text."""
+    if type(value) is not dict:
+        return None
+    response = value.get('response') if type(value.get('response')) is dict else value
+    details = response.get('incomplete_details')
+    if type(details) is not dict or type(details.get('reason')) is not str:
+        return None
+    return {'max_output_tokens': 'MAX_OUTPUT_TOKENS', 'content_filter': 'CONTENT_FILTER'}.get(
+        details['reason'], 'OTHER')
+
+
+def _json_refusal_reason(value):
+    if type(value) is not dict:
+        return 'JSON_ROOT_NOT_OBJECT'
+    if value.get('error'):
+        return 'JSON_ERROR_PRESENT'
+    status = value.get('status')
+    if type(status) is str:
+        return {'failed': 'JSON_STATUS_FAILED', 'incomplete': 'JSON_STATUS_INCOMPLETE',
+            'cancelled': 'JSON_STATUS_CANCELLED'}.get(status)
+    return None
+
+
+def _sse_refusal_reason(value, event_name):
+    if type(value) is not dict:
+        return 'SSE_ROOT_NOT_OBJECT'
+    if value.get('error'):
+        return 'SSE_ERROR_PRESENT'
+    kind = value.get('type')
+    if kind in ('error', 'response.failed', 'response.incomplete'):
+        return {'error': 'SSE_TYPE_ERROR', 'response.failed': 'SSE_TYPE_RESPONSE_FAILED',
+            'response.incomplete': 'SSE_TYPE_RESPONSE_INCOMPLETE'}[kind]
+    if event_name in ('error', 'response.failed', 'response.incomplete'):
+        return {'error': 'SSE_EVENT_ERROR', 'response.failed': 'SSE_EVENT_RESPONSE_FAILED',
+            'response.incomplete': 'SSE_EVENT_RESPONSE_INCOMPLETE'}[event_name]
+    return None
 
 
 def _pairs(items):
@@ -326,10 +377,10 @@ class HttpsModelUpstream:
                 # Repeated nonsemantic headers such as Set-Cookie are valid
                 # HTTP. They are neither consumed nor forwarded by this broker.
                 if key in SEMANTIC_RESPONSE_HEADERS:
-                    need(key not in lower, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                    need(key not in lower, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='DUPLICATE_SEMANTIC_HEADER')
                     lower[key] = value
             need(lower.get('content-encoding', 'identity').lower() == 'identity',
-                 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='CONTENT_ENCODING_NOT_IDENTITY')
             chunks = []
             size = 0
             while True:
@@ -372,14 +423,15 @@ def validate_response(response, *, stream, path, config):
          'HERMES_MODEL_REQUEST_ID_MISSING', 502)
     content_type = headers.get('content-type', '').split(';', 1)[0].lower()
     if stream:
-        need(content_type == 'text/event-stream', 'HERMES_MODEL_RESPONSE_INVALID', 502)
+        need(content_type == 'text/event-stream', 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='STREAM_CONTENT_TYPE_NOT_SSE')
         _validate_sse(response.body, config.model, path)
     else:
-        need(content_type == 'application/json', 'HERMES_MODEL_RESPONSE_INVALID', 502)
+        need(content_type == 'application/json', 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='NONSTREAM_CONTENT_TYPE_NOT_JSON')
         value = decode_json(response.body)
         need(type(value) is dict and not value.get('error')
              and value.get('status') not in ('failed', 'incomplete', 'cancelled'),
-             'HERMES_MODEL_RESPONSE_INVALID', 502)
+             'HERMES_MODEL_RESPONSE_INVALID', 502, reason=_json_refusal_reason(value),
+             reason_detail=_terminal_reason_detail(value))
         need(_verify_tree(value, config.model) > 0, 'HERMES_MODEL_IDENTITY_MISSING', 502)
     return {'content-type': content_type, 'x-request-id': request_id,
         'x-hermes-verified-model': config.model}
@@ -389,7 +441,7 @@ def _validate_sse(body, model, path):
     try:
         text = body.decode('utf-8').replace('\r\n', '\n')
     except UnicodeError:
-        raise BrokerError('HERMES_MODEL_RESPONSE_INVALID', 502) from None
+        raise BrokerError('HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_UTF8_INVALID') from None
     need('\r' not in text and text.endswith('\n\n'), 'HERMES_MODEL_STREAM_INCOMPLETE', 502)
     events = text.split('\n\n')
     need(len(events) <= MAX_EVENTS + 1, 'HERMES_MODEL_RESPONSE_LIMIT', 502)
@@ -404,13 +456,13 @@ def _validate_sse(body, model, path):
             if line.startswith('data:'):
                 data.append(line[5:].removeprefix(' '))
             elif line.startswith('event:'):
-                need(event_name is None, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                need(event_name is None, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_DUPLICATE_EVENT_FIELD')
                 event_name = line[6:].strip()
             else:
-                need(False, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                need(False, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_UNSUPPORTED_FIELD')
         if not data:
             continue
-        need(not done, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+        need(not done, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_DATA_AFTER_DONE')
         encoded = '\n'.join(data)
         if encoded == '[DONE]':
             done = True
@@ -419,16 +471,18 @@ def _validate_sse(body, model, path):
         need(type(value) is dict and not value.get('error')
              and value.get('type') not in ('error', 'response.failed', 'response.incomplete')
              and event_name not in ('error', 'response.failed', 'response.incomplete'),
-             'HERMES_MODEL_RESPONSE_INVALID', 502)
+             'HERMES_MODEL_RESPONSE_INVALID', 502,reason=_sse_refusal_reason(value,event_name),
+             reason_detail=_terminal_reason_detail(value))
         models += _verify_tree(value, model)
         if value.get('type') == 'response.completed' or event_name == 'response.completed':
             need(value.get('response', {}).get('status') == 'completed',
-                 'HERMES_MODEL_RESPONSE_INVALID', 502)
+                 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_COMPLETED_STATUS_NOT_COMPLETED',
+                 reason_detail=_terminal_reason_detail(value))
             finished = True
         choices = value.get('choices', [])
-        need(type(choices) is list, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+        need(type(choices) is list, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_CHOICES_NOT_ARRAY')
         for choice in choices:
-            need(type(choice) is dict, 'HERMES_MODEL_RESPONSE_INVALID', 502)
+            need(type(choice) is dict, 'HERMES_MODEL_RESPONSE_INVALID', 502,reason='SSE_CHOICE_NOT_OBJECT')
             if choice.get('finish_reason') is not None:
                 finished = True
     need(models > 0, 'HERMES_MODEL_IDENTITY_MISSING', 502)
@@ -550,8 +604,10 @@ class _Handler(socketserver.StreamRequestHandler):
             event('RESPONSE_VERIFIED', provider_request_id=headers['x-request-id'])
             self._send(200, headers, response.body)
         except BrokerError as error:
+            diagnostic = {key: value for key, value in (('reason', error.reason),
+                ('reason_detail', error.reason_detail)) if value is not None}
             event('REFUSED', code=str(error) if str(error) in REQUEST_CODES else 'HERMES_MODEL_ERROR_UNCLASSIFIED',
-                status=error.status)
+                status=error.status,**diagnostic)
             self._error(error)
         except (TimeoutError, socket.timeout) as error:
             event('TRANSPORT_ERROR', **_safe_error(error))
