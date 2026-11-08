@@ -249,6 +249,32 @@ class BrokerValidationTests(unittest.TestCase):
                 ('HERMES_MODEL_RESPONSE_INVALID', 502, reason))
             self.assertNotIn('PRIVATE_', str(caught.exception.__dict__))
 
+    def test_upstream_error_projection_keeps_only_known_code_type_and_param(self):
+        cases = (({'code': 'unsupported_value', 'type': 'invalid_request_error',
+                'param': 'reasoning.effort', 'message': 'PRIVATE_PROVIDER_TEXT'},
+                ('unsupported_value', 'invalid_request_error', 'reasoning.effort')),
+            ({'code': 'insufficient_quota', 'type': 'insufficient_quota', 'param': None},
+                ('insufficient_quota', 'insufficient_quota', None)),
+            ({'code': 'rate_limit_exceeded', 'type': 'rate_limit_error', 'param': None},
+                ('rate_limit_exceeded', 'rate_limit_error', None)),
+            ({'code': 'PRIVATE_CODE', 'type': ['PRIVATE_TYPE'], 'param': {'PRIVATE': 'PARAM'}},
+                ('OTHER', 'OTHER', 'OTHER')),
+            ('PRIVATE_PROVIDER_TEXT', ('OTHER', 'OTHER', 'OTHER')),
+            ({'message': 'PRIVATE_PROVIDER_TEXT'}, (None, None, None)))
+        for error, expected in cases:
+            for nested in (False, True):
+                value = {'type': 'response.failed', 'response': {'error': error}} if nested else {'error': error}
+                raw = b'data: ' + json.dumps(value).encode() + b'\n\n'
+                with self.subTest(error=expected, nested=nested), self.assertRaises(b.BrokerError) as caught:
+                    b.validate_response(b.UpstreamResponse(200, sse().headers, raw), stream=True,
+                        path='/v1/responses', config=config())
+                refusal = caught.exception
+                self.assertEqual((str(refusal), refusal.status), ('HERMES_MODEL_RESPONSE_INVALID', 502))
+                self.assertEqual(refusal.upstream_error, dict(zip(
+                    ('upstream_error_code', 'upstream_error_type', 'upstream_error_param'), expected)))
+                self.assertNotIn('PRIVATE_', json.dumps(refusal.__dict__))
+        self.assertEqual(b.BrokerError('HERMES_MODEL_TIMEOUT', 504).upstream_error, {})
+
     def test_refusal_handler_logs_fixed_predicate_without_changing_error_reply_or_dispatch(self):
         upstream=response(status='incomplete',incomplete_details={'reason':'max_output_tokens','private':'PRIVATE_PROVIDER_TEXT'})
         body=request();calls=[];events=[]
@@ -272,6 +298,19 @@ class BrokerValidationTests(unittest.TestCase):
         server._diagnostics=Mock(side_effect=OSError('PRIVATE_JOURNAL_ERROR'))
         self.assertEqual(run(),raw)
         self.assertEqual(len(calls),2)
+        # An upstream error event remains the same local refusal; only the
+        # journal gets a finite code/type/parameter projection, never a message.
+        server._diagnostics = events.append
+        upstream = response(error={'code': 'context_length_exceeded', 'type': 'invalid_request_error',
+            'param': 'input', 'message': 'PRIVATE_PROVIDER_TEXT'})
+        error_raw = run()
+        self.assertEqual(error_raw, raw)
+        self.assertEqual({key: events[-1][key] for key in
+            ('upstream_error_code', 'upstream_error_type', 'upstream_error_param')},
+            {'upstream_error_code': 'context_length_exceeded', 'upstream_error_type': 'invalid_request_error',
+             'upstream_error_param': 'input'})
+        self.assertNotIn('PRIVATE_', json.dumps(events))
+        self.assertEqual(len(calls), 3)
 
 
 class PeerCredentialTests(unittest.TestCase):

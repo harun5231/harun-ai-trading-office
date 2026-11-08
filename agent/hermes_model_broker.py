@@ -86,6 +86,20 @@ RESPONSE_REASONS = frozenset({'DUPLICATE_SEMANTIC_HEADER','CONTENT_ENCODING_NOT_
     'SSE_EVENT_RESPONSE_INCOMPLETE','SSE_COMPLETED_STATUS_NOT_COMPLETED',
     'SSE_CHOICES_NOT_ARRAY','SSE_CHOICE_NOT_OBJECT'})
 RESPONSE_REASON_DETAILS = frozenset({'MAX_OUTPUT_TOKENS','CONTENT_FILTER','OTHER'})
+# Only these provider vocabulary values may leave the validation boundary.
+# Arbitrary error messages, parameter strings, and unrecognized values never do.
+UPSTREAM_ERROR_CODES = frozenset({'invalid_api_key', 'insufficient_quota', 'rate_limit_exceeded',
+    'billing_hard_limit_reached', 'context_length_exceeded', 'model_not_found',
+    'unsupported_parameter', 'unsupported_value', 'invalid_parameter', 'invalid_value',
+    'invalid_type', 'missing_required_parameter', 'invalid_request_error', 'invalid_prompt',
+    'invalid_json_schema', 'content_policy_violation', 'server_error', 'internal_error',
+    'timeout', 'request_timeout', 'permission_denied', 'account_deactivated'})
+UPSTREAM_ERROR_TYPES = frozenset({'invalid_request_error', 'authentication_error',
+    'permission_error', 'rate_limit_error', 'insufficient_quota', 'server_error',
+    'api_error', 'not_found_error', 'conflict_error', 'unprocessable_entity_error'})
+UPSTREAM_ERROR_PARAMS = CHAT_FIELDS | RESPONSES_FIELDS | frozenset({'reasoning.effort',
+    'text.format', 'text.format.type', 'text.format.name', 'text.format.schema',
+    'response_format.type', 'response_format.json_schema'})
 _diagnostic_context = threading.local()
 
 
@@ -139,17 +153,41 @@ def request_metadata(value, config):
 class BrokerError(Exception):
     """Public fixed error codes only; never provider bodies or credentials."""
 
-    def __init__(self, code, status=400, *, reason=None, reason_detail=None):
+    def __init__(self, code, status=400, *, reason=None, reason_detail=None, upstream_error=None):
         super().__init__(code)
         self.status = status
         self.reason = reason if type(reason) is str and reason in RESPONSE_REASONS else None
         self.reason_detail = reason_detail if self.reason is not None and type(reason_detail) is str \
             and reason_detail in RESPONSE_REASON_DETAILS else None
+        self.upstream_error = _safe_upstream_error(upstream_error)
 
 
-def need(condition, code='HERMES_MODEL_REQUEST_INVALID', status=400, *, reason=None, reason_detail=None):
+def need(condition, code='HERMES_MODEL_REQUEST_INVALID', status=400, *, reason=None, reason_detail=None,
+        upstream_error=None):
     if not condition:
-        raise BrokerError(code, status, reason=reason, reason_detail=reason_detail)
+        raise BrokerError(code, status, reason=reason, reason_detail=reason_detail, upstream_error=upstream_error)
+
+
+def _safe_upstream_error(error):
+    if error is None:
+        return {}
+    fields = (('code', UPSTREAM_ERROR_CODES), ('type', UPSTREAM_ERROR_TYPES),
+        ('param', UPSTREAM_ERROR_PARAMS))
+    output = {}
+    for field, allowed in fields:
+        value = error.get(field) if type(error) is dict else 'OTHER'
+        output['upstream_error_' + field] = value if value is None or type(value) is str \
+            and value in allowed else 'OTHER'
+    return output
+
+
+def _response_error(value):
+    if type(value) is not dict:
+        return None
+    if value.get('error'):
+        return value['error']
+    response = value.get('response')
+    return response.get('error') if type(response) is dict else None
 
 
 def _terminal_reason_detail(value):
@@ -431,7 +469,7 @@ def validate_response(response, *, stream, path, config):
         need(type(value) is dict and not value.get('error')
              and value.get('status') not in ('failed', 'incomplete', 'cancelled'),
              'HERMES_MODEL_RESPONSE_INVALID', 502, reason=_json_refusal_reason(value),
-             reason_detail=_terminal_reason_detail(value))
+             reason_detail=_terminal_reason_detail(value), upstream_error=_response_error(value))
         need(_verify_tree(value, config.model) > 0, 'HERMES_MODEL_IDENTITY_MISSING', 502)
     return {'content-type': content_type, 'x-request-id': request_id,
         'x-hermes-verified-model': config.model}
@@ -472,7 +510,7 @@ def _validate_sse(body, model, path):
              and value.get('type') not in ('error', 'response.failed', 'response.incomplete')
              and event_name not in ('error', 'response.failed', 'response.incomplete'),
              'HERMES_MODEL_RESPONSE_INVALID', 502,reason=_sse_refusal_reason(value,event_name),
-             reason_detail=_terminal_reason_detail(value))
+             reason_detail=_terminal_reason_detail(value), upstream_error=_response_error(value))
         models += _verify_tree(value, model)
         if value.get('type') == 'response.completed' or event_name == 'response.completed':
             need(value.get('response', {}).get('status') == 'completed',
@@ -606,6 +644,7 @@ class _Handler(socketserver.StreamRequestHandler):
         except BrokerError as error:
             diagnostic = {key: value for key, value in (('reason', error.reason),
                 ('reason_detail', error.reason_detail)) if value is not None}
+            diagnostic.update(error.upstream_error)
             event('REFUSED', code=str(error) if str(error) in REQUEST_CODES else 'HERMES_MODEL_ERROR_UNCLASSIFIED',
                 status=error.status,**diagnostic)
             self._error(error)
