@@ -2,15 +2,19 @@
 import hashlib
 import hmac
 import json
+import logging
 import os
 import re
 import stat
 import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
+from http.client import HTTPSConnection
+from threading import RLock
 from urllib.error import HTTPError
 from urllib.parse import urlencode, urlsplit, parse_qsl
-from urllib.request import Request, build_opener, ProxyHandler
+from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
 from .http_client import NoRedirect, unique
 from .research_guard import ResearchReadPaused,check_research_read
 
@@ -27,6 +31,22 @@ QUERY_ORDER=('symbol','startTime','endTime','limit','page','fromId')
 CODES=frozenset(('BINANCE_NOT_CONFIGURED','BINANCE_AUTH_FAILED','BINANCE_IP_RESTRICTED',
     'BINANCE_PERMISSION_DENIED','BINANCE_CLOCK_ERROR','BINANCE_ACCOUNT_UNAVAILABLE','BINANCE_ENDPOINT_DENIED'))
 class BinanceCheckError(Exception):pass
+
+_time_sample=ContextVar('binance_time_sample',default=None)
+
+class _ClockSampleConnection(HTTPSConnection):
+    def request(self,*args,**kwargs):
+        sample=_time_sample.get()
+        if sample is not None:
+            # DNS/TCP/TLS precede the unsigned time request. They cannot age a
+            # serverTime value that Binance has not produced yet.
+            if self.sock is None:self.connect()
+            sample['wire_started']=sample['clock']()
+        return super().request(*args,**kwargs)
+
+class _ClockSampleHTTPSHandler(HTTPSHandler):
+    def https_open(self,request):
+        return self.do_open(_ClockSampleConnection,request,context=self._context)
 
 def _query_options(path,symbol,options,timestamp):
     """One endpoint-specific allowlist, also enforced by the HTTP transport."""
@@ -112,7 +132,9 @@ def read_only_get(url,headers):
     reason='BINANCE_ACCOUNT_UNAVAILABLE'
     try:
         req=Request(url,headers=headers,method='GET')
-        opener=build_opener(ProxyHandler({}),NoRedirect())
+        handlers=[ProxyHandler({}),NoRedirect()]
+        if parts.path==TIME_PATH:handlers.append(_ClockSampleHTTPSHandler())
+        opener=build_opener(*handlers)
         try:response=opener.open(req,timeout=15)
         except HTTPError as error:response=error
         with response:
@@ -123,6 +145,8 @@ def read_only_get(url,headers):
             except (ValueError,TypeError):data=None
             if status!=200 or (isinstance(data,dict) and type(data.get('code')) is int and data['code']<0):
                 reason=failure(status,data)
+                code=data.get('code') if isinstance(data,dict) and type(data.get('code')) is int else None
+                logging.getLogger(__name__).warning('BINANCE_READ_FAILED endpoint=%s http_status=%s binance_code=%s reason=%s',parts.path,status,code,reason)
             elif isinstance(data,(dict,list)):return data
     except ResearchReadPaused:raise
     except Exception:pass
@@ -134,39 +158,63 @@ class BinanceReadOnly:
         self._key=read_secret('BINANCE_API_KEY_FILE')
         self._secret=read_secret('BINANCE_API_SECRET_FILE')
         self._transport=transport;self._clock=clock;self._server=None;self._synced=None
-    def _get(self,url,headers):
+        self._time_lock=RLock();self._clock_diagnostics=None
+    def _get(self,url,headers,*,prepare=None):
         check_research_read()
-        try:return self._transport(url,headers)
+        try:
+            if prepare is not None:url,headers=prepare()
+            return self._transport(url,headers)
         except ResearchReadPaused:raise
         except BinanceCheckError as error:
             reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
         except Exception:reason='BINANCE_ACCOUNT_UNAVAILABLE'
         raise BinanceCheckError(reason) from None
     def sync_time(self):
-        start=self._clock();data=self._get(BASE+TIME_PATH,{})
-        end=self._clock()
-        if not isinstance(data,dict) or type(data.get('serverTime')) is not int or not 0<data['serverTime']<10**16 or not 0<=end-start<=2:
-            raise BinanceCheckError('BINANCE_CLOCK_ERROR')
-        # Advance trusted server time using monotonic elapsed time, not VPS wall clock.
-        # Anchoring at receipt is conservative (at most measured RTT behind server).
-        self._server=data['serverTime'];self._synced=end
+        with self._time_lock:
+            start=self._clock();sample={'clock':self._clock,'wire_started':None}
+            token=_time_sample.set(sample)
+            try:data=self._get(BASE+TIME_PATH,{})
+            finally:
+                end=self._clock();_time_sample.reset(token)
+            wire=sample['wire_started']
+            if wire is None:wire=start  # Custom transports retain the strict total-RTT contract.
+            elapsed=end-wire
+            self._clock_diagnostics=dict(source='SERVER_MONOTONIC_ANCHOR',total_s=end-start,
+                wire_s=elapsed,setup_s=wire-start,recv_window_ms=5000)
+            reason=('INVALID_TIME_RESPONSE' if not isinstance(data,dict) or type(data.get('serverTime')) is not int
+                    or not 0<data['serverTime']<10**16 else 'SAMPLE_ROUNDTRIP')
+            if not start<=wire<=end or not 0<=elapsed<=2 or reason=='INVALID_TIME_RESPONSE':
+                logging.getLogger(__name__).warning('BINANCE_CLOCK_SYNC_REJECTED endpoint=%s reason=%s total_s=%.6f wire_s=%.6f setup_s=%.6f',TIME_PATH,reason,end-start,elapsed,wire-start)
+                raise BinanceCheckError('BINANCE_CLOCK_ERROR')
+            # Receipt anchoring is conservative: no midpoint correction can put
+            # a timestamp ahead of Binance after asymmetric network latency.
+            self._server=data['serverTime'];self._synced=end
+            logging.getLogger(__name__).debug('BINANCE_CLOCK_SYNC_VALID endpoint=%s total_s=%.6f wire_s=%.6f setup_s=%.6f',TIME_PATH,end-start,elapsed,wire-start)
     def server_time_ms(self):
         """Trusted server time advanced only with monotonic elapsed time."""
-        elapsed=self._clock()-self._synced if self._synced is not None else None
-        if elapsed is None or not 0<=elapsed<=30:raise BinanceCheckError('BINANCE_CLOCK_ERROR')
-        return self._server+int(elapsed*1000)
+        with self._time_lock:
+            elapsed=self._clock()-self._synced if self._synced is not None else None
+            if elapsed is None or not 0<=elapsed<=30:
+                logging.getLogger(__name__).warning('BINANCE_CLOCK_CACHE_REJECTED source=SERVER_MONOTONIC_ANCHOR age_s=%s',elapsed)
+                raise BinanceCheckError('BINANCE_CLOCK_ERROR')
+            return self._server+int(elapsed*1000)
     def signed_get(self,path,symbol=None,*,start_time=None,end_time=None,limit=None,page=None,from_id=None):
         # Validate shape before touching the clock, transport, or credentials.
         options={k:v for k,v in (('startTime',start_time),('endTime',end_time),('limit',limit),('page',page),('fromId',from_id)) if v is not None}
         try:_query_options(path,symbol,options,10**16-1)
         except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
-        timestamp=self.server_time_ms()
-        try:scoped=_query_options(path,symbol,options,timestamp)
-        except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
-        params=[('recvWindow',5000),('timestamp',timestamp)]+scoped
-        query=urlencode(params)
-        return self._get(BASE+path+'?'+query+'&signature='+signature(self._secret,query),
-            {'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'})
+        with self._time_lock:
+            # Wait for a concurrent synchronization/request and run the local
+            # admission guard before creating this request's timestamp/HMAC.
+            def prepare():
+                timestamp=self.server_time_ms()
+                try:scoped=_query_options(path,symbol,options,timestamp)
+                except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
+                params=[('recvWindow',5000),('timestamp',timestamp)]+scoped
+                query=urlencode(params)
+                return (BASE+path+'?'+query+'&signature='+signature(self._secret,query),
+                    {'X-MBX-APIKEY':self._key,'Accept':'application/json','User-Agent':'harun-office/1.0'})
+            return self._get(None,None,prepare=prepare)
     def commission_rate(self,symbol):
         """Fresh account/symbol commission evidence, never an assumed fee tier."""
         try:_query_options(COMMISSION_PATH,symbol,{},10**16-1)

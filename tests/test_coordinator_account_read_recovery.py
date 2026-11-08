@@ -105,6 +105,8 @@ class CoordinatorAccountReadRecoveryTests(unittest.TestCase):
 
     def test_actual_readonly_client_recovers_expired_check_clock_without_relaxing_window(self):
         client=object.__new__(BinanceReadOnly)
+        from threading import RLock
+        client._time_lock=RLock()
         client._key='fixture';client._secret='fixture';client._server=None;client._synced=None
         elapsed=[0.0];requests=[];completed=set()
         client._clock=lambda:elapsed[0]
