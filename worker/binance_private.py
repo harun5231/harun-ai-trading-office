@@ -4,7 +4,10 @@ import hmac
 import json
 import logging
 import os
+import errno
 import re
+import socket
+import ssl
 import stat
 import time
 from contextvars import ContextVar
@@ -12,7 +15,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from http.client import HTTPSConnection
 from threading import RLock
-from urllib.error import HTTPError
+from urllib.error import HTTPError,URLError
 from urllib.parse import urlencode, urlsplit, parse_qsl
 from urllib.request import Request, build_opener, ProxyHandler, HTTPSHandler
 from .http_client import NoRedirect, unique
@@ -34,22 +37,90 @@ class BinanceCheckError(Exception):pass
 
 _time_sample=ContextVar('binance_time_sample',default=None)
 _signed_request=ContextVar('binance_signed_request',default=None)
+_read_diagnostic=ContextVar('binance_read_diagnostic',default=None)
+_TRANSPORT_PHASES=frozenset(('VALIDATE','CONNECT','SIGN','WRITE','WRITE_ENTERED','READ',
+    'HEADERS','BODY','DECODE','COMPLETE','DEADLINE','UNKNOWN'))
+_DELIVERIES=frozenset(('NOT_SENT','DELIVERY_UNCONFIRMED','RESPONSE_RECEIVED'))
+_ERROR_CLASSES=frozenset(('gaierror','herror','TimeoutError','ConnectionError','ConnectionRefusedError',
+    'ConnectionResetError','ConnectionAbortedError','BrokenPipeError','PermissionError','OSError',
+    'URLError','HTTPError','SSLError','SSLCertVerificationError','SSLEOFError','SSLSyscallError',
+    'SSLZeroReturnError','SSLWantReadError','SSLWantWriteError','RemoteDisconnected','BadStatusLine',
+    'IncompleteRead','LineTooLong','HTTPException','ValueError','RuntimeError','TypeError','JSONDecodeError',
+    'BinanceCheckError','_ExchangeError','Review'))
+_ERROR_NUMBERS={v:k for k,v in vars(errno).items()if k.startswith('E')and type(v)is int}
+_ERROR_NUMBERS.update({v:k for k,v in vars(socket).items()if k.startswith('EAI_')and type(v)is int})
+
+def safe_transport_error(error):
+    """Finite diagnostics only; never stringify a provider/socket exception."""
+    chain=[];seen=set()
+    while isinstance(error,BaseException)and id(error)not in seen and len(chain)<4:
+        seen.add(id(error));chain.append(error)
+        error=error.reason if isinstance(error,URLError)and isinstance(error.reason,BaseException)else None
+    if not chain:return dict(exception_class=None,exception_chain=[],errno=None,errno_name=None)
+    root=chain[-1];number=getattr(root,'errno',None)
+    value=dict(exception_class=type(root).__name__ if type(root).__name__ in _ERROR_CLASSES else'Exception',
+        exception_chain=[type(e).__name__ if type(e).__name__ in _ERROR_CLASSES else'Exception'for e in chain])
+    if isinstance(root,ssl.SSLError):
+        value.update(errno=None,errno_name=None,
+            ssl_error_code=int(number)if isinstance(number,int)and not isinstance(number,bool)and 0<=number<=255 else None)
+        if isinstance(root,ssl.SSLCertVerificationError):
+            verify=getattr(root,'verify_code',None)
+            value['ssl_verify_code']=verify if type(verify)is int and 0<=verify<=1000000 else None
+    else:
+        value['errno']=number if type(number)is int and number in _ERROR_NUMBERS else None
+        value['errno_name']=_ERROR_NUMBERS.get(value['errno'])
+    return value
+
+def transport_error_metadata(error,phase,delivery):
+    return dict(safe_transport_error(error),
+        phase=phase if phase in _TRANSPORT_PHASES else'UNKNOWN',
+        delivery=delivery if delivery in _DELIVERIES else'DELIVERY_UNCONFIRMED')
+
+def dns_not_sent_retryable(value):
+    return (type(value)is dict and value.get('phase')=='CONNECT'and value.get('delivery')=='NOT_SENT'
+        and value.get('exception_class')=='gaierror'
+        and value.get('errno')in(socket.EAI_NONAME,socket.EAI_AGAIN))
+
+def _phase(value,delivery=None):
+    diagnostic=_read_diagnostic.get()
+    if diagnostic is not None:
+        diagnostic['phase']=value
+        if delivery is not None:diagnostic['delivery']=delivery
+
+def _read_budget():
+    diagnostic=_read_diagnostic.get()
+    if diagnostic is not None:
+        remaining=diagnostic['deadline']-time.monotonic()
+        if remaining<=0:raise BinanceCheckError('BINANCE_ACCOUNT_UNAVAILABLE')
+        return min(15,remaining)
+    return 15
+
+def _socket_budget(connection):
+    remaining=_read_budget();sock=connection.sock
+    if sock is not None and callable(getattr(sock,'settimeout',None)):
+        current=sock.gettimeout()
+        if type(current)in(int,float)and current>0:remaining=min(remaining,current)
+        sock.settimeout(remaining)
 
 class _ClockSampleConnection(HTTPSConnection):
     def request(self,method,url,body=None,headers=None,*,encode_chunked=False):
         sample=_time_sample.get()
         signed=_signed_request.get()
         path=urlsplit(url).path
-        if sample is not None and path==TIME_PATH:
+        if path==TIME_PATH:
             # DNS/TCP/TLS precede the unsigned time request. They cannot age a
             # serverTime value that Binance has not produced yet.
+            _phase('CONNECT')
             if self.sock is None:self.connect()
-            sample['wire_started']=sample['clock']()
+            _read_budget()
+            if sample is not None:sample['wire_started']=sample['clock']()
         elif signed is not None and path==signed['path']:
             if method!='GET' or body is not None:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED')
             # A signed query cannot wait through DNS/TCP/TLS with its timestamp
             # already fixed. Recreate only the selector at the wire boundary.
+            _phase('CONNECT')
             if self.sock is None:self.connect()
+            _phase('SIGN')
             check_research_read()
             fresh_url,fresh_headers=signed['prepare']()
             try:
@@ -61,7 +132,17 @@ class _ClockSampleConnection(HTTPSConnection):
             url=parts.path+'?'+parts.query
             signed['wire_timestamp_ms']=int(dict(parse_qsl(parts.query))['timestamp'])
             signed['wire_started']=signed['clock']()
+            _read_budget()
+        _socket_budget(self)
+        _phase('WRITE_ENTERED','DELIVERY_UNCONFIRMED')
         return super().request(method,url,body,headers or {},encode_chunked=encode_chunked)
+
+    def getresponse(self):
+        _socket_budget(self)
+        _phase('HEADERS')
+        value=super().getresponse()
+        _phase('HEADERS','RESPONSE_RECEIVED')
+        return value
 
 class _ClockSampleHTTPSHandler(HTTPSHandler):
     def https_open(self,request):
@@ -136,8 +217,27 @@ def failure(status,data):
     # 403 can be a WAF restriction, not necessarily the key permission.
     return 'BINANCE_ACCOUNT_UNAVAILABLE'
 
+def _diagnostic_copy(value):
+    if type(value)is not dict:return None
+    phase=value.get('phase');delivery=value.get('delivery');number=value.get('errno');name=value.get('exception_class')
+    result=dict(phase=phase if type(phase)is str and phase in _TRANSPORT_PHASES else'UNKNOWN',
+        delivery=delivery if type(delivery)is str and delivery in _DELIVERIES else'DELIVERY_UNCONFIRMED',
+        exception_class=name if name is None or type(name)is str and name in _ERROR_CLASSES|{'Exception'}else'Exception',
+        errno=number if type(number)is int and number in _ERROR_NUMBERS else None)
+    result['errno_name']=_ERROR_NUMBERS.get(result['errno'])
+    chain=value.get('exception_chain')
+    if isinstance(chain,list):result['exception_chain']=[name if type(name)is str and name in _ERROR_CLASSES else'Exception'for name in chain[:4]]
+    for key,low,high in(('attempts',1,2),('retry_count',0,1),('http_status',100,599),
+                         ('binance_code',-1000000,1000000),('ssl_error_code',0,255),('ssl_verify_code',0,1000000)):
+        number=value.get(key)
+        if type(number)is int and low<=number<=high:result[key]=number
+    elapsed=value.get('duration_s')
+    if type(elapsed)in(int,float)and 0<=elapsed<=1000000:result['duration_s']=elapsed
+    return result
+
+
 def read_only_get(url,headers):
-    """Transport validates origin/path/query itself; method and body are not arguments."""
+    """Fixed-origin GET. Only a proven pre-write DNS failure gets one retry."""
     try:
         parts=urlsplit(url)
         if parts.scheme!='https' or parts.netloc!='fapi.binance.com' or parts.fragment:raise ValueError()
@@ -148,33 +248,70 @@ def read_only_get(url,headers):
             if set(headers)!={'X-MBX-APIKEY','Accept','User-Agent'}:raise ValueError()
         else:raise ValueError()
     except Exception:raise BinanceCheckError('BINANCE_ENDPOINT_DENIED') from None
-    reason='BINANCE_ACCOUNT_UNAVAILABLE'
-    try:
-        req=Request(url,headers=headers,method='GET')
-        handlers=[ProxyHandler({}),NoRedirect()]
-        signed=_signed_request.get()
-        if parts.path==TIME_PATH or (signed is not None and parts.path==signed['path']):
-            handlers.append(_ClockSampleHTTPSHandler())
-        opener=build_opener(*handlers)
-        try:response=opener.open(req,timeout=15)
-        except HTTPError as error:response=error
-        with response:
-            status=response.code
-            raw=response.read(2_000_001)
-            if len(raw)>2_000_000:raise ValueError()
-            try:data=json.loads(raw,parse_float=str,object_pairs_hook=unique)
-            except (ValueError,TypeError):data=None
-            if status!=200 or (isinstance(data,dict) and type(data.get('code')) is int and data['code']<0):
-                reason=failure(status,data)
-                code=data.get('code') if isinstance(data,dict) and type(data.get('code')) is int else None
-                logging.getLogger(__name__).warning('BINANCE_READ_FAILED endpoint=%s http_status=%s binance_code=%s reason=%s',parts.path,status,code,reason)
-            elif isinstance(data,(dict,list)):return data
-    except ResearchReadPaused:raise
-    except BinanceCheckError as error:
-        reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
-    except Exception:pass
-    # Never chain a URL-bearing urllib exception, provider message or raw response.
-    raise BinanceCheckError(reason) from None
+    # This bounds retry/write admission and socket waits; libc DNS resolution
+    # retains its OS timeout and cannot be preempted by urllib's socket timeout.
+    endpoint=parts.path;expected_headers=dict(headers);deadline=time.monotonic()+30
+    for attempt in range(2):
+        diagnostic=dict(phase='CONNECT',delivery='NOT_SENT',deadline=deadline,attempts=attempt+1,retry_count=attempt)
+        token=_read_diagnostic.set(diagnostic);started=time.monotonic();reason='BINANCE_ACCOUNT_UNAVAILABLE';signed=_signed_request.get()
+        try:
+            check_research_read();_read_budget()
+            if attempt and signed is not None and endpoint==signed['path']:
+                _phase('SIGN')
+                url,headers=signed['prepare']()
+                fresh=urlsplit(url)
+                if (fresh.scheme!='https' or fresh.netloc!='fapi.binance.com' or fresh.fragment
+                        or fresh.path!=endpoint or headers!=expected_headers):
+                    raise BinanceCheckError('BINANCE_ENDPOINT_DENIED')
+                _validate_signed_query(fresh.path,fresh.query)
+            _phase('CONNECT')
+            req=Request(url,headers=headers,method='GET')
+            handlers=[ProxyHandler({}),NoRedirect()]
+            if endpoint==TIME_PATH or (signed is not None and endpoint==signed['path']):
+                handlers.append(_ClockSampleHTTPSHandler())
+            opener=build_opener(*handlers)
+            try:response=opener.open(req,timeout=_read_budget())
+            except HTTPError as error:response=error
+            _phase('HEADERS','RESPONSE_RECEIVED')
+            with response:
+                status=response.code;diagnostic['http_status']=status
+                _phase('BODY');raw=response.read(2_000_001)
+                if len(raw)>2_000_000:raise ValueError()
+                _phase('DECODE')
+                try:data=json.loads(raw,parse_float=str,object_pairs_hook=unique)
+                except (ValueError,TypeError):data=None
+                code=data.get('code')if isinstance(data,dict)and type(data.get('code'))is int else None
+                if code is not None:diagnostic['binance_code']=code
+                if status!=200 or code is not None and code<0:reason=failure(status,data)
+                elif isinstance(data,(dict,list)):
+                    _phase('COMPLETE')
+                    if attempt:
+                        logging.getLogger(__name__).warning('BINANCE_READ_RECOVERED endpoint=%s attempts=2 reason=DNS_BEFORE_WRITE',endpoint)
+                    return data
+        except ResearchReadPaused:raise
+        except BinanceCheckError as error:
+            reason=str(error)if str(error)in CODES else'BINANCE_ACCOUNT_UNAVAILABLE'
+            previous=_diagnostic_copy(getattr(error,'transport_diagnostics',None))
+            diagnostic.update(previous if previous is not None else
+                transport_error_metadata(error,diagnostic['phase'],diagnostic['delivery']))
+        except Exception as error:
+            diagnostic.update(transport_error_metadata(error,diagnostic['phase'],diagnostic['delivery']))
+        finally:
+            diagnostic['duration_s']=time.monotonic()-started
+            _read_diagnostic.reset(token)
+        metadata=_diagnostic_copy(diagnostic)
+        can_refresh=(endpoint==TIME_PATH or type(signed)is dict and signed.get('path')==endpoint
+            and callable(signed.get('prepare')))
+        if attempt==0 and can_refresh and dns_not_sent_retryable(metadata)and time.monotonic()<deadline:
+            logging.getLogger(__name__).warning('BINANCE_READ_DNS_RETRY endpoint=%s attempt=1 phase=%s errno=%s',
+                endpoint,metadata['phase'],metadata['errno'])
+            continue
+        logging.getLogger(__name__).warning('BINANCE_READ_FAILED endpoint=%s phase=%s delivery=%s exception_class=%s errno=%s attempts=%s http_status=%s binance_code=%s reason=%s duration_s=%.6f',
+            endpoint,metadata['phase'],metadata['delivery'],metadata.get('exception_class'),metadata['errno'],attempt+1,
+            metadata.get('http_status'),metadata.get('binance_code'),reason,diagnostic['duration_s'])
+        # No raw exception/URL chain; optional diagnostics contain finite fields only.
+        error=BinanceCheckError(reason);error.transport_diagnostics=metadata
+        raise error from None
 
 class BinanceReadOnly:
     def __init__(self,transport=read_only_get,clock=time.monotonic):
@@ -190,8 +327,12 @@ class BinanceReadOnly:
         except ResearchReadPaused:raise
         except BinanceCheckError as error:
             reason=str(error) if str(error) in CODES else 'BINANCE_ACCOUNT_UNAVAILABLE'
-        except Exception:reason='BINANCE_ACCOUNT_UNAVAILABLE'
-        raise BinanceCheckError(reason) from None
+            metadata=_diagnostic_copy(getattr(error,'transport_diagnostics',None))
+        except Exception:
+            reason='BINANCE_ACCOUNT_UNAVAILABLE';metadata=None
+        error=BinanceCheckError(reason)
+        if metadata is not None:error.transport_diagnostics=metadata
+        raise error from None
     def sync_time(self):
         with self._time_lock:
             start=self._clock();sample={'clock':self._clock,'wire_started':None}

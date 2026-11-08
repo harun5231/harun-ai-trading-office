@@ -1,11 +1,15 @@
 import hmac
 import hashlib
 import requests
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from decimal import Decimal
 from .core import D, Review, number, validated_risk_target
 
 NOT_CONNECTED = 'BINANCE_ORDER_GATEWAY_NOT_CONNECTED'
+
+# Each transport invocation owns its server-time anchor, including parallel actors.
+_wire_clock = ContextVar('native_binance_wire_clock', default=None)
 
 class GatewayUnavailable(Review):
     pass
@@ -202,6 +206,91 @@ class OrderGateway(_MissingOrderImplementation):
         import json
         from urllib.request import Request, build_opener, ProxyHandler, HTTPRedirectHandler
         from urllib.error import HTTPError
+        from urllib.request import HTTPSHandler
+        from http.client import HTTPSConnection
+        from urllib.parse import parse_qsl, urlencode, urlsplit
+        import time
+        from .binance_private import transport_error_metadata
+        import logging
+        gateway, sample = self, _wire_clock.get()
+        started = time.monotonic()
+        transport = {'phase': 'CONNECT', 'delivery': 'NOT_SENT', 'http_status': None}
+        if isinstance(sample, dict):
+            sample['transport'] = transport
+        def failure(original, exposed):
+            try:
+                detail = transport_error_metadata(original, phase=transport['phase'], delivery=transport['delivery'])
+                endpoint = urlsplit(path).path
+                if not __import__('re').fullmatch(r'/fapi/v[1-3]/[A-Za-z]{1,40}', endpoint):
+                    endpoint = 'UNSUPPORTED'
+                detail.update(method=method if method in ('GET', 'POST', 'DELETE') else 'UNSUPPORTED',
+                    endpoint=endpoint, http_status=transport['http_status'],
+                    binance_code=(original.code if isinstance(original, gateway._ExchangeError)
+                                  and type(original.code) is int else None),
+                    duration_s=max(0, time.monotonic()-started))
+                exposed.transport_diagnostics = detail
+                logging.getLogger(__name__).warning(
+                    'BINANCE_NATIVE_REQUEST_FAILED method=%s endpoint=%s phase=%s delivery=%s '
+                    'exception_class=%s errno=%s errno_name=%s http_status=%s binance_code=%s duration_s=%.6f',
+                    detail['method'], detail['endpoint'], detail['phase'], detail['delivery'],
+                    detail['exception_class'], detail.get('errno'), detail.get('errno_name'),
+                    detail['http_status'], detail['binance_code'], detail['duration_s'])
+            except Exception:
+                pass  # Observability cannot change gateway outcome or authorize a retry.
+        class ClockConnection(HTTPSConnection):
+            def request(connection, verb, selector, body=None, headers=None, *, encode_chunked=False):
+                parts = urlsplit(selector)
+                if (not isinstance(sample, dict) or verb != method or parts.path != path
+                        or parts.scheme or parts.netloc or parts.fragment
+                        or connection.host != 'fapi.binance.com' or connection.port != 443
+                        or getattr(connection, '_tunnel_host', None)):
+                    raise Review('BINANCE_ORDER_ENDPOINT_DENIED')
+                if connection.sock is None:
+                    connection.connect()
+                gateway._time_left()
+                if signed:
+                    elapsed = time.monotonic()-sample['received']
+                    if not 0 <= elapsed <= 30:
+                        raise Review('BINANCE_ORDER_CLOCK_INVALID')
+                    original = body.decode('ascii') if verb == 'POST' else parts.query
+                    if original != query or original != sample['query']:
+                        raise Review('BINANCE_ORDER_PARAMETERS_INVALID')
+                    pairs = parse_qsl(original, keep_blank_values=True, strict_parsing=True)
+                    values = dict(pairs)
+                    if (len(values) != len(pairs) or len(pairs) < 3
+                            or pairs[-1][0] != 'signature' or values.get('recvWindow') != '5000'):
+                        raise Review('BINANCE_ORDER_PARAMETERS_INVALID')
+                    unsigned = urlencode(pairs[:-1])
+                    if not hmac.compare_digest(values['signature'], gateway._sign(unsigned)):
+                        raise Review('BINANCE_ORDER_PARAMETERS_INVALID')
+                    values.pop('signature')
+                    values['timestamp'] = str(sample['server_time']+int(elapsed*1000))
+                    sample['wire_timestamp_ms'] = int(values['timestamp'])
+                    sample['wire_sync_age_s'] = elapsed
+                    unsigned = urlencode(sorted(values.items()))
+                    fresh = unsigned+'&signature='+gateway._sign(unsigned)
+                    if verb in ('POST', 'DELETE') and not (gateway_mutations_allowed()
+                            or gateway_protection_allowed(verb, path, fresh)):
+                        raise Review('BINANCE_ORDER_ROBOT_OFF')
+                    if verb == 'POST':
+                        body = fresh.encode('ascii')
+                        headers = dict(headers or {})
+                        for key in list(headers):
+                            if key.lower() == 'content-length':
+                                headers[key] = str(len(body))
+                    else:
+                        selector = path+'?'+fresh
+                else:
+                    sample['wire_started'] = time.monotonic()
+                # Starting a socket write makes delivery uncertain; completing
+                # it still does not prove that Binance accepted the request.
+                transport.update(phase='WRITE', delivery='DELIVERY_UNCONFIRMED')
+                result = super().request(verb, selector, body, headers or {}, encode_chunked=encode_chunked)
+                transport.update(phase='READ', request_written=True)
+                return result
+        class ClockHTTPSHandler(HTTPSHandler):
+            def https_open(handler, request):
+                return handler.do_open(ClockConnection, request, context=handler._context)
         class NoRedirect(HTTPRedirectHandler):
             def redirect_request(self, req, fp, code, msg, headers, newurl):
                 return None
@@ -218,6 +307,10 @@ class OrderGateway(_MissingOrderImplementation):
             from .research_guard import gateway_mutations_allowed, gateway_protection_allowed
             if not (gateway_mutations_allowed() or gateway_protection_allowed(method, path, query)):
                 raise Review('BINANCE_ORDER_ROBOT_OFF')
+        if signed and (not isinstance(sample, dict) or sample.get('kind') != 'SIGNED'
+                or sample.get('method') != method or sample.get('path') != path
+                or sample.get('query') != query):
+            raise Review('BINANCE_ORDER_CLOCK_INVALID')
         timeout = min(15, self._time_left())
         self._request_count = getattr(self, '_request_count', 0)+1
         url = self.base_url + path
@@ -232,13 +325,18 @@ class OrderGateway(_MissingOrderImplementation):
             url += '?' + query
         try:
             request = Request(url, data=body, headers=headers, method=method)
-            opener = build_opener(ProxyHandler({}), NoRedirect())
+            handlers = [ProxyHandler({}), NoRedirect()]
+            if sample is not None:
+                handlers.append(ClockHTTPSHandler())
+            opener = build_opener(*handlers)
             try:
                 if method in ('POST', 'DELETE') and not (gateway_mutations_allowed() or gateway_protection_allowed(method, path, query)):
                     raise Review('BINANCE_ORDER_ROBOT_OFF')
                 response = opener.open(request, timeout=timeout)
             except HTTPError as error:
                 response = error
+            transport.update(phase='READ', delivery='RESPONSE_RECEIVED',
+                             http_status=response.code if type(response.code) is int else None)
             with response:
                 chunks = []
                 total = 0
@@ -260,19 +358,36 @@ class OrderGateway(_MissingOrderImplementation):
                 if not isinstance(data, (dict, list)):
                     raise ValueError()
                 return data
-        except self._ExchangeError:
+        except self._ExchangeError as error:
+            failure(error, error)
             raise
         except Review as error:
-            if str(error) == 'BINANCE_ORDER_ROBOT_OFF':
+            if str(error) in ('BINANCE_ORDER_ROBOT_OFF', 'BINANCE_ORDER_CLOCK_INVALID',
+                              'BINANCE_ORDER_CALLBACK_DEADLINE'):
+                failure(error, error)
                 raise
-            raise Review('BINANCE_ORDER_OUTCOME_UNKNOWN') from None
-        except Exception:
-            raise Review('BINANCE_ORDER_OUTCOME_UNKNOWN') from None
+            exposed = Review('BINANCE_ORDER_OUTCOME_UNKNOWN')
+            failure(error, exposed)
+            raise exposed from None
+        except Exception as error:
+            exposed = Review('BINANCE_ORDER_OUTCOME_UNKNOWN')
+            failure(error, exposed)
+            raise exposed from None
 
     def _get_server_time(self) -> int:
-        data = self._wire('GET', '/fapi/v1/time')
+        import time
+        start = time.monotonic()
+        sample = {'kind': 'TIME', 'wire_started': None}
+        token = _wire_clock.set(sample)
+        try:
+            data = self._wire('GET', '/fapi/v1/time')
+            end = time.monotonic()
+        finally:
+            _wire_clock.reset(token)
         value = data.get('serverTime') if isinstance(data, dict) else None
-        if type(value) is not int or not 0 < value < 10**16:
+        wire = sample['wire_started'] if sample['wire_started'] is not None else start
+        if (type(value) is not int or not 0 < value < 10**16
+                or not start <= wire <= end or not 0 <= end-wire <= 2):
             raise Review('BINANCE_ORDER_CLOCK_INVALID')
         return value
 
@@ -298,9 +413,34 @@ class OrderGateway(_MissingOrderImplementation):
             from .research_guard import gateway_mutations_allowed, gateway_protection_allowed
             if not (gateway_mutations_allowed() or gateway_protection_allowed(method, path, params)):
                 raise Review('BINANCE_ORDER_ROBOT_OFF')
-        values = dict(params, timestamp=self._get_server_time(), recvWindow=5000)
-        query = urlencode(sorted(values.items()))
-        return self._wire(method, path, query + '&signature=' + self._sign(query), True)
+        import time
+        from .binance_private import dns_not_sent_retryable
+        frozen = dict(params)
+        # One shared retry slot: confirmed GET -1021 OR proven DNS before any
+        # write. Re-read time/sign the same frozen parameters within the native
+        # deadline, never allocate another slot for a different error cause.
+        for attempt in range(2 if method == 'GET' else 1):
+            self._time_left()
+            token = None
+            try:
+                server_time = self._get_server_time()
+                received = time.monotonic()
+                values = dict(frozen, timestamp=server_time, recvWindow=5000)
+                query = urlencode(sorted(values.items()))
+                query += '&signature='+self._sign(query)
+                token = _wire_clock.set({'kind': 'SIGNED', 'method': method, 'path': path,
+                    'query': query, 'server_time': server_time, 'received': received})
+                return self._wire(method, path, query, True)
+            except self._ExchangeError as error:
+                if method != 'GET' or error.code != -1021 or attempt:
+                    raise
+            except Review as error:
+                if (method != 'GET' or attempt or not dns_not_sent_retryable(
+                        getattr(error, 'transport_diagnostics', None))):
+                    raise
+            finally:
+                if token is not None:
+                    _wire_clock.reset(token)
 
     def _decimal(self, value, *, positive=False):
         import re

@@ -124,6 +124,48 @@ class ConfirmedAbsentIntentTests(unittest.TestCase):
         self.assertEqual(history['limit'],'1000')
         self.assertLess(int(history['startTime']),datetime.fromisoformat(self.intent()['created']).timestamp()*1000)
 
+    def test_new_proof_records_the_exact_reviewed_native_source(self):
+        self.assertIsNotNone(self.recover())
+        value=json.loads(self.intent()['result'])
+        current=hashlib.sha256(Path(self.exchange._entry.__func__.__code__.co_filename).read_bytes()).hexdigest()
+        self.assertEqual(value['negative_proof']['gateway_source_sha256'],current)
+        self.assertEqual(current,'df129ffe67aee9f47d4bd241bc83139a3f23bf4468464c0cbfdf20fabc27b579')
+        self.assertNotEqual(current,policy._GATEWAY_SOURCE)
+        self.assertTrue(self.coordinator.replaceable_result(self.candidate()))
+
+    def test_historical_approved_source_proof_remains_readable_without_recalculation(self):
+        self.assertIsNotNone(self.recover())
+        current=json.loads(self.intent()['result'])
+        # A persisted legacy proof has the identical schema and original source
+        # identity. Changing only this fixture's source/hash simulates that row;
+        # production readers never rewrite the old proof or frozen parameters.
+        legacy=copy.deepcopy(current)
+        legacy['negative_proof']['gateway_source_sha256']=policy._GATEWAY_SOURCE
+        legacy['negative_proof_sha256']=policy._proof_hash(legacy['negative_proof'])
+        self.db.execute('UPDATE order_intents SET result=?',(json.dumps(legacy),))
+        frozen=self.frozen()
+        self.assertTrue(self.coordinator.replaceable_result(self.candidate()))
+        self.assertEqual(self.frozen(),frozen)
+        self.assertEqual(self.intent()['payload'],self.payload)
+        self.assertEqual(self.candidate()['plan'],self.plan)
+
+    def test_unapproved_live_source_cannot_collect_or_retire_an_intent(self):
+        error=self.error();before=self.frozen()
+        with patch.object(policy.Path,'read_bytes',return_value=b'unreviewed-native-source'):
+            self.assertIsNone(self.recover(error))
+        self.assertEqual(self.exchange.calls,[])
+        self.assert_retained(before)
+
+    def test_unapproved_persisted_source_cannot_release_replacement_even_with_matching_digest(self):
+        self.assertIsNotNone(self.recover())
+        value=json.loads(self.intent()['result'])
+        value['negative_proof']['gateway_source_sha256']='0'*64
+        value['negative_proof_sha256']=policy._proof_hash(value['negative_proof'])
+        self.db.execute('UPDATE order_intents SET result=?',(json.dumps(value),))
+        frozen=self.frozen()
+        self.assertFalse(self.coordinator.replaceable_result(self.candidate()))
+        self.assertEqual(self.frozen(),frozen)
+
     def test_native_tick_retries_read_then_releases_replacement_on_following_tick_without_submit(self):
         self.scheduler_progression()
 

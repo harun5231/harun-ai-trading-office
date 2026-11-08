@@ -21,6 +21,10 @@ from .robot_provenance import source_signal, stamp, verify
 NOT_ACCEPTED='ORDER_CONFIRMED_NOT_ACCEPTED'
 _NEGATIVE_VERSION='BINANCE_NOT_ACCEPTED_V1'
 _GATEWAY_SOURCE='9419df472fb5624d2a707117de08264b2adfac21c181728fa9611b65ecb55169'
+# Retain historical negative proofs while admitting the reviewed native
+# transport-only recovery. Never derive approval from whatever file is present.
+_GATEWAY_SOURCES=frozenset((_GATEWAY_SOURCE,
+    'df129ffe67aee9f47d4bd241bc83139a3f23bf4468464c0cbfdf20fabc27b579'))
 _NEGATIVE_PATHS=('/fapi/v1/order','/fapi/v3/positionRisk','/fapi/v1/openOrders',
     '/fapi/v1/openAlgoOrders','/fapi/v1/userTrades','/fapi/v1/order')
 
@@ -66,7 +70,7 @@ def _negative_proof_valid(proof,payload,candidate,intent):
             'payload_sha256','plan_sha256','source_attempt','gateway_source_sha256','server_started_ms',
             'server_finished_ms','history_start_ms','history_end_ms','elapsed_seconds','reads'}):return False
     source=proof['source_attempt'];reads=proof['reads']
-    if (proof['version']!=_NEGATIVE_VERSION or proof['gateway_source_sha256']!=_GATEWAY_SOURCE
+    if (proof['version']!=_NEGATIVE_VERSION or proof['gateway_source_sha256']not in _GATEWAY_SOURCES
             or proof['intent_id']!=intent['intent_id'] or proof['client_order_id']!=intent['client_order_id']
             or proof['symbol']!=intent['symbol'] or proof['payload_sha256']!=hashlib.sha256(payload.encode()).hexdigest()
             or proof['plan_sha256']!=hashlib.sha256(candidate['plan'].encode()).hexdigest()
@@ -131,7 +135,9 @@ def retire_confirmed_absent(coordinator,row,account,error,*,clock=time.time):
         trace=error.__traceback__;matched=False
         while trace is not None:
             matched=matched or trace.tb_frame.f_code is entry_code;trace=trace.tb_next
-        if not matched or hashlib.sha256(Path(entry_code.co_filename).read_bytes()).hexdigest()!=_GATEWAY_SOURCE:return None
+        if not matched:return None
+        gateway_source=hashlib.sha256(Path(entry_code.co_filename).read_bytes()).hexdigest()
+        if gateway_source not in _GATEWAY_SOURCES:return None
         if row['state']not in('NEEDS_REVIEW','SUBMITTING') or row['result']is not None:return None
         intent=coordinator.verified_intent(row);client=intent['client_order_id'];today=datetime.fromtimestamp(clock(),ZoneInfo('Asia/Jakarta')).date().isoformat()
         settings=coordinator.store.settings()
@@ -185,7 +191,7 @@ def retire_confirmed_absent(coordinator,row,account,error,*,clock=time.time):
             proof=dict(version=_NEGATIVE_VERSION,intent_id=intent['intent_id'],client_order_id=client,symbol=intent['symbol'],
                 payload_sha256=hashlib.sha256(row['payload'].encode()).hexdigest(),
                 plan_sha256=hashlib.sha256(candidate['plan'].encode()).hexdigest(),
-                source_attempt=attempt,gateway_source_sha256=_GATEWAY_SOURCE,
+                source_attempt=attempt,gateway_source_sha256=gateway_source,
                 server_started_ms=first,server_finished_ms=last,history_start_ms=start,history_end_ms=first,
                 elapsed_seconds=elapsed,reads=reads)
             if not _negative_proof_valid(proof,row['payload'],candidate,intent):return None
