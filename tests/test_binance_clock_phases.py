@@ -1,11 +1,14 @@
 """Offline clock regressions using real urllib with a synthetic TLS socket."""
 import io
 import json
+import hashlib
+import hmac
 import threading
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
-from worker.binance_private import BinanceCheckError, BinanceReadOnly
+from worker.binance_private import BinanceCheckError, BinanceReadOnly, _signed_request
 
 
 SERVER = 1700000000000
@@ -39,8 +42,9 @@ class FakeSocket:
         self.wire.sent.append(bytes(data))
 
     def makefile(self, mode, *args):
-        body = json.dumps(self.wire.body).encode('ascii')
-        raw = (b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: '
+        status, data = (200, self.wire.body) if self.wire.responder is None else self.wire.responder(self.wire.sent[-1])
+        body = json.dumps(data).encode('ascii')
+        raw = (b'HTTP/1.1 ' + str(status).encode('ascii') + b' Fixture\r\nContent-Type: application/json\r\nContent-Length: '
                + str(len(body)).encode('ascii') + b'\r\nConnection: close\r\n\r\n' + body)
         return ResponseBytes(raw, self.wire)
 
@@ -56,6 +60,7 @@ class FakeTLS:
         self.response_seconds = response_seconds
         self.body_seconds = body_seconds
         self.body = {'serverTime': SERVER}
+        self.responder = None
         self.sent = []
         self.connections = 0
         self.connects = 0
@@ -130,6 +135,93 @@ class ConnectPhaseClockTests(unittest.TestCase):
             self.client.sync_time()
         self.assertEqual(self.client.server_time_ms(), previous + 250)
         self.assertEqual(wire.connects, 2)
+
+    def test_signed_timestamp_and_hmac_follow_six_second_tls_setup(self):
+        wire = self.fake_tls()
+        self.client.sync_time()
+        wire.connect_seconds = 6.0
+        wire.body = {'assets': [], 'positions': []}
+        self.assertEqual(self.client.signed_get('/fapi/v3/account'), wire.body)
+        selector = wire.sent[-1].split(b' ', 2)[1].decode('ascii')
+        unsigned, signature = urlsplit(selector).query.rsplit('&signature=', 1)
+        self.assertEqual(parse_qs(unsigned), {'recvWindow': ['5000'], 'timestamp': [str(SERVER + 6000)]})
+        expected = hmac.new(b'offline-fixture-credential', unsigned.encode('ascii'), hashlib.sha256).hexdigest()
+        self.assertEqual(signature, expected)
+        self.assertEqual(urlsplit(selector).path, '/fapi/v3/account')
+        self.assertEqual(len(wire.sent), 2)
+        self.assertIsNone(_signed_request.get())
+
+    def test_signing_clock_expired_during_tls_setup_fails_before_private_wire(self):
+        wire = self.fake_tls()
+        self.client.sync_time()
+        wire.connect_seconds = 31.0
+        with self.assertRaisesRegex(BinanceCheckError, '^BINANCE_CLOCK_ERROR$'):
+            self.client.signed_get('/fapi/v3/account')
+        self.assertEqual(len(wire.sent), 1)
+        self.assertEqual(wire.connects, 2)
+        self.assertIsNone(_signed_request.get())
+
+    def test_research_pause_during_tls_setup_stops_before_private_wire(self):
+        from worker.research_guard import ResearchReadPaused, research_reads
+        wire = self.fake_tls()
+        self.client.sync_time()
+        wire.connect_seconds = 6.0
+        with research_reads(lambda: self.elapsed[0] < 16.0):
+            with self.assertRaisesRegex(ResearchReadPaused, '^ROBOT_RESEARCH_PAUSED$'):
+                self.client.signed_get('/fapi/v3/account')
+        self.assertEqual(len(wire.sent), 1)
+        self.assertIsNone(_signed_request.get())
+
+    def test_real_http_clock_error_uses_exactly_one_outer_retry_and_fresh_signature(self):
+        from worker.binance_office import _read
+        for failures in (1, 2):
+            with self.subTest(failures=failures):
+                wire = self.fake_tls(connect_seconds=6.0)
+                signed = []
+                syncs = []
+                def response(request):
+                    selector = request.split(b' ', 2)[1].decode('ascii')
+                    if urlsplit(selector).path == '/fapi/v1/time':
+                        syncs.append(selector)
+                        return 200, {'serverTime': SERVER + 10000 * len(syncs)}
+                    signed.append(parse_qs(urlsplit(selector).query))
+                    if len(signed) <= failures:
+                        return 400, {'code': -1021, 'msg': 'PRIVATE_PROVIDER_TEXT signature=PRIVATE'}
+                    return 200, {'assets': [], 'positions': []}
+                wire.responder = response
+                self.client.sync_time()
+                with self.assertLogs('worker.binance_private', level='WARNING') as captured:
+                    if failures == 1:
+                        self.assertEqual(_read(self.client, '/fapi/v3/account'), {'assets': [], 'positions': []})
+                    else:
+                        with self.assertRaisesRegex(BinanceCheckError, '^BINANCE_CLOCK_ERROR$'):
+                            _read(self.client, '/fapi/v3/account')
+                self.assertEqual(len(syncs), 2)
+                self.assertEqual(len(signed), 2)
+                self.assertEqual(len(wire.sent), 4)
+                self.assertNotEqual(signed[0]['timestamp'], signed[1]['timestamp'])
+                self.assertNotEqual(signed[0]['signature'], signed[1]['signature'])
+                self.assertEqual([query['recvWindow'] for query in signed], [['5000'], ['5000']])
+                self.assertNotIn('PRIVATE', '\n'.join(captured.output))
+                self.assertIsNone(_signed_request.get())
+
+    def test_connect_error_is_sanitized_and_resets_signed_context(self):
+        import traceback
+        wire = self.fake_tls()
+        self.client.sync_time()
+        def fail(connection):
+            raise OSError('PRIVATE_CONNECTION_URL?signature=PRIVATE offline-fixture-credential')
+        with patch('http.client.HTTPSConnection.connect', new=fail):
+            try:
+                self.client.signed_get('/fapi/v3/account')
+            except BinanceCheckError as error:
+                self.assertEqual(str(error), 'BINANCE_ACCOUNT_UNAVAILABLE')
+                self.assertNotIn('PRIVATE', traceback.format_exc())
+                self.assertNotIn('offline-fixture-credential', traceback.format_exc())
+            else:
+                self.fail('Expected sanitized connection failure')
+        self.assertEqual(len(wire.sent), 1)
+        self.assertIsNone(_signed_request.get())
 
 
 class SharedClockConcurrencyTests(unittest.TestCase):
