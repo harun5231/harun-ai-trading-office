@@ -141,6 +141,26 @@ class HermesDialogueRecoveryTests(unittest.TestCase):
             {'role': 'user', 'content': request['reply']},
             {'role': 'assistant', 'content': json.dumps(result['decision'], sort_keys=True, separators=(',', ':'))}])
 
+    def test_historical_screening_archive_recovers_without_rewriting_payload_or_resending(self):
+        prepare=self.model._prepare
+        def legacy_prepare(*args,**kwargs):
+            return prepare(*args,**kwargs,legacy_screening=True)
+        with patch.object(self.model,'_prepare',side_effect=legacy_prepare):
+            request=self.lose_reply()
+        sent=deepcopy(self.sent[0]);budget=self.budgets()
+        self.assertEqual(hashlib.sha256(sent['instructions'].encode()).hexdigest(),
+            '4a847d2e5750e4c176aa75b2486fe9880a262b23a90fe476b3e16b53a1b7850c')
+        self.restart()
+        before=self.database_snapshot()
+        self.assertEqual(self.model.recovery_archive(request['request_id'])['rpc_payload'],sent)
+        self.assertEqual(self.database_snapshot(),before)
+        result=self.engine.recover_hermes(request['request_id'])
+        self.assert_result(result,request)
+        self.assertEqual(self.lookups,[(request['request_id'],sent['request_sha256'])])
+        self.assertEqual(len(self.sent),1)
+        self.assertEqual(self.budgets(),budget)
+        self.assertEqual(self.model.recovery_archive(request['request_id'])['rpc_payload'],sent)
+
     def test_expired_original_deadline_allows_only_explicit_custody_recovery(self):
         request = self.lose_reply()
         self.now += 180

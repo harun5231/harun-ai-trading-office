@@ -277,6 +277,10 @@ RECEIVED_TERMINAL = 'RECEIVED_STALE_NOT_EXECUTED'
 RECEIVED_REASON = 'SCREENING_RESPONSE_RECEIVED_STALE'
 RECEIVED_HOLD_TERMINAL = 'RECEIVED_HOLD_NOT_EXECUTED'
 RECEIVED_HOLD_REASON = 'SCREENING_RESPONSE_RECEIVED_HOLD'
+ENDED_NOEXEC = 'SCREENING_ENDED_STALE_NOEXEC_V1'
+ENDED_RETURN_KIND = 'NATIVE_SCREENING_ENDED_RETURN_V1'
+ENDED_RETURN_PRODUCER = '879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5'
+ENDED_RETURN_HOOK = 'ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee903784b'
 RECEIVED_NATIVE_SOURCE = '30ea13cd51706b1db65620cdfb5f8db6dec1c9b3b8a20c9b7ca1d6c9db07f72e'
 RECEIVED_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_response_recoveries(
  operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
@@ -513,11 +517,8 @@ def _retained_review_return(provider, envelope, payload, review, *, catalog, max
     return False
 
 
-def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
-        retained=False, require_approval=True):
-    """Check a no-send observation before admitting any native recorder write."""
-    from agent.neurobro_reply import parse_reply_for_payload, _TECHNICAL
-    from .neuroapi import screening_count
+def _received_screening_shape(envelope, payload, created, *, max_age, now, retained=False):
+    """Shared positive custody, independent of whether text is actionable."""
     _require(type(envelope) is dict and envelope.get('kind') == RECEIVED_KIND
         and envelope.get('operation_completed') is False and envelope.get('operation') == payload['operation']
         and envelope.get('request_sha256') == payload['request_sha256'])
@@ -570,6 +571,226 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
                 and re.fullmatch('[A-Za-z0-9_.:-]{1,160}', row['id']), 'SCREENING_REPLY_NOT_COMPLETE')
             ids.append(row['id'])
     _require(len(ids) == len(set(ids)) and all(payload['marker'] not in row['text'] for row in rows[2::2]))
+    return proof
+
+
+def _ended_screening_return(proof, payload, created, *, max_age):
+    """Prove an actual native interpretation ended before another WEB Send.
+
+    This never resolves a model RPC. In particular its original UNKNOWN row is
+    left untouched. The pinned native hook changes phase before a followup
+    click, so these retained failures prove the current received turn cannot
+    have caused another uncertain Send. A CLARIFY alone is not this evidence.
+    """
+    entry = proof.get('screening_ended_return')
+    _require(type(entry) is dict and set(entry) == {'kind', 'name', 'sha256', 'bytes',
+        'producer_source_sha256', 'hook_source_sha256', 'value'}
+        and entry['kind'] == ENDED_RETURN_KIND
+        and entry['name'] == 'native-return-failure-' + payload['request_sha256'] + '.json'
+        and entry['producer_source_sha256'] == ENDED_RETURN_PRODUCER
+        and entry['hook_source_sha256'] == ENDED_RETURN_HOOK)
+    value = entry['value']; raw = _wire(value, ascii=True)
+    _require(entry['sha256'] == _sha(raw) and type(entry['bytes']) is int
+        and entry['bytes'] == len(raw.encode()) and 0 < entry['bytes'] <= 65536
+        and type(value) is dict and set(value) in (
+            {'schema_version', 'operation', 'request_sha256', 'phase', 'accepted_reply_sha256',
+                'followup_intent_sha256', 'clock', 'deadline', 'at', 'chain'},
+            {'schema_version', 'operation', 'request_sha256', 'phase', 'accepted_reply_sha256',
+                'followup_intent_sha256', 'clock', 'deadline', 'at', 'chain', 'gate_failure'})
+        and type(value['schema_version']) is int and value['schema_version'] == 1
+        and value['operation'] == payload['operation'] and value['request_sha256'] == payload['request_sha256']
+        and value['accepted_reply_sha256'] is None and value['followup_intent_sha256'] == []
+        and value['phase'] in ('INITIAL', 'FOLLOWUP_SENT')
+        and all(_finite(value[key]) for key in ('clock', 'deadline', 'at'))
+        and 0 < value['clock'] < value['deadline']
+        and created <= value['at'] <= proof['observed_at'])
+    rows = proof['rows']
+    _require((value['phase'] == 'INITIAL') is (len(rows) == 2))
+    chain = value['chain']
+    _require(type(chain) is list and len(chain) == 2)
+    def frames(error):
+        _require(type(error) is dict and set(error) == {'class', 'reason', 'frames',
+            'message_sha256', 'message_characters'} and type(error['frames']) is list
+            and 1 <= len(error['frames']) <= 24
+            and type(error['message_sha256']) is str and re.fullmatch('[a-f0-9]{64}', error['message_sha256'])
+            and type(error['message_characters']) is int and 0 <= error['message_characters'] <= 65536)
+        result = []
+        for frame in error['frames']:
+            _require(type(frame) is dict and set(frame) == {'file', 'function', 'line'}
+                and type(frame['file']) is str and frame['file'].startswith('/app/')
+                and type(frame['function']) is str and re.fullmatch('[A-Za-z_][A-Za-z0-9_]*', frame['function'])
+                and type(frame['line']) is int and frame['line'] > 0)
+            expected = {'native_browser_hook.py': '/app/agent/native_browser_hook.py',
+                'dialogue_client.py': '/app/agent/dialogue_client.py', 'dom.py': '/app/browser_runtime/dom.py'}
+            basename = frame['file'].rsplit('/', 1)[-1]
+            _require(basename in expected and frame['file'] == expected[basename])
+            result.append((frame['file'].rsplit('/', 1)[-1], frame['function']))
+        return result
+    outer, inner = frames(chain[0]), frames(chain[1])
+    _require(chain[0]['class'] == 'OutcomeUnknown' and chain[0]['reason'] is None
+        and outer == [('native_browser_hook.py', '_ask'), ('dom.py', 'ask')])
+    prefix = [('dom.py', 'ask'), ('native_browser_hook.py', 'delegated_answer'),
+        ('native_browser_hook.py', 'review')]
+    if chain[1]['class'] == 'DialogueError':
+        _require(chain[1]['reason'] == 'DIALOGUE_MODEL_UNAVAILABLE' and 'gate_failure' not in value
+            and inner == prefix + [('dialogue_client.py', 'request'), ('dialogue_client.py', '_request')])
+    else:
+        gate = value.get('gate_failure')
+        _require(chain[1]['class'] == 'OutcomeUnknown' and chain[1]['reason'] is None
+            and type(gate) is dict and set(gate) == {'reason', 'clock', 'deadline', 'phase',
+                'check_material', 'site_status', 'dispatch', 'initial_url_sha256', 'current_url_sha256'}
+            and gate['reason'] == 'DISPATCH_NOT_PERMITTED' and gate['phase'] == value['phase']
+            and gate['site_status'] == 'CONNECTED' and gate['dispatch'] is False
+            and gate['check_material'] is False and gate['deadline'] == value['deadline']
+            and _finite(gate['clock']) and 0 < gate['clock'] <= value['clock']
+            and gate['initial_url_sha256'] == _sha(proof['page_url']) and gate['current_url_sha256'] is None
+            and inner == prefix + [('native_browser_hook.py', name) for name in ('gate', 'failed', 'unknown')])
+    # Every native clarification is durably recorded before its Send. The
+    # passive producer reads the complete matching review inventory (or fails),
+    # so an additional authorizing review would make another Send uncertain.
+    _require(len(proof['review_receipts']) == len(rows) // 2 - 1)
+    review_proof = _ended_screening_review_identity(proof, payload, created, max_age=max_age)
+    review_rows = review_proof['rows']
+    for index in range(2, len(rows), 2):
+        review = _screening_review(review_proof, payload, review_rows[:index])
+        prior = [entry['value'] for entry in proof['review_receipts']
+            if entry['value'].get('request_id') == (review or {}).get('request_id')]
+        _require(review is not None and review['needs_followup'] is True
+            and review['decision']['action'] == 'CLARIFY'
+            and rows[index]['text'].strip() == review['decision']['question'].strip()
+            and len(prior) == 1 and created <= prior[0]['observed_at'] <= value['at'])
+    return value
+
+
+def _ended_screening_review_identity(proof, payload, created, *, max_age):
+    """Use exact old native rows only as provenance for an existing review."""
+    identity = proof.get('screening_review_identity')
+    if identity is None:
+        return proof
+    _require(type(identity) is dict and set(identity) == {'kind', 'source_capture_name',
+        'source_capture_sha256', 'source_capture_bytes', 'source_observation',
+        'source_observation_sha256', 'source_observation_bytes', 'changed_assistant_rows', 'ended_return_sha256'}
+        and identity['kind'] == 'NATIVE_SCREENING_RECEIVED_REVIEW_IDENTITIES_V1'
+        and identity['ended_return_sha256'] == proof['screening_ended_return']['sha256'])
+    source = identity['source_observation']
+    key = _sha(_wire({name: payload[name] for name in ('operation', 'request_sha256')}))[:16]
+    _require(identity['source_capture_name'] == 'received-analysis-observation-' + key + '-'
+        + str(identity['source_capture_sha256']) + '.json'
+        and type(source) is dict and source.get('screening_review_identity') is None)
+    envelope = dict(kind=RECEIVED_KIND, operation=payload['operation'], request_sha256=payload['request_sha256'],
+        operation_completed=False, observation=source, observation_sha256=identity['source_observation_sha256'],
+        observation_bytes=identity['source_observation_bytes'], capture_name=identity['source_capture_name'],
+        capture_sha256=identity['source_capture_sha256'], capture_bytes=identity['source_capture_bytes'])
+    old = _received_screening_shape(envelope, payload, created, max_age=max_age,
+        now=proof['observed_at'], retained=True)
+    rows, previous = proof['rows'], old['rows']
+    semantic = lambda row: {key: value for key, value in row.items() if key != 'id'}
+    _require(len(rows) == len(previous) and all(semantic(left) == semantic(right)
+        for left, right in zip(rows, previous))
+        and proof['rendered_prompt_receipt'] == old['rendered_prompt_receipt']
+        and proof['page_url'] == old['page_url']
+        and proof['screening_ended_return']['value']['at'] <= old['observed_at']
+        and all(proof['room'][key] == old['room'][key] for key in ('day', 'room_id', 'url'))
+        and proof['review_receipts'] == old['review_receipts'])
+    changed = [index for index, (current, original) in enumerate(zip(rows, previous)) if current != original]
+    _require(changed and changed == identity['changed_assistant_rows']
+        and all(index % 2 == 1 and rows[index]['complete'] is True and previous[index]['complete'] is True
+            and type(rows[index]['id']) is str and type(previous[index]['id']) is str for index in changed))
+    return old
+
+
+def _validate_ended_screening(envelope, payload, created, *, max_age, now, retained=False):
+    proof = _received_screening_shape(envelope, payload, created,
+        max_age=max_age, now=now, retained=retained)
+    ended = _ended_screening_return(proof, payload, created, max_age=max_age)
+    stale = (now - created > max_age or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        != proof['room']['day'])
+    return proof, ended, stale
+
+
+def _retire_ended_screening(provider, envelope, payload, before, *, index, count, current,
+        max_age, permitted):
+    """Atomically retain the received text without fabricating typed output."""
+    from agent.neurobro_reply import _TECHNICAL
+    db = provider.db; operation = payload['operation']; cycle = before['robot_cycles']
+    api, job = before['api_requests'], before['robot_jobs']
+    proof, ended, stale = _validate_ended_screening(envelope, payload, api['created'],
+        max_age=max_age, now=current)
+    _require(stale, 'SCREENING_ENDED_RESPONSE_AWAITING_EXPIRY')
+    _require(before['research_browser_responses'] is None and api['output'] is None
+        and api['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+    sealed = copy.deepcopy(envelope)
+    sealed['retirement'] = dict(kind=ENDED_NOEXEC, canonical_result=False,
+        disposition='TECHNICAL_REPLY_RECEIVED' if _TECHNICAL.search(proof['rows'][-1]['text']) else 'REPLY_RECEIVED',
+        failure_sha256=proof['screening_ended_return']['sha256'], max_age=max_age,
+        preimage_sha256=_sha(_wire(before)))
+    raw = _wire(sealed); data = json.loads(cycle['data'])
+    data.update(screen=index, replacement_due=count)
+    if index: data['replacements'] += 1
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        _require(permitted() is True and _snapshot(db, operation, cycle['id']) == before, 'RESEARCH_PAUSED')
+        _require(not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+        _require(db.execute('SELECT 1 FROM screening_response_recoveries WHERE operation=?', (operation,)).fetchone() is None)
+        db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
+            (operation, payload['request_sha256'], _sha(raw), raw, _wire(before), 'NOEXEC', current, current))
+        _require(db.execute('UPDATE api_requests SET state=?,output=NULL,failure_code=? '
+            'WHERE operation=? AND state=? AND body_hash=? AND attempts=1 AND output IS NULL',
+            (RECEIVED_TERMINAL, RECEIVED_REASON, operation, api['state'], payload['request_sha256'])).rowcount == 1)
+        _require(db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state=?",
+            (operation, job['state'])).rowcount == 1)
+        _require(db.execute("UPDATE robot_cycles SET state='ACTIVE',data=? WHERE id=? AND state=? AND data=?",
+            (json.dumps(data), cycle['id'], cycle['state'], cycle['data'])).rowcount == 1)
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction: db.execute('ROLLBACK')
+        raise
+    return 'NOEXEC'
+
+
+def _sealed_ended_screening(db, journal, body, request_hash):
+    """Validate the non-canonical seal without pretending a response exists."""
+    from agent.neurobro_reply import _TECHNICAL
+    envelope = json.loads(journal['proof']); before = json.loads(journal['preimage'])
+    retirement = envelope.get('retirement'); operation = body['operation']
+    _require(type(retirement) is dict and set(retirement) == {'kind', 'canonical_result',
+        'disposition', 'failure_sha256', 'max_age', 'preimage_sha256'}
+        and retirement['kind'] == ENDED_NOEXEC and retirement['canonical_result'] is False
+        and retirement['preimage_sha256'] == _sha(journal['preimage'])
+        and journal['phase'] == 'NOEXEC' and journal['request_sha256'] == request_hash
+        and journal['proof_sha256'] == _sha(journal['proof'])
+        and journal['created'] == journal['updated'] and _finite(journal['created']))
+    api = before['api_requests']; job = before['robot_jobs']; cycle = before['robot_cycles']
+    _require(api['operation'] == job['operation'] == operation and api['body_hash'] == request_hash
+        and type(api['attempts']) is int and api['attempts'] == 1 and api['idempotency'] is None
+        and api['state'] in ('PENDING', 'NEEDS_REVIEW') and api['output'] is None
+        and api['failure_code'] in (None, 'NEUROBRO_BROWSER_OUTCOME_UNKNOWN', 'LOCAL_PROCESSING_FAILED')
+        and job['kind'] == 'SCREENING' and job['symbol'] is None and job['risk_target'] is None
+        and job['state'] in ('PENDING', 'NEEDS_REVIEW') and job['cycle'] == cycle['id']
+        and cycle['state'] in ('ACTIVE', 'NEEDS_REVIEW') and before['robot_settings']['enabled'] == 1
+        and before['research_browser_responses'] is None)
+    proof, ended, stale = _validate_ended_screening(envelope, {**body, 'request_sha256': request_hash},
+        api['created'], max_age=retirement['max_age'], now=journal['created'], retained=True)
+    _require(stale and retirement['failure_sha256'] == proof['screening_ended_return']['sha256']
+        and retirement['disposition'] == ('TECHNICAL_REPLY_RECEIVED'
+            if _TECHNICAL.search(proof['rows'][-1]['text']) else 'REPLY_RECEIVED')
+        and _row(db, 'api_requests', 'operation', operation) == {**api,
+            'state': RECEIVED_TERMINAL, 'output': None, 'failure_code': RECEIVED_REASON}
+        and _row(db, 'robot_jobs', 'operation', operation) == {**job, 'state': 'COMPLETE'}
+        and _row(db, 'research_browser_responses', 'operation', operation) is None
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+    return before, envelope
+
+
+def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
+        retained=False, require_approval=True):
+    """Check a no-send observation before admitting any native recorder write."""
+    from agent.neurobro_reply import parse_reply_for_payload, _TECHNICAL
+    from .neuroapi import screening_count
+    proof = _received_screening_shape(envelope, payload, created,
+        max_age=max_age, now=now, retained=retained)
+    rows = proof['rows']; room = proof['room']; users = list(range(0, len(rows), 2))
     count = screening_count(payload['output_schema'])
     _require(count in (1, 2) and _TECHNICAL.search(rows[-1]['text']) is None, 'NEUROBRO_INPUT_UNREADABLE')
     output = parse_reply_for_payload(rows[-1]['text'], payload)
@@ -658,6 +879,8 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
     if journal is not None:
         _require(journal['request_sha256'] == request_hash and journal['proof_sha256'] == _sha(journal['proof']))
         if journal['phase'] in ('RESUME_CACHED', 'NOEXEC'):
+            if json.loads(journal['proof']).get('retirement', {}).get('kind') == ENDED_NOEXEC:
+                _sealed_ended_screening(db, journal, body, request_hash)
             return journal['phase']
         _require(journal['phase'] == 'PREPARED')
         envelope = json.loads(journal['proof']); before = json.loads(journal['preimage'])
@@ -678,6 +901,15 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
         and type(data.get('seen')) is list and type(data.get('round_symbols')) is list)
     if index:
         _require(set(data['seen']) <= set(body['context']['excluded_symbols']))
+    ended = envelope.get('observation', {}).get('screening_ended_return')
+    if (journal is None and type(ended) is dict and type(ended.get('value')) is dict
+            and ended['value'].get('accepted_reply_sha256') is None
+            and ended['value'].get('phase') in ('INITIAL', 'FOLLOWUP_SENT')
+            and len(envelope['observation'].get('rows', [])) >= 2
+            and len(envelope['observation'].get('review_receipts', []))
+                == len(envelope['observation']['rows']) // 2 - 1):
+        return _retire_ended_screening(provider, envelope, payload, before, index=index,
+            count=count, current=current, max_age=max_age, permitted=permitted)
     result, received, stale = validate_received_screening(provider, envelope, payload, api['created'],
         catalog=catalog, max_age=max_age, now=current, retained=journal is not None)
     cached = canonical_output(result['output'], body['output_schema'], catalog)
@@ -757,6 +989,14 @@ def received_screening_replacement_due(db, cycle_id, data):
             return 0
         body, request_hash, match = stored_screening_request(db, operation)
         before = json.loads(journal['preimage']); envelope = json.loads(journal['proof'])
+        if envelope.get('retirement', {}).get('kind') == ENDED_NOEXEC:
+            before, envelope = _sealed_ended_screening(db, journal, body, request_hash)
+            original_data = json.loads(before['robot_cycles']['data'])
+            expected_data = {**original_data, 'screen': index, 'replacement_due': due}
+            if index: expected_data['replacements'] += 1
+            cycle = _row(db, 'robot_cycles', 'id', cycle_id)
+            _require(data == expected_data and json.loads(cycle['data']) == data and cycle['state'] == 'ACTIVE')
+            return due
         api = _row(db, 'api_requests', 'operation', operation); job = _row(db, 'robot_jobs', 'operation', operation)
         cycle = _row(db, 'robot_cycles', 'id', cycle_id); receipt = _row(db, 'research_browser_responses', 'operation', operation)
         proof = envelope['observation']; final = proof['rows'][-1]
@@ -856,6 +1096,7 @@ def resume_uncertain_screening(coordinator, today, account):
         safe = {'NEUROBRO_LOGIN_REQUIRED', 'NEUROBRO_LOGIN_IN_PROGRESS', 'NEUROBRO_CHALLENGE_REQUIRED',
             'NEUROBRO_BUSY', 'NEUROBRO_UNAVAILABLE', 'NEUROBRO_BROWSER_NOT_CONFIGURED', 'RESEARCH_PAUSED',
             'SCREENING_REPLY_NOT_COMPLETE', 'SCREENING_MINI_APPROVAL_NOT_RETAINED', 'NEUROBRO_INPUT_UNREADABLE',
+            'SCREENING_ENDED_RESPONSE_AWAITING_EXPIRY',
             'SCREENING_RESPONSE_OBSERVATION_PENDING', 'SCREENING_REVIEW_OUTCOME_UNKNOWN', 'SCREENING_REVIEW_INCOMPLETE'}
         return coordinator.store.report('WAITING', account,
             wait_reason=reason if reason in safe else 'SCREENING_RESPONSE_RECOVERY_UNVERIFIED')

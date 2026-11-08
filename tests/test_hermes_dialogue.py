@@ -71,7 +71,7 @@ class HermesDialogueCandidateTests(unittest.TestCase):
         with self.assertRaisesRegex(AgentError,'MODEL_IDENTITY_INVALID'):
             self.make(model='provider/model with whitespace')
 
-    def test_every_existing_phase_uses_the_same_rpc_and_indonesian_json_request_policy(self):
+    def test_every_existing_phase_uses_the_same_rpc_and_phase_specific_policy(self):
         phases=('SCREENING','ANALYSIS','PENDING_REVIEW','POST_TRADE_EVALUATION',
             'COMPOSE_SCREENING','COMPOSE_ANALYSIS','COMPOSE_PENDING_REVIEW','COMPOSE_POST_TRADE_EVALUATION')
         for index,phase in enumerate(phases):
@@ -84,13 +84,45 @@ class HermesDialogueCandidateTests(unittest.TestCase):
             with self.subTest(phase=phase):self.plan(request)
         self.assertEqual(len(self.calls),len(phases))
         for call in self.calls:
-            self.assertIn('COIN, ARAH, ENTRY, TP, SL',call['instructions'])
-            self.assertIn('RISK REWARD 1:2',call['instructions'])
-            self.assertIn('Jangan menulis JSON pengganti',call['instructions'])
+            if call['phase'] in ('SCREENING','COMPOSE_SCREENING'):
+                self.assertIn('SCREENING hanya memilih coin',call['instructions'])
+                self.assertNotIn('Untuk analisis minta LONG/SHORT/HOLD',call['instructions'])
+                self.assertNotIn('minta Neurobro sendiri mengakhiri keputusan',call['instructions'])
+                description=call['output_schema']['properties']['question']['description']
+                self.assertIn('pilihan coin',description)
+                self.assertNotIn('Minta RISK REWARD',description)
+            else:
+                self.assertIn('COIN, ARAH, ENTRY, TP, SL',call['instructions'])
+                self.assertIn('RISK REWARD 1:2',call['instructions'])
+                self.assertIn('Jangan menulis JSON pengganti',call['instructions'])
             if call['phase'] in ('ANALYSIS','COMPOSE_ANALYSIS'):
                 description=call['output_schema']['properties']['question']['description']
                 self.assertIn('JSON COIN, ARAH, ENTRY, TP, SL',description)
                 self.assertNotIn('Risk Manager',description)
+
+    def test_complete_screening_choices_do_not_require_setup_or_chart_analysis(self):
+        reply=(Path(__file__).parent/'fixtures/neurobro_screening_daftar_pick_20261109.txt').read_text()
+        request=self.request(reply=reply,index=100)
+        self.output=dict(action='SCREENING',symbols=['FILUSDT','ENAUSDT'],question='')
+        result=self.plan(request)
+        call=self.calls[0]
+        self.assertEqual((result.action,result.symbols,result.question),('SCREENING',('FILUSDT','ENAUSDT'),''))
+        self.assertIn('jumlah coin dan pengecualian',call['instructions'])
+        self.assertIn('action SCREENING',call['instructions'])
+        self.assertIn('sesudah chart Futures 1H dan 15M',call['instructions'])
+        self.assertIsNone(call['market_context'])
+        self.assertNotIn('RISK REWARD 1:2',call['instructions'])
+        self.assertEqual(call['model'],'gpt-6.1-sol')
+        self.assertNotIn('gpt-5-mini',json.dumps(call))
+
+    def test_screening_can_clarify_only_unresolved_coin_selection_without_fabricating_choices(self):
+        request=self.request(reply='FILUSDT atau ENAUSDT; pilihan akhir belum jelas.',index=101)
+        self.output=dict(action='CLARIFY',symbols=[],question='Coin mana yang menjadi pilihan akhir?')
+        result=self.plan(request)
+        self.assertEqual(result.action,'CLARIFY')
+        self.assertEqual(result.symbols,())
+        self.assertIn('Klarifikasi hanya pilihan coin',self.calls[0]['instructions'])
+        self.assertIn('tanpa mengarang pilihan',self.calls[0]['output_schema']['properties']['question']['description'])
 
     def test_private_new_inputs_are_projected_without_changing_source_or_mini_history(self):
         request=self.request();values=dict(symbol='BTCUSDT',risk_usdt='PRIVATE_BUDGET_918',quantity='PRIVATE_QTY_743',
