@@ -94,6 +94,58 @@ class CarryQuotaTests(unittest.TestCase):
         self.assertEqual(self.store.available_slots(1,['BTCUSDT'],'2026-10-24'),1)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_daily_carry').fetchone()[0],2)
         self.assertEqual(self.store.entries(DAY),1)
+    def test_full_close_before_wib_midnight_is_not_next_day_carry_after_restart(self):
+        midnight=START+86400000;tomorrow='2026-10-24'
+        self.receipt('BTCUSDT')
+        self.db.execute("INSERT INTO robot_carry_symbols VALUES('BTCUSDT')")
+        client=Client([], [fill(at=START+1000),
+            fill(side='SELL',at=midnight-1,identity=2)])
+        client.anchor=midnight-1
+        self.assertTrue(self.store.reconcile_carry(client,DAY,[]))
+        self.assertEqual(self.store.available_slots(0,[],DAY),1)
+        receipts=[tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')]
+        self.restart();client.anchor=midnight+1000
+        self.assertTrue(self.store.reconcile_carry(client,tomorrow,[]))
+        proof=self.db.execute('SELECT carried FROM robot_daily_carry WHERE day=? AND symbol=?',
+            (tomorrow,'BTCUSDT')).fetchone()
+        self.assertEqual(proof['carried'],0)
+        self.assertEqual(self.store.entries(DAY),1)
+        self.assertEqual(self.store.entries(tomorrow),0)
+        self.assertEqual(self.store.available_slots(0,[],tomorrow),2)
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')],receipts)
+        windows=[options for path,symbol,options in client.calls
+            if path=='/fapi/v1/userTrades' and options['start_time']==midnight]
+        self.assertEqual(len(windows),1)
+    def test_full_close_after_wib_midnight_keeps_actual_carry_charge_after_restart(self):
+        midnight=START+86400000;tomorrow='2026-10-24'
+        self.receipt('BTCUSDT')
+        self.db.execute("INSERT INTO robot_carry_symbols VALUES('BTCUSDT')")
+        client=Client([], [fill(at=START+1000),
+            fill(side='SELL',at=midnight+1,identity=2)])
+        client.anchor=midnight+1000
+        self.assertTrue(self.store.reconcile_carry(client,tomorrow,[]))
+        self.assertEqual(quota.charged_symbols(self.db,tomorrow),{'BTCUSDT'})
+        self.assertEqual(self.store.entries(tomorrow),0)
+        self.assertEqual(self.store.available_slots(0,[],tomorrow),1)
+        before=[tuple(row) for row in self.db.execute('SELECT * FROM robot_daily_carry')]
+        calls=len(client.calls);self.restart()
+        self.assertTrue(self.store.reconcile_carry(client,tomorrow,[]))
+        self.assertEqual(len(client.calls),calls)
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM robot_daily_carry')],before)
+        self.assertEqual(self.store.available_slots(0,[],tomorrow),1)
+    def test_partial_close_before_midnight_full_close_after_still_charges_one_carry(self):
+        midnight=START+86400000;tomorrow='2026-10-24'
+        self.receipt('BTCUSDT')
+        self.db.execute("INSERT INTO robot_carry_symbols VALUES('BTCUSDT')")
+        client=Client([], [fill(at=START+1000),
+            fill('0.4','SELL',at=midnight-1,identity=2),
+            fill('0.6','SELL',at=midnight+1,identity=3)])
+        client.anchor=midnight+1000
+        self.assertTrue(self.store.reconcile_carry(client,tomorrow,[]))
+        self.assertEqual(quota.charged_symbols(self.db,tomorrow),{'BTCUSDT'})
+        self.assertEqual(self.store.available_slots(0,[],tomorrow),1)
+        self.assertEqual(self.store.entries(DAY),1)
+        self.assertEqual(self.store.entries(tomorrow),0)
     def test_changed_snapshot_and_invalid_history_do_not_write_proofs(self):
         for client in (Client([position()]),Client([position()],[fill(amount='-1')])):
             if not client.fills: client.change=True
