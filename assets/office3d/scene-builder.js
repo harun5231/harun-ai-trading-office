@@ -94,7 +94,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     const mesh = add(parent, cylinder, material, a.clone().add(b).multiplyScalar(.5).toArray(), [radius, direction.length(), radius]);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize()); return mesh;
   }
-  function label(position, width, height, name, { size = 68, color = '#211d18', background = '#d0b17d', rotation = 0 } = {}) {
+  function label(position, width, height, name, { size = 68, color = '#211d18', background = '#d0b17d', rotation = 0, parent = displays } = {}) {
     const map = texture(1536, 256, (ctx, w, h) => {
       const g = ctx.createLinearGradient(0, 0, 0, h);
       g.addColorStop(0, '#f1dbad'); g.addColorStop(.18, background); g.addColorStop(.58, '#dac299'); g.addColorStop(1, '#b39561');
@@ -105,26 +105,27 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
       for (const x of [31, w - 31]) { ctx.beginPath(); ctx.arc(x, h / 2, 5, 0, Math.PI * 2); ctx.fill(); }
     });
     const material = new THREE.MeshBasicMaterial({ map }); materials.set(`label:${materials.size}`, material);
-    const mesh = add(displays, geo(`plane:${width}:${height}`, () => new THREE.PlaneGeometry(width, height)), material, position);
+    const mesh = add(parent, geo(`plane:${width}:${height}`, () => new THREE.PlaneGeometry(width, height)), material, position);
     mesh.rotation.y = rotation; mesh.castShadow = false; return mesh;
   }
-  function display(role, variant, position, width, height, angle = 0) {
+  function display(role, variant, position, width, height, angle = 0, parent = displays) {
     const map = monitors?.get(role, variant); if (!map) return;
     const material = new THREE.MeshBasicMaterial({ map }); materials.set(`display:${materials.size}`, material);
-    const mesh = add(displays, geo(`screen:${width}:${height}`, () => new THREE.PlaneGeometry(width, height)), material, position);
+    const mesh = add(parent, geo(`screen:${width}:${height}`, () => new THREE.PlaneGeometry(width, height)), material, position);
     mesh.rotation.y = angle; mesh.castShadow = false; displayMeshes.push(mesh);
   }
 
   // Open-front cutaway with real geometry and softly reflective oak flooring.
-  block(staticRoot, [0, -.25, .2], [22.2, .5, 17.7], M.paleStone, .12);
-  block(staticRoot, [0, -.025, .2], [21.8, .05, 17.3], M.floor, 0);
-  block(staticRoot, [0, 2.67, -8.43], [22, 5.35, .22], M.stone, .02);
-  block(staticRoot, [10.87, .35, .2], [.2, .7, 17.3], M.paleStone, .02);
-  block(staticRoot, [-10.87, .13, .2], [.2, .25, 17.3], M.paleStone, .02);
-  block(staticRoot, [0, .09, 8.88], [22, .18, .16], M.paleStone, .02);
+  // Keep the foundation top below the floor: coplanar tops caused mobile depth flicker.
+  block(staticRoot, [0, -.30, -.05], [19.5, .5, 14.0], M.paleStone, .12);
+  block(staticRoot, [0, -.025, -.05], [19.1, .05, 13.6], M.floor, 0);
+  block(staticRoot, [0, 2.67, -6.83], [19.3, 5.35, .22], M.stone, .02);
+  block(staticRoot, [9.52, .35, -.05], [.2, .7, 13.6], M.paleStone, .02);
+  block(staticRoot, [-9.52, .13, -.05], [.2, .25, 13.6], M.paleStone, .02);
+  block(staticRoot, [0, .09, 6.78], [19.3, .18, .16], M.paleStone, .02);
   for (const y of [.18, 5.12]) {
-    block(staticRoot, [0, y, -8.26], [21.5, .08, .13], M.brass, .01);
-    if (y > 1) block(staticRoot, [0, y - .08, -8.17], [21.3, .035, .06], M.glow, .006);
+    block(staticRoot, [0, y, -6.66], [18.8, .08, .13], M.brass, .01);
+    if (y > 1) block(staticRoot, [0, y - .08, -6.57], [18.6, .035, .06], M.glow, .006);
   }
   // Full-height left glazing with a generated skyline, independent of data feeds.
   const skyline = texture(1024, 512, (ctx, w, h) => {
@@ -136,25 +137,21 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     }
   });
   const skyMaterial = new THREE.MeshBasicMaterial({ map: skyline, side: THREE.DoubleSide }); materials.set('skyline', skyMaterial);
-  const windowView = add(displays, geo('window-view', () => new THREE.PlaneGeometry(17.0, 5.1)), skyMaterial, [-10.91, 2.85, .15]); windowView.rotation.y = Math.PI / 2;
-  for (let z = -8.1; z < 9; z += 2.45) block(staticRoot, [-10.7, 2.72, z], [.12, 5.35, .065], M.metal, .006);
-  for (const y of [.25, 2.75, 5.28]) block(staticRoot, [-10.69, y, .2], [.12, .065, 17.3], M.metal, .006);
-  block(staticRoot, [-10.72, 2.74, .15], [.035, 5.05, 17.0], M.glass, 0);
+  const windowView = add(displays, geo('window-view', () => new THREE.PlaneGeometry(13.3, 5.1)), skyMaterial, [-9.56, 2.85, -.10]); windowView.rotation.y = Math.PI / 2;
+  for (let z = -6.5; z < 6.8; z += 2.2) block(staticRoot, [-9.35, 2.72, z], [.12, 5.35, .065], M.metal, .006);
+  for (const y of [.25, 2.75, 5.28]) block(staticRoot, [-9.34, y, -.05], [.12, .065, 13.6], M.metal, .006);
+  block(staticRoot, [-9.37, 2.74, -.10], [.035, 5.05, 13.3], M.glass, 0);
 
-  // A panoramic wall display carries only textures supplied by the status bridge.
-  block(staticRoot, [-1.25, 3.01, -8.10], [13.6, 3.72, .24], M.brass, .08);
-  block(staticRoot, [-1.25, 3.01, -7.95], [13.39, 3.53, .10], M.dark, .06);
-  for (const [index, role] of ['market', 'neuro', 'risk', 'trading'].entries()) {
-    const x = -1.25 + (index % 2 ? 3.28 : -3.28), y = 3.01 + (index < 2 ? .86 : -.86);
-    display(role, 0, [x, y, -7.887], 6.43, 1.61);
-  }
-  label([-1.25, .82, -8.02], 4.7, .31, 'HARUN  /  TRADING OFFICE', { size: 59 });
+  // A single panoramic read-only market screen; PC contents stay per owner.
+  block(staticRoot, [-1.9, 3.01, -6.50], [13.6, 3.72, .24], M.brass, .08);
+  block(staticRoot, [-1.9, 3.01, -6.35], [13.39, 3.53, .10], M.dark, .06);
+  display('wall', 0, [-1.9, 3.01, -6.287], 13.25, 3.39);
   // Warm architectural sconces and concealed perimeter light.
-  for (const x of [-9, 6.2]) {
-    block(staticRoot, [x, 2.85, -8.12], [.14, 1.25, .15], M.brass, .025);
-    block(staticRoot, [x, 2.85, -8.015], [.055, 1.08, .055], M.glow, .015);
+  for (const x of [-8.85, 5.2]) {
+    block(staticRoot, [x, 2.85, -6.52], [.14, 1.25, .15], M.brass, .025);
+    block(staticRoot, [x, 2.85, -6.415], [.055, 1.08, .055], M.glow, .015);
   }
-  for (const z of [-4.1, 3.5]) {
+  for (const z of [-3.6, 2.7]) {
     block(staticRoot, [-1.0, 5.25, z], [13, .08, .16], M.brass, .025);
     block(staticRoot, [-1.0, 5.19, z], [12.8, .028, .115], M.glow, .006);
   }
@@ -177,8 +174,8 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
   }
   function chair(station) {
     const { x, z, y, backZ, depth } = station.seat;
-    const back = backZ - z;
-    const group = new THREE.Group(); group.name = `chair-${station.role}`; group.position.set(x, 0, z); root.add(group);
+    const back = (backZ - z) * Math.cos(station.yaw);
+    const group = new THREE.Group(); group.name = `chair-${station.role}`; group.position.set(x, 0, z); group.rotation.y = station.yaw; root.add(group);
     rod(group, [0, .12, 0], [0, y - .07, 0], .045, M.chrome);
     for (let index = 0; index < 5; index++) {
       const angle = index * Math.PI * 2 / 5 + Math.PI / 2, px = Math.cos(angle) * .32, pz = Math.sin(angle) * .32;
@@ -194,13 +191,13 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     batchMoving(group);
     chairGroups.set(station.role, group);
   }
-  function monitor(role, variant, center, angle = 0, width = 1.35, height = .48) {
-    const [x, y, z] = center, group = new THREE.Group(); group.position.set(x, y, z); group.rotation.y = angle; staticRoot.add(group);
+  function monitor(role, variant, center, angle = 0, width = 1.35, height = .48, parent = staticRoot, displayParent = displays) {
+    const [x, y, z] = center, group = new THREE.Group(); group.position.set(x, y, z); group.rotation.y = angle; parent.add(group);
     const rise = height / 2 + .08;
     block(group, [0, -rise + .018, -.02], [.30, .025, .20], M.metal, .012);
     rod(group, [0, -rise + .03, -.04], [0, -.04, -.04], .023, M.metal);
     block(group, [0, 0, -.025], [width + .045, height + .04, .05], M.dark, .018);
-    display(role, variant, [x + Math.sin(angle) * .004, y, z + Math.cos(angle) * .004], width, height, angle);
+    display(role, variant, [x + Math.sin(angle) * .004, y, z + Math.cos(angle) * .004], width, height, angle, displayParent);
     ellipse(group, [width * .44, -height / 2 - .01, .003], [.005, .005, .005], M.glow);
   }
   function mug(parent, x, y, z) {
@@ -209,69 +206,77 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     add(parent, geo('mug-handle', () => new THREE.TorusGeometry(.034, .009, 6, 14)), M.white, [x + .057, y + .06, z]);
   }
   function workstation(station) {
-    const { role, x, z, deskWidth: width, deskDepth: depth, deskTop: top, keyTop } = station;
-    const boss = role === 'boss', rootZ = station.dock.z;
+    const { role, deskWidth: width, deskDepth: depth, deskTop: top, keyTop } = station;
+    const x = 0, z = 0, furniture = new THREE.Group(), stationDisplays = new THREE.Group();
+    for (const [group, parent] of [[furniture, staticRoot], [stationDisplays, displays]]) {
+      group.position.set(station.x, 0, station.z); group.rotation.y = station.yaw; parent.add(group);
+    }
+    const boss = role === 'boss', rootZ = station.localDockZ;
     // Thin real desktop and open kneehole: knees/feet are never buried in the
     // old full-width pedestal. All four legs have matching navigation bounds.
-    block(staticRoot, [x, top - .035, z], [width, .07, depth], M.wood, .035);
+    block(furniture, [x, top - .035, z], [width, .07, depth], M.wood, .035);
     for (const side of [-1, 1]) for (const end of [-1, 1])
-      block(staticRoot, [x + side * (width / 2 - .22), (top - .07) / 2, z + end * (depth / 2 - .20)], [.10, top - .07, .10], M.edge, .012);
-    block(staticRoot, [x, top - .24, z + depth / 2 - .06], [width - .20, .37, .06], M.wood, .018);
-    block(staticRoot, [x, top - .10, z + depth / 2 + .001], [width - .28, .022, .02], M.glow, .006);
+      block(furniture, [x + side * (width / 2 - .22), (top - .07) / 2, z + end * (depth / 2 - .20)], [.10, top - .07, .10], M.edge, .012);
+    block(furniture, [x, top - .24, z + depth / 2 - .06], [width - .20, .37, .06], M.wood, .018);
+    block(furniture, [x, top - .10, z + depth / 2 + .001], [width - .28, .022, .02], M.glow, .006);
     const plaqueWidth = boss ? 2.9 : 2.55;
-    block(staticRoot, [x, top - .24, z + depth / 2 - .012], [plaqueWidth + .08, .26, .065], M.paleBrass, .022);
-    label([x, top - .24, z + depth / 2 + .026], plaqueWidth, .22, station.name, { size: boss ? 200 : 156 });
-    // Exactly one fixed PC per owner. The panel faces the person (-Z); its rear
-    // is a normal opaque case, not an impossible second screen for the camera.
-    monitor(role, 0, [x, top + (boss ? .355 : .32), z + .08], Math.PI, boss ? 1.65 : 1.35, boss ? .55 : .48);
+    block(furniture, [x, top - .24, z + depth / 2 - .012], [plaqueWidth + .08, .26, .065], M.paleBrass, .022);
+    label([x, top - .24, z + depth / 2 + .026], plaqueWidth, .22, station.name, { size: boss ? 200 : 156, parent: stationDisplays });
+    // Local -Z faces its seated owner. The whole station rotates toward the
+    // wall, so the panel faces world +Z and its opaque rear faces the big screen.
+    monitor(role, 0, [x, top + (boss ? .355 : .32), z + .08], Math.PI, boss ? 1.65 : 1.35, boss ? .55 : .48, furniture, stationDisplays);
     const keyboardZ = rootZ + .19, keyboard = new THREE.Group();
-    keyboard.name = `keyboard-${role}`; root.add(keyboard);
+    keyboard.name = `keyboard-${role}`;
+    keyboard.position.set(station.x, 0, station.z); keyboard.rotation.y = station.yaw; root.add(keyboard);
     block(keyboard, [x, top - .005, rootZ + .3075], [.61, .018, .505], M.wood, .012);
     block(keyboard, [x, keyTop - .013, keyboardZ], [.52, .020, .20], M.dark, .018);
     for (let row = 0; row < 4; row++) for (let col = 0; col < 11; col++)
       block(keyboard, [x - .21 + col * .042, keyTop - .0025, keyboardZ - .06 + row * .040], [.032, .005, .027], M.metal, .002);
     batchMoving(keyboard); keyboardGroups.set(role, keyboard);
-    block(staticRoot, [x + .58, top + .008, rootZ + .62], [.30, .01, .30], M.teal, .02);
-    ellipse(staticRoot, [x + .58, top + .035, rootZ + .62], [.065, .027, .09], M.dark);
-    block(staticRoot, [x - 1.28, top + .02, z - .28], [.34, .035, .40], M.edge, .013);
-    block(staticRoot, [x - 1.28, top + .041, z - .28], [.30, .006, .36], M.linen, .006);
-    mug(staticRoot, x + (boss ? 1.78 : 1.41), top + .004, z - .28);
-    block(staticRoot, [x + (boss ? 2.08 : 1.57), top + .235, z + .20], [.23, .47, .40], M.dark, .03);
-    block(staticRoot, [x + (boss ? 2.20 : 1.69), top + .235, z + .20], [.009, .34, .025], M.brass, .003);
+    block(furniture, [x + .58, top + .008, rootZ + .62], [.30, .01, .30], M.teal, .02);
+    ellipse(furniture, [x + .58, top + .035, rootZ + .62], [.065, .027, .09], M.dark);
+    block(furniture, [x - 1.28, top + .02, z - .28], [.34, .035, .40], M.edge, .013);
+    block(furniture, [x - 1.28, top + .041, z - .28], [.30, .006, .36], M.linen, .006);
+    mug(furniture, x + (boss ? 1.78 : 1.41), top + .004, z - .28);
+    block(furniture, [x + (boss ? 2.08 : 1.57), top + .235, z + .20], [.23, .47, .40], M.dark, .03);
+    block(furniture, [x + (boss ? 2.20 : 1.69), top + .235, z + .20], [.009, .34, .025], M.brass, .003);
     chair(station);
     stationary[role] = { ...station, seat: { ...station.seat }, dock: { ...station.dock }, entry: { ...station.entry },
       setChairOffset(offset, keyboardOffset = .42) {
         const travel = Math.max(0, Math.min(.42, offset));
-        chairGroups.get(role).position.z = station.seat.z - travel;
-        keyboardGroups.get(role).position.z = Math.max(0, Math.min(.42, keyboardOffset));
+        const forward = { x: Math.sin(station.yaw), z: Math.cos(station.yaw) };
+        chairGroups.get(role).position.set(station.seat.x - forward.x * travel, 0, station.seat.z - forward.z * travel);
+        const trayTravel = Math.max(0, Math.min(.42, keyboardOffset));
+        keyboardGroups.get(role).position.set(station.x + forward.x * trayTravel, 0, station.z + forward.z * trayTravel);
       } };
   }
   STATION_CONFIG.forEach(workstation);
 
   // Back-right walnut coffee nook with open shelving, cups and espresso machine.
-  const coffee = COFFEE_CONFIG;
-  block(staticRoot, [coffee.x, 2.65, -8.20], [coffee.width + .16, 5.1, .15], M.wood, .02);
-  for (let x = 6.65; x < 10.2; x += .16) block(staticRoot, [x, 3.25, -8.08], [.045, 3.6, .075], M.edge, .005);
-  block(staticRoot, [coffee.x, .57, coffee.z], [coffee.width, 1.08, coffee.depth], M.wood, .05);
-  block(staticRoot, [coffee.x, 1.15, coffee.z], [coffee.width + .08, .10, coffee.depth + .10], M.paleStone, .04);
+  const coffee = COFFEE_CONFIG, nook = new THREE.Group();
+  nook.position.set(coffee.x - 8.45, 0, coffee.z + 7.05); staticRoot.add(nook);
+  block(nook, [8.45, 2.65, -7.85], [coffee.width + .16, 5.1, .15], M.wood, .02);
+  for (let x = 6.65; x < 10.2; x += .16) block(nook, [x, 3.25, -7.73], [.045, 3.6, .075], M.edge, .005);
+  block(nook, [8.45, .57, -7.05], [coffee.width, 1.08, coffee.depth], M.wood, .05);
+  block(nook, [8.45, 1.15, -7.05], [coffee.width + .08, .10, coffee.depth + .10], M.paleStone, .04);
   for (const dx of [-1.15, 0, 1.15]) {
-    block(staticRoot, [coffee.x + dx, .60, coffee.z + .61], [1.08, .91, .025], M.edge, .015);
-    rod(staticRoot, [coffee.x + dx - .14, .94, coffee.z + .637], [coffee.x + dx + .14, .94, coffee.z + .637], .012, M.brass);
+    block(nook, [8.45 + dx, .60, -7.05 + .61], [1.08, .91, .025], M.edge, .015);
+    rod(nook, [8.45 + dx - .14, .94, -7.05 + .637], [8.45 + dx + .14, .94, -7.05 + .637], .012, M.brass);
   }
   for (const y of [2.3, 3.16]) {
-    block(staticRoot, [coffee.x, y, -7.71], [coffee.width - .18, .09, .70], M.edge, .025);
-    block(staticRoot, [coffee.x, y - .06, -7.64], [coffee.width - .35, .025, .40], M.glow, .006);
-    for (let i = 0; i < 5; i++) add(staticRoot, geo('coffee-tin', () => new THREE.CylinderGeometry(.10, .10, .23, 14)), i % 2 ? M.white : M.paleBrass, [7.30 + i * .49, y + .16, -7.70]);
+    block(nook, [8.45, y, -7.36], [coffee.width - .18, .09, .70], M.edge, .025);
+    block(nook, [8.45, y - .06, -7.29], [coffee.width - .35, .025, .40], M.glow, .006);
+    for (let i = 0; i < 5; i++) add(nook, geo('coffee-tin', () => new THREE.CylinderGeometry(.10, .10, .23, 14)), i % 2 ? M.white : M.paleBrass, [7.30 + i * .49, y + .16, -7.35]);
   }
-  block(staticRoot, [8.75, 1.57, -7.05], [.83, .70, .62], M.dark, .055);
-  block(staticRoot, [8.75, 1.56, -6.72], [.69, .54, .018], M.chrome, .014);
-  block(staticRoot, [8.75, 1.70, -6.70], [.36, .16, .021], M.dark, .006);
-  rod(staticRoot, [8.75, 1.54, -6.68], [8.75, 1.42, -6.59], .022, M.chrome);
-  block(staticRoot, [8.75, 1.26, -6.59], [.60, .035, .35], M.chrome, .012);
-  mug(staticRoot, 8.74, 1.29, -6.58); mug(staticRoot, 7.26, 1.21, -6.78); mug(staticRoot, 7.61, 1.21, -6.78);
+  block(nook, [8.75, 1.57, -7.05], [.83, .70, .62], M.dark, .055);
+  block(nook, [8.75, 1.56, -6.72], [.69, .54, .018], M.chrome, .014);
+  block(nook, [8.75, 1.70, -6.70], [.36, .16, .021], M.dark, .006);
+  rod(nook, [8.75, 1.54, -6.68], [8.75, 1.42, -6.59], .022, M.chrome);
+  block(nook, [8.75, 1.26, -6.59], [.60, .035, .35], M.chrome, .012);
+  mug(nook, 8.74, 1.29, -6.58); mug(nook, 7.26, 1.21, -6.78); mug(nook, 7.61, 1.21, -6.78);
 
   // Lounge: pale linen sofa, teal cushions, woven rug and low coffee table.
-  block(staticRoot, [-6.6, .06, 5.25], [5.6, .025, 4.3], M.rug, .12);
+  block(staticRoot, [-6.0, .06, 4.05], [5.6, .025, 4.3], M.rug, .12);
   for (const sofa of SOFA_CONFIG) {
     const { x, z, width, depth } = sofa;
     block(staticRoot, [x, .18, z + .02], [width, .30, depth - .12], M.linen, .10);
@@ -320,10 +325,10 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     rod(staticRoot, [pool.x + side * .33, .87, pool.z - 3.45], [pool.x + side * .33, .87, pool.z - 2.98], .026, M.chrome);
   }
 
-  for (const [index, z] of [1.55, 5.8].entries()) {
+  for (const [index, z] of [.65, 4.5].entries()) {
     const top = index === 0 ? .421 : .366;
-    block(staticRoot, [4.92, top - .055, z], [.50, .11, 1.25], M.paleStone, .04);
-    for (const dz of [-.43, .43]) block(staticRoot, [5.05, (top - .11) / 2, z + dz], [.22, top - .11, .15], M.paleStone, .02);
+    block(staticRoot, [4.02, top - .055, z], [.50, .11, 1.25], M.paleStone, .04);
+    for (const dz of [-.43, .43]) block(staticRoot, [4.15, (top - .11) / 2, z + dz], [.22, top - .11, .15], M.paleStone, .02);
   }
 
   function plant(config) {
@@ -361,7 +366,7 @@ export function createOfficeScene(THREE, { scene, monitors, mobile = false }) {
     idleActivities: [...new Set(IDLE_SLOTS.map(slot => slot.kind))],
     staticSourceMeshes: sourceMeshes, staticDrawCalls: batches.size,
     estimatedDrawCalls: batches.size + displays.children.length + [...chairGroups.values(), ...keyboardGroups.values()].reduce((sum, group) => sum + group.children.length, 0),
-    monitorCount: STATION_CONFIG.length + 4, computerCount: STATION_CONFIG.length,
+    monitorCount: STATION_CONFIG.length + 1, computerCount: STATION_CONFIG.length,
     screenSurfaceCount: displayMeshes.length,
     fixedChairOwnership: true, rollingChairs: true, pool: true, coffeeNook: true, floorBounds: { ...BOUNDS }, mobile,
     textureSources: 'locally generated office materials; existing read-only monitor telemetry',

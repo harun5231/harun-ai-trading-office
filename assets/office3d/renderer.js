@@ -28,6 +28,7 @@ host.append(renderer.domElement);
 const camera = new THREE.PerspectiveCamera(39, innerWidth / innerHeight, .1, 220);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+controls.enablePan = false;
 controls.dampingFactor = .08;
 controls.minDistance = 3;
 controls.maxDistance = 130;
@@ -103,70 +104,23 @@ for (const actor of actors) {
   actor.bubble = bubble; actor.screen = null;
 }
 
-const cameraViews = document.createElement('nav');
-cameraViews.className = 'office-camera-views';
-cameraViews.setAttribute('aria-label', 'Sudut pandang kantor');
-host.append(cameraViews);
-function cameraButton(label, action) {
-  const button = document.createElement('button');
-  button.type = 'button'; button.textContent = label;
-  button.setAttribute('aria-pressed', 'false');
-  button.addEventListener('click', () => {
-    action();
-    for (const child of cameraViews.children) child.setAttribute('aria-pressed', String(child === button));
-  });
-  cameraViews.append(button);
-  return button;
-}
-const overviewButton = cameraButton('KANTOR', frameOffice);
-overviewButton.setAttribute('aria-pressed', 'true');
-let focusedStation = null;
-// Magnify the same live canvas texture on touch screens; no separate data feed.
-const monitorDetail = document.createElement('figure');
-monitorDetail.className = 'office-monitor-detail'; monitorDetail.hidden = true;
-const monitorCaption = document.createElement('figcaption');
-const monitorClose = document.createElement('button');
-monitorClose.type = 'button'; monitorClose.textContent = 'Tutup layar';
-monitorClose.addEventListener('click', () => { monitorDetail.hidden = true; });
-const monitorZoom = document.createElement('button');
-monitorZoom.className = 'office-monitor-zoom'; monitorZoom.type = 'button'; monitorZoom.textContent = '2×';
-monitorZoom.setAttribute('aria-label', 'Perbesar teks layar PC'); monitorZoom.setAttribute('aria-pressed', 'false');
-monitorZoom.addEventListener('click', () => {
-  const zoomed = monitorDetail.classList.toggle('is-zoomed');
-  monitorZoom.setAttribute('aria-pressed', String(zoomed));
-});
-const monitorViewport = document.createElement('div'); monitorViewport.className = 'office-monitor-viewport';
-monitorDetail.append(monitorCaption, monitorZoom, monitorClose, monitorViewport); host.append(monitorDetail);
-function focusStation(station) {
-  focusedStation = station;
-  // Look over the owner's shoulder at the real screen, from inside the room.
-  controls.target.set(station.x, 1.05, station.z - .6);
-  camera.position.set(station.x + (mobile ? 1.7 : 2.5), mobile ? 3.6 : 3.1, station.z - 3.5);
-  controls.update(); camera.updateMatrixWorld(true);
-  if (mobile) {
-    monitorDetail.querySelector('canvas')?.remove();
-    const screen = monitors.get(station.role).image;
-    screen.setAttribute('aria-label', `Layar ${station.name}, data existing hanya baca`);
-    monitorCaption.textContent = station.name;
-    monitorViewport.append(screen); monitorViewport.scrollTo(0, 0); monitorDetail.hidden = false;
-  }
-}
-for (const station of stations) cameraButton(station.name, () => focusStation(station));
-
 function frameOffice() {
-  focusedStation = null;
-  monitorDetail.hidden = true;
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
-  controls.target.set(0, 1.65, -.2);
+  const { minX, maxX, minZ, maxZ } = office.bounds;
+  const centerX = (minX + maxX) / 2, centerZ = (minZ + maxZ) / 2;
+  controls.target.set(centerX, 1.65, centerZ);
   const top = document.querySelector('.top')?.getBoundingClientRect().bottom || 0;
   const maxTop = Math.max(.45, 1 - 2 * (top + 12) / innerHeight);
   const points = [];
-  for (const x of [-11, 11]) for (const z of [-8.6, 9]) points.push(new THREE.Vector3(x, 0, z));
-  points.push(new THREE.Vector3(-10.6, 5.35, -8.4), new THREE.Vector3(10.6, 5.35, -8.4));
-  let distance = 23;
+  for (const x of [minX - .5, maxX + .5]) for (const z of [minZ - .5, maxZ + .5])
+    points.push(new THREE.Vector3(x, 0, z));
+  points.push(new THREE.Vector3(minX - .35, 5.35, minZ - .3),
+    new THREE.Vector3(maxX + .35, 5.35, minZ - .3),
+    new THREE.Vector3(minX - .35, 5.1, maxZ + .3));
+  let distance = Math.max(maxX - minX, maxZ - minZ);
   for (let attempt = 0; attempt < 22; attempt++) {
-    camera.position.set(distance * (mobile ? .12 : .32), distance * .62, distance * 1.02 - .2);
+    camera.position.set(centerX + distance * (mobile ? .12 : .32), distance * .62, centerZ + distance * 1.02);
     camera.lookAt(controls.target); camera.updateMatrixWorld(true);
     if (points.every(point => {
       const projected = point.clone().project(camera);
@@ -176,9 +130,12 @@ function frameOffice() {
   }
   controls.update();
   camera.updateMatrixWorld(true);
-  for (const child of cameraViews.children) child.setAttribute('aria-pressed', String(child === overviewButton));
 }
 frameOffice();
+// Preserve manual orbit and zoom when browser chrome or orientation resizes.
+let cameraMoved = false;
+function manualCameraStart() { cameraMoved = true; }
+controls.addEventListener('start', manualCameraStart);
 
 const projectedHead = new THREE.Vector3();
 let labelDiagnostics = { visible: 0, hiddenForSpace: 0, overlaps: 0 };
@@ -194,7 +151,7 @@ function projectSpeech(dt) {
   const candidates = [];
   for (const actor of actors) {
     if (!actor.avatar.available) { actor.bubble.hidden = true; actor.screen = null; continue; }
-    if (mobile && focusedStation?.role !== actor.role) {
+    if (mobile) {
       actor.bubble.hidden = true; actor.screen = null; continue;
     }
     const role = displayStatus.getRole(actor.role);
@@ -277,9 +234,7 @@ function resize() {
   camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   for (const actor of actors) { actor.labelWidth = null; actor.labelHeight = null; }
-  // Framing affects the canvas camera only, never the dashboard layout.
-  if (focusedStation) focusStation(focusedStation);
-  else frameOffice();
+  if (!cameraMoved) frameOffice();
 }
 function visibility() { if (document.hidden) pause(); else resume(); }
 function contextLost(event) {
@@ -291,16 +246,15 @@ function dispose() {
   if (disposed) return; disposed = true; pause();
   removeEventListener('resize', resize);
   document.removeEventListener('visibilitychange', visibility);
-  document.getElementById('resetCamera')?.removeEventListener('click', frameOffice);
+  controls.removeEventListener('start', manualCameraStart);
   renderer.domElement.removeEventListener('webglcontextlost', contextLost);
   controls.dispose(); status.dispose();
   for (const actor of actors) actor.avatar.dispose();
   office.dispose(); monitors.dispose(); renderer.dispose();
-  speechLayer.remove(); assetNotice.remove(); cameraViews.remove(); monitorDetail.remove(); renderer.domElement.remove();
+  speechLayer.remove(); assetNotice.remove(); renderer.domElement.remove();
 }
 addEventListener('resize', resize);
 document.addEventListener('visibilitychange', visibility);
-document.getElementById('resetCamera')?.addEventListener('click', frameOffice);
 renderer.domElement.addEventListener('webglcontextlost', contextLost);
 addEventListener('pagehide', event => { if (event.persisted) pause(); else dispose(); });
 addEventListener('pageshow', event => { if (event.persisted) resume(); });

@@ -10,7 +10,7 @@ HARNESS = r"""
 import assert from 'node:assert/strict';
 const RealDate=Date;let clock=RealDate.parse('2026-10-06T12:00:00Z');globalThis.Date=class extends RealDate{constructor(...args){super(...(args.length?args:[clock]));}static now(){return clock;}};
 const canvases=[];
-globalThis.document={createElement:tag=>{assert.equal(tag,'canvas');const canvas={width:0,height:0};const ctx=new Proxy({drawn:[],fillText(value){this.drawn.push(String(value));},fillRect(x,y,w,h){if(x===0&&y===0&&w===512&&h===256)this.drawn=[];},createLinearGradient(){return {addColorStop(){}};}},{get(target,key){return key in target?target[key]:()=>{};}});canvas.ctx=ctx;canvas.getContext=()=>ctx;canvases.push(canvas);return canvas;}};
+globalThis.document={createElement:tag=>{assert.equal(tag,'canvas');const canvas={width:0,height:0};const ctx=new Proxy({drawn:[],fillText(value){this.drawn.push(String(value));},fillRect(x,y,w,h){if(x===0&&y===0&&(w===512&&h===256||w===1024&&h===272))this.drawn=[];},createLinearGradient(){return {addColorStop(){}};}},{get(target,key){return key in target?target[key]:()=>{};}});canvas.ctx=ctx;canvas.getContext=()=>ctx;canvases.push(canvas);return canvas;}};
 globalThis.fetch=()=>{throw Error('Office monitors must not make requests.');};
 class CanvasTexture{constructor(image){this.image=image;}dispose(){this.disposed=true;}}
 const THREE={CanvasTexture,SRGBColorSpace:'srgb',LinearFilter:'linear'};
@@ -33,7 +33,7 @@ class MonitorTextures(unittest.TestCase):
 
     def test_no_fabricated_prices_counts_gateway_or_chat_without_data(self):
         self.run_node(r"""
-assert.equal(canvases.length,16);assert.equal(monitors.diagnostics().textures,16);
+assert.equal(canvases.length,17);assert.equal(monitors.diagnostics().textures,17);
 assert.equal(monitors.diagnostics().decorativeCharts,false);
 for(const role of monitors.diagnostics().roles){assert.match(text(role),/DATA WORKER · READ ONLY/);assert.equal(words(role).some(value=>/^\$?-?\d+(?:\.\d+)?%?$/.test(value)),false);assert.doesNotMatch(text(role),/BUY|SELL|ONLINE|WORKING|CHAT|SIGNAL PATTERN|CODE FLOW/);}
 assert.match(text('trading'),/BELUM ADA DATA GATEWAY/);assert.doesNotMatch(text('trading'),/NOT_CONNECTED/);assert.match(text('market'),/Belum ada aktivitas terbaru/);
@@ -100,6 +100,20 @@ for(const [role,name] of Object.entries({market:'HERMES AGENT',neuro:'NEUROBRO',
 for(const role of ['position','reviewer','report'])assert.ok(monitors.get(role));
 monitors.update(1,{...data,robot_on:true,status:'WAITING'});assert.ok(words('boss').includes('ON'));for(const role of monitors.diagnostics().roles)assert.doesNotMatch(text(role),/WORKING|ONLINE|Bekerja/);
 monitors.dispose();
+""")
+
+    def test_wall_chart_area_reports_missing_ohlc_without_reusing_pc_logs_or_trade_prices(self):
+        self.run_node(r"""
+assert.equal(monitors.get('wall').image.width,1536);assert.equal(monitors.get('wall').image.height,408);
+assert.match(text('wall'),/BINANCE FUTURES/);assert.ok(words('wall').includes('1H'));assert.ok(words('wall').includes('15M'));
+assert.match(text('wall'),/Data candlestick belum tersedia/);assert.match(text('wall'),/SIMBOL BELUM TERSEDIA/);
+monitors.update(1,{...data,recent_fills:[{symbol:'ETHUSDT',side:'BUY',quantity:'1',price:'2500',time:now()}],fills_checked_at:now()});
+assert.match(text('wall'),/ETHUSDT/);assert.match(text('wall'),/EXECUTION_BLOCKED/);assert.match(text('wall'),/Pembaruan status · 12:00:00 UTC/);
+assert.doesNotMatch(text('wall'),/2500|116\.93|Actual worker event|AKTIVITAS|WALLET|HASIL PIPELINE/);
+assert.match(text('market'),/Actual worker event/);assert.ok(words('position').includes('116.93'));
+clock+=120001;monitors.update(2,data);assert.doesNotMatch(text('wall'),/ETHUSDT|EXECUTION_BLOCKED|12:00:00/);
+assert.equal(monitors.diagnostics().wall.candleData,'UNAVAILABLE');
+const texture=monitors.get('wall');monitors.dispose();assert.equal(texture.disposed,true);assert.equal(texture.image.width,1);
 """)
 
 
