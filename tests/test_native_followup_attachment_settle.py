@@ -77,7 +77,8 @@ class BatchBridge:
                 'initial_url': self.page.url, 'fresh': None, 'phase': 'FOLLOWUP_SENT'},
             'until': self.operation_deadline, 'payload': payload, 'payload_digest': _digest(payload),
             'chart_images': (), 'chart_evidence': (), 'dispatch_check': lambda: True,
-            'delivery': self.delivery, '_digest': _digest, 'hashlib': hashlib, 're': re}
+            'delivery': self.delivery, '_digest': _digest, 'hashlib': hashlib, 're': re,
+            '_received': inspect.signature(DelegatedDOMBridge._ask).parameters['_received'].default}
         def unknown(): raise Unknown()
         scope['unknown'] = unknown
         exec(compile(ast.Module(body=functions, type_ignores=[]), '<actual-production-transcript>', 'exec'), scope)
