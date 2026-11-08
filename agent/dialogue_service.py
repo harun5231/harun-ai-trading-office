@@ -121,6 +121,52 @@ def _number_values(value):
     return result
 
 
+def _without_sourced_utc_times(question,request):
+    """Full UTC renderings are sourced time facts, never reusable price tokens."""
+    if 'UTC'not in question.upper()and re.search(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:',question,re.I)is None:
+        return question
+    instants=set();utc=ZoneInfo('UTC');context=request.get('market_context')
+    if type(context)is dict:
+        try:
+            validated_market_context(context,now=context.get('observed_at'))
+            milliseconds=context['server_time_ms']
+            instants.add(datetime.fromtimestamp(milliseconds//1000,utc).replace(microsecond=milliseconds%1000*1000))
+        except (AgentError,ValueError,TypeError,OverflowError,OSError):pass
+    # Existing pending-order facts publish accepted_at as explicit UTC ISO and
+    # observed_at as epoch seconds. Other temporal keys require explicit units
+    # in their ISO value; price, age, quantity and private values cannot opt in.
+    for fact in web_source_facts(request.get('source_facts',[])):
+        values=fact['values']
+        for key in('accepted_at','observed_at','last_review_at','next_review_at'):
+            value=values.get(key)
+            try:
+                if key=='observed_at'and type(value)in(int,float)and math.isfinite(value)and 0<value<=253402300799:
+                    instants.add(datetime.fromtimestamp(value,utc))
+                elif type(value)is str and re.fullmatch(r'\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|\+00:00)',value):
+                    instants.add(datetime.fromisoformat(value.replace('Z','+00:00')))
+            except (ValueError,OverflowError,OSError):pass
+    months=(('Januari','January','Jan'),('Februari','February','Feb'),('Maret','March','Mar'),('April','Apr'),
+        ('Mei','May'),('Juni','June','Jun'),('Juli','July','Jul'),('Agustus','August','Agu','Aug'),
+        ('September','Sep','Sept'),('Oktober','October','Okt','Oct'),('November','Nov'),('Desember','December','Des','Dec'))
+    forms=set()
+    for instant in instants:
+        clock=instant.strftime('%H:%M:%S');date=instant.strftime('%Y-%m-%d')
+        fractions={'',f'.{instant.microsecond:06d}',f'.{instant.microsecond//1000:03d}'}
+        if instant.microsecond:fractions.add('.'+f'{instant.microsecond:06d}'.rstrip('0'))
+        for fraction in fractions:
+            for separator in('T',' '):
+                for suffix in('Z','+00:00',' UTC'):
+                    forms.add(date+separator+clock+fraction+suffix)
+        for month in months[instant.month-1]:
+            for day in{str(instant.day),f'{instant.day:02d}'}:
+                forms.add(f'{day} {month} {instant.year} {clock} UTC')
+                forms.add(f'{day}{month}{instant.year} {clock} UTC')
+                forms.add(f'{month} {day}, {instant.year} {clock} UTC')
+    if not forms:return question
+    pattern=r'(?<![A-Za-z0-9_])(?:'+'|'.join(re.escape(value)for value in sorted(forms,key=len,reverse=True))+r')(?![A-Za-z0-9_])'
+    return re.sub(pattern,'',question,flags=re.I)
+
+
 def validate_question_sources(question, request, *, web_outbound=False):
     """Allow natural discussion of known facts without inventing new levels.
 
@@ -141,7 +187,8 @@ def validate_question_sources(question, request, *, web_outbound=False):
     else:
         known.update(_number_values(request.get('source_facts')))
     # These are the owner's fixed timeframe/reward vocabulary, not price data.
-    without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', '', question)
+    without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', '',
+        _without_sourced_utc_times(question,request))
     need(_number_values(without_timeframes) <= known, 'DIALOGUE_PRICE_PROPOSAL_REFUSED')
     # Unicode numeric lookalikes are not silently reinterpreted as price data.
     need(not any(char.isdigit() and char not in '0123456789' for char in question),

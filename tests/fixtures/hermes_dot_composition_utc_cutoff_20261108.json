@@ -1,0 +1,30 @@
+{
+  "request_id": "2891ffd2a98281ddab9573ccd41dee2d07d83a644f650d4b391fcdaf5d77cc41",
+  "request_sha256": "9e8765535e26a7dc33321ef6d8d5276ff5e3bcfd3ce32d7f15a52c0a8b0bf26a",
+  "archive_sha256": "f5f53625b74283b85be289f44c5679664b1e25dd477040e7bb8df8fe2637cf39",
+  "envelope_sha256": "9d3e4a04e79de51695ef13096ea3980784686f42aba15dd8430ed47cc7296ae2",
+  "question_sha256": "44b45cd6c4bf5397062c66051e87d27ac73908971323463ef17b1761993cc1c2",
+  "question": "Neurobro, analisis DOTUSDT perpetual Binance untuk scalping entry 15m dengan konteks 1h berdasarkan data publik terlampir, cutoff 8 November 2026 20:43:57 UTC. Mark price 0.88780549; close tertutup terakhir 15m 0.888900 dan 1h 0.890100. Candle 15m berjalan: open 0.888800, high 0.889400, low 0.885100, close sementara 0.887700. Kembalinya harga di atas 0.887000–0.887300 masih intrabar, bukan reclaim atau false breakdown terkonfirmasi.\nEvaluasi struktur pasar, swing high/low, momentum, volume, volatilitas, wick dan potensi sapuan likuiditas. Tinjau pantulan 0.880600 ke 0.894700 lalu pelemahan kembali, dengan konteks penolakan sebelumnya dari 0.905500. Petakan support/resistance dan nilai apakah pantulan terkini hanya koreksi atau memberi bukti perubahan struktur. Pisahkan fakta OHLCV dari hipotesis likuiditas.\nTentukan LONG, SHORT, atau HOLD. Untuk setup layak, berikan ENTRY, TP rekomendasi, SL teknikal serta titik invalidasi. SL harus mengikuti struktur/swing dengan ruang terhadap wick, volatilitas dan sapuan likuiditas, bukan dipersempit demi rasio. Tunjukkan perhitungan RISK REWARD 1:2 dan kelayakan target terhadap level penghalang. Jika HOLD, jelaskan alasan pasar dan konfirmasi yang ditunggu. Jangan memaksakan setup, menjanjikan profit atau mengarang berita.\nAkhiri keputusan yang sudah jelas dengan JSON yang kamu tulis sendiri berkunci COIN, ARAH, ENTRY, TP, SL; COIN DOTUSDT, ARAH LONG/SHORT/HOLD. Jika HOLD, ENTRY, TP dan SL semuanya null.",
+  "approved_question_values": [
+    "0.880600",
+    "0.885100",
+    "0.887000",
+    "0.887300",
+    "0.887700",
+    "0.88780549",
+    "0.888800",
+    "0.888900",
+    "0.889400",
+    "0.890100",
+    "0.894700",
+    "0.905500",
+    "8",
+    "43",
+    "2026"
+  ],
+  "unsupported_values": [
+    "20",
+    "57"
+  ],
+  "fixture_context_note": "Tests use a validated synthetic 400-candle context in the displayed cutoff second; source runtime time is verified separately from retained proof."
+}
