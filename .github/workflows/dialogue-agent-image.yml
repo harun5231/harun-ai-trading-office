@@ -1,7 +1,7 @@
 name: Build and publish delegated Neurobro dialogue agent
 on:
   pull_request:
-    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/neurobro-dialogue.contract.json', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_dialogue_sourced_utc.py', 'tests/fixtures/hermes_dot_composition_utc_cutoff_20261108.json', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
   workflow_dispatch:
 permissions: {}
 defaults:
@@ -24,7 +24,7 @@ jobs:
         run: |
           python3 -m venv "$RUNNER_TEMP/dialogue-agent-tests"
           "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m pip install --disable-pip-version-check httpx==0.28.1
-          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
+          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_dialogue_sourced_utc tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
       - name: Build from the immutable existing agent image
         run: |
           contract_sha="$(sha256sum deploy/neurobro-dialogue.contract.json | cut -d ' ' -f 1)"
@@ -61,7 +61,7 @@ jobs:
           docker push "$image"
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
           image_id="$(docker image inspect --format '{{.Id}}' "$image")"
-          dialogue_sha="$(sha256sum agent/hermes_dialogue.py | cut -d ' ' -f 1)"
+          dialogue_sha="$(sha256sum agent/dialogue_service.py | cut -d ' ' -f 1)"
           SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" DIALOGUE_SHA="$dialogue_sha" python3 - <<'PY'
           import json, os, re
           image=os.environ['IMAGE_DIGEST']
@@ -75,9 +75,9 @@ jobs:
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
-                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:41702f11e004a1bbcceb86dc09f116b920f3cccc8df9cae1356319fc09e9e2db',
-                  'maintenance_profile':'ISOLATED_HERMES_DIALOGUE_MAINTENANCE_V1',
-                  'source_files':{'agent/hermes_dialogue.py':os.environ['DIALOGUE_SHA']},
+                  'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:696219259ef3d2e8b5d336a4f784389a3a9626527ce387b9db2798752ad3c41d',
+                  'maintenance_profile':'ISOLATED_HERMES_DIALOGUE_UTC_PROVENANCE_V1',
+                  'source_files':{'agent/dialogue_service.py':os.environ['DIALOGUE_SHA']},
                   'hermes_runtime_inherited':True,
                   'deployment_authorized':False},output,sort_keys=True)
           PY
