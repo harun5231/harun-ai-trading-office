@@ -13,6 +13,7 @@ from worker.account_state import screening_contract
 
 
 FIXTURE = Path(__file__).parent / 'fixtures/neurobro_screening_pick_summary_20261109.txt'
+DAFTAR_FIXTURE = Path(__file__).parent / 'fixtures/neurobro_screening_daftar_pick_20261109.txt'
 
 
 class ScreeningPickSummaryTests(unittest.TestCase):
@@ -103,6 +104,109 @@ class ScreeningPickSummaryTests(unittest.TestCase):
         self.assertFalse(screening_market_hold(self.summary, selected))
         self.assertFalse(screening_market_hold(held.replace('HOLD, momentum', 'LONG, momentum'), selected))
         self.assertFalse(screening_market_hold('Data chart belum terbaca.\n' + held, selected))
+
+    def test_actual_replacement_reply_keeps_only_explicit_base_matched_choices(self):
+        reply = DAFTAR_FIXTURE.read_text()
+        self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),
+            '53a83fda27a6027ce5e792d91f8835c6f5f6193c3d8cd36cc11073f78ecaa7fb')
+        self.assertEqual(parse_reply_for_payload(reply, self.payload(2)),
+            {'symbols': ['FILUSDT', 'ENAUSDT']})
+        with self.assertRaisesRegex(ReplyIncomplete, 'SCREENING_COUNT_MISMATCH'):
+            parse_reply_for_payload(reply, self.payload(1))
+        for symbol in ('FILUSDT', 'ENAUSDT'):
+            with self.subTest(symbol=symbol), self.assertRaises(ReplyIncomplete):
+                parse_analysis_reply(reply, symbol)
+
+    def test_pick_heading_family_case_plural_colon_and_list_styles_share_strict_rules(self):
+        bodies = (
+            '$FILUSDT Perpetual - LONG, struktur jelas.\n$ENAUSDT Perpetual - LONG, likuid.',
+            'FIL: FILUSDT Perpetual - LONG, struktur jelas.\nENA: ENAUSDT Perpetual - LONG, likuid.',
+        )
+        for family in ('Ringkasan', 'Daftar'):
+            for word in ('pick', 'picks'):
+                for suffix in ('', ':'):
+                    for transform in (str.lower, str.upper, str.title):
+                        for body in bodies:
+                            heading = transform(family + ' ' + word) + suffix
+                            with self.subTest(heading=heading, body=body):
+                                reply = ('Perbandingan BTCUSDT dan ETHUSDT, bukan pilihan.\n\n'
+                                    + heading + '\n\n' + body + '\n\nCatatan riset umum.')
+                                self.assertEqual(parse_screening_reply(reply), {'symbols': ['FILUSDT', 'ENAUSDT']})
+                                held = reply.replace('LONG,', 'HOLD,')
+                                self.assertTrue(screening_market_hold(held, ['FILUSDT', 'ENAUSDT']))
+
+    def test_pick_heading_family_does_not_hide_conflict_conditions_or_extra_choices(self):
+        valid = 'Daftar picks:\nFIL: FILUSDT Perpetual - LONG\nENA: ENAUSDT Perpetual - LONG'
+        invalid = (
+            valid.replace('FIL: FILUSDT', 'DOT: FILUSDT'),
+            valid.replace('ENA: ENAUSDT', 'FIL: FILUSDT'),
+            valid.replace('LONG', 'LONG jika breakout', 1),
+            valid.replace('LONG', 'LONG dibanding BTCUSDT', 1),
+            'Jika struktur berubah, gunakan daftar ini.\n\n' + valid,
+            'COIN: BTCUSDT\n\n' + valid,
+            valid + '\n\nRingkasan pick\n$BTCUSDT Perpetual - LONG',
+            valid + '\n\nCatatan lain.\nBTC: BTCUSDT Perpetual - LONG',
+            valid.replace('Daftar picks:', 'Daftar picks bersyarat:'),
+            valid.replace('Daftar picks:', 'Daftar kandidat alternatif:'),
+        )
+        for reply in invalid:
+            with self.subTest(reply=reply), self.assertRaises(ReplyIncomplete):
+                parse_screening_reply(reply)
+
+    def replacement_case(self, excluded=()):
+        from tests import test_generic_screening_response_recovery as generic
+        case = generic.GenericScreeningResponseRecoveryTests()
+        case.setUp()
+        self.addCleanup(case.doCleanups)
+        operation = generic.CYCLE + ':screening:9:2'
+        case.context['requested_count'] = 2
+        case.context['excluded_symbols'] = sorted(set(case.context['excluded_symbols']) | set(excluded))
+        _, schema = screening_contract(2)
+        case.body, encoded, case.request_hash = case.source.request_body(
+            operation, case.body['prompt'], schema, case.context)
+        case.payload = {**case.body, 'request_sha256': case.request_hash}
+        case.catalog.update(FILUSDT={}, ENAUSDT={})
+        case.db.execute('UPDATE api_requests SET operation=?,body_hash=?,created=? WHERE operation=?',
+            (operation, case.request_hash, generic.NOW-1000, generic.OP))
+        case.db.execute('UPDATE robot_jobs SET operation=? WHERE operation=?', (operation, generic.OP))
+        case.db.execute('UPDATE research_browser_requests SET operation=?,request_sha256=?,marker=?,request_body=? '
+            'WHERE operation=?', (operation, case.request_hash, case.body['marker'], encoded, generic.OP))
+        return case, operation
+
+    def test_actual_replacement_reply_keeps_original_context_exclusions_enforced(self):
+        from tests import test_generic_screening_response_recovery as generic
+        from worker.core import Review
+        from worker import screening_response_recovery as recovery
+        case, operation = self.replacement_case(excluded=['FILUSDT'])
+        envelope = case.fixture(operation=operation, reply=DAFTAR_FIXTURE.read_text(), symbols=['FILUSDT', 'ENAUSDT'])
+        finances = case.finances()
+        before = tuple(case.db.execute('SELECT * FROM api_requests').fetchone())
+        with self.assertRaises(Review):
+            recovery.recover_received_screening(case.provider, envelope, catalog=case.catalog,
+                max_age=180, now=generic.NOW)
+        self.assertEqual(tuple(case.db.execute('SELECT * FROM api_requests').fetchone()), before)
+        self.assertEqual(case.db.execute('SELECT count(*) FROM research_browser_responses').fetchone()[0], 0)
+        self.assertEqual(case.db.execute('SELECT count(*) FROM screening_response_recoveries').fetchone()[0], 0)
+        self.assertEqual(case.finances(), finances)
+
+    def test_actual_replacement_reply_recovers_original_receipt_once_without_provider_replay(self):
+        from tests import test_generic_screening_response_recovery as generic
+        from worker import screening_response_recovery as recovery
+        case, operation = self.replacement_case()
+        reply = DAFTAR_FIXTURE.read_text()
+        envelope = case.fixture(operation=operation, reply=reply, symbols=['FILUSDT', 'ENAUSDT'])
+        finances = case.finances()
+        self.assertEqual(recovery.recover_received_screening(case.provider, envelope,
+            catalog=case.catalog, max_age=180, now=generic.NOW), 'NOEXEC')
+        receipt = dict(case.db.execute('SELECT * FROM research_browser_responses').fetchone())
+        self.assertEqual(receipt['assistant_text'], reply)
+        self.assertEqual(case.db.execute('SELECT attempts FROM api_requests WHERE operation=?', (operation,)).fetchone()[0], 1)
+        self.assertEqual(case.finances(), finances)
+        snapshot = tuple(case.db.iterdump())
+        case.provider._record_browser_response = case.forbid
+        self.assertEqual(recovery.recover_received_screening(case.provider, envelope,
+            catalog=case.catalog, max_age=180, now=generic.NOW+1), 'NOEXEC')
+        self.assertEqual(tuple(case.db.iterdump()), snapshot)
 
     def test_original_pick_reply_still_requires_real_review_and_recovers_once_after_restart(self):
         from tests import test_generic_screening_response_recovery as generic

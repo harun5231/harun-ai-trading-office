@@ -1,0 +1,34 @@
+Dua pick pengganti baru di luar seluruh daftar eksklusi, dua-duanya LONG dengan bahan bakar squeeze paling tebal hari ini.
+
+$FIL - si raja short-squeeze
+
+Funding Binance -0.84% per 8 jam dan itu terjadi sambil OI malah naik +1.69% - artinya short baru masuk, bayar mahal, dan mereka yang kena gencet: short liquidasi $520K vs long cuma $1K dalam 24h. Ini setup pantulan paling kuat.
+
+Level	Harga
+Entry	0.76
+SL	0.72
+TP1	0.80
+TP2	0.84
+
+Confidence 6, R:R 1.31 (moderate, 5x).
+
+$ENA - likuiditas paling gede
+
+Volume 24h $117M dengan OI $78M - paling dalam di antara semua kandidat, cocok buat scalping tanpa takut slippage. Short liquidasi $451K vs long $20K - pasar lagi diisi shorts yang rawan kejebol walau koreksinya dangkal (-2.5%).
+
+Level	Harga
+Entry	0.154
+SL	0.145
+TP1	0.165
+TP2	0.175
+
+Confidence 7, R:R 1.58 (moderate, 5x).
+
+Daftar pick
+
+FIL: FILUSDT Perpetual - LONG, funding sangat negatif + OI naik + short terlikuidasi massal
+ENA: ENAUSDT Perpetual - LONG, likuiditas top tier + short mulai kejepit
+
+Keduanya bisa langsung lo trade di NeuroWallet atau Binance USD-M.
+
+⚖️ Neurobro adalah tool riset dan bukan saran finansial! Kami terus improve, tapi tetap bisa salah - yang lo trade dan risiko yang lo ambil tetap keputusan lo.
