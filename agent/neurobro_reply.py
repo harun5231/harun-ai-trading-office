@@ -23,7 +23,7 @@ _COIN = re.compile(r'^\s*' + _COIN_LABEL + '(' + PAIR + r')\b', re.I | re.M)
 _COIN_HEADING = re.compile(r'^\s*(' + PAIR + r')\s*(?:[-—:|]\s*|\s+)'
     r'(?:LONG|SHORT|HOLD)\s*[.!]?\s*$', re.I | re.M)
 _FINAL = re.compile(r'^\s*(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b[^\n]*', re.I | re.M)
-_SCREENING_PICK = re.compile(r'^[ \t]*RINGKASAN[ \t]+PICK[ \t]*:?[ \t]*$', re.I | re.M)
+_SCREENING_PICK = re.compile(r'^[ \t]*(?:RINGKASAN|DAFTAR)[ \t]+PICKS?[ \t]*:?[ \t]*$', re.I | re.M)
 # Negating proof of a visual candle count does not negate readability. The
 # outer material/receipt checks still own actual CSV counts and chart coverage;
 # a separate missing, unreadable, inconsistent or wrong-material complaint
