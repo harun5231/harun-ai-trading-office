@@ -185,6 +185,25 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     text(ctx, decision(data)?.status ?? '—', 265, 174, palette.text, 11, '600');
     activity(ctx, data, { y: 196, count: 1 });
   }
+  // The wall has its own composition: PC telemetry must not fill the chart area.
+  // /office/status currently supplies no OHLC frames or market subscription.
+  // Keep that absence visible instead of inferring candles from fills/decisions.
+  function wall(ctx, data) {
+    ctx.fillStyle = palette.bg; ctx.fillRect(0, 0, 1024, 272);
+    text(ctx, 'BINANCE FUTURES', 22, 30, palette.gold, 20, '600');
+    const symbol = decision(data)?.symbol;
+    text(ctx, typeof symbol === 'string' && /^[A-Z0-9]{2,18}USDT$/.test(symbol)
+      ? symbol : 'SIMBOL BELUM TERSEDIA', 730, 29, palette.text, 16, '600');
+    line(ctx, 22, 43, 1002, 43);
+    for (const [x, timeframe] of [[22, '1H'], [520, '15M']]) {
+      box(ctx, x, 54, 482, 174);
+      text(ctx, timeframe, x + 18, 81, palette.gold, 20, '600');
+      text(ctx, 'Data candlestick belum tersedia', x + 18, 143, palette.text, 20, '500');
+      text(ctx, 'Menunggu candle Binance Futures.', x + 18, 173, palette.muted, 15);
+    }
+    text(ctx, `STATUS · ${status(data)}`, 22, 254, palette.muted, 13);
+    text(ctx, `Pembaruan status · ${timestamp(data.robot_checked_at)}`, 650, 254, palette.muted, 13);
+  }
   const painters = { market, neuro, risk, trading, position, reviewer, report, boss };
   for (const role of roles) {
     const variants = [];
@@ -201,11 +220,20 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
     }
     screens.set(role, variants);
   }
+  const wallCanvas = document.createElement('canvas'); wallCanvas.width = 1536; wallCanvas.height = 408;
+  const wallContext = wallCanvas.getContext('2d', { alpha: false });
+  if (!wallContext) throw new Error('Canvas 2D wall rendering is unavailable.');
+  wallContext.setTransform(1.5, 0, 0, 1.5, 0, 0);
+  const wallTexture = new THREE.CanvasTexture(wallCanvas);
+  if (THREE.SRGBColorSpace) wallTexture.colorSpace = THREE.SRGBColorSpace;
+  if (THREE.LinearFilter) { wallTexture.minFilter = THREE.LinearFilter; wallTexture.magFilter = THREE.LinearFilter; }
+  wallTexture.generateMipmaps = false; wallTexture.name = 'office-wall-market';
   function render(telemetry) {
     for (const role of roles) for (const screen of screens.get(role)) {
       frame(screen.context, role, screen.variant, telemetry);
       painters[role](screen.context, telemetry, screen.variant); screen.texture.needsUpdate = true;
     }
+    wall(wallContext, telemetry); wallTexture.needsUpdate = true;
   }
   function signature(data) {
     return JSON.stringify([balance(data), pnl(data), positions(data), status(data),
@@ -218,6 +246,7 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
   return {
     get(role, variant = 0) {
       if (disposed) throw new Error('Monitor textures have been disposed.');
+      if (role === 'wall') return wallTexture;
       if (!screens.has(role)) throw new RangeError(`Unknown monitor role: ${role}`);
       const index = Number.isFinite(Number(variant)) ? Math.abs(Math.trunc(Number(variant))) % 2 : 0;
       return screens.get(role)[index].texture;
@@ -237,10 +266,12 @@ export function createMonitorTextures(THREE, { mobile = false, reducedMotion = f
       for (const variants of screens.values()) for (const screen of variants) {
         screen.texture.dispose(); screen.canvas.width = 1; screen.canvas.height = 1;
       }
+      wallTexture.dispose(); wallCanvas.width = 1; wallCanvas.height = 1;
       disposed = true;
     },
     diagnostics() {
-      return { roles: [...roles], textures: roles.length * 2, width: WIDTH, height: HEIGHT,
+      return { roles: [...roles], textures: roles.length * 2 + 1, width: WIDTH, height: HEIGHT,
+        wall: { width: 1536, height: 408, candleData: 'UNAVAILABLE', source: 'existing workerSnapshot; OHLC not supplied' },
         fps: FPS, reducedMotion: Boolean(reducedMotion), updates, disposed, decorativeCharts: false, realEventsOnly: true };
     }
   };

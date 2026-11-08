@@ -10,34 +10,20 @@
 /* Office palette; operational controls retain their existing DOM and bindings. */
 :root{--panel:rgba(24,32,36,.94);--line:rgba(215,184,128,.34);--muted:#c6c1b6;--cyan:#e6c991;--green:#a0dfbd}
 html,body{background:#e8dfd2}
-.brand,.stat,.menu-toggle,.menu-drawer,.info-panel,.bottomhint,.camera-reset{box-shadow:0 6px 24px #3a2b1d19}
+.brand,.stat,.menu-toggle,.menu-drawer,.info-panel,.bottomhint{box-shadow:0 6px 24px #3a2b1d19}
 .brand,.stat{backdrop-filter:blur(18px);border-top-color:#ddc28d66}
 .brand strong{color:#f5ead5;letter-spacing:.14em}
 .logo{background:linear-gradient(145deg,#45615c,#243d3a);border-color:#c5a46588;color:#e7d4a8}
 .stat span{letter-spacing:.025em;color:#c6c1b6}.stat b{color:#f5ead5}
 .menu-item.active{background:#35534d;color:#fff4dd}
-.camera-reset,.bottomhint{color:#eee2cc}
+.bottomhint{color:#eee2cc}
 button:focus-visible{outline-color:#caa663}
 #loading{background:#e8dfd2;color:#393c36}#loading span{color:#6d7568}
 #scene .office-speech{max-width:190px;color:#f5ead5;border-color:#c5a46566;background:rgba(24,32,36,.95);font-size:10px}
 #scene .office-asset-notice{position:absolute;left:18px;bottom:70px;z-index:1;max-width:min(480px,calc(100% - 36px));padding:10px 14px;border:1px solid #c9a86d88;border-radius:10px;background:#fff8e9ed;color:#645437;font:500 11px/1.45 Inter,system-ui,sans-serif;box-shadow:0 4px 18px #48362216;pointer-events:none}
 #scene .office-asset-notice[hidden]{display:none}
-#scene .office-camera-views{position:absolute;top:104px;left:50%;transform:translateX(-50%);z-index:1;display:flex;gap:4px;max-width:calc(100% - 250px);padding:4px;border:1px solid #c5a46555;border-radius:10px;background:#fff8e9e6;overflow-x:auto;scrollbar-width:thin}
-#scene .office-camera-views button{flex:0 0 auto;min-height:36px;padding:8px 10px;border:0;border-radius:7px;background:transparent;color:#5b574a;font:600 9px/1.3 Inter,system-ui,sans-serif;letter-spacing:.04em;white-space:nowrap}
-#scene .office-camera-views button[aria-pressed="true"]{background:#2b4842;color:#fff4dd}
-#scene .office-monitor-detail{position:absolute;left:10px;right:10px;bottom:64px;z-index:2;margin:0;padding:6px;border:1px solid #c5a46588;border-radius:10px;background:#101e25;box-shadow:0 8px 25px #102d3c33}
-#scene .office-monitor-detail[hidden]{display:none}
-#scene .office-monitor-detail figcaption{padding:5px 7px;color:#e6c991;font:600 10px/1.4 Inter,system-ui,sans-serif}
-#scene .office-monitor-detail canvas{display:block;width:100%;height:auto;border-radius:5px}
-#scene .office-monitor-detail button{position:absolute;right:6px;top:0;min-height:32px;border:0;background:transparent;color:#d8e4e8;font-size:10px}
-#scene .office-monitor-detail button.office-monitor-zoom{right:82px;min-width:44px;font-size:12px}
-#scene .office-monitor-viewport{overflow:auto;max-height:240px;overscroll-behavior:contain}
-#scene .office-monitor-detail.is-zoomed canvas{width:200%;max-width:none}
 @media(max-width:700px){
  #scene .office-speech{max-width:150px;font-size:8px}
  #scene .office-asset-notice{left:10px;bottom:62px;max-width:calc(100% - 20px);padding:8px 10px;font-size:10px}
  .stat b{font-size:13px}
- #scene .office-camera-views{top:188px;left:10px;transform:none;max-width:calc(100% - 20px);padding:3px;gap:2px}
- #scene .office-camera-views button{min-height:44px;padding:8px 9px;font-size:8px}
 }
-@media(max-height:500px) and (orientation:landscape){#scene .office-camera-views{top:82px;max-width:calc(100% - 240px)}}

@@ -167,7 +167,8 @@ for(let frame=0;frame<100;frame++){
   time+=.05;controller.update(.05,time);
   assert.equal(a.mode,'DOCKING');assert.equal(a.sit,0);
   assert.equal(a.avatar.root.position.z,a.station.dock.z,'docking may not yield sideways into furniture');
-  assert.ok(a.avatar.root.position.x>a.station.dock.x+.92);
+  assert.ok(distance(a.avatar.root.position,a.station.dock)>.92);
+  assert.ok((a.avatar.root.position.x-a.station.dock.x)*(a.station.approach.x-a.station.dock.x)>0);
 }
 assert.equal(nav.lastMotion.reason,'CONTACT_WAIT');
 blocked=false;
