@@ -282,6 +282,11 @@ RECEIVED_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_response_recoveries(
  operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
  proof TEXT NOT NULL,preimage TEXT NOT NULL,phase TEXT NOT NULL,created REAL NOT NULL,
  updated REAL NOT NULL);'''
+REVIEW_RETURN_KIND = 'NATIVE_RECEIVED_SCREENING_REVIEW_INCOMPLETE_V1'
+REVIEW_RETURN_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_review_returns(
+ operation TEXT NOT NULL,request_sha256 TEXT NOT NULL,source_sha256 TEXT NOT NULL,
+ source TEXT NOT NULL,returned_sha256 TEXT NOT NULL,returned TEXT NOT NULL,
+ recorded REAL NOT NULL,PRIMARY KEY(operation,returned_sha256));'''
 
 
 def _wire(value, *, ascii=False):
@@ -410,6 +415,104 @@ def _received_coin_summary(count):
         'Jangan sertakan coin pembanding sebagai pilihan.')
 
 
+def _review_source_identity(proof):
+    """Bind an owned turn; read clocks and unrelated history offsets may change."""
+    return dict(operation=proof['operation'], request_sha256=proof['request_sha256'],
+        payload_sha256=proof['payload_sha256'], native_source_sha256=proof['native_source_sha256'],
+        page_url=proof['page_url'], room={key: proof['room'][key] for key in ('day', 'room_id', 'url')},
+        rows=proof['rows'], operation_scope=proof['operation_scope'],
+        rendered_prompt_receipt=proof['rendered_prompt_receipt'])
+
+
+def _review_return(returned, source, payload, recorded):
+    """Only the authenticated review-only RPC can author this positive closure."""
+    _require(type(returned) is dict and set(returned) == {
+        'kind', 'operation', 'request_sha256', 'operation_completed', 'review_receipts'}
+        and returned['kind'] == REVIEW_RETURN_KIND and returned['operation_completed'] is False
+        and all(returned[key] == payload[key] for key in ('operation', 'request_sha256'))
+        and type(returned['review_receipts']) is list and _finite(recorded)
+        and source['finished_at'] <= recorded)
+    # The actual review can finish after its source observation. Use the real
+    # receipt-return time only to check review chronology, never rewrite capture.
+    review = _screening_review({**source, 'review_receipts': returned['review_receipts'],
+        'finished_at': recorded}, payload, source['rows'])
+    _require(review is not None and review['needs_followup'] is True
+        and review['decision']['action'] == 'CLARIFY')
+    entries = [entry for entry in returned['review_receipts']
+        if entry['value'].get('request_id') == review['request_id']]
+    previous = [entry for entry in source['review_receipts']
+        if entry['value'].get('request_id') == review['request_id']]
+    _require(len(entries) == 1 and (not previous or previous == entries))
+    return entries[0]
+
+
+def retain_screening_review_return(provider, envelope, returned, *, catalog, max_age,
+        now=None, permitted=lambda: True):
+    """Append the real NO-SEND review return without changing its original job."""
+    db = provider.db; current = time.time() if now is None else now
+    _require(not db.in_transaction and _finite(current) and permitted() is True)
+    operation = envelope.get('operation'); body, request_hash, match = stored_screening_request(db, operation)
+    payload = {**body, 'request_sha256': request_hash}; cycle = operation.rsplit(':screening:', 1)[0]
+    before = _snapshot(db, operation, cycle)
+    api, job, cycle_row, settings = (before[key] for key in ('api_requests', 'robot_jobs', 'robot_cycles', 'robot_settings'))
+    _require(all(value is not None for value in (api, job, cycle_row, settings))
+        and type(api['attempts']) is int and api['attempts'] == 1 and api['output'] is None
+        and api['idempotency'] is None and api['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and job['operation'] == operation and job['cycle'] == cycle and job['kind'] == 'SCREENING'
+        and job['symbol'] is None and job['risk_target'] is None and job['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and cycle_row['id'] == cycle and cycle_row['day'] == match[1] and cycle_row['entry_epoch'] == int(match[2])
+        and cycle_row['state'] in ('ACTIVE', 'NEEDS_REVIEW') and settings['enabled'] == 1
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+    data = json.loads(cycle_row['data'])
+    _require(type(data) is dict and data.get('queue') == [] and type(data.get('screen')) is int
+        and data['screen'] == int(match[3]) - 1)
+    validate_received_screening(provider, envelope, payload, api['created'], catalog=catalog,
+        max_age=max_age, now=current, require_approval=False)
+    _review_return(returned, envelope['observation'], payload, current)
+    source = _wire(envelope); result = _wire(returned); digest = _sha(result)
+    db.execute(REVIEW_RETURN_SCHEMA)
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        _require(permitted() is True and _snapshot(db, operation, cycle) == before, 'RESEARCH_PAUSED')
+        existing = db.execute('SELECT * FROM screening_review_returns WHERE operation=? AND returned_sha256=?',
+            (operation, digest)).fetchone()
+        if existing is None:
+            db.execute('INSERT INTO screening_review_returns VALUES(?,?,?,?,?,?,?)',
+                (operation, request_hash, _sha(source), source, digest, result, current))
+        else:
+            _require(existing['request_sha256'] == request_hash and existing['returned'] == result
+                and existing['source_sha256'] == _sha(existing['source'])
+                and _review_source_identity(json.loads(existing['source'])['observation'])
+                    == _review_source_identity(envelope['observation']))
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK'); raise
+
+
+def _retained_review_return(provider, envelope, payload, review, *, catalog, max_age):
+    """A normal CLARIFY receipt alone never proves that a followup was not sent."""
+    db = getattr(provider, 'db', None)
+    if db is None:
+        return False
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_review_returns'").fetchone():
+        return False
+    for row in db.execute('SELECT * FROM screening_review_returns WHERE operation=?', (payload['operation'],)):
+        _require(row['request_sha256'] == payload['request_sha256']
+            and row['source_sha256'] == _sha(row['source']) and row['returned_sha256'] == _sha(row['returned'])
+            and _finite(row['recorded']))
+        source = json.loads(row['source']); returned = json.loads(row['returned'])
+        if _review_source_identity(source['observation']) != _review_source_identity(envelope['observation']):
+            continue
+        _require(row['recorded'] <= envelope['observation']['finished_at'])
+        api = _row(db, 'api_requests', 'operation', payload['operation'])
+        validate_received_screening(provider, source, payload, api['created'], catalog=catalog,
+            max_age=max_age, now=row['recorded'], retained=True, require_approval=False)
+        entry = _review_return(returned, source['observation'], payload, row['recorded'])
+        _require(entry['value']['response'] == review and entry in envelope['observation']['review_receipts'])
+        return True
+    return False
+
+
 def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
         retained=False, require_approval=True):
     """Check a no-send observation before admitting any native recorder write."""
@@ -481,19 +584,29 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
             _require(rows[index]['text'].replace('\r\n', '\n').strip() == _received_coin_summary(count)
                 and parse_reply_for_payload(rows[index - 1]['text'], payload) == output)
     review = _screening_review(proof, payload, rows)
+    stale = now - created > max_age or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat() != room['day']
     if require_approval:
         _require(review is not None, 'SCREENING_MINI_APPROVAL_NOT_RETAINED')
         decision = review['decision']
         from agent.neurobro_reply import screening_market_hold
         held = screening_market_hold(rows[-1]['text'], output['symbols'])
-        _require(review['needs_followup'] is False and decision['question'] == ''
+        # A real CLARIFY is not final approval and must never resume a fresh
+        # selection. An obsolete initial turn also needs the authenticated
+        # review-only NO-SEND return bound to that exact DONE receipt. A normal
+        # CLARIFY could precede an uncertain followup Send and proves no closure.
+        stale_clarification = (stale and not held and len(rows) == 2
+            and review['needs_followup'] is True and decision['action'] == 'CLARIFY'
+            and decision['symbols'] in ([], output['symbols']))
+        if stale_clarification:
+            _require(_retained_review_return(provider, envelope, payload, review,
+                catalog=catalog, max_age=max_age), 'SCREENING_STALE_REVIEW_RETURN_NOT_RETAINED')
+        _require(stale_clarification or review['needs_followup'] is False and decision['question'] == ''
             and (decision == {'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}
                 or decision['action'] == 'HOLD' and held
                 and decision['symbols'] in ([], output['symbols'])), 'NEUROBRO_DECISION_CONFLICT')
     result = {key: payload[key] for key in ('operation', 'marker', 'request_sha256')}
     result.update(output=output, assistant_text=rows[-1]['text'], chart_evidence=[],
         response_id='dom-' + _sha(room['url'] + '\n' + payload['marker'] + '\n' + rows[-1]['text']))
-    stale = now - created > max_age or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat() != room['day']
     return result, proof['finished_at'], stale
 
 
@@ -723,12 +836,16 @@ def resume_uncertain_screening(coordinator, today, account):
             phase = recover_received_screening(coordinator.neuro, envelope, catalog=coordinator.market.catalog(),
                 max_age=coordinator.market.max_age, permitted=lambda: coordinator.allowed(today))
         except Review as error:
-            if str(error) != 'SCREENING_MINI_APPROVAL_NOT_RETAINED':
+            if str(error) not in ('SCREENING_MINI_APPROVAL_NOT_RETAINED', 'SCREENING_STALE_REVIEW_RETURN_NOT_RETAINED'):
                 raise
             review = getattr(coordinator.neuro, 'review_received_screening', None)
             _require(callable(review), 'SCREENING_MINI_APPROVAL_NOT_RETAINED')
             _require(coordinator.allowed(today), 'RESEARCH_PAUSED')
             reviewed = review(operation, envelope)
+            if isinstance(reviewed, dict) and reviewed.get('kind') == REVIEW_RETURN_KIND:
+                retain_screening_review_return(coordinator.neuro, envelope, reviewed,
+                    catalog=coordinator.market.catalog(), max_age=coordinator.market.max_age,
+                    permitted=lambda: coordinator.allowed(today))
             # Re-observe the native footer and durable actual review next tick.
             return coordinator.store.report('WAITING', account, wait_reason=(
                 'SCREENING_REVIEW_INCOMPLETE' if isinstance(reviewed, dict)
