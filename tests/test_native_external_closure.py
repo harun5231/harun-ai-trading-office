@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import json
 import time
 import unittest
+from zoneinfo import ZoneInfo
 
 from worker.core import D, Rules, Signal, Review, RISK_MODEL, NORMALIZED_REWARD_RISK_POLICY, risk_check
 from worker.research_guard import gateway_mutations
@@ -166,6 +167,49 @@ class NativeExternalClosureTests(unittest.TestCase):
         self.assertEqual(coordinator.db.execute('SELECT state FROM order_intents').fetchone()[0], 'CLOSED')
         status = json.loads(coordinator.db.execute('SELECT data FROM robot_status').fetchone()[0])
         self.assertNotIn(intent['client_order_id'], status.get('protection_observations', {}))
+
+    def test_same_day_manual_close_releases_reservation_without_resetting_filled_quota(self):
+        from contextlib import closing
+        import sqlite3
+        from worker.robot_store import RobotStore
+        from tests.test_carry_quota import Client
+        coordinator, exchange, intent = self.coordinator_fixture()
+        coordinator.store.configure({'robot_on': True})
+        result = self.reconcile(intent, exchange)
+        today = datetime.fromtimestamp(exchange.first/1000, timezone.utc).astimezone(
+            ZoneInfo('Asia/Jakarta')).date().isoformat()
+        previous = {key: value for key, value in result.items()
+            if key not in ('closure_source', 'closure_receipt', 'closed_at', 'exit_order_id')}
+        previous.update(state='POSITION_PROTECTED', sl_confirmed=True, tp_confirmed=True,
+            sl_order_id='202', tp_order_id='203')
+        coordinator.record_gateway_observation(intent['intent_id'], intent['intent_id'], previous, None)
+        account = Client([dict(symbol=intent['symbol'], positionSide='BOTH',
+            positionAmt='-'+intent['entry']['quantity'], updateTime=exchange.first)],
+            [exchange.entry_trade])
+        account.anchor = exchange.now
+        self.assertTrue(coordinator.store.reconcile_carry(account,today,[intent['symbol']]))
+        self.assertEqual(coordinator.store.entries(today),1)
+        self.assertEqual(coordinator.store.available_slots(1,[intent['symbol']],today),1)
+        receipts = [tuple(row) for row in coordinator.db.execute('SELECT * FROM robot_entry_receipts')]
+        frozen = coordinator.db.execute('SELECT payload FROM order_intents').fetchone()[0]
+        for _ in range(2):
+            coordinator.record_gateway_observation(intent['intent_id'], intent['intent_id'], result, None)
+            self.assertEqual(coordinator.db.execute('SELECT state FROM order_intents').fetchone()[0],'CLOSED')
+            self.assertEqual(coordinator.db.execute("SELECT COUNT(*) FROM order_intents WHERE state IN "
+                "('ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE')").fetchone()[0],0)
+            self.assertEqual(coordinator.store.available_slots(0,[],today),1)
+            self.assertEqual(coordinator.store.entries(today),1)
+        self.assertEqual(coordinator.db.execute('SELECT payload FROM order_intents').fetchone()[0],frozen)
+        path = coordinator.db.execute('PRAGMA database_list').fetchone()[2]
+        with closing(sqlite3.connect(path,isolation_level=None)) as restarted:
+            restarted.row_factory = sqlite3.Row
+            store = RobotStore(restarted)
+            self.assertTrue(store.settings()['robot_on'])
+            self.assertEqual(store.available_slots(0,[],today),1)
+            self.assertEqual(store.entries(today),1)
+            self.assertEqual([tuple(row) for row in restarted.execute('SELECT * FROM robot_entry_receipts')],receipts)
+            self.assertEqual(restarted.execute('SELECT state FROM order_intents').fetchone()[0],'CLOSED')
+        self.assertTrue(all(method == 'GET' for method,_,_ in exchange.calls))
 
     def test_competing_local_owners_stay_needs_review(self):
         for other_state in ('NEEDS_REVIEW', 'SUBMITTING', 'POSITION_PROTECTED', 'CLOSED'):

@@ -23,6 +23,7 @@ _COIN = re.compile(r'^\s*' + _COIN_LABEL + '(' + PAIR + r')\b', re.I | re.M)
 _COIN_HEADING = re.compile(r'^\s*(' + PAIR + r')\s*(?:[-—:|]\s*|\s+)'
     r'(?:LONG|SHORT|HOLD)\s*[.!]?\s*$', re.I | re.M)
 _FINAL = re.compile(r'^\s*(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b[^\n]*', re.I | re.M)
+_SCREENING_PICK = re.compile(r'^[ \t]*RINGKASAN[ \t]+PICK[ \t]*:?[ \t]*$', re.I | re.M)
 # Negating proof of a visual candle count does not negate readability. The
 # outer material/receipt checks still own actual CSV counts and chart coverage;
 # a separate missing, unreadable, inconsistent or wrong-material complaint
@@ -293,8 +294,9 @@ def parse_screening_reply(reply):
     final = list(_FINAL.finditer(text))
     if final:
         text = text[final[-1].end():].strip()
-    named = list(re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH'
-        r'[ \t]*[:=][ \t]*$', text, re.I | re.M))
+    named = sorted([*re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH'
+        r'[ \t]*[:=][ \t]*$', text, re.I | re.M), *_SCREENING_PICK.finditer(text)],
+        key=lambda heading: heading.start())
     if named:
         if len(named) != 1:
             raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
@@ -396,8 +398,9 @@ def screening_market_hold(reply, selected):
         text = clean(reply)
         if _TECHNICAL.search(text) or parse_screening_reply(text)['symbols'] != selected:
             return False
-        headings = list(re.finditer(r'^[ \t]*(?:(?:COIN|KOIN)(?:[ \t]+YANG[ \t]+DIPILIH)?|PILIHAN COIN|COIN PILIHAN)'
-            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$', text, re.I | re.M))
+        headings = sorted([*re.finditer(r'^[ \t]*(?:(?:COIN|KOIN)(?:[ \t]+YANG[ \t]+DIPILIH)?|PILIHAN COIN|COIN PILIHAN)'
+            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$', text, re.I | re.M), *_SCREENING_PICK.finditer(text)],
+            key=lambda heading: heading.start())
         if not headings:
             return False
         choices, reasons = _screening_named_choices(text[headings[-1].end():], details=True)
