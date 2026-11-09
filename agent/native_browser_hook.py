@@ -771,8 +771,28 @@ class DelegatedDOMBridge:
             if not state['turn_names']:
                 state.update(prompt=prompt, attachments=attachment_names)
                 state['turn_names'] = [list(attachment_names)]
-            answer = (final_answer() if state['prefix'] is not None
-                      else original_answer(prompt, attachment_names))
+            if state['prefix'] is not None:
+                answer = final_answer()
+            elif (_received is not None and _received.get('manual_contexts')
+                    and len(_received['rows']) == 2):
+                # The native last-user reader sees the physical manual tail.
+                # Read only the LIVE owned pair after the sealed-context and
+                # per-turn file projection checks, never the cached seed text.
+                gate()
+                turns = transcript()
+                if (turns != _received['rows'] or len(turns) != 2
+                        or turns[0].get('text') != prompt
+                        or list(attachment_names) != list(state['attachments'])
+                        or turns[0].get('role') == turns[1].get('role')
+                        or turns[1].get('complete') is not True
+                        or type(turns[1].get('id')) is not str
+                        or re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', turns[1]['id']) is None):
+                    unknown()
+                answer = turns[1].get('text')
+                if type(answer) is not str or not answer or len(answer.encode()) > self.native.MAX_ANSWER:
+                    unknown()
+            else:
+                answer = original_answer(prompt, attachment_names)
             if state['phase'] == 'ACCEPT':
                 gate()
                 if answer is not None and hashlib.sha256(answer.encode()).hexdigest() != state['accepted_reply_sha256']:

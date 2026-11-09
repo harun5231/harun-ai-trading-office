@@ -196,6 +196,123 @@ class ManualContextTests(unittest.TestCase):
 
 
 class HookManualContextTests(fixtures.ReceivedHookTests):
+    def initial_manual_case(self,*,four_files=False):
+        case,seed,calls=self.harness(prior_followup=False)
+        if four_files:
+            names=list(case.bridge.uploaded_names)+['initial-1h.csv','initial-15m.csv']
+            case.bridge.uploaded_names=list(names);case.bridge.pending_names=list(names)
+            case.bridge.messages[0]['attachments']=list(names)
+            seed['rows'][0]['attachments']=list(names);seed['turn_names']=[list(names)]
+        pair=manual_pair('BTCUSDT')
+        pair[0]['role']=case.bridge.messages[0]['role'];pair[1]['role']=case.bridge.messages[1]['role']
+        case.bridge.messages.extend(copy.deepcopy(pair))
+        original_turns=case.bridge._turns
+        def physical_projection():
+            rows=original_turns()
+            for row in rows:
+                if row.get('text')==pair[0]['text']:
+                    row['attachments']=['UNCONFIRMED']if case.bridge.uploaded_names else[]
+            return rows
+        case.bridge._turns=physical_projection
+        # Retained native _answer requires its prompt to be the last physical
+        # user turn. A manual formatting pair therefore returns None, although
+        # its sealed context can be excluded by the owned transcript reader.
+        def strict_native_answer(prompt,attachment_names=()):
+            rows=case.bridge._turns()
+            if len(rows)<2:return None
+            user,answer=rows[-2:]
+            if (user.get('role')!=seed['rows'][0]['role'] or answer.get('role')!=seed['rows'][1]['role']
+                    or user.get('text')!=prompt or sorted(user.get('attachments',[]))!=sorted(attachment_names)
+                    or answer.get('complete')is not True or type(answer.get('id'))is not str
+                    or type(answer.get('text'))is not str or not answer['text']
+                    or len(answer['text'].encode())>case.module.MAX_ANSWER):return None
+            return answer['text']
+        reader=Mock(side_effect=strict_native_answer);case.bridge._answer=reader
+        seed['manual_contexts']=[dict(relative_row=2,rows=pair,
+            receipt=dict(name='observed-manual-context-fixture.json',sha256='a'*64,bytes=400))]
+        return case,seed,calls,reader
+
+    def test_initial_owned_pair_with_sealed_manual_tail_uses_live_transcript_then_new_owned_followup(self):
+        for four_files in(False,True):
+            with self.subTest(four_files=four_files):
+                case,seed,calls,reader=self.initial_manual_case(four_files=four_files)
+                self.assertIsNone(reader(seed['prompt'],seed['turn_names'][0]));reader.reset_mock()
+                before=copy.deepcopy(case.bridge.messages)
+                stable_reads=[];original_poll=c.poll_received
+                def observed_poll(raw,*args,**kwargs):
+                    delegated=raw._answer
+                    def counted(*positional,**named):
+                        value=delegated(*positional,**named)
+                        if value==case.bridge.final:stable_reads.append(value)
+                        return value
+                    raw._answer=counted
+                    try:return original_poll(raw,*args,**kwargs)
+                    finally:raw._answer=delegated
+                with patch.object(c,'poll_received',side_effect=observed_poll):
+                    result=self.run_received(case,seed)
+                self.assertEqual(case.bridge.messages[:4],before)
+                self.assertEqual(case.bridge.clicks,2);self.assertEqual(len(case.bridge.uploads),1)
+                self.assertEqual(calls,[('UPLOAD',1),('SEND',1)])
+                self.assertEqual(len(case.bridge.messages),6)
+                self.assertEqual(result['assistant_text'],case.bridge.final)
+                self.assertEqual(result['response_id'],'dom-'+hashlib.sha256((case.bridge.page.url+'\n'+
+                    case.value['marker']+'\n'+case.bridge.final).encode()).hexdigest())
+                self.assertEqual(case.reasoner.request.call_count,1)
+                self.assertEqual(len(stable_reads),4)
+                case.bridge.ask.assert_not_called();case.bridge._fresh_conversation.assert_not_called()
+                reader.assert_not_called()
+                intents=[value for stage,_,value in case.events if stage=='INTENT']
+                self.assertEqual(len(intents),1);self.assertEqual(intents[0]['followup_sequence'],1)
+                self.assertEqual(intents[0]['manual_context_receipts'],[seed['manual_contexts'][0]['receipt']])
+
+    def test_initial_manual_context_changed_unsealed_or_owned_fields_changed_never_sends(self):
+        for change in('unsealed','manual_text','manual_id','manual_complete','owned_text','owned_id','missing_csv','new_tail'):
+            case,seed,calls,reader=self.initial_manual_case(four_files=True)
+            if change=='unsealed':seed.pop('manual_contexts')
+            elif change=='manual_text':case.bridge.messages[2]['text']='Changed format request'
+            elif change=='manual_id':case.bridge.messages[3]['id']='changed-manual-id'
+            elif change=='manual_complete':case.bridge.messages[3]['complete']=False
+            elif change=='owned_text':case.bridge.messages[1]['text']='Changed owned reply'
+            elif change=='owned_id':case.bridge.messages[1]['id']='changed-owned-id'
+            elif change=='missing_csv':case.bridge.messages[0]['attachments']=case.bridge.messages[0]['attachments'][:-1]
+            else:case.bridge.messages.append(dict(role='native_user_role',text='Unowned new turn',attachments=[]))
+            with self.subTest(change=change),self.assertRaises((ValueError,
+                    fixtures.hook_fixtures.OutcomeUnknown,fixtures.hook_fixtures.NotSubmitted)):
+                self.run_received(case,seed)
+            self.assertEqual(case.bridge.clicks,1);self.assertEqual(calls,[])
+            self.assertEqual(case.bridge.uploads,[]);case.reasoner.request.assert_not_called()
+            case.bridge.ask.assert_not_called();case.bridge._fresh_conversation.assert_not_called()
+
+    def test_live_owned_or_manual_change_after_initial_parity_never_uses_seed_as_an_answer(self):
+        for target,field in((1,'text'),(1,'id'),(3,'id')):
+            case,seed,calls,_reader=self.initial_manual_case(four_files=True)
+            original_poll=c.poll_received
+            def changed_after_parity(raw,*args,**kwargs):
+                raw.messages[target][field]='Changed after the initial parity check'
+                return original_poll(raw,*args,**kwargs)
+            with self.subTest(target=target,field=field),patch.object(c,'poll_received',
+                    side_effect=changed_after_parity),self.assertRaises((ValueError,
+                        fixtures.hook_fixtures.OutcomeUnknown,fixtures.hook_fixtures.NotSubmitted)):
+                self.run_received(case,seed)
+            self.assertEqual(case.bridge.clicks,1);self.assertEqual(case.bridge.uploads,[])
+            self.assertEqual(calls,[]);case.reasoner.request.assert_not_called()
+
+    def test_new_owned_reply_change_during_review_is_unknown_without_a_second_followup(self):
+        case,seed,calls,_reader=self.initial_manual_case(four_files=True)
+        original=case.reasoner.request.side_effect
+        def changed_during_review(value):
+            result=original(value)
+            case.bridge.messages[-1]['id']='changed-new-owned-author-id'
+            return result
+        case.reasoner.request.side_effect=changed_during_review
+        with self.assertRaises((ValueError,fixtures.hook_fixtures.OutcomeUnknown,
+                fixtures.hook_fixtures.NotSubmitted)):
+            self.run_received(case,seed)
+        self.assertEqual(case.bridge.clicks,2);self.assertEqual(len(case.bridge.uploads),1)
+        self.assertEqual(calls,[('UPLOAD',1),('SEND',1)])
+        self.assertEqual(case.reasoner.request.call_count,1)
+        case.bridge.ask.assert_not_called();case.bridge._fresh_conversation.assert_not_called()
+
     def test_existing_fresh_followup_starts_at_real_end_with_context_not_fake_intent(self):
         case,seed,calls=self.harness(prior_followup=True)
         pair=manual_pair('BTCUSDT');pair[0]['role']=case.bridge.messages[0]['role'];pair[1]['role']=case.bridge.messages[1]['role']
