@@ -1,0 +1,15 @@
+{
+  "provenance": {
+    "projection_kind": "DISPLAY_NORMALIZED_RETAINED_CAPTURE",
+    "original_observer_job": "42697573536-1",
+    "saved_projection_job": "42702675213-1",
+    "operation": "2026-11-10:robot-v9:0:analysis-v9:FILUSDT",
+    "capture_sha256": "3734abbef9c8e1d61174f3d91433d6c6f50408135a2d7e33b6992bc94524e179",
+    "original_assistant_sha256": "8345ddf921d190b306b65153a828674de014176ecd4c8ef9e111ec74b03e0466",
+    "original_chars": 1064,
+    "original_raw_bytes_in_fixture": false,
+    "display_text_sha256": "0afeb20ec4b7d1f68bd48c1b61f343623aef33ce8f997260f59cb339755d1d99"
+  },
+  "display_text": "HOLD - belum ada entry 15M yang memenuhi RR minimal 1:2 dengan SL struktural.  KONTEKS STRUKTUR  CSV berisi 200 candle tertutup per timeframe; rentang waktunya cocok dengan chart, dan candle paling kanan pada gambar masih berjalan. Struktur 1H masih bearish meski sedang rebound dari wick ekstrem 0.7122; di 15M, harga mark 0.7773 sedang menguji area 0.7781-0.7821, dengan resistensi lebih besar di 0.7888-0.7900.  KEPUTUSAN  Belum ada ENTRY, TP, SL, atau titik invalidasi setup yang ditetapkan - candle 15M yang berjalan belum mengonfirmasi penembusan, sementara entry dekat resistensi menyulitkan target 2R yang wajar. Area 0.7701-0.7723 jadi support dekat untuk dipantau; feed metrik lain menunjukkan harga FIL berbeda jauh, jadi analisis ini memakai data Binance Futures dan chart yang kamu berikan karena keduanya konsisten untuk FILUSDT Perpetual.  Ringkasan: COIN: FILUSDT Perpetual | HOLD | ENTRY: — | TP: — | SL: —  ⚖️ Neurobro adalah alat riset, bukan saran finansial; hasilnya tetap bisa salah - keputusan trading dan risiko sepenuhnya tanggung jawabmu.",
+  "verbatim_summary_fragment": "Ringkasan: COIN: FILUSDT Perpetual | HOLD | ENTRY: — | TP: — | SL: —"
+}
