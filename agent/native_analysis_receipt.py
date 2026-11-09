@@ -169,7 +169,8 @@ def question_was_answered(payload,turns,*,context,rendered_question,intents):
     return False
 
 
-def refuse_reviewed_no_progress(root,payload,turns,*,context,intents,render_question,conversation_id=None):
+def refuse_reviewed_no_progress(root,payload,turns,*,context,intents,render_question,conversation_id=None,
+        parsed_setup=False):
     """Avoid another paid interpretation of a proven redundant clarification.
 
     First-generation legacy receipts remain readable. UNKNOWN has no accepted
@@ -200,10 +201,13 @@ def refuse_reviewed_no_progress(root,payload,turns,*,context,intents,render_ques
             # Only detect an unresolved UUID-only lineage, never alias it into
             # a new positive receipt or replay the old interpretation.
             semantic=lambda rows:[{key:item for key,item in row.items()if key!='id'}for row in rows]
-            if prior is None or semantic(prior)!=semantic(turns):continue
+            extends_prior = (parsed_setup and prior is not None and len(turns)>len(prior)
+                and turns[:len(prior)]==prior)
+            if not extends_prior and (prior is None or semantic(prior)!=semantic(turns)):continue
         try:question=validate_web_question(decision['question'],request)
         except DialogueError:continue  # Historical private questions are never new WEB authority.
         rendered=render_question(question)
         if question_was_answered(payload,turns,context=context,rendered_question=rendered,intents=intents):
-            if not same:raise ValueError('NATIVE_DIALOGUE_REVIEW_LINEAGE_UNVERIFIED')
+            if not same and not extends_prior:
+                raise ValueError('NATIVE_DIALOGUE_REVIEW_LINEAGE_UNVERIFIED')
             raise ValueError('NEUROBRO_CLARIFICATION_NO_PROGRESS')

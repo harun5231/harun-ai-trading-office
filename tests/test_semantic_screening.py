@@ -244,7 +244,13 @@ class SemanticScreeningHookTests(unittest.TestCase):
      if side!='HOLD':
       self.assertEqual(str(result['output']['limit_entry']),levels[0])
       self.assertEqual(str(result['output']['stop_loss']),levels[2])
-     self.assertEqual(bridge.sent,1);client.request.assert_called_once()
+     self.assertEqual(bridge.sent,1)
+     # Source-authored market HOLD is terminal without a paid interpretation;
+     # it still passes the same real four-file witness checks below.
+     if side=='HOLD':client.request.assert_not_called()
+     else:client.request.assert_called_once()
+     self.assertEqual(bridge._turns()[0]['attachments'],['15m.png','1h.png']+[r['name']for r in expected])
+     self.assertEqual(bridge.files,[{k:r[k]for k in('name','mimeType','buffer')}for r in expected])
      self.assertEqual(bridge.actions,['native-png-upload','plus','File','choose-csv'])
      self.assertEqual(len(bridge.data_file_deliveries),1)
      self.assertTrue(bridge.data_file_deliveries[0]['preview_verified'])

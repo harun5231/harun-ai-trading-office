@@ -8,7 +8,6 @@ import math
 from pathlib import Path
 import re
 import sqlite3
-import sys
 import time
 from types import SimpleNamespace
 import unittest
@@ -237,8 +236,8 @@ class NativeScreeningRecoveryTests(unittest.TestCase):
         self.recover()
         # Recreating the Coordinator leaves all progress in SQLite, not memory.
         successor=object.__new__(coordinator_class());successor.__dict__.update(self.robot.__dict__);self.robot=successor
-        pending=SimpleNamespace(review_then_advance=lambda owner,account,today:None)
-        with patch.dict(sys.modules,{'agent.native_pending_review':pending}):result=self.robot._tick()
+        pending=importlib.import_module('agent.native_pending_review')
+        with patch.object(pending,'review_then_advance',return_value=None):result=self.robot._tick()
         self.assertEqual(result['wait_reason'],'SCREENING_COMPLETE_ANALYSIS_PENDING')
         self.assertEqual(len(self.requests),1)
         request=self.requests[0]
@@ -255,8 +254,8 @@ class NativeScreeningRecoveryTests(unittest.TestCase):
 
     def test_normal_replacement_uses_actual_one_slot_capacity(self):
         self.recover();self.account['available_slots']=1;self.next_symbols=['PENDLEUSDT']
-        pending=SimpleNamespace(review_then_advance=lambda owner,account,today:None)
-        with patch.dict(sys.modules,{'agent.native_pending_review':pending}):self.robot._tick()
+        pending=importlib.import_module('agent.native_pending_review')
+        with patch.object(pending,'review_then_advance',return_value=None):self.robot._tick()
         self.assertEqual(self.requests[0]['operation'],self.cycle+':screening:1:1')
         self.assertEqual(self.requests[0]['prompt'],REPLACEMENT_SCREENING.format(count=1))
         self.assertEqual(self.requests[0]['context']['requested_count'],1)
@@ -309,8 +308,8 @@ class NativeScreeningRecoveryTests(unittest.TestCase):
         self.recover();after=self.frozen()
         self.assertIsNone(self.recover());self.assertEqual(self.frozen(),after)
         self.assertTrue(self.robot.unresolved_research())
-        pending=SimpleNamespace(review_then_advance=lambda owner,account,today:None)
-        with patch.dict(sys.modules,{'agent.native_pending_review':pending}):result=self.robot._tick()
+        pending=importlib.import_module('agent.native_pending_review')
+        with patch.object(pending,'review_then_advance',return_value=None):result=self.robot._tick()
         self.assertEqual(result['failure_code'],'ROBOT_REQUEST_NEEDS_REVIEW')
         self.assertEqual(self.requests,[])
 

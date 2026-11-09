@@ -257,6 +257,9 @@ class Coordinator:
         return value
     def replaceable_result(self,row):
         if row['status']=='HOLD':return True
+        from agent.native_pending_review import confirmed_cancel_result,screening_day_rejected_result
+        if screening_day_rejected_result(self,row):return True
+        if confirmed_cancel_result(self,row):return True
         from .new_setup_policy import confirmed_absent_result
         if confirmed_absent_result(self,row,build_intent=build_intent):return True
         if stale_unsubmitted(self,row,build_intent=build_intent,retired=True):return True
@@ -275,13 +278,15 @@ class Coordinator:
             (row['id'],row['cycle'],row['symbol'])).fetchone())
     def replacement_count(self,data,results,cycle=None):
         hold=sum(r['symbol'] in data.get('round_symbols',[]) and self.replaceable_result(r) for r in results)
+        from agent.native_pending_review import confirmed_cancel_result,screening_day_replacement_due
+        hold+=sum(r['symbol'] not in data.get('round_symbols',[]) and confirmed_cancel_result(self,r) for r in results)
         due=data.get('replacement_due',0)
         if cycle is not None and self.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_response_recoveries'").fetchone():
             operation=cycle+':screening:'+str(data.get('screen'))+':'+str(due)
             if self.db.execute('SELECT 1 FROM screening_response_recoveries WHERE operation=?',(operation,)).fetchone():
                 from .screening_response_recovery import received_screening_replacement_due
                 due=received_screening_replacement_due(self.db,cycle,data)
-        return max(hold,due)
+        return max(hold,due,screening_day_replacement_due(self,cycle,data) if cycle is not None else 0)
     def research_budget(self,data,results):
         ready=sum(r['status'] in ('READY_FOR_EXECUTION','EXECUTION_BLOCKED','ENTRY_PENDING','POSITION_PROTECTED','PROTECTION_INCOMPLETE','CLOSED') for r in results)
         technical=sum(r['status']=='REJECTED' and not self.replaceable_result(r) for r in results)
@@ -756,6 +761,14 @@ class Coordinator:
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         if data['queue']:
             symbol=data['queue'][0]
+            operation=cycle+':'+VERSION+':'+symbol
+            unstarted=not any(self.db.execute('SELECT 1 FROM '+table+' WHERE '+key+'=?',(operation,)).fetchone()
+                for table,key in (('api_requests','operation'),('robot_jobs','operation'),
+                    ('robot_candidates','id'),('order_intents','candidate_id')))
+            if unstarted:
+                from agent.native_pending_review import screening_day_exclusions
+                if symbol in screening_day_exclusions(self,today):
+                    return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_DAY_EXCLUDED')
             if symbol in self.exposed_symbols(account) or symbol in MANUAL_ONLY_SYMBOLS:
                 # Account conflicts are technical rejections, never replacement triggers.
                 return self.reject_queued_symbol(cycle,data,symbol,account,'ROBOT_SYMBOL_EXPOSED')
@@ -787,8 +800,12 @@ class Coordinator:
         self.db.execute("DELETE FROM robot_jobs WHERE operation=? AND state='PENDING' AND NOT EXISTS (SELECT 1 FROM api_requests WHERE operation=?)",(operation,operation))
     def screen(self,cycle,data,count,account,today,initial):
         if not self.allowed(today):return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+        from agent.native_pending_review import screening_day_exclusions
+        day_exclusions=screening_day_exclusions(self,today)
         catalog=self.market.catalog();prompt,schema=screening_contract(count)
         if not initial:prompt=REPLACEMENT_SCREENING.format(count=count)
+        elif day_exclusions:
+            prompt+='\n\nHindari coin dengan keputusan HOLD atau BATALKAN terkonfirmasi pada hari WIB ini: '+', '.join(sorted(day_exclusions))+'. Pilih coin lain sesuai kapasitas yang diminta.'
         index=data['screen']+1;operation=cycle+':screening:'+str(index)+':'+str(count)
         # A paid response received before a crash is drained without rebuilding
         # its historical request body or sending another provider request.
@@ -806,7 +823,7 @@ class Coordinator:
             return self.store.report('WAITING',account,wait_reason=self.pause_reason())
         try:
             context=None if initial else dict(requested_count=count,
-                excluded_symbols=sorted(set(data['seen'])|self.exposed_symbols(account)|MANUAL_ONLY_SYMBOLS),
+                excluded_symbols=sorted(set(data['seen'])|day_exclusions|self.exposed_symbols(account)|MANUAL_ONLY_SYMBOLS),
                 replacement_instruction='Choose different Binance USD-M USDT perpetual coins that are not in excluded_symbols.')
             value=(self.completed_value(cached,lambda v:selections(v,catalog,count)) if cached else
                 self.neuro.ask(operation,prompt,schema,lambda v:selections(v,catalog,count),context,catalog=catalog,
@@ -820,7 +837,7 @@ class Coordinator:
             data['screen']=index
             if not initial:data['replacements']+=1
             exposed=self.exposed_symbols(account)
-            eligible=[s for s in coins if s not in data['seen'] and s not in exposed and s not in MANUAL_ONLY_SYMBOLS]
+            eligible=[s for s in coins if s not in data['seen'] and s not in day_exclusions and s not in exposed and s not in MANUAL_ONLY_SYMBOLS]
             rejected=[s for s in coins if s not in eligible]
             for symbol in rejected:
                 if symbol not in data['seen']:data['seen'].append(symbol)

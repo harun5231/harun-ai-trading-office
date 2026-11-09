@@ -766,7 +766,7 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         fixture.bridge.after_click = after_click
         result = fixture.ask()
         self.assertEqual(fixture.bridge.clicks, 2)
-        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Candle tertutup terbaru Binance'))
+        self.assertTrue(fixture.bridge.messages[2]['text'].startswith('Aku kirim chart 1H/15M dan CSV terbaru untuk coin yang sama.'))
         self.assertEqual(fixture.reasoner.request.call_count, 1)
         fixture.refresh.assert_called_once()
         self.assertEqual(result['assistant_text'], fixture.bridge.final)
@@ -794,6 +794,7 @@ class CurrentMaterialConversationTests(unittest.TestCase):
 
     def test_actual_clear_rune_market_hold_ends_without_rewriting_mini_clarify_receipt(self):
         saved = json.loads((Path(__file__).parent / 'fixtures/neurobro_market_hold_20261105.json').read_text())
+        original = copy.deepcopy(saved)
         fixture = self.fixture()
         fixture.bridge.initial = saved['reply']
         fixture.value['context']['symbol'] = 'RUNEUSDT'
@@ -820,9 +821,9 @@ class CurrentMaterialConversationTests(unittest.TestCase):
         self.assertEqual(fixture.bridge.clicks, 1)
         self.assertEqual(len(fixture.bridge.messages), 2)
         fixture.refresh.assert_not_called(); fixture.receipt.assert_not_called()
-        fixture.hook.client.request.assert_called_once()
-        self.assertEqual(responses[0]['decision'], saved['mini_decision'])
-        self.assertIs(responses[0]['needs_followup'], True)
+        fixture.hook.client.request.assert_not_called()
+        self.assertEqual(responses, [])
+        self.assertEqual(saved, original)
 
     def test_actual_aave_market_hold_finishes_without_extra_material_or_discussion(self):
         saved = json.loads((Path(__file__).parent /

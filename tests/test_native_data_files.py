@@ -3,7 +3,6 @@ import csv
 import hashlib
 import io
 import json
-from datetime import datetime, timezone
 import sys
 import unittest
 from pathlib import Path
@@ -36,6 +35,7 @@ class NativeDataFileTests(unittest.TestCase):
         for record in files:
             self.assertEqual(record['mimeType'], 'text/csv')
             self.assertEqual(record['closed_count'], 200)
+            self.assertEqual(record['timestamp_unit'],'UNIX_MILLISECONDS_UTC')
             self.assertEqual(record['sha256'], hashlib.sha256(record['buffer']).hexdigest())
             self.assertRegex(record['name'], r'^BTCUSDT_(15m|1h)_200_closed_[a-f0-9]{8}\.csv$')
             reader = csv.DictReader(io.StringIO(record['buffer'].decode('utf-8')))
@@ -75,33 +75,60 @@ class NativeDataFileTests(unittest.TestCase):
         self.assertNotIn('OUTPUT_JSON_SCHEMA', rendered)
         self.assertNotIn('Quantity eksekusi', rendered)
         self.assertNotIn('rekomendasi ukuran posisi', rendered)
-        self.assertIn('Risk Manager hanya menormalkan TP', rendered)
-        self.assertIn('RISK REWARD 1:2', rendered)
+        self.assertNotIn('Risk Manager', rendered)
+        self.assertEqual(rendered.count('RR 1:2'),1)
         self.assertEqual(payload, before)
         self.assertNotIn('CONTEXT_JSON', rendered)
         self.assertNotIn('large public context', rendered)
-        self.assertIn(files[0]['name'], rendered)
-        self.assertIn(files[1]['name'], rendered)
-        self.assertLess(len(rendered), 2500)
-        self.assertIn('body/wick candle', rendered)
-        self.assertIn('jangan menyatakannya jika gambar tidak membuktikannya', rendered)
-        self.assertIn('Periksa jumlah 200 candle tertutup dari tiap CSV', rendered)
-        self.assertIn('Tidak perlu menghitung ulang setiap candle pada PNG', rendered)
+        self.assertLess(len(rendered)-len(payload['prompt']),650)
+        self.assertIn('chart asli 1H/15M',rendered)
+        self.assertIn('CSV masing-masing 200 candle tertutup', rendered)
+        self.assertIn('bahan belum terbaca',rendered)
+        for admin in ('Unix','milidetik','UTC','.csv','Mark data','bukan HOLD','PNG -15m-',
+                'jumlah candle tertutup mengacu','hitungan visual'):
+            self.assertNotIn(admin,rendered)
         projected = convert_native_market_context(payload['context'], now=NOW)
-        for frame,label in (('15m','15M'),('1h','1H')):
-            window=projected['candle_windows'][frame]
-            for field in ('first_open_time_ms','last_close_time_ms'):
-                exact=datetime.fromtimestamp(window[field]/1000,timezone.utc).isoformat(
-                    timespec='milliseconds').replace('+00:00','Z')
-                self.assertIn(exact,rendered)
-            self.assertIn(label+' tertutup:',rendered)
-        self.assertIn('-15m- berarti chart 15M',rendered)
-        self.assertIn('-1h- berarti chart 1H',rendered)
+        self.assertNotIn(projected['observed_at_utc'],rendered)
+        for file in files:
+            self.assertNotIn(file['name'],rendered);self.assertNotIn(file['sha256'],rendered)
+            self.assertEqual(file['source_candles_sha256'],projected['provenance']['candles_sha256'])
         self.assertEqual(deliver_market_data_files(payload['context'],now=NOW),files)
         # The integration may ask the pinned native formatter to format null
         # context so the old large-context renderer never runs at all.
         null_formatted = payload['prompt'] + CONTEXT_SEPARATOR + 'null' + SCHEMA_SEPARATOR + suffix
         self.assertEqual(render_short_prompt(payload, null_formatted, files, now=NOW), rendered)
+
+    def test_complete_owner_analysis_instructions_are_preserved_without_repetition(self):
+        owner='Tentukan COIN LONG/SHORT/HOLD, ENTRY, TP, SL. RR 1:2; SL mempertimbangkan wick dan invalidasi.'
+        payload=dict(prompt=owner,context=self.context(),marker='HARUN_OWNER',output_schema={'required':['symbol','side']})
+        original=owner+CONTEXT_SEPARATOR+'null'+SCHEMA_SEPARATOR+'{}\n'+payload['marker']
+        files=deliver_market_data_files(payload['context'],now=NOW)
+        rendered=render_short_prompt(payload,original,files,now=NOW)
+        self.assertTrue(rendered.startswith(owner+'\n\n'))
+        for word in ('COIN','LONG/SHORT/HOLD','ENTRY','TP','SL.','1:2','wick','invalidasi'):
+            self.assertEqual(rendered.count(word),owner.count(word))
+        self.assertEqual(rendered.count(payload['marker']),1)
+
+    def test_each_selected_replacement_or_pending_coin_keeps_its_own_exact_csv_material(self):
+        from agent.native_pending_protocol import REVIEW_SCHEMA
+        for symbol in ('FILUSDT','ATOMUSDT','ETHUSDT'):
+            for schema in ({'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']},REVIEW_SCHEMA):
+                with self.subTest(symbol=symbol,pending=schema==REVIEW_SCHEMA):
+                    context=self.context();context['symbol']=symbol
+                    for frame in context['timeframes'].values():frame['symbol']=symbol
+                    payload=dict(prompt='Analisis coin pilihan.',context=context,marker='HARUN_'+symbol,output_schema=schema)
+                    original=payload['prompt']+CONTEXT_SEPARATOR+'null'+SCHEMA_SEPARATOR+json.dumps(schema)+'\n'+payload['marker']
+                    before=copy.deepcopy(payload);files=deliver_market_data_files(context,now=NOW)
+                    result=render_short_prompt(payload,original,files,now=NOW)
+                    self.assertIn(symbol+' — Binance Futures USDT Perpetual',result)
+                    self.assertEqual(payload,before)
+                    for file in files:
+                        self.assertEqual(file['symbol'],symbol);self.assertNotIn(file['name'],result)
+                        self.assertEqual(file['sha256'],hashlib.sha256(file['buffer']).hexdigest())
+                        self.assertEqual(len(file['buffer'].decode().splitlines()),201)
+                    foreign=deliver_market_data_files(self.context(),now=NOW)
+                    with self.assertRaisesRegex(ValueError,'NATIVE_DATA_FILES_UNVERIFIED'):
+                        render_short_prompt(payload,original,foreign,now=NOW)
 
     def test_changed_or_missing_file_cannot_be_represented_as_attached_data(self):
         payload = {'prompt': 'Analyze.', 'context': self.context(), 'marker': 'HARUN_TEST'}

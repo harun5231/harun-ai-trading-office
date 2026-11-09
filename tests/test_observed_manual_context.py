@@ -221,5 +221,7 @@ class HookManualContextTests(fixtures.ReceivedHookTests):
         self.assertIn('BTCUSDT',case.bridge.messages[-2]['text'])
         self.assertIn('COIN, ARAH, ENTRY, TP, SL',case.bridge.messages[-2]['text'])
         self.assertIn('Jika keputusanmu sudah final',case.bridge.messages[-2]['text'])
-        self.assertEqual(case.reasoner.request.call_count,1)
+        # The newly received, source-authored market HOLD is final. Its
+        # verified native attachments/receipt do not need another paid review.
+        case.reasoner.request.assert_not_called()
         case.bridge.ask.assert_not_called();case.bridge._fresh_conversation.assert_not_called()

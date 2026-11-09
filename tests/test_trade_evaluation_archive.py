@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from agent.native_chart_followup import ReceiptStore, sha
+from agent.native_chart_followup import ReceiptStore, sha, native_snapshot
 from agent.native_chart_capture import WEBSITE_SIDECAR
 from agent.native_data_files import deliver_market_data_files
 from agent.native_market_context import convert_native_market_context
@@ -89,6 +89,67 @@ class HistoricalArchiveCustodyTests(unittest.TestCase):
         self.assertEqual(archive.lookup_capture_paths(self.root, self.payload['operation'],
             self.request, self.response), self.capture['paths'])
         self.assertEqual(archive.record_capture_lookup(self.root, self.capture, self.wire), self.index)
+
+    def test_refreshed_actor_context_drops_only_original_nonpreserved_metadata(self):
+        from tests.test_native_chart_followup import market_snapshot
+        from tests.test_agent_closed_candles_200 import NOW
+        original=copy.deepcopy(self.payload)
+        original['context'].update(risk_constraints={'risk_usdt':'owner-setting'},
+            risk_manager_facts={'policy':'FEE_ONLY_SL_RISK_PRICE_PNL_2R_V1'})
+        # This is the actual ActorCharts constructor and its exact metadata
+        # copy policy, not an arbitrary stripped-context/hash fallback.
+        fresh=native_snapshot(market_snapshot(),now=NOW)
+        sidecar=dict(native_context_canonical_sha256=sha(fresh),
+            public_market_context=convert_native_market_context(fresh,now=NOW))
+        before=copy.deepcopy((sidecar,original))
+        self.assertEqual(archive._context(sidecar,original),fresh)
+        self.assertEqual((sidecar,original),before)
+        self.assertNotIn('risk_constraints',fresh);self.assertNotIn('risk_manager_facts',fresh)
+        self.assertEqual({len(frame['candles'])for frame in fresh['timeframes'].values()},{201})
+
+    def test_refreshed_actor_context_keeps_pending_keys_and_requires_exact_capture_hash(self):
+        from tests.test_native_chart_followup import market_snapshot
+        from tests.test_agent_closed_candles_200 import NOW
+        original=copy.deepcopy(self.payload)
+        original['context'].update(risk_constraints={'owner':'not part of refreshed market ABI'},
+            pending_review={'intent_ref':'a'*64,'symbol':'BTCUSDT','entry_created_at':'2026-11-05T00:00:00Z'},
+            pending_order_context={'source':'existing-owned-order'},material_contract={'version':1})
+        fresh=native_snapshot(market_snapshot(),now=NOW)
+        for key in ('pending_review','pending_order_context','material_contract'):
+            fresh[key]=copy.deepcopy(original['context'][key])
+        sidecar=dict(native_context_canonical_sha256=sha(fresh),
+            public_market_context=convert_native_market_context(fresh,now=NOW))
+        self.assertEqual(archive._context(sidecar,original),fresh)
+        for mutate in (lambda value:value.update(native_context_canonical_sha256='e'*64),
+                lambda value:value['public_market_context'].update(mark_price='65001')):
+            changed=copy.deepcopy(sidecar);mutate(changed)
+            with self.assertRaisesRegex(ValueError,'EVALUATION_HISTORICAL_CONTEXT_MISMATCH'):
+                archive._context(changed,original)
+        changed=copy.deepcopy(original);changed['context']['pending_review']['intent_ref']='b'*64
+        with self.assertRaisesRegex(ValueError,'EVALUATION_HISTORICAL_CONTEXT_MISMATCH'):
+            archive._context(sidecar,changed)
+
+    def test_initial_and_legacy_enriched_context_reconstruction_remain_byte_exact(self):
+        sidecar_path=Path(self.capture['paths'][0]).parent/WEBSITE_SIDECAR
+        sidecar=json.loads(sidecar_path.read_bytes())
+        self.assertEqual(archive._context(sidecar,self.payload),self.context)
+        self.assertEqual({len(frame['candles'])for frame in self.context['timeframes'].values()},{202})
+        self.assertNotIn('quantity_unit',self.context)
+        # The older reconstruction can preserve initial extra metadata. Keep
+        # accepting it when (and only when) the original full hash proves it.
+        from tests.test_native_chart_followup import market_snapshot
+        from tests.test_agent_closed_candles_200 import NOW
+        enriched=native_snapshot(market_snapshot(),now=NOW)
+        enriched['risk_manager_facts']={'historical':'unchanged'}
+        legacy=dict(native_context_canonical_sha256=sha(enriched),
+            public_market_context=convert_native_market_context(enriched,now=NOW))
+        payload=copy.deepcopy(self.payload)
+        payload['context']['risk_manager_facts']=copy.deepcopy(enriched['risk_manager_facts'])
+        # The old metadata-preserving reconstruction reaches the exact target.
+        # The new ActorCharts fallback would drop this key and must not replace
+        # that already proven historical result.
+        self.assertNotEqual(sha(payload['context']),legacy['native_context_canonical_sha256'])
+        self.assertEqual(archive._context(legacy,payload),enriched)
 
     def test_reader_uses_produced_index_and_does_not_search_random_capture_directories(self):
         directory = Path(self.root) / archive.CAPTURE_INDEX

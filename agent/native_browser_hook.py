@@ -17,8 +17,8 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
-from .neurobro_reply import (ReplyIncomplete, analysis_coin_block, parse_reply_for_payload,
-                            screening_interpretation)
+from .neurobro_reply import (ReplyIncomplete, parse_reply_for_payload,
+                            screening_interpretation, author_market_hold)
 from .llm import web_prompt_allowed
 
 
@@ -29,12 +29,8 @@ OWNER_DIALOGUE_TIMEOUT_SECONDS = 900
 # Request only after an observed author reply needs its final setup clarified.
 # No price examples: executable values must be supplied by Neurobro itself.
 FINAL_SETUP_JSON_REQUEST = (
-    'Jika keputusanmu sudah final, balas satu JSON singkat dengan kunci '
-    'COIN, ARAH, ENTRY, TP, SL. ARAH hanya LONG, SHORT, atau HOLD. '
-    'Gunakan harga yang memang menjadi keputusanmu; jangan mengubah ENTRY atau SL. '
-    'Untuk HOLD, isi ENTRY, TP, SL dengan null. '
-    'Jika bahan belum terbaca atau keputusan belum final, jelaskan masalahnya '
-    'dan jangan mengisi setup atau HOLD hanya untuk melengkapi format.')
+    'Jika keputusanmu sudah final, balas JSON singkat: COIN, ARAH, ENTRY, TP, SL. '
+    'ARAH LONG/SHORT/HOLD; untuk HOLD harga null.')
 
 
 def _same_text(left, right):
@@ -547,6 +543,22 @@ class DelegatedDOMBridge:
             if type(required) is not list or any(type(key) is not str for key in required):
                 unknown()
             phase = _phase(payload, required)
+            # An authored present market HOLD terminates this coin. A later
+            # re-entry condition or candle boundary is not an invitation to
+            # ask for an actionable setup. Transcript/attachment and technical
+            # input guards remain the source of this non-order decision.
+            terminal_market_hold = (phase == 'ANALYSIS' and author_market_hold(
+                answer, (payload.get('context') or {}).get('symbol')))
+            if terminal_market_hold:
+                # The actual authored final HOLD needs no further paid review,
+                # fresh setup request, or fabricated Mini approval. transcript()
+                # above has verified this operation's submitted attachment
+                # witnesses. Keep the native final receipt/author text intact;
+                # a closed candle advancing cannot turn no-entry into an order.
+                state.update(phase='ACCEPT', reviewed=True,
+                    accepted_reply_sha256=hashlib.sha256(answer.encode()).hexdigest(),
+                    accepted_output=parse_reply_for_payload(answer, payload))
+                return
             if evaluation is not None:
                 # Preserve this ACTUAL per-turn reply before a model/network
                 # failure can obscure it; this receipt never authorizes trading.
@@ -559,20 +571,17 @@ class DelegatedDOMBridge:
                 series_changed = (type(server) is int and any(
                     int(self.wall_clock()*1000)//interval != server//interval
                     for interval in (900000,3600000)))
-                if received_refresh or series_changed:
+                if (received_refresh or series_changed) and not terminal_market_hold:
                     # The reply is known, not an uncertain Send. Refresh before
                     # accepting a market decision from old charts; timestamps
                     # remain their real production values throughout.
                     reference = {'symbol': active_context.get('symbol'),
                         'observed_at': observed, 'server_time_ms': active_context.get('server_time')}
-                    question = ('Kita lanjutkan pembahasan '+str(active_context.get('symbol'))+' yang sudah ada dengan chart dan data terbaru. '
-                        'Periksa kembali kedua gambar 15M dan 1H serta batas waktu candle tertutup '
-                        'UTC yang dijelaskan bersama CSV. Jika bahan terbaca dan konsisten, '
-                        'berikan keputusan pasar terbaru; jika belum, jelaskan bagian yang bermasalah.'
+                    question = ('Aku kirim chart 1H/15M dan CSV terbaru untuk '+str(active_context.get('symbol'))+'. '
+                        'Lanjutkan analisis berdasarkan bahan ini dan pembahasan sebelumnya.'
                         if received_refresh else
-                        'Candle tertutup terbaru Binance telah berubah sejak materi sebelumnya. '
-                        'Berikut chart dan data terbaru untuk coin yang sama; mohon perbarui '
-                        'keputusan berdasarkan kondisi terkini dan pertahankan konteks pembahasannya.')
+                        'Aku kirim chart 1H/15M dan CSV terbaru untuk coin yang sama. '
+                        'Perbarui keputusan berdasarkan kondisi terkini.')
                     if received_refresh and _received.get('manual_contexts'):
                         question+=' '+FINAL_SETUP_JSON_REQUEST
                     send_followup(question,
@@ -609,15 +618,21 @@ class DelegatedDOMBridge:
                 # An already sealed redundant clarification is not another paid
                 # request after a tick/restart. A new answer or actual context
                 # remains productive; no discussion-round limit is imposed.
-                try:parse_reply_for_payload(answer,payload)
+                progress_guard = phase == 'ANALYSIS'
+                parsed_setup = False
+                try:
+                    parsed = parse_reply_for_payload(answer,payload)
+                    parsed_setup = phase == 'ANALYSIS' and parsed.get('side') in ('LONG','SHORT')
                 except (ReplyIncomplete,KeyError):
+                    progress_guard = True
+                if progress_guard:
                     from .native_analysis_receipt import refuse_reviewed_no_progress
                     def render_prior(question):
                         if phase=='SCREENING':return question
                         return self.native.user_prompt(dict(payload,prompt=question,context=active_context))
                     refuse_reviewed_no_progress(self.daily_room.store.root,payload,observed_turns,
                         context=active_context,intents=state['followup_intents'],render_question=render_prior,
-                        conversation_id=self.daily_room.conversation_id)
+                        conversation_id=self.daily_room.conversation_id,parsed_setup=parsed_setup)
             # Independently enforce the dialogue-only result protocol, including
             # no foreign symbols, prices or trading authority from the model.
             from .dialogue_service import DialogueError, validate_request, validate_result
@@ -731,7 +746,8 @@ class DelegatedDOMBridge:
             action = response['decision']['action']
             if complete and natural_parsed and phase == 'ANALYSIS' and (
                     action == 'HOLD' and output.get('side') != 'HOLD'
-                    or action == 'COMPLETE' and output.get('side') == 'HOLD'):
+                    or action == 'COMPLETE' and output.get('side') == 'HOLD'
+                        and not terminal_market_hold):
                 complete, output, parse_error = False, None, 'NEUROBRO_DECISION_CONFLICT'
             if (complete and natural_parsed and phase == 'PENDING_REVIEW'
                     and action in {'TAHAN', 'BATALKAN'} and action != output.get('decision')):
@@ -752,21 +768,16 @@ class DelegatedDOMBridge:
                 # A model HOLD/COMPLETE decision cannot replace the native
                 # marker/schema binding. Ask the WEB author to restate its own
                 # answer; never turn an unbound fragment into a local setup.
-                required_question = (
-                    ('Lampiran atau data belum dapat dipahami dengan benar. Mohon jelaskan '
-                     'bagian yang belum terbaca atau tidak konsisten sebelum memberi keputusan pasar. '
-                     if parse_error == 'NEUROBRO_INPUT_UNREADABLE' else
-                     'Mohon pertegas keputusan akhir untuk coin yang sedang dibahas, tanpa '
-                     'mengambil level coin lain atau skenario bersyarat. ')
-                    + ('Ringkas COIN dan KEPUTUSAN: TAHAN/BATALKAN untuk order ini.'
-                       if phase == 'PENDING_REVIEW' else
-                       FINAL_SETUP_JSON_REQUEST))
+                required_question = ('Bagian mana dari lampiran yang belum terbaca atau tidak konsisten?'
+                    if parse_error == 'NEUROBRO_INPUT_UNREADABLE' else
+                    'Ringkas COIN dan keputusan TAHAN/BATALKAN untuk order ini.'
+                    if phase == 'PENDING_REVIEW' else FINAL_SETUP_JSON_REQUEST)
             legacy_complete = complete and self.prompt_cache is None and not natural_parsed and parse_error not in {
-                'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_SETUP_CONDITIONAL'}
+                'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_SETUP_CONDITIONAL'} and (
+                    phase != 'ANALYSIS' or output.get('side') == 'HOLD')
             clear_market_hold = (phase == 'ANALYSIS' and natural_parsed and complete
                 and parse_error is None and output.get('side') == 'HOLD'
-                and not re.search(r'\b(?:jika|apabila|bersyarat|alternatif|skenario)\b',
-                    analysis_coin_block(answer, expected_symbol), re.I))
+                and terminal_market_hold)
             # A clear author market HOLD ends this coin's analysis. Keep the
             # actual Mini CLARIFY receipt intact; future setup/size questions
             # cannot turn Neurobro's present no-entry decision into a debate.
@@ -807,11 +818,11 @@ class DelegatedDOMBridge:
             if (question in state['asked_questions']or phase=='SCREENING'and any(
                     row.get('role')==observed_turns[0].get('role')
                     and _same_text(row.get('text'),question)for row in observed_turns)):
-                if complete:
+                if complete and (phase != 'ANALYSIS' or clear_market_hold):
                     state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha,
                         accepted_output=copy.deepcopy(output))
                     return
-                if phase=='SCREENING':
+                if phase == 'SCREENING':
                     raise ReplyIncomplete('NEUROBRO_CLARIFICATION_NO_PROGRESS')
             state['asked_questions'].append(question)
             send_followup(question, market, observed_turns, answer, phase)

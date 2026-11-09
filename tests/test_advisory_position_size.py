@@ -61,13 +61,15 @@ class PrivateRiskPromptContractTests(unittest.TestCase):
             self.assertNotIn('ukuran posisi', text.lower())
             self.assertNotIn('quantity', text.lower())
             self.assertNotIn('risiko Office', text)
-            for clause in ('RISK REWARD 1:2', 'swing high/low', 'likuiditas', 'volatilitas',
-                    'wick', 'false breakout', 'invalidasi', 'ENTRY dan SL ditetapkan Neurobro',
-                    '1:3', '1:4', 'coin pengganti'):
+            for clause in ('ENTRY','TP','SL','wick','invalidasi'):
                 self.assertIn(clause, text)
-        # Only the new WEB fallback projection changed; retain the separate
-        # legacy formatter contract and test the explicit owner-facing omission.
-        self.assertIn('Risk Manager hanya menormalkan TP',summary)
+        self.assertIn('RISK REWARD minimal 1:2',summary)
+        self.assertIn('Neurobro tentukan',summary)
+        for clause in ('RISK REWARD 1:2','swing high/low','likuiditas','volatilitas','false breakout',
+                'ENTRY dan SL ditetapkan Neurobro','1:3','1:4','coin pengganti'):
+            self.assertIn(clause,fallback)
+        # Both public representations keep internal execution roles private.
+        self.assertNotIn('Risk Manager',summary)
         self.assertNotIn('Risk Manager',fallback)
         self.assertNotIn('target bersih',fallback)
 

@@ -6,7 +6,6 @@ provenance, schema, prices and risk calculations remain with their owners.
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
 import hashlib
 import io
 import json
@@ -92,31 +91,10 @@ def render_short_prompt(payload, formatted_original, files, *, now=None):
     _need(type(payload.get('marker')) is str and payload['marker']
           and suffix.count(payload['marker']) == 1)
     symbol = expected[0]['symbol']
-    projected = convert_native_market_context(payload['context'], now=now)
-    def utc(milliseconds):
-        return datetime.fromtimestamp(milliseconds / 1000, timezone.utc).isoformat(
-            timespec='milliseconds').replace('+00:00', 'Z')
-    windows = projected['candle_windows']
-    periods = '\n'.join(f"{label} tertutup: {utc(windows[frame]['first_open_time_ms'])} s.d. "
-        f"{utc(windows[frame]['last_close_time_ms'])}."
-        for frame,label in (('15m','15M'),('1h','1H')))
     instructions = (
-        f"Bahan Binance Futures USDT Perpetual untuk {symbol}, diambil {projected['observed_at_utc']}. "
-        'Dua CSV terlampir masing-masing berisi 200 candle tertutup 15M dan 1H dengan OHLCV asli. '
-        'Waktu CSV adalah Unix millisecond UTC; candle berjalan dipisahkan dari 200 candle itu.\n'
-        f"15M: {expected[0]['name']}\n1H: {expected[1]['name']}\n"
-        f'{periods}\n'
-        'Pada nama PNG, -15m- berarti chart 15M dan -1h- berarti chart 1H. '
-        'Data dan kedua gambar diambil berurutan; harga dapat bergerak di antaranya, '
-        'jadi perhatikan waktu pengambilannya. '
-        f"Harga mark saat pengambilan data: {projected['mark_price']} USDT. "
-        'Periksa juga dua gambar chart terlampir: body/wick candle, simbol, timeframe, sumbu waktu, dan harga harus terbaca. '
-        'Periksa jumlah 200 candle tertutup dari tiap CSV dan kecocokan rentang waktunya dengan gambar. '
-        'Tidak perlu menghitung ulang setiap candle pada PNG; gunakan gambar untuk membaca struktur, body, dan wick. '
-        'Jangan mengarang hitungan visual; jangan menyatakannya jika gambar tidak membuktikannya. '
-        'Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. '
-        'Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; '
-        'itu bukan keputusan HOLD berdasarkan pasar.')
+        f"{symbol} — Binance Futures USDT Perpetual. "
+        'Lampiran: chart asli 1H/15M dan CSV masing-masing 200 candle tertutup. '
+        'Jika bahan belum terbaca, sebutkan bagian yang perlu diperbaiki.')
     rendered = payload['prompt'] + '\n\n' + instructions + '\n\n' + compact_summary(payload)
     _need(len(rendered.encode('utf-8')) <= MAX_PROMPT_BYTES and web_prompt_allowed(rendered))
     return rendered
@@ -130,17 +108,21 @@ def compact_summary(payload):
     if set(required) == {'symbols'}:
         summary = 'Akhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.'
     elif set(required) == {'symbol', 'order_ref', 'decision'}:
-        summary = ('Akhiri dengan COIN dan keputusan TAHAN atau BATALKAN untuk order yang sedang dibahas, '
-                   'beserta alasan. Jangan menafsirkan perubahan harga sebagai izin membuat order baru.')
+        summary = 'Keputusan akhir: COIN, TAHAN atau BATALKAN untuk order ini, beserta alasan singkat.'
     else:
-        summary = ('Jika keputusan sudah jelas, akhiri dengan ringkasan COIN, LONG/SHORT/HOLD, ENTRY, TP, dan SL. '
-                   'Jika HOLD adalah penilaian pasar, jelaskan alasannya; jangan mengarang level yang belum ditetapkan. '
-                   'Gunakan RISK REWARD 1:2. Tentukan SL berdasarkan struktur, swing high/low, likuiditas, '
-                   'volatilitas, wick, false breakout, dan titik invalidasi. '
-                   'ENTRY dan SL ditetapkan Neurobro; Risk Manager hanya menormalkan TP eksekusi. '
-                   'Rekomendasi TP dengan RR 1:3 atau 1:4 tetap boleh disampaikan. '
-                   'HOLD pasar yang jelas mengakhiri pembahasan coin ini untuk mencari coin pengganti.')
-    return summary + '\nAcuan percakapan: ' + marker
+        # Omit only instructions already explicit in the owner-authored prompt;
+        # this renders text, never interprets a market decision or price.
+        prompt=payload.get('prompt','')
+        parts=[]
+        if not all(re.search(r'\b'+field+r'\b',prompt,re.I)
+                for field in ('COIN','LONG','SHORT','HOLD','ENTRY','TP','SL')):
+            parts.append('Neurobro tentukan keputusan akhir: COIN, LONG/SHORT/HOLD, ENTRY, TP, SL.')
+        if not re.search(r'\b(?:RISK\s*REWARD|R[/:]?R)\s*(?:minimal\s*)?1\s*:\s*2\b',prompt,re.I):
+            parts.append('RISK REWARD minimal 1:2.')
+        if not all(re.search(r'\b'+word+r'\b',prompt,re.I)for word in ('wick','invalidasi')):
+            parts.append('SL teknikal memperhitungkan wick dan invalidasi.')
+        summary=' '.join(parts)
+    return (summary+'\n'if summary else'')+'Acuan percakapan: '+marker
 
 
 def render_screening_prompt(payload, formatted_original):
