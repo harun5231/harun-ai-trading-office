@@ -638,7 +638,8 @@ class DialogueEngine:
         inferred = HERMES_BACKEND if isinstance(model, HermesDialogue) else MINI_BACKEND
         need(backend is None or backend == inferred, 'DIALOGUE_AUTHENTICATION_FAILED')
         self.backend = inferred
-        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45)
+        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45,
+            daily_requests=math.inf, daily_input_tokens=math.inf, daily_output_tokens=math.inf)
         self.lock = threading.RLock()
         self.stopping = threading.Event()
         self._authenticated_key_identity = None
@@ -981,9 +982,12 @@ class DialogueEngine:
             if self.backend == HERMES_BACKEND and self.memory.get(RECOVERY_PREFIX+request['request_id']) is not None:
                 return self.recover_hermes(request['request_id'],incoming=request)
             def execute():
-                validate_request(request, now=self.clock())
-                remaining = min(45.0, request['deadline_epoch'] - self.clock())
-                need(remaining > 0, 'DIALOGUE_DEADLINE_EXPIRED')
+                try:
+                    validate_request(request, now=self.clock())
+                    remaining = min(45.0, request['deadline_epoch'] - self.clock())
+                    need(remaining > 0, 'DIALOGUE_DEADLINE_EXPIRED')
+                except DialogueError as error:
+                    raise NotSent(str(error)) from None
                 until = time.monotonic() + remaining
                 self.model.set_remaining_budget(lambda: max(0.0,
                     min(until-time.monotonic(), request['deadline_epoch']-self.clock())))
@@ -991,24 +995,30 @@ class DialogueEngine:
                 history = self.memory.history(conversation, max_chars=8000, max_messages=12)
                 day = datetime.fromtimestamp(self.clock(), ZoneInfo('Asia/Jakarta')).date().isoformat()
                 # Last possible gate check immediately before provider dispatch.
-                validate_request(request, now=self.clock())
+                try:
+                    validate_request(request, now=self.clock())
+                except DialogueError as error:
+                    raise NotSent(str(error)) from None
                 original_transport = self.model.transport
                 dispatched_key = [None]
                 def gated_transport(payload):
-                    validate_request(request, now=self.clock())
-                    need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
-                    need(self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
-                    need(time.monotonic() < until, 'DIALOGUE_DEADLINE_EXPIRED')
-                    if self.backend == HERMES_BACKEND:
-                        if not self.model.runtime_ready():
-                            raise NotSent('HERMES_RUNTIME_UNVERIFIED')
-                    else:
-                        dispatched_key[0] = key_identity(self.key_file)
-                        if isinstance(self.model,OpenAIDialogue):
-                            _archive_compose_request(self.memory,current_id,request,self.clock())
-                            validate_request(request,now=self.clock())
-                            need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
-                            need(time.monotonic()<until,'DIALOGUE_DEADLINE_EXPIRED')
+                    try:
+                        validate_request(request, now=self.clock())
+                        need(not self.stopping.is_set(),'DIALOGUE_UNAVAILABLE')
+                        need(self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
+                        need(time.monotonic() < until, 'DIALOGUE_DEADLINE_EXPIRED')
+                        if self.backend == HERMES_BACKEND:
+                            if not self.model.runtime_ready():
+                                raise NotSent('HERMES_RUNTIME_UNVERIFIED')
+                        else:
+                            dispatched_key[0] = key_identity(self.key_file)
+                            if isinstance(self.model,OpenAIDialogue):
+                                _archive_compose_request(self.memory,current_id,request,self.clock())
+                                validate_request(request,now=self.clock())
+                                need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
+                                need(time.monotonic()<until,'DIALOGUE_DEADLINE_EXPIRED')
+                    except DialogueError as error:
+                        raise NotSent(str(error)) from None
                     return original_transport(payload)
                 self.model.transport = gated_transport
                 try:

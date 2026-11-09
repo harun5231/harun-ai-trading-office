@@ -13,13 +13,13 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_TRADING_BUDGET_V4'
+PROFILE = 'RESTORED_MINI_PRODUCTIVE_DIALOGUE_V5'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
-SOURCE_SHA256 = '033e5b8c4758c3841350132dd58344460273310baf6d30bccad9e762ac748c37'
+SOURCE_SHA256 = 'de20014917614a913b24a61b13ad1dcdb2eac6b74d92806d972f5c31c10c86aa'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
 MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
@@ -132,12 +132,27 @@ def apply_purpose_policy(raw,root=ROOT):
     source=source.replace('def safe_error(error):\n',
         "def safe_error(error):\n    if isinstance(error,NotSent) and str(error)=='DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED':\n"
         "        return 'DIALOGUE_MODEL_NOT_SENT'\n",1)
-    budget_needle=('        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45,\n'
-        '            daily_requests=math.inf, daily_input_tokens=math.inf, daily_output_tokens=math.inf)')
-    if source.count(budget_needle)!=1:
-        raise ValueError('MINI_BUDGET_PATCH_TARGET_CHANGED')
-    source=source.replace(budget_needle,
-        '        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45)',1)
+    initial=('            def execute():\n'
+        '                validate_request(request, now=self.clock())\n'
+        "                remaining = min(45.0, request['deadline_epoch'] - self.clock())\n"
+        "                need(remaining > 0, 'DIALOGUE_DEADLINE_EXPIRED')\n")
+    if source.count(initial)!=1:
+        raise ValueError('MINI_PRE_PROVIDER_INITIAL_GATE_CHANGED')
+    source=source.replace(initial,'            def execute():\n                try:\n'+
+        ''.join('    '+line+'\n' for line in initial.splitlines()[1:])+
+        '                except DialogueError as error:\n                    raise NotSent(str(error)) from None\n',1)
+    marker='                # Last possible gate check immediately before provider dispatch.\n'
+    source=source.replace(marker+'                validate_request(request, now=self.clock())\n',
+        marker+'                try:\n                    validate_request(request, now=self.clock())\n'
+        '                except DialogueError as error:\n                    raise NotSent(str(error)) from None\n',1)
+    start=source.index('                def gated_transport(payload):\n')
+    body_start=start+len('                def gated_transport(payload):\n')
+    end=source.index('                    return original_transport(payload)\n',body_start)
+    # The original provider call deliberately remains OUTSIDE this catch. Its
+    # timeout/transport/response failures must retain UNKNOWN semantics.
+    source=(source[:body_start]+'                    try:\n'+''.join(
+        '    '+line+'\n' for line in source[body_start:end].splitlines())+
+        '                    except DialogueError as error:\n                        raise NotSent(str(error)) from None\n'+source[end:])
     return source.encode()
 
 

@@ -79,6 +79,48 @@ class MiniComposeArchiveTests(unittest.TestCase):
         self.assertEqual(json.loads(self.memory.db.execute('SELECT result FROM operations').fetchone()[0]),
             {'_agent_not_sent':'DIALOGUE_REQUEST_ARCHIVE_UNAVAILABLE'})
 
+    def test_archive_delay_expiry_is_not_sent_with_source_and_budget_retained(self):
+        monotonic=[1000.0];original=self.memory.put
+        def put(key,value):
+            result=original(key,value)
+            if key.startswith('dialogue-compose-request-v1:'):monotonic[0]+=46
+            return result
+        with patch.object(self.memory,'put',side_effect=put),patch.object(self.service.time,'monotonic',
+                side_effect=lambda:monotonic[0]),self.assertRaises(self.service.DialogueError) as caught:
+            self.engine.process(self.value)
+        self.assertEqual(self.calls,[]);self.assertIsNotNone(self.memory.get(self.archive_key))
+        self.assertEqual(self.memory.db.execute('SELECT requests FROM budgets').fetchone()[0],1)
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':1})
+        self.assertEqual(json.loads(self.memory.db.execute('SELECT result FROM operations').fetchone()[0]),
+            {'_agent_not_sent':'DIALOGUE_DEADLINE_EXPIRED'})
+        self.assertEqual(str(caught.exception),'DIALOGUE_MODEL_NOT_SENT')
+
+    def test_initial_execute_expiry_after_claim_is_conclusive_not_sent(self):
+        clock=[time.time()];self.engine.clock=lambda:clock[0]
+        original=self.memory.operation
+        def delayed(operation,kind,payload,execute):
+            def after_claim():
+                clock[0]+=100
+                return execute()
+            return original(operation,kind,payload,after_claim)
+        with patch.object(self.memory,'operation',side_effect=delayed),self.assertRaises(
+                self.service.DialogueError) as caught:
+            self.engine.process(self.value)
+        self.assertEqual(self.calls,[]);self.assertIsNone(self.memory.get(self.archive_key))
+        self.assertEqual(self.memory.db.execute('SELECT COUNT(*) FROM budgets').fetchone()[0],0)
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':1})
+        self.assertEqual(json.loads(self.memory.db.execute('SELECT result FROM operations').fetchone()[0]),
+            {'_agent_not_sent':'DIALOGUE_DEADLINE_EXPIRED'})
+        self.assertEqual(str(caught.exception),'DIALOGUE_MODEL_NOT_SENT')
+
+    def test_identical_error_after_original_transport_entry_still_remains_unknown(self):
+        self.model.transport=Mock(side_effect=self.service.DialogueError('DIALOGUE_DEADLINE_EXPIRED'))
+        with self.assertRaisesRegex(self.service.DialogueError,'DIALOGUE_DEADLINE_EXPIRED'):
+            self.engine.process(self.value)
+        self.model.transport.assert_called_once()
+        self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+        self.assertIsNotNone(self.memory.get(self.archive_key))
+
     def test_received_invalid_model_output_keeps_source_and_raw_proof_without_replay(self):
         self.decision={'action':'PROMPT','symbols':['BTCUSDT'],'question':'Invalid compose symbol array.'}
         with self.assertRaises(self.service.DialogueError):self.engine.process(self.value)
