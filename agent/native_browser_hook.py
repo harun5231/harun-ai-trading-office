@@ -17,7 +17,8 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
-from .neurobro_reply import ReplyIncomplete, analysis_coin_block, parse_reply_for_payload
+from .neurobro_reply import (ReplyIncomplete, analysis_coin_block, parse_reply_for_payload,
+                            screening_interpretation)
 from .llm import web_prompt_allowed
 
 
@@ -190,7 +191,7 @@ class DelegatedDOMBridge:
                  'fresh': None, 'fresh_names': [], 'bound_charts': None,
                  'followup_intents': [], 'initial_url': None, 'turn_names': [],
                  'accepted_reply_sha256': None, 'accepted_output': None,
-                 'asked_questions': []}
+                 'asked_questions': [], 'screening_interpretation': None}
         if _received is not None:
             # Only the actor's received-turn adapter supplies this private seed.
             # It has just observed the same BOUND room and every posted intent;
@@ -589,6 +590,14 @@ class DelegatedDOMBridge:
                 'reply_sha256': reply_sha, 'market_context': market,
                 'gate': {'robot_on': True, 'native_dispatch_verified': True},
                 'deadline_epoch': self.wall_clock() + min(90.0, until - self.clock())}
+            if phase in ('SCREENING','ANALYSIS','PENDING_REVIEW')and all(
+                    row.get('role')==('user'if index%2==0 else'assistant')
+                    for index,row in enumerate(observed_turns)):
+                # Canonical native rows opt into exact WEB context. Legacy
+                # native role dialects retain their original request contract;
+                # never relabel rows beneath their already bound digest.
+                request['conversation_context']={'native_operation':operation,
+                    'native_request_sha256':request_sha,'turns':copy.deepcopy(observed_turns)}
             facts = _source_facts(payload)
             if facts:
                 request['source_facts'] = facts
@@ -618,12 +627,13 @@ class DelegatedDOMBridge:
             gate()
             if transcript() != observed_turns:
                 unknown()
+            sealed_review=None
             if phase in ('ANALYSIS','SCREENING') and self.daily_room is not None:
                 # Persist the actual accepted dialogue result before native
                 # final polling can be interrupted. Never synthesize approval
                 # while later recovering an uncertain browser outcome.
                 from .native_analysis_receipt import persist_review
-                persist_review(self.daily_room.store.root, payload, request, response,
+                sealed_review=persist_review(self.daily_room.store.root, payload, request, response,
                     observed_turns, context=active_context, observed_at=self.wall_clock(),
                     model_operation=model_operation)
             if evaluation is not None:
@@ -641,6 +651,7 @@ class DelegatedDOMBridge:
                 output = None  # An incomplete parse never becomes an invented setup.
             parse_error = None
             natural_parsed = False
+            screening_question = None
             try:
                 output = parse_reply_for_payload(answer, payload)
                 natural_parsed = True
@@ -654,11 +665,52 @@ class DelegatedDOMBridge:
                         'NEUROBRO_LEVEL_INCOMPLETE', 'NEUROBRO_DECISION_CONFLICT',
                         'NEUROBRO_SETUP_CONDITIONAL', 'NEUROBRO_REVIEW_CONDITIONAL'}:
                     output = None  # Do not fall back to an old/conflicting card.
+            if phase=='SCREENING'and response['decision']['action']=='SCREENING':
+                # The existing authenticated Mini receipt reads the whole
+                # analyst conversation. A text-layout parser cannot overrule
+                # that choice merely because it expects a particular heading.
+                try:
+                    output=screening_interpretation(answer,payload,request,response,observed_turns)
+                    natural_parsed=True;parse_error=None
+                except ReplyIncomplete as error:
+                    if str(error)not in {'NEUROBRO_SCREENING_EXCLUDED_SYMBOL','NEUROBRO_SCREENING_COUNT_MISMATCH'}:
+                        raise
+                    output=None;parse_error=str(error)
+                    limits=payload['output_schema'].get('properties',{}).get('symbols',{})
+                    count=limits.get('minItems',(payload.get('context')or{}).get('requested_count'))
+                    capacity=('satu coin'if count==1 else'dua coin'if count==2 else'coin sesuai kapasitas yang diminta')
+                    if parse_error=='NEUROBRO_SCREENING_EXCLUDED_SYMBOL':
+                        excluded=(payload.get('context')or{}).get('excluded_symbols',[])
+                        invalid=[s for s in response['decision']['symbols']if s in excluded]
+                        screening_question=('Koin '+', '.join(invalid)+' sudah dikecualikan dari siklus ini. '
+                            'Pilih pengganti, pertahankan kandidat yang masih sah, lalu nyatakan pilihan final '
+                            'untuk '+capacity+'. Jangan berikan level setup sebelum chart coin tersebut dikirim.')
+                    else:
+                        screening_question=('Kapasitas saat ini meminta '+capacity+'. Pertahankan pilihan yang sudah jelas '
+                            'dan lengkapi jumlah coin yang belum terpenuhi, lalu nyatakan pilihan final. '
+                            'Belum perlu memberikan level setup sebelum chart coin tersebut dikirim.')
+                if parse_error is None and sealed_review is not None and model_operation is not None:
+                    from .native_analysis_receipt import read_reviews
+                    entries=[entry for entry in read_reviews(self.daily_room.store.root,payload)
+                        if entry['value']==sealed_review]
+                    room=self.daily_room;day=getattr(room,'day',None);room_id=getattr(room,'room_id',None)
+                    if len(entries)!=1:
+                        unknown()
+                    if day is not None or room_id is not None:
+                        if (type(day)is not str or day!=operation[:10]or type(room_id)is not str
+                                or re.fullmatch('[a-f0-9]{32}',room_id)is None
+                                or request['conversation_id']!='neurobro:'+day+':'+room_id):
+                            unknown()
+                        state['screening_interpretation']={'kind':'NATIVE_SCREENING_INTERPRETATION_V1',
+                            'operation':operation,'request_sha256':request_sha,'payload_sha256':payload_digest,
+                            'assistant_sha256':reply_sha,'room':{'day':day,'room_id':room_id,
+                                'url':self.bridge.page.url},'turns':copy.deepcopy(observed_turns),
+                            'observed_at':sealed_review['observed_at'],'review_receipt':copy.deepcopy(entries[0])}
             complete = type(output) is dict and set(required).issubset(output)
             expected_symbol = (payload.get('context') or {}).get('symbol')
             if complete and phase in ('ANALYSIS', 'PENDING_REVIEW') and output.get('symbol') != expected_symbol:
                 output, complete, parse_error = None, False, 'NEUROBRO_FOREIGN_COIN'
-            required_question = None
+            required_question = screening_question
             action = response['decision']['action']
             if complete and natural_parsed and phase == 'ANALYSIS' and (
                     action == 'HOLD' and output.get('side') != 'HOLD'
@@ -667,7 +719,7 @@ class DelegatedDOMBridge:
             if (complete and natural_parsed and phase == 'PENDING_REVIEW'
                     and action in {'TAHAN', 'BATALKAN'} and action != output.get('decision')):
                 complete, output, parse_error = False, None, 'NEUROBRO_DECISION_CONFLICT'
-            if (phase == 'SCREENING' and not complete and not response['needs_followup']
+            if (phase == 'SCREENING' and not complete and not response['needs_followup']and required_question is None
                     and self.prompt_cache is not None):
                 limits = payload.get('output_schema', {}).get('properties', {}).get('symbols', {})
                 target = limits.get('minItems')
@@ -719,7 +771,7 @@ class DelegatedDOMBridge:
                 # sending an old budget/sizing request or inventing any level.
                 from .dialogue_service import DialogueError, validate_web_question
                 try:
-                    validate_web_question(question, request)
+                    question=validate_web_question(question, request)
                 except DialogueError:
                     if phase == 'ANALYSIS':
                         question = ('Mohon pertegas keputusan akhir untuk coin yang sedang dibahas. '
@@ -735,11 +787,15 @@ class DelegatedDOMBridge:
                     else:
                         question = ('Mohon ringkas coin pilihanmu sesuai kapasitas yang diminta '
                             'dalam bentuk COIN: simbol USDT Perpetual.')
-            if question in state['asked_questions']:
+            if (question in state['asked_questions']or phase=='SCREENING'and any(
+                    row.get('role')==observed_turns[0].get('role')
+                    and _same_text(row.get('text'),question)for row in observed_turns)):
                 if complete:
                     state.update(phase='ACCEPT', accepted_reply_sha256=reply_sha,
                         accepted_output=copy.deepcopy(output))
                     return
+                if phase=='SCREENING':
+                    raise ReplyIncomplete('NEUROBRO_CLARIFICATION_NO_PROGRESS')
             state['asked_questions'].append(question)
             send_followup(question, market, observed_turns, answer, phase)
 
@@ -929,6 +985,10 @@ class DelegatedDOMBridge:
                 result = {**result,'chart_evidence':evaluation.complete(result)}
             if self.native_turn_batch is not None:
                 self.native_turn_batch.evidence('COMPLETE')
+            if state['screening_interpretation']is not None:
+                if hashlib.sha256(result['assistant_text'].encode()).hexdigest()!=state['screening_interpretation']['assistant_sha256']:
+                    unknown()
+                result={**result,'screening_interpretation':copy.deepcopy(state['screening_interpretation'])}
             return result
         except BaseException as error:
             try:

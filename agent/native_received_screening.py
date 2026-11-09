@@ -14,6 +14,9 @@ INCOMPLETE='NATIVE_RECEIVED_SCREENING_REVIEW_INCOMPLETE_V1'
 RETURN_FAILURE_KIND='NATIVE_SCREENING_ENDED_RETURN_V1'
 RETURN_FAILURE_PRODUCER='879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5'
 RETURN_FAILURE_HOOK='ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee903784b'
+CURRENT_RETURN_FAILURE_HOOK='8498214906365ec2081af01a1049f466308cb36498c1dda1f765083afc3d1d49'
+RETURN_FAILURE_SOURCES=frozenset(((RETURN_FAILURE_PRODUCER,RETURN_FAILURE_HOOK),
+    (RETURN_FAILURE_PRODUCER,CURRENT_RETURN_FAILURE_HOOK)))
 REVIEW_IDENTITY_KIND='NATIVE_SCREENING_RECEIVED_REVIEW_IDENTITIES_V1'
 
 
@@ -44,12 +47,12 @@ def read_ended_return(root,payload):
         and value.get('operation')==payload['operation']
         and value.get('request_sha256')==payload['request_sha256'],
         'SCREENING_RETURN_FAILURE_BINDING_UNVERIFIED')
-    # A different native hook may have different send ordering. Refuse to turn
-    # its old-style failure into a positive no-further-send closure.
+    # Both reviewed hooks retain the same no-further-send phase contract.
+    # Refuse every other producer/hook pair; an unknown hook may reorder Send.
     source=Path(__file__).resolve().parent
     producer=hashlib.sha256((source/'native_turn_batch.py').read_bytes()).hexdigest()
     hook=hashlib.sha256((source/'native_browser_hook.py').read_bytes()).hexdigest()
-    need(producer==RETURN_FAILURE_PRODUCER and hook==RETURN_FAILURE_HOOK,
+    need((producer,hook)in RETURN_FAILURE_SOURCES,
         'SCREENING_RETURN_FAILURE_PRODUCER_CHANGED')
     canonical=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
     need(canonical==raw,'SCREENING_RETURN_FAILURE_BYTES_UNVERIFIED')

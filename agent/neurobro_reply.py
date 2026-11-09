@@ -7,6 +7,7 @@ cannot supply missing fields. Native JSON remains a separate compatible input.
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+import hashlib
 import json
 import math
 import re
@@ -349,6 +350,137 @@ def parse_screening_reply(reply):
     if not 1 <= len(result) <= 2 or len(result) != len(set(result)):
         raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
     return {'symbols': result}
+
+
+def _screening_json_choices(reply):
+    """Recognize explicit authored coin fields, never prices or comparisons."""
+    text=reply.strip();final=list(_FINAL.finditer(text))
+    if final:text=text[final[-1].end():].strip()
+    fences=list(re.finditer(r'```(?:json)?[ \t]*\n?([\s\S]*?)\n?```',text,re.I))
+    blocks=[match[1].strip()for match in fences]if fences else[text]
+    found=[]
+    def unique(items):
+        value={}
+        for key,item in items:
+            key=key.upper()
+            if key in value:raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+            value[key]=item
+        return value
+    for block in blocks:
+        if not block.startswith(('{','[')):continue
+        try:value=json.loads(block,object_pairs_hook=unique,
+            parse_constant=lambda _:(_ for _ in()).throw(ValueError()))
+        except(ValueError,TypeError,AttributeError):raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')from None
+        if type(value)is dict and type(value.get('SYMBOLS'))is list:choices=value['SYMBOLS']
+        elif type(value)is dict and type(value.get('COIN'))is str:choices=[value['COIN']]
+        elif type(value)is list and value and all(type(item)is dict and type(item.get('COIN'))is str for item in value):
+            choices=[item['COIN']for item in value]
+        else:continue
+        selected=[]
+        for choice in choices:
+            match=re.fullmatch('('+PAIR+r')(?:[ \t]+Perpetual)?',choice.strip(),re.I)if type(choice)is str else None
+            if match is None:raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+            selected.append(symbol(match[1]))
+        if not 1<=len(selected)<=2 or len(set(selected))!=len(selected):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        found.append(selected)
+    if found and any(value!=found[-1]for value in found):
+        raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+    return found[-1]if found else None
+
+
+def screening_interpretation(reply, payload, request, response, turns):
+    """Use the actual Mini reading of a source-bound screening conversation.
+
+    This projects only chosen coin identities. It never supplies a price,
+    changes the analyst reply, or replaces a CLARIFY/HOLD with a selection.
+    Native receipt ownership and the live Binance catalog remain caller guards.
+    """
+    def need(value,code='NEUROBRO_SCREENING_INTERPRETATION_UNVERIFIED'):
+        if not value:raise ReplyIncomplete(code)
+    digest=lambda value:hashlib.sha256(json.dumps(value,sort_keys=True,
+        separators=(',',':'),ensure_ascii=True,allow_nan=False).encode()).hexdigest()
+    need(type(reply)is str and type(payload)is dict and type(request)is dict
+        and type(response)is dict and type(turns)is list and bool(turns))
+    need(all(type(row)is dict and type(row.get('text'))is str for row in turns))
+    need(type(payload.get('operation'))is str and type(payload.get('request_sha256'))is str
+        and re.fullmatch('[a-f0-9]{64}',payload['request_sha256']))
+    schema=payload.get('output_schema',{})
+    need(type(schema)is dict and schema.get('required')==['symbols'])
+    reply_sha=hashlib.sha256(reply.encode()).hexdigest()
+    need(request.get('schema_version')==1 and type(request.get('schema_version'))is int
+        and request.get('gate')=={'robot_on':True,'native_dispatch_verified':True}
+        and all(type(flag)is bool for flag in request['gate'].values())
+        and request.get('phase')=='SCREENING'and request.get('market_context')is None
+        and request.get('reply')==reply and request.get('reply_sha256')==reply_sha
+        and turns[-1].get('text')==reply and turns[-1].get('complete')is True)
+    expected=digest(dict(operation=payload.get('operation'),request_sha256=payload.get('request_sha256'),
+        reply_sha256=reply_sha,phase='SCREENING',transcript_sha256=digest(turns)))
+    need(request.get('request_id')==expected)
+    # Both callers already validate their actual Mini receipt. Keep this pure
+    # shared projection usable by the worker without importing a model runtime.
+    need(response.get('schema_version')==1 and type(response.get('schema_version'))is int
+        and response.get('ok')is True and response.get('authority')=='DIALOGUE_CONTROL_ONLY'
+        and response.get('trading_authority')is False
+        and response.get('reason')=='DIALOGUE_DECISION'
+        and all(response.get(key)==request.get(key)for key in('request_id','conversation_id','phase','reply_sha256'))
+        and type(response.get('decision'))is dict)
+    decision=response['decision']
+    need(set(decision)=={'action','symbols','question'}and type(decision['symbols'])is list
+        and 1<=len(decision['symbols'])<=2 and all(type(s)is str for s in decision['symbols'])
+        and len(decision['symbols'])==len(set(decision['symbols'])))
+    need(decision['action']=='SCREENING'and response['needs_followup']is False
+        and decision['question']=='','NEUROBRO_SCREENING_INTERPRETATION_INCOMPLETE')
+    selected=list(decision['symbols'])
+    limits=schema.get('properties',{}).get('symbols',{})
+    minimum,maximum=limits.get('minItems',1),limits.get('maxItems',2)
+    need(type(minimum)is int and type(maximum)is int and 1<=minimum<=maximum<=2,
+        'NEUROBRO_SCHEMA_UNVERIFIED')
+    need(minimum<=len(selected)<=maximum,'NEUROBRO_SCREENING_COUNT_MISMATCH')
+    pattern=limits.get('items',{}).get('pattern',r'^[A-Z0-9]{2,18}USDT$')
+    need(type(pattern)is str and all(re.fullmatch(pattern,value)for value in selected),
+        'NEUROBRO_SCREENING_INTERPRETATION_UNVERIFIED')
+    mentioned=attributed_symbols(reply)
+    for choice in selected:
+        base=choice[:-4]
+        # Match the established Mini standalone-cashtag attribution contract;
+        # dollar amounts and compound foreign pairs do not name a USDT coin.
+        if not re.fullmatch('[0-9]+[KMBT]?',base)and re.search(
+                r'''(?:^|(?<=[\s,;:!?()\[\]{}*'"`]))\$(?ai:'''+re.escape(base)
+                +r''')(?=\.?(?:$|[\s,;:!?()\[\]{}*'"`]))''',reply):
+            mentioned.add(choice)
+    need(set(selected)<=mentioned,'NEUROBRO_SCREENING_INTERPRETATION_UNVERIFIED')
+    context=payload.get('context')or{}
+    need(type(context)is dict,'NEUROBRO_SCHEMA_UNVERIFIED')
+    if 'requested_count'in context:
+        need(type(context['requested_count'])is int and len(selected)==context['requested_count'],
+            'NEUROBRO_SCREENING_COUNT_MISMATCH')
+    excluded=context.get('excluded_symbols',[])
+    need(type(excluded)is list and all(type(value)is str for value in excluded),
+        'NEUROBRO_SCHEMA_UNVERIFIED')
+    need(not set(selected).intersection(excluded),'NEUROBRO_SCREENING_EXCLUDED_SYMBOL')
+    # An already unambiguous explicit final choice must not be contradicted.
+    # Failure to fit a local text layout is not a second semantic decision:
+    # Mini has read the original paragraph/table/JSON and identified its choices.
+    text=clean(reply)
+    strong_final=(_FINAL.search(text)is not None or _SCREENING_PICK.search(text)is not None
+        or re.search(r'^[ \t]*(?:(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH|PILIHAN COIN|COIN PILIHAN)'
+            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$',text,re.I|re.M)is not None)
+    # A sole leading COIN summary is explicit; labels inside an earlier
+    # comparison table are not a competing semantic interpretation.
+    labels=list(re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]*[:=][ \t]*[^\n]+',text,re.I|re.M))
+    if len(labels)==1 and labels[0].start()==0:
+        tail=text[labels[0].end():]
+        competing=re.search(r'\b(?:pilihan|rekomendasi|daftar)[ \t]+(?:akhir|final)\b|\bYANG[ \t]+DIPILIH\b',tail,re.I)
+        strong_final=strong_final or competing is None
+    try:explicit=parse_screening_reply(reply)if strong_final else None
+    except ReplyIncomplete:explicit=None
+    if explicit is not None:
+        need(explicit['symbols']==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
+    structured=_screening_json_choices(reply)
+    if structured is not None:
+        need(structured==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
+    return {'symbols':selected}
 
 
 def _screening_named_choices(block, *, details=False):

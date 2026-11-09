@@ -54,16 +54,22 @@ class PrivateRiskPromptContractTests(unittest.TestCase):
     def test_native_summary_and_fallback_request_only_neurobro_setup_authority(self):
         payload = dict(marker='HARUN_private', output_schema={'required': [
             'symbol', 'side', 'limit_entry', 'take_profit', 'stop_loss', 'risk_reward']})
-        for text in (compact_summary(payload), compact_protocol(
-                prompts.ANALYSIS + '\n\nOUTPUT_JSON_SCHEMA:\n{}', payload)):
+        summary=compact_summary(payload)
+        fallback=compact_protocol(prompts.ANALYSIS+'\n\nOUTPUT_JSON_SCHEMA:\n{}',payload)
+        for text in(summary,fallback):
             self.assertTrue(web_prompt_allowed(text))
             self.assertNotIn('ukuran posisi', text.lower())
             self.assertNotIn('quantity', text.lower())
             self.assertNotIn('risiko Office', text)
             for clause in ('RISK REWARD 1:2', 'swing high/low', 'likuiditas', 'volatilitas',
-                    'wick', 'false breakout', 'invalidasi', 'Risk Manager hanya menormalkan TP',
+                    'wick', 'false breakout', 'invalidasi', 'ENTRY dan SL ditetapkan Neurobro',
                     '1:3', '1:4', 'coin pengganti'):
                 self.assertIn(clause, text)
+        # Only the new WEB fallback projection changed; retain the separate
+        # legacy formatter contract and test the explicit owner-facing omission.
+        self.assertIn('Risk Manager hanya menormalkan TP',summary)
+        self.assertNotIn('Risk Manager',fallback)
+        self.assertNotIn('target bersih',fallback)
 
     def test_private_budget_is_blocked_even_when_its_number_is_in_market_data(self):
         messages = ('Risiko Office 17.25 USDT.', 'Anggaran risiko 17.25 USDT.',

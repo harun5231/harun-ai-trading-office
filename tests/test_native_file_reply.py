@@ -12,6 +12,7 @@ class OutcomeUnknown(Exception): pass
 
 
 class StrictNativeBridge(Fixture):
+    answer='NEUROBRO ACTUAL ANSWER'
     def __init__(self):
         super().__init__()
         self.url='https://app.neurobro.ai/chat/owned'
@@ -28,7 +29,7 @@ class StrictNativeBridge(Fixture):
         if dispatch_check()is not True: raise NotSubmitted('RESEARCH_PAUSED')
         self.sent+=1
         self.rows=[{'role':'user','text':prompt},
-            {'role':'assistant','text':'NEUROBRO ACTUAL ANSWER','complete':True}]
+            {'role':'assistant','text':self.answer,'complete':True}]
         previous=None;stable=0
         while self.current < deadline:
             answer=self._answer(prompt,native_names)

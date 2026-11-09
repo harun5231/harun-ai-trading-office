@@ -50,11 +50,15 @@ class OutboundPrivacyReminderTests(unittest.TestCase):
                     native.user_prompt(dict(original, prompt=question))
                 cache = PromptCompositionCache(native, root)
                 rendered = cache.store(original, question, draft['request_id'])
-                expected = question.removesuffix(' ' + REMINDER)
+                # Current owner policy also omits this exact internal role
+                # clause on new WEB renders; the historical draft stays intact.
+                expected = question.removesuffix(' ' + REMINDER).replace(
+                    ' Risk Manager hanya menormalkan TP eksekusi.', '')
                 self.assertNotEqual(expected, question)
                 self.assertEqual(outbound_question(question), expected)
                 self.assertTrue(rendered.startswith(expected + '\n\n'))
                 self.assertNotIn(REMINDER, rendered)
+                self.assertNotIn('Risk Manager hanya menormalkan TP eksekusi',rendered)
                 self.assertTrue(web_prompt_allowed(rendered))
                 record = cache.read(original)
                 self.assertEqual(record['payload_sha256'], digest(before))

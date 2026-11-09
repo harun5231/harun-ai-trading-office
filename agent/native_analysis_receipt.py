@@ -33,7 +33,8 @@ def _need(value):
 
 
 def persist_review(root, payload, request, response, turns, *, context, observed_at,model_operation=None):
-    from .dialogue_service import validate_result, screening_model_operation
+    from .dialogue_service import (validate_result, screening_model_operation,
+        validate_conversation_context, dialogue_operation_memo)
     screening=payload.get('output_schema',{}).get('required')==['symbols']
     phase='SCREENING'if screening else'ANALYSIS';kind=SCREENING_KIND if screening else KIND
     _need(request.get('phase') == phase and (context==payload.get('context') if screening else type(context) is dict)
@@ -44,6 +45,11 @@ def persist_review(root, payload, request, response, turns, *, context, observed
     _need(type(turns) is list and turns and turns[-1].get('role') == 'assistant'
         and turns[-1].get('text') == request['reply']
         and hashlib.sha256(request['reply'].encode()).hexdigest() == request['reply_sha256'])
+    bound_turns=validate_conversation_context(request)
+    if bound_turns is not None:
+        evidence=request['conversation_context']
+        _need(bound_turns==turns and evidence['native_operation']==payload['operation']
+            and evidence['native_request_sha256']==payload['request_sha256'])
     transcript = digest(turns)
     expected = digest(dict(operation=payload['operation'], request_sha256=payload['request_sha256'],
         reply_sha256=request['reply_sha256'], phase=phase, transcript_sha256=transcript))
@@ -82,6 +88,9 @@ def persist_review(root, payload, request, response, turns, *, context, observed
             copied = copy.deepcopy(record); copied.pop('observed_at', None)
             # A cached result for the same exact native transcript may be read
             # again with a new technical call deadline. Keep the first receipt.
+            # Optional WEB context is already bound by this same native ID;
+            # validate it before comparing with a legacy receipt without it.
+            copied['request']=dialogue_operation_memo(copied['request'])
             copied['request'].pop('deadline_epoch', None)
             return copied
         _need(identity(existing) == identity(value))

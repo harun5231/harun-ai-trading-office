@@ -99,9 +99,9 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
     def forbid(self, *args, **kwargs):
         raise AssertionError('Recovery must not send provider/model/upload/order work')
 
-    def row(self, table):
+    def row(self, table, operation=OP):
         key = 'id' if table == 'robot_cycles' else 'operation'
-        value = CYCLE if table == 'robot_cycles' else OP
+        value = CYCLE if table == 'robot_cycles' else operation
         row = self.db.execute('SELECT * FROM ' + table + ' WHERE ' + key + '=?', (value,)).fetchone()
         return dict(row) if row else None
 
@@ -121,7 +121,7 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         rows = [dict(role='user', text=rendered, attachments=[]),
             dict(role='assistant', text=reply, id='native-round9-first', complete=True, attachments=[])]
         if followup:
-            rows += [dict(role='user', text=clarification(1), attachments=[]),
+            rows += [dict(role='user', text=clarification(int(operation[-1])), attachments=[]),
                 dict(role='assistant', text=reply, id='native-round9-final', complete=True, attachments=[])]
         proof = dict(schema_version=2, kind=KIND, operation=operation,
             request_sha256=self.request_hash, payload_sha256=digest(self.payload),
@@ -162,7 +162,8 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
                     kind='DELEGATED_MODEL_DIALOGUE', request_hash=digest(request),
                     state='DONE', result=wire(response, ascii=True), updated_at=NOW-15))
             raw = wire(value, ascii=True)
-            proof['review_receipts'] = [dict(name='screening-review-fixture.json',
+            proof['review_receipts'] = [dict(name='screening-review-' + digest(dict(operation=operation,
+                request_sha256=self.request_hash)) + '-' + request_id + '.json',
                 sha256=sha(raw), bytes=len(raw.encode()), value=value)]
         return self.seal(dict(kind=KIND, operation=operation, request_sha256=self.request_hash,
             operation_completed=False, observation=proof,
@@ -360,6 +361,343 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(json.loads(self.row('api_requests')['output']),{'symbols':['SUIUSDT']})
         self.assertEqual(self.row('robot_jobs')['state'],'PENDING')
 
+    def two_coin_contract(self):
+        operation = CYCLE + ':screening:0:2'
+        self.context = None
+        _, schema = screening_contract(2)
+        self.body, serialized, self.request_hash = self.source.request_body(
+            operation, 'Pilih dua coin dari jawaban Neurobro dalam konteks screening asli.', schema, None)
+        self.payload = {**self.body, 'request_sha256': self.request_hash}
+        self.data = dict(target=2, queue=[], seen=[], screen=-1,
+            replacements=0, round_symbols=[], risk_target='5')
+        self.catalog.update(FILUSDT={}, ATOMUSDT={})
+        self.db.execute('UPDATE robot_cycles SET data=? WHERE id=?', (json.dumps(self.data), CYCLE))
+        self.db.execute('UPDATE robot_jobs SET operation=? WHERE operation=?', (operation, OP))
+        self.db.execute('UPDATE api_requests SET operation=?,body_hash=? WHERE operation=?',
+            (operation, self.request_hash, OP))
+        self.db.execute('UPDATE research_browser_requests SET operation=?,request_sha256=?,marker=?,request_body=? WHERE operation=?',
+            (operation, self.request_hash, self.body['marker'], serialized, OP))
+        return operation
+
+    def contextual_review(self, envelope):
+        entry = envelope['observation']['review_receipts'][0]
+        value = entry['value']
+        value['request']['conversation_context'] = dict(native_operation=envelope['operation'],
+            native_request_sha256=self.request_hash, turns=copy.deepcopy(envelope['observation']['rows']))
+        raw = wire(value, ascii=True)
+        entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+        return self.seal(envelope)
+
+    def test_actual_mini_interprets_fil_atom_paragraph_list_table_and_json_without_format_question(self):
+        operation = self.two_coin_contract()
+        replies = (
+            'Saya memilih FILUSDT dan ATOMUSDT sebagai dua kandidat utama. '
+                'BTCUSDT dan ETHUSDT hanya menjadi pembanding pasar.',
+            'Kandidat akhir saya:\n1. FILUSDT karena momentumnya.\n2. ATOMUSDT karena strukturnya.\n'
+                'BTCUSDT hanya pembanding.',
+            '| Pilihan akhir | Alasan |\n| --- | --- |\n| FILUSDT | Momentum |\n'
+                '| ATOMUSDT | Struktur |\nBTCUSDT hanya pembanding.',
+            '{"pilihan_akhir":["FILUSDT","ATOMUSDT"],"pembanding":["BTCUSDT","ETHUSDT"]}',
+        )
+        finances = self.finances()
+        for reply in replies:
+            for contextual in (False, True):
+                with self.subTest(reply=reply, contextual=contextual):
+                    envelope = self.fixture(operation=operation, reply=reply, symbols=['FILUSDT', 'ATOMUSDT'])
+                    if contextual:
+                        self.contextual_review(envelope)
+                    result, received, stale = recovery.validate_received_screening(self.provider,
+                        envelope, self.payload, self.created, catalog=self.catalog, max_age=180, now=NOW)
+                    self.assertEqual(result['output'], {'symbols': ['FILUSDT', 'ATOMUSDT']})
+                    self.assertEqual(result['assistant_text'], reply)
+                    self.assertEqual(received, NOW-10)
+                    self.assertFalse(stale)
+        self.assertEqual(self.finances(), finances)
+        self.assertIsNone(self.row('research_browser_responses', operation))
+
+    def test_fil_atom_natural_reply_recovers_once_and_resumes_sealed_crash_after_native_commit(self):
+        operation = self.two_coin_contract()
+        reply = 'Pilihan akhir saya FILUSDT dan ATOMUSDT. BTCUSDT hanya pembanding.'
+        envelope = self.contextual_review(self.fixture(operation=operation, reply=reply,
+            symbols=['FILUSDT', 'ATOMUSDT']))
+        finances = self.finances()
+        native_record = self.provider._record_browser_response
+        def interrupted(*args, **kwargs):
+            self.assertEqual(self.row('screening_response_recoveries', operation)['phase'], 'PREPARED')
+            native_record(*args, **kwargs)
+            raise RuntimeError('controlled disappearance after natural reply receipt')
+        self.provider._record_browser_response = interrupted
+        with self.assertRaisesRegex(RuntimeError, 'controlled disappearance'):
+            self.recover(envelope)
+        receipt = self.row('research_browser_responses', operation)
+        self.assertEqual(receipt['assistant_text'], reply)
+        self.assertEqual(self.row('robot_jobs', operation)['state'], 'NEEDS_REVIEW')
+        self.provider._record_browser_response = self.forbid
+        self.assertEqual(self.recover(envelope, now=NOW+1), 'RESUME_CACHED')
+        self.assertEqual(self.row('research_browser_responses', operation), receipt)
+        api = self.row('api_requests', operation)
+        self.assertEqual(json.loads(api['output']), {'symbols': ['FILUSDT', 'ATOMUSDT']})
+        self.assertEqual((api['attempts'], api['created']), (1, self.created))
+        self.assertEqual(self.row('robot_cycles')['data'], json.dumps(self.data))
+        self.assertEqual(self.finances(), finances)
+        snapshot = tuple(self.db.iterdump())
+        self.assertEqual(self.recover(envelope, now=NOW+2), 'RESUME_CACHED')
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
+
+    def test_actual_natural_final_after_recorded_clarification_uses_whole_transcript(self):
+        operation = self.two_coin_contract()
+        reply = 'Saya memilih FILUSDT dan ATOMUSDT. BTCUSDT hanya pembanding.'
+        envelope = self.contextual_review(self.fixture(operation=operation, reply=reply,
+            symbols=['FILUSDT', 'ATOMUSDT'], followup=True))
+        initial = self.contextual_review(self.fixture(operation=operation, reply=reply,
+            symbols=[], action='CLARIFY'))
+        entry = initial['observation']['review_receipts'][0]
+        response = entry['value']['response']
+        response['needs_followup'] = True
+        response['decision']['question'] = envelope['observation']['rows'][2]['text']
+        entry['value']['model_operation']['result'] = wire(response, ascii=True)
+        raw = wire(entry['value'], ascii=True)
+        entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+        envelope['observation']['review_receipts'].insert(0, entry)
+        self.seal(envelope)
+        result, _, _ = recovery.validate_received_screening(self.provider, envelope, self.payload,
+            self.created, catalog=self.catalog, max_age=180, now=NOW)
+        self.assertEqual(result['output'], {'symbols': ['FILUSDT', 'ATOMUSDT']})
+
+    def natural_native_result(self, operation):
+        reply = 'Pilihan akhir saya FILUSDT dan ATOMUSDT. BTCUSDT hanya pembanding.'
+        envelope = self.contextual_review(self.fixture(operation=operation, reply=reply,
+            symbols=['FILUSDT', 'ATOMUSDT']))
+        result, _, _ = recovery.validate_received_screening(self.provider, envelope, self.payload,
+            self.created, catalog=self.catalog, max_age=180, now=NOW)
+        result['screening_interpretation'] = recovery._received_interpretation_proof(
+            envelope['observation'], self.payload)
+        return result
+
+    def test_first_native_delivery_and_restart_cache_use_durable_mini_source_without_recovery_or_reasking(self):
+        from worker.neuroapi import selections
+        operation = self.two_coin_contract()
+        result = self.natural_native_result(operation)
+        self.db.execute('DELETE FROM api_requests WHERE operation=?', (operation,))
+        self.db.execute('DELETE FROM research_browser_requests WHERE operation=?', (operation,))
+        calls = []
+        self.provider.require_key = lambda: None
+        self.provider.headers = lambda: {}
+        def transport(method, url, headers, body, *, timeout):
+            calls.append((method, url, body))
+            return 200, {}, result
+        self.provider.transport = transport
+        finances = self.finances()
+        with patch.object(self.native.time, 'time', side_effect=[self.created, NOW, NOW]):
+            output = self.native.NeuroBrowser.ask(self.provider, operation, self.body['prompt'], self.body['output_schema'],
+                lambda value: selections(value, self.catalog, 2), self.context, catalog=self.catalog)
+        self.assertEqual(output, {'symbols': ['FILUSDT', 'ATOMUSDT']})
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], self.native.BASE + '/v1/ask')
+        self.assertEqual(self.row('research_browser_responses', operation)['assistant_text'], result['assistant_text'])
+        self.assertEqual(self.row('api_requests', operation)['state'], 'COMPLETE')
+        self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='screening_response_recoveries'").fetchone())
+        self.assertEqual(self.db.execute('SELECT count(*) FROM screening_interpretations').fetchone()[0], 1)
+        evidence = self.source.source_evidence(self.db, operation)
+        self.assertEqual(evidence['source_type'], self.source.BROWSER_SOURCE)
+        self.assertEqual(self.finances(), finances)
+        restarted_db = sqlite3.connect(':memory:', isolation_level=None)
+        restarted_db.row_factory = sqlite3.Row
+        self.addCleanup(restarted_db.close)
+        self.db.backup(restarted_db)
+        restarted = object.__new__(self.native.NeuroBrowser)
+        restarted.db = restarted_db
+        restarted.chart_max_age = self.provider.chart_max_age
+        restarted.require_key = self.forbid
+        restarted.transport = self.forbid
+        snapshot = tuple(restarted_db.iterdump())
+        self.assertEqual(restarted.ask(operation, self.body['prompt'], self.body['output_schema'],
+            lambda value: selections(value, self.catalog, 2), self.context, catalog=self.catalog), output)
+        self.assertEqual(self.source.source_evidence(restarted_db, operation), evidence)
+        self.assertEqual(tuple(restarted_db.iterdump()), snapshot)
+
+    def test_native_recorder_keeps_raw_text_and_unknown_on_missing_forged_or_tampered_mini_proof(self):
+        from worker.neuroapi import selections
+        operation = self.two_coin_contract()
+        original = self.natural_native_result(operation)
+        finances = self.finances()
+        for change in ('absent', 'plain_symbols', 'foreign_request', 'changed_turn', 'unknown_mini', 'future_review'):
+            with self.subTest(change=change):
+                result = copy.deepcopy(original)
+                proof = result['screening_interpretation']
+                if change == 'absent':
+                    del result['screening_interpretation']
+                elif change == 'plain_symbols':
+                    result['screening_interpretation'] = {'symbols': ['FILUSDT', 'ATOMUSDT']}
+                elif change == 'foreign_request':
+                    proof['request_sha256'] = '0' * 64
+                elif change == 'changed_turn':
+                    proof['turns'][-1]['text'] += ' Sumber lain.'
+                elif change == 'unknown_mini':
+                    entry = proof['review_receipt']
+                    entry['value']['model_operation']['state'] = 'UNKNOWN'
+                    raw = wire(entry['value'], ascii=True)
+                    entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+                else:
+                    proof['observed_at'] = NOW+1
+                    entry = proof['review_receipt']
+                    entry['value']['observed_at'] = NOW+1
+                    raw = wire(entry['value'], ascii=True)
+                    entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+                with patch.object(self.native.time, 'time', return_value=NOW), self.assertRaises(Review):
+                    self.provider._record_browser_response(operation, self.body, self.request_hash,
+                        result, self.body['output_schema'], lambda value: selections(value, self.catalog, 2),
+                        self.context, catalog=self.catalog, received_at=NOW-10, recovery=True)
+                self.assertEqual(self.row('api_requests', operation)['state'], 'NEEDS_REVIEW')
+                self.assertIsNone(self.row('api_requests', operation)['output'])
+                self.assertEqual(self.row('research_browser_responses', operation)['assistant_text'], original['assistant_text'])
+                self.assertIsNone(self.db.execute("SELECT name FROM sqlite_master WHERE name='screening_interpretations'").fetchone())
+                self.assertEqual(self.finances(), finances)
+
+    def test_later_actual_mini_review_recovers_prior_raw_receipt_without_changing_either_clock(self):
+        from worker.neuroapi import selections
+        operation = self.two_coin_contract()
+        result = self.natural_native_result(operation)
+        original_received = NOW-30
+        initial = {key: value for key, value in result.items() if key != 'screening_interpretation'}
+        with self.assertRaises(Review):
+            self.provider._record_browser_response(operation, self.body, self.request_hash,
+                initial, self.body['output_schema'], lambda value: selections(value, self.catalog, 2),
+                self.context, catalog=self.catalog, received_at=original_received, recovery=True)
+        receipt = self.row('research_browser_responses', operation)
+        envelope = self.contextual_review(self.fixture(operation=operation, reply=result['assistant_text'],
+            symbols=['FILUSDT', 'ATOMUSDT']))
+        with patch.object(recovery.time, 'time', return_value=NOW):
+            self.assertEqual(self.recover(envelope), 'RESUME_CACHED')
+        self.assertEqual(self.row('research_browser_responses', operation), receipt)
+        self.assertEqual(receipt['received_at'], original_received)
+        saved = self.row('screening_interpretations', operation)
+        self.assertEqual(json.loads(saved['proof'])['observed_at'], NOW-15)
+        self.assertEqual(saved['retained_at'], NOW)
+        self.assertEqual(self.source.source_evidence(self.db, operation)['source_type'], self.source.BROWSER_SOURCE)
+
+    def test_native_source_reread_rejects_resealed_proof_tampering_and_never_overwrites_first_proof(self):
+        from worker.owner_source_protocol import retain_screening_interpretation
+        operation = self.two_coin_contract()
+        envelope = self.contextual_review(self.fixture(operation=operation,
+            reply='Saya memilih FILUSDT dan ATOMUSDT. BTCUSDT hanya pembanding.', symbols=['FILUSDT', 'ATOMUSDT']))
+        self.assertEqual(self.recover(envelope), 'RESUME_CACHED')
+        saved = self.row('screening_interpretations', operation)
+        evidence = self.source.source_evidence(self.db, operation)
+        text = self.row('research_browser_responses', operation)['assistant_text']
+        proof = json.loads(saved['proof'])
+        retain_screening_interpretation(self.db, self.body, self.request_hash, text, proof)
+        self.assertEqual(self.row('screening_interpretations', operation), saved)
+        newer = copy.deepcopy(proof)
+        newer['observed_at'] += 1
+        newer['review_receipt']['value']['observed_at'] += 1
+        raw = wire(newer['review_receipt']['value'], ascii=True)
+        newer['review_receipt'].update(sha256=sha(raw), bytes=len(raw.encode()))
+        with self.assertRaises(Review):
+            retain_screening_interpretation(self.db, self.body, self.request_hash, text, newer)
+        self.assertEqual(self.row('screening_interpretations', operation), saved)
+        for change in ('payload', 'transcript', 'foreign_symbols', 'unknown_mini'):
+            with self.subTest(change=change):
+                changed = copy.deepcopy(proof)
+                entry = changed['review_receipt']
+                if change == 'payload':
+                    changed['payload_sha256'] = '0' * 64
+                elif change == 'transcript':
+                    changed['turns'][-1]['id'] = 'foreign-native-turn'
+                elif change == 'foreign_symbols':
+                    response = entry['value']['response']
+                    response['decision']['symbols'] = ['FILUSDT', 'XRPUSDT']
+                    entry['value']['model_operation']['result'] = wire(response, ascii=True)
+                else:
+                    entry['value']['model_operation']['state'] = 'UNKNOWN'
+                raw = wire(entry['value'], ascii=True)
+                entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+                raw = wire(changed)
+                self.db.execute('UPDATE screening_interpretations SET proof=?,proof_sha256=? WHERE operation=?',
+                    (raw, sha(raw), operation))
+                with self.assertRaisesRegex(Review, '^ROBOT_SETUP_UNVERIFIED$'):
+                    self.source.source_evidence(self.db, operation)
+        self.db.execute('UPDATE screening_interpretations SET proof=?,proof_sha256=? WHERE operation=?',
+            (saved['proof'], saved['proof_sha256'], operation))
+        self.db.execute('UPDATE screening_interpretations SET retained_at=? WHERE operation=?', (NOW-60, operation))
+        with self.assertRaisesRegex(Review, '^ROBOT_SETUP_UNVERIFIED$'):
+            self.source.source_evidence(self.db, operation)
+        self.db.execute('UPDATE screening_interpretations SET retained_at=? WHERE operation=?', (saved['retained_at'], operation))
+        self.assertEqual(self.source.source_evidence(self.db, operation), evidence)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM screening_interpretations').fetchone()[0], 1)
+
+    def test_natural_interpretation_needs_exact_original_mini_source_and_optional_context(self):
+        operation = self.two_coin_contract()
+        reply = 'Saya memilih FILUSDT dan ATOMUSDT; BTCUSDT hanya pembanding.'
+        original = self.contextual_review(self.fixture(operation=operation, reply=reply,
+            symbols=['FILUSDT', 'ATOMUSDT']))
+        for change in ('reply', 'turn_id', 'context_operation', 'context_hash', 'context_turns', 'context_extra',
+                'missing_receipt', 'unknown_receipt'):
+            with self.subTest(change=change):
+                envelope = copy.deepcopy(original)
+                proof = envelope['observation']; entry = proof['review_receipts'][0]
+                context = entry['value']['request']['conversation_context']
+                if change == 'reply':
+                    proof['rows'][-1]['text'] += ' Teks sumber berubah.'
+                elif change == 'turn_id':
+                    proof['rows'][-1]['id'] = 'different-native-turn'
+                elif change == 'context_operation':
+                    context['native_operation'] = OP
+                elif change == 'context_hash':
+                    context['native_request_sha256'] = '0' * 64
+                elif change == 'context_turns':
+                    context['turns'] = context['turns'][-1:]
+                elif change == 'context_extra':
+                    context['unowned'] = True
+                elif change == 'missing_receipt':
+                    proof['review_receipts'] = []
+                else:
+                    entry['value']['model_operation']['state'] = 'UNKNOWN'
+                raw = wire(entry['value'], ascii=True)
+                entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+                self.seal(envelope)
+                with self.assertRaises((Review, ValueError)):
+                    self.recover(envelope)
+                self.assertEqual(self.row('api_requests', operation)['state'], 'NEEDS_REVIEW')
+                self.assertIsNone(self.row('research_browser_responses', operation))
+
+    def test_mini_cannot_invent_foreign_excluded_missing_or_wrong_count_symbols_in_natural_reply(self):
+        self.catalog.update(FILUSDT={}, ATOMUSDT={}, BTCUSDT={})
+        cases = (
+            ('Saya memilih FILUSDT. ATOMUSDT hanya pembanding.', ['XRPUSDT']),
+            ('Saya memilih AVAXUSDT sebagai kandidat akhir.', ['AVAXUSDT']),
+            ('Saya memilih FILUSDT dan ATOMUSDT.', ['FILUSDT', 'ATOMUSDT']),
+            ('Saya memilih FILUSDT dan ATOMUSDT.', []),
+            ('Saya memilih FILUSDT sebagai kandidat akhir.', ['ATOMUSDT']),
+            ('COIN: SUIUSDT\nFILUSDT hanya pembanding.', ['FILUSDT']),
+        )
+        for reply, symbols in cases:
+            with self.subTest(reply=reply, symbols=symbols):
+                envelope = self.contextual_review(self.fixture(reply=reply, symbols=symbols))
+                with self.assertRaises(Review):
+                    self.recover(envelope)
+                self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
+                self.assertIsNone(self.row('research_browser_responses'))
+
+    def test_natural_mini_selection_still_needs_current_catalog_and_cannot_promote_hold_or_clarify(self):
+        for action in ('SCREENING', 'HOLD', 'CLARIFY'):
+            with self.subTest(action=action):
+                envelope = self.fixture(reply='Saya memilih FILUSDT sebagai kandidat akhir.',
+                    symbols=['FILUSDT'], action=action)
+                if action == 'CLARIFY':
+                    entry = envelope['observation']['review_receipts'][0]
+                    response = entry['value']['response']
+                    response.update(needs_followup=True)
+                    response['decision']['question'] = 'Mana pilihan akhirnya?'
+                    entry['value']['model_operation']['result'] = wire(response, ascii=True)
+                    raw = wire(entry['value'], ascii=True)
+                    entry.update(sha256=sha(raw), bytes=len(raw.encode()))
+                    self.seal(envelope)
+                with self.assertRaises((Review, ValueError)):
+                    self.recover(envelope)
+                self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
+                self.assertIsNone(self.row('research_browser_responses'))
+
     def test_existing_coordinator_drains_fresh_round9_cache_without_provider_call(self):
         from worker import robot as robot_module
         self.assertEqual(self.recover(), 'RESUME_CACHED')
@@ -548,6 +886,39 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
         self.assertEqual(self.row('robot_jobs')['state'], 'NEEDS_REVIEW')
         self.assertIsNone(self.row('research_browser_responses'))
+
+    def test_missing_natural_reply_approval_routes_once_to_read_only_mini_without_local_format_gate(self):
+        operation = self.two_coin_contract()
+        envelope = self.fixture(operation=operation,
+            reply='Saya memilih FILUSDT dan ATOMUSDT. BTCUSDT hanya pembanding.', approval=False)
+        with self.assertRaisesRegex(Review, '^SCREENING_MINI_APPROVAL_NOT_RETAINED$'):
+            recovery.validate_received_screening(self.provider, envelope, self.payload,
+                self.created, catalog=self.catalog, max_age=180, now=NOW)
+        # Without approval enforcement, the old no-receipt parser still has no
+        # semantic authority to project this paragraph into chosen symbols.
+        with self.assertRaises(ValueError):
+            recovery.validate_received_screening(self.provider, envelope, self.payload,
+                self.created, catalog=self.catalog, max_age=180, now=NOW, require_approval=False)
+        calls = []
+        self.provider.observe_received_screening = lambda op: calls.append(('observe', op)) or envelope
+        def review(op, observed):
+            self.assertEqual(observed, envelope)
+            calls.append(('review', op))
+            raise Review('SCREENING_REVIEW_OUTCOME_UNKNOWN')
+        self.provider.review_received_screening = review
+        coordinator = SimpleNamespace(db=self.db, neuro=self.provider,
+            market=SimpleNamespace(max_age=180, catalog=lambda: self.catalog), allowed=lambda today: True,
+            store=SimpleNamespace(report=lambda status, account=None, reason=None, **kw:
+                dict(bot_status=status, reason=reason, **kw)))
+        finances = self.finances()
+        with patch.object(recovery.time, 'time', return_value=NOW):
+            result = recovery.resume_uncertain_screening(coordinator, DAY, {})
+        self.assertEqual(result['wait_reason'], 'SCREENING_REVIEW_OUTCOME_UNKNOWN')
+        self.assertEqual(calls, [('observe', operation), ('review', operation)])
+        self.assertEqual(self.row('api_requests', operation)['state'], 'NEEDS_REVIEW')
+        self.assertIsNone(self.row('api_requests', operation)['output'])
+        self.assertIsNone(self.row('research_browser_responses', operation))
+        self.assertEqual(self.finances(), finances)
 
     def test_unknown_or_unbound_actual_mini_row_cannot_clear_received_research(self):
         for key, invalid in (('state', 'UNKNOWN'), ('state', 'STARTED'),

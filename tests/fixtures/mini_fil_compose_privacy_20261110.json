@@ -1,0 +1,32 @@
+{
+  "source_observation": {
+    "bytes": 140577,
+    "job": "42669406872-1",
+    "name": "current-room-dialogue-full-private.json",
+    "sha256": "2ffd37fdd123e31c38759b155b58e9ffb205efc8877989313663fd398c65f493"
+  },
+  "operation_id": "delegated-model:5c4eff63eae927a1b1ffd5b54405dcc71181901f2c3d4e06ddf1a4d8426d748c",
+  "question": "Saya kirim data chart FILUSDT (Binance Futures) timeframe 1H dan 15M — ingin scalp di TF 15M. Tolong analisa dan tentukan: LONG / SHORT / HOLD; ENTRY (level harga 15M), TP, dan SL. Persyaratan: minta RISK REWARD minimal 1:2 dan SL harus berbasis struktur pasar (swing high/low), likuiditas, volatilitas, wick, kemungkinan false breakout, dan titik invalidasi setup — jangan taruh SL di area yang mudah tersapu wick. Neurobro yang menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP ke target bersih 2R saat eksekusi. Jangan minta atau sarankan ukuran/quantity/anggaran risiko akun. Gunakan data yang saya kirim (termasuk mark_price 0.77725194 dan candles 1H/15M). Berikan level jelas dan singkat disertai alasan struktur singkat (swing, likuiditas, wick, invalidasi). Jika HOLD, tulis HOLD saja dengan harga null. Terima data sebagai fakta; jangan ubah ENTRY/SL dari Neurobro. Mulai analisa untuk FILUSDT TF15M (scalp).",
+  "question_sha256": "4782161dd6903b55522dcf722f6df838f6f0251400d4062f9617afc8d861d77c",
+  "before_validation": {
+    "outbound_question": {
+      "error": "NATIVE_COMPOSE_RENDER_UNVERIFIED",
+      "error_class": "ValueError",
+      "ok": false
+    },
+    "question_sources": {
+      "error": null,
+      "ok": true
+    },
+    "validate_raw_decision": {
+      "error": "DIALOGUE_MODEL_RESULT_INVALID",
+      "error_class": "DialogueError",
+      "ok": false
+    },
+    "validate_web_question": {
+      "error": "DIALOGUE_MODEL_RESULT_INVALID",
+      "error_class": "DialogueError",
+      "ok": false
+    }
+  }
+}

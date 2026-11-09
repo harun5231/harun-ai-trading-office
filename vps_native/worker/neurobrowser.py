@@ -479,7 +479,10 @@ class NeuroBrowser:
             if not isinstance(result, dict):
                 raise Review(failure)
             required = {'operation', 'marker', 'request_sha256', 'output', 'assistant_text', 'response_id'}
-            if set(result) not in (required, required | {'chart_evidence'}):
+            allowed = required | {'chart_evidence'}
+            if screening_count(schema) is not None:
+                allowed.add('screening_interpretation')
+            if not required <= set(result) <= allowed:
                 raise Review(failure)
             if (result['operation'], result['marker'], result['request_sha256']) != (operation, body['marker'], request_hash):
                 raise Review(failure)
@@ -530,8 +533,14 @@ class NeuroBrowser:
             failure = 'NEUROBRO_CHART_EVIDENCE_INVALID'
             validate_chart_evidence(raw_charts, schema, context, current['created'], received_at, self.chart_max_age)
             failure = 'INVALID_OUTPUT_SCHEMA'
+            if 'screening_interpretation' in result:
+                # Retain only independently validated source-bound Mini proof,
+                # after the original raw reply is safely in its native receipt.
+                from .owner_source_protocol import retain_screening_interpretation
+                retain_screening_interpretation(self.db, body, request_hash, text,
+                    result['screening_interpretation'])
             actual = parse_bound_assistant_text(text, body, parse_assistant_text,
-                max_assistant_bytes=MAX_ASSISTANT_BYTES)
+                max_assistant_bytes=MAX_ASSISTANT_BYTES, db=self.db)
             validate(value)
             cached = canonical_output(value, schema, catalog)
             if canonical_output(actual, schema, catalog) != cached or sha(cached) != sha(receipt_output):

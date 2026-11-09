@@ -1,0 +1,173 @@
+{
+  "source": "EXACT_PUBLIC_HASH_VERIFIED_NATIVE_ROOM_ROWS",
+  "source_evidence": {
+    "bytes": 140577,
+    "job": "42669406872-1",
+    "name": "current-room-dialogue-full-private.json",
+    "sha256": "2ffd37fdd123e31c38759b155b58e9ffb205efc8877989313663fd398c65f493"
+  },
+  "notes": "Original analyst text, including newlines, is unchanged. Test model envelopes are offline fixtures, not production receipts.",
+  "repeated_question": "Mohon ringkas 2 coin pilihanmu sesuai kapasitas yang diminta dalam bentuk COIN: simbol USDT Perpetual. Jangan sertakan coin pembanding sebagai pilihan.",
+  "replies": [
+    {
+      "reply": "Ringkasan final 2 pilihan lo - tanpa koin pembanding:\n\nFIL: FILUSDT Perpetual - momentum terkuat, short-squeeze $1.2M, funding tipis. Entry 0.765 | SL 0.738 | TP 0.80/0.83.\n\nATOM: ATOMUSDT Perpetual - gain 24 jam tertinggi (+3.5%), funding netral, OI tumbuh. Entry 1.33 | SL 1.27 | TP 1.42/1.47.\n\nJSON sesuai format lo:\n\n\n```json\n[\n  {\"COIN\":\"FILUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":0.765,\"TP\":0.80,\"SL\":0.738},\n  {\"COIN\":\"ATOMUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":1.33,\"TP\":1.42,\"SL\":1.27}\n]\n```\n\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo.\n\nBisa dieksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya?",
+      "sha256": "3cb78c2366e4e3627fd4994ada6098a0f6a3145d82b2174d56074c7a94b5a793",
+      "characters": 739,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "ATOMUSDT"
+        ]
+      },
+      "original_review_request_id": "08d9757a7c9ce9450759bf5541e016c76766e4b405aeebeb137dd5f782a7a52e",
+      "original_review_receipt_sha256": "0b9d0fff078320749a484a1f1ed9395a9247ebed30a43bb1ca68bad3dac00852",
+      "before_parse": {
+        "capacity": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        },
+        "screening": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        }
+      }
+    },
+    {
+      "reply": "Ringkasan final 2 pilihan lo - tanpa koin pembanding:\n\nFIL: FILUSDT Perpetual - LONG, momentum + short-squeeze $1.2M. Entry 0.765 | SL 0.738 | TP 0.80/0.83 | Confidence 7, R:R 1.6-1.8.\n\nATOM: ATOMUSDT Perpetual - LONG, gain 24 jam tertinggi + OI tumbuh. Entry 1.33 | SL 1.27 | TP 1.42/1.47 | Confidence 7, R:R 1.7-1.9.\n\nJSON sesuai format lo:\n\n\n```json\n[\n  {\"COIN\":\"FILUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":0.765,\"TP\":0.80,\"SL\":0.738},\n  {\"COIN\":\"ATOMUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":1.33,\"TP\":1.42,\"SL\":1.27}\n]\n```\n\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo.\n\nBisa dieksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya?",
+      "sha256": "ddebdf8335bb789fb3cfe26b385d047b3d67f201b45b8148d15f281edc346e9b",
+      "characters": 762,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "ATOMUSDT"
+        ]
+      },
+      "original_review_request_id": "fc842c9784248c624bf742417ffec812286b61eb5d3a0e9699bc22929a7ce175",
+      "original_review_receipt_sha256": "f01602019c5efa5f4c0ff9e0746979f64e974248ad6c34e8b91351cce4c6f02e",
+      "before_parse": {
+        "capacity": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        },
+        "screening": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        }
+      }
+    },
+    {
+      "reply": "Ringkasan final 2 pilihan lo - tanpa koin pembanding:\n\nFIL: FILUSDT Perpetual - LONG, momentum terkuat + short-squeeze $1.2M. Entry 0.765 | SL 0.738 | TP 0.80/0.83.\n\nATOM: ATOMUSDT Perpetual - LONG, gain 24 jam tertinggi + OI tumbuh. Entry 1.33 | SL 1.27 | TP 1.42/1.47.\n\nJSON sesuai format lo:\n\n\n```json\n[\n  {\"COIN\":\"FILUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":0.765,\"TP\":0.80,\"SL\":0.738},\n  {\"COIN\":\"ATOMUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":1.33,\"TP\":1.42,\"SL\":1.27}\n]\n```\n\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo.\n\nBisa dieksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya?",
+      "sha256": "5ef7c8eec459f1cd1e9825e8ed97d4039555812f982f862e8fcb6411d635bcce",
+      "characters": 714,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "ATOMUSDT"
+        ]
+      },
+      "original_review_request_id": "0fe7f600a819d773adcef2c97c3394ba5c403756f68f17587462f3cc4b86be60",
+      "original_review_receipt_sha256": "8da5316b936285861e0bcdc9db0e92a0ab47b100a7ca3f668b5a434403eaf2a5",
+      "before_parse": {
+        "capacity": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        },
+        "screening": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        }
+      }
+    },
+    {
+      "reply": "Ini 2 pilihan final - tanpa koin pembanding:\n\nCOIN: FILUSDT Perpetual - LONG, momentum terkuat + short-squeeze $1.2M. Entry 0.765 | SL 0.738 | TP 0.80/0.83.\n\nCOIN: ATOMUSDT Perpetual - LONG, gain 24 jam tertinggi + OI tumbuh. Entry 1.33 | SL 1.27 | TP 1.42/1.47.\n\nJSON sesuai format lo:\n\n\n```json\n[\n  {\"COIN\":\"FILUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":0.765,\"TP\":0.80,\"SL\":0.738},\n  {\"COIN\":\"ATOMUSDT Perpetual\",\"ARAH\":\"LONG\",\"ENTRY\":1.33,\"TP\":1.42,\"SL\":1.27}\n]\n```\n\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo.\n\nKeduanya bisa dieksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya kalau market bergerak?",
+      "sha256": "3996c0d5dafeebb3ce0b83825fb43baab3871e8e6ea87f08719ff9121ddfbd3d",
+      "characters": 737,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "ATOMUSDT"
+        ]
+      },
+      "original_review_request_id": "f4b5981f99643c2a7f7085efaba21cfd5fa9f3d20c8cc2079c4ddb3dbf21cb32",
+      "original_review_receipt_sha256": "0d1aaf255b0e6c92b36a06f2c52b7bf0fac11c2358b47f8a3ec5ec77776ab4ae",
+      "before_parse": {
+        "capacity": {
+          "error": null,
+          "output": {
+            "symbols": [
+              "FILUSDT",
+              "ATOMUSDT"
+            ]
+          }
+        },
+        "screening": {
+          "error": null,
+          "output": {
+            "symbols": [
+              "FILUSDT",
+              "ATOMUSDT"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "reply": "Pasar lagi risk-off abis leverage flush di $BTC, jadi saya saring yang punya funding terkendali + short-squeeze aktif + volume gede - bukan sekadar ngejar hype. Dua kandidat terkuat buat rotation lo saat ini:\n\nSHORT SQUEEZE JADI SENJATA\n\n$FIL lagi unggul: +1.6% dalam 24 jam padahal market merah, dengan short-liquidations $1.2M vs long cuma $31K - artinya shorts lagi dibantai dan momentum masih naik. Funding tipis positif (0.0087%) dan rasio long/short cuma 1.10, jadi belum ramai pengikut.\n\nLIKUIDITAS + ROTASI BERSIH\n\n$LTC pas dengan profile rotation lo - volume $83.6M tetap tebal, short-liq $1.31M mendominasi, dan open interest turun berarti posisi longs lama mulai bersih. Ini masuk akal sebagai pengganti yang liquid di siklus sekarang.\n\nDua-duanya saya kasih pandangan long (scalp), R:R sudah net setelah biaya:\n\nPair\tSinyal\tEntry\tSL\tTP1\tTP2\nFILUSDT Perpetual\tLONG\t0.765\t0.738\t0.80\t0.83\nLTCUSDT Perpetual\tLONG\t51.0\t49.5\t53.5\t55.2\n\nDaftar pilihan:\n\nFIL: FILUSDT Perpetual - momentum terkuat dan short-squeeze paling agresif, entry di pullback 0.765.\nLTC: LTCUSDT Perpetual - paling liquid untuk rotation, jalan seiring keluarnya posisi longs lama.\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo sendiri.\n\nBisa lo eksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya nanti?",
+      "sha256": "bd4cb3c0223e40a33722246951305f9e2e600756cea5698a6374d8e4d5cb1278",
+      "characters": 1413,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "LTCUSDT"
+        ]
+      },
+      "original_review_request_id": "41c99ad78e34371b0ddceb526ebe4c1a6689f1357637a0f33e4f0d36b905052b",
+      "original_review_receipt_sha256": "2ea69b563abd869d0b810c54eb2354ad6a91479204d0379c46c5c80bc8d68a51",
+      "before_parse": {
+        "capacity": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        },
+        "screening": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        }
+      }
+    },
+    {
+      "reply": "Ringkasan 2 pilihan final sesuai kapasitas lo - tanpa koin pembanding. Catatan singkat: baris kedua saya ganti dari sebelumnya karena LTCUSDT sudah masuk daftar eksklusi rotation lo, jadi saya isi slot dengan kandidat terkuat yang masih valid.\n\nFIL: FILUSDT Perpetual - momentum terbaik di alt liquid (+1.6% saat market red), short-liq $1.2M vs long $31K, funding tipis. Entry 0.765 | SL 0.738 | TP1 0.80 | TP2 0.83.\n\nATOM: ATOMUSDT Perpetual - gain 24 jam tertinggi (+3.5%), funding nyaris netral (belum crowded), short-squeeze $265K, OI tumbuh. Entry 1.33 | SL 1.27 | TP1 1.42 | TP2 1.47.\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial! Kami terus improve tapi bisa saja salah - apa yang lo trade dan risiko yang lo ambil tetap keputusan lo.\n\nBisa dieksekusi langsung di NeuroWallet. Mau saya pantau ulang level entry-nya?",
+      "sha256": "831851c2282e48beb5b4a4c65e9698808a7b6ce8f89458beab49e6db40b3a767",
+      "characters": 831,
+      "mini_decision": {
+        "action": "SCREENING",
+        "question": "",
+        "symbols": [
+          "FILUSDT",
+          "ATOMUSDT"
+        ]
+      },
+      "original_review_request_id": "d754322a9e331a28adefbf1f6754afe1a6ebe1510c6678a09eb899ee5cbc2783",
+      "original_review_receipt_sha256": "7c1a23859cc30053c741284bbdea58fd0305917ac733b24da600374c2942a9c8",
+      "before_parse": {
+        "capacity": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        },
+        "screening": {
+          "error": "NEUROBRO_SCREENING_INCOMPLETE",
+          "output": null
+        }
+      }
+    }
+  ]
+}
