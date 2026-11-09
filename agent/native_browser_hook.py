@@ -29,8 +29,8 @@ OWNER_DIALOGUE_TIMEOUT_SECONDS = 900
 # Request only after an observed author reply needs its final setup clarified.
 # No price examples: executable values must be supplied by Neurobro itself.
 FINAL_SETUP_JSON_REQUEST = (
-    'Ringkas keputusan finalmu sebagai JSON dengan COIN, ARAH (LONG/SHORT/HOLD), '
-    'ENTRY, TP, SL. Untuk HOLD, harga null.')
+    'Jika keputusanmu sudah final, balas JSON singkat: COIN, ARAH, ENTRY, TP, SL. '
+    'ARAH LONG/SHORT/HOLD; untuk HOLD harga null.')
 
 
 def _same_text(left, right):
