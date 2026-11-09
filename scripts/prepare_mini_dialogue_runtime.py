@@ -13,7 +13,7 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_HTTP_REJECTION_V1'
+PROFILE = 'RESTORED_MINI_HTTP_COOLDOWN_V2'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
@@ -21,7 +21,7 @@ UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
-MODEL_SOURCE_SHA256 = '89a4d16ff32aa4bfc949260ac01e507b3fd962b6fb54a7bec746e7444531f973'
+MODEL_SOURCE_SHA256 = 'feda2b11871899561af453debe24a0fab4735ade794eed16ba801a5e9cb66a85'
 UNCHANGED_SOURCES = {
     'agent/memory.py': '0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272',
     'agent/dialogue_client.py': '87b873b40ebff100fef08481783a85d3b027e21d2f2be7ed3f06688fe8f04e92',
