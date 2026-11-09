@@ -1,7 +1,7 @@
 name: Build and publish delegated Neurobro dialogue agent
 on:
   pull_request:
-    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/mini-dialogue-service-*.zlib.b85', 'deploy/neurobro-dialogue.contract.json', 'scripts/prepare_mini_dialogue_runtime.py', 'scripts/verify_mini_dialogue_runtime.py', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_mini_dialogue_profile.py', 'tests/test_mini_http_rejection.py', 'tests/test_mini_http_cooldown.py', 'tests/test_mini_paid_purpose.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_dialogue_sourced_utc.py', 'tests/fixtures/hermes_dot_composition_utc_cutoff_20261108.json', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/mini-dialogue-service-*.zlib.b85', 'deploy/neurobro-dialogue.contract.json', 'scripts/prepare_mini_dialogue_runtime.py', 'scripts/verify_mini_dialogue_runtime.py', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_mini_dialogue_profile.py', 'tests/test_mini_http_rejection.py', 'tests/test_mini_http_cooldown.py', 'tests/test_mini_paid_purpose.py', 'tests/test_mini_default_budget.py', 'tests/test_mini_compose_archive.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_dialogue_sourced_utc.py', 'tests/test_dialogue_discussion_structure.py', 'tests/fixtures/mini_dot_compose_structural_numbers_20261109.json', 'tests/fixtures/hermes_dot_composition_utc_cutoff_20261108.json', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
   workflow_dispatch:
 permissions: {}
 defaults:
@@ -25,7 +25,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/dialogue-agent-tests"
           "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m pip install --disable-pip-version-check httpx==0.28.1
           python3 scripts/prepare_mini_dialogue_runtime.py
-          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_mini_dialogue_profile tests.test_mini_http_rejection tests.test_mini_http_cooldown tests.test_mini_paid_purpose tests.test_dialogue_sourced_utc tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
+          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_mini_dialogue_profile tests.test_mini_http_rejection tests.test_mini_http_cooldown tests.test_mini_paid_purpose tests.test_mini_default_budget tests.test_mini_compose_archive tests.test_dialogue_discussion_structure tests.test_dialogue_sourced_utc tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
           PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" scripts/verify_mini_dialogue_runtime.py
       - name: Build from the immutable existing agent image
         run: |
@@ -74,7 +74,7 @@ jobs:
           assert re.fullmatch(r'[0-9a-f]{40}',os.environ['SOURCE_COMMIT'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['CONTRACT_SHA'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['DIALOGUE_SHA'])
-          assert os.environ['DIALOGUE_SHA']=='98cb4e8b2e4a058e10f1459ad2ad86e5fa6ed3174219b9a85dff2b3250bf0c4a'
+          assert os.environ['DIALOGUE_SHA']=='033e5b8c4758c3841350132dd58344460273310baf6d30bccad9e762ac748c37'
           assert os.environ['LLM_SHA']=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
           with open('dialogue-agent-image.json','w') as output:
               json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office',
@@ -82,7 +82,7 @@ jobs:
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
                   'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626',
-                  'maintenance_profile':'RESTORED_MINI_TRADING_PURPOSE_V3',
+                  'maintenance_profile':'RESTORED_MINI_TRADING_BUDGET_V4',
                   'source_files':{'agent/dialogue_service.py':os.environ['DIALOGUE_SHA'],'agent/llm.py':os.environ['LLM_SHA']},
                   'hermes_runtime_inherited':False,
                   'deployment_authorized':False},output,sort_keys=True)

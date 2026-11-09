@@ -529,9 +529,10 @@ class DialogueServiceTests(unittest.TestCase):
         link=self.base/'config-link';link.symlink_to(config)
         with self.assertRaises((d.DialogueError,OSError)):d.runtime_config_sha256(link,refs)
 
-    def test_production_engine_has_no_daily_business_cap_and_more_than_three_hold_rounds_persist(self):
+    def test_production_engine_uses_owner_default_budget_and_hold_rounds_have_no_artificial_cap(self):
         default=d.DialogueEngine(self.memory,self.key)
-        self.assertTrue(all(math.isinf(value) for value in default.model.limits.values()))
+        self.assertEqual(default.model.limits,
+            {'max_requests':48,'max_input_tokens':200000,'max_output_tokens':24000})
         self.output={'action':'HOLD','symbols':['BTCUSDT'],'question':''}
         for index in range(9):
             value=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT HOLD',index=index))
