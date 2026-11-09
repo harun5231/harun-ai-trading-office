@@ -1,4 +1,4 @@
-"""Reproduce the retained Mini service with only the reviewed shared UTC fix.
+"""Reproduce retained Mini with the reviewed UTC fix and HTTP diagnostics.
 
 This prepares an image input, never a provider request or production deployment.
 The canonical service retains historical Hermes compatibility for audit/tests;
@@ -13,15 +13,16 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_UTC_PROVENANCE_V1'
+PROFILE = 'RESTORED_MINI_HTTP_REJECTION_V1'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
+GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
+MODEL_SOURCE_SHA256 = '89a4d16ff32aa4bfc949260ac01e507b3fd962b6fb54a7bec746e7444531f973'
 UNCHANGED_SOURCES = {
-    'agent/llm.py': 'c25ff71062d9bc25a5be341d3ee4b8828e5331e3b3cf88147e1bcedc11ee89b7',
     'agent/memory.py': '0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272',
     'agent/dialogue_client.py': '87b873b40ebff100fef08481783a85d3b027e21d2f2be7ed3f06688fe8f04e92',
     'agent/native_status_bridge.py': 'f6ad632038414188572d5de9a53c5d71ac2cd6d5cf7f08c559e6300787bede9c',
@@ -69,19 +70,27 @@ def build_source(root=ROOT):
 def prepare(root=ROOT):
     root = Path(root)
     raw = build_source(root)
-    target = root / GENERATED
-    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if target.exists():
-        if target.is_symlink() or target.read_bytes() != raw:
+    model = (root/'agent/llm.py').read_bytes()
+    if sha256(model) != MODEL_SOURCE_SHA256:
+        raise ValueError('MINI_MODEL_SOURCE_CHANGED')
+    payload = {GENERATED:raw,GENERATED_LLM:model}
+    # Validate every existing input before writing either generated file.
+    for name,value in payload.items():
+        target=root/name
+        if (target.exists() or target.is_symlink()) and (target.is_symlink() or target.read_bytes()!=value):
             raise ValueError('MINI_GENERATED_SOURCE_CONFLICT')
-    else:
-        with target.open('xb') as stream:
-            stream.write(raw)
-        target.chmod(0o444)
+    for name,value in payload.items():
+        target=root/name
+        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if not target.exists():
+            with target.open('xb') as stream:
+                stream.write(value)
+            target.chmod(0o444)
     return {'profile': PROFILE, 'base_image': BASE_IMAGE,
         'base_source_commit': BASE_COMMIT, 'base_source_sha256': BASE_SHA256,
         'shared_utc_patch': UTC_PATCH, 'source_sha256': sha256(raw),
         'source_path': str(GENERATED), 'model': 'gpt-5-mini',
+        'source_files':{'agent/dialogue_service.py':SOURCE_SHA256,'agent/llm.py':MODEL_SOURCE_SHA256},
         'hermes_runtime_inherited': False, 'deployment_authorized': False}
 
 

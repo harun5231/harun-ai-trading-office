@@ -9,7 +9,8 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
-from scripts.prepare_mini_dialogue_runtime import GENERATED, PROFILE, SOURCE_SHA256, build_source
+from scripts.prepare_mini_dialogue_runtime import (GENERATED, GENERATED_LLM, PROFILE,
+    SOURCE_SHA256, MODEL_SOURCE_SHA256, build_source)
 
 ROOT=Path(__file__).resolve().parents[1]
 PARENT_EVIDENCE=ROOT/'tests/fixtures/dialogue_agent_retained_b844.json'
@@ -62,7 +63,7 @@ class DialoguePackagingTests(unittest.TestCase):
         rows=(ROOT/'deploy/dialogue-agent.Dockerfile.dockerignore').read_text().splitlines()
         self.assertEqual(rows[0],'**')
         allowed={row[1:] for row in rows if row.startswith('!')}
-        copied={str(GENERATED)}
+        copied={str(GENERATED),str(GENERATED_LLM)}
         self.assertEqual(allowed,{*copied,'deploy','deploy/.mini-dialogue-runtime',
             'deploy/.mini-dialogue-runtime/agent','deploy/dialogue-agent.Dockerfile',
             'deploy/dialogue-agent.Dockerfile.dockerignore'})
@@ -72,7 +73,7 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertEqual(hashlib.sha256(build_source()).hexdigest(),SOURCE_SHA256)
         copies=re.findall(r'^COPY --chmod=0444 (.+) /app/agent/$',self.docker,re.M)
         self.assertEqual(len(copies),1)
-        self.assertEqual(set(copies[0].split()),copied)
+        self.assertEqual(copies,['deploy/.mini-dialogue-runtime/agent/'])
         self.assertNotIn('hermes_model_broker.py',self.docker)
         self.assertNotIn('.env',allowed)
         self.assertFalse(any(path.startswith('worker') for path in allowed))
@@ -142,6 +143,7 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertIn("value['model_key_state']=='MISSING'",smoke)
         self.assertIn("value['model']=='gpt-5-mini'",smoke)
         self.assertIn(SOURCE_SHA256,smoke)
+        self.assertIn(MODEL_SOURCE_SHA256,smoke)
         self.assertIn("find_spec('hermes_cli') is None",smoke)
         self.assertIn("find_spec('run_agent') is None",smoke)
         self.assertIn("'schema_version':2",smoke)
@@ -161,7 +163,8 @@ class DialoguePackagingTests(unittest.TestCase):
         block=run_blocks(self.workflow)[-1]
         snippet=block.split("<<'PY'\n",1)[1].split('\nPY\n',1)[0]
         env={'SOURCE_COMMIT':'a'*40,'IMAGE_DIGEST':'ghcr.io/harun5231/harun-neurobro-agent@sha256:'+'b'*64,
-             'IMAGE_ID':'sha256:'+'c'*64,'CONTRACT_SHA':'d'*64,'DIALOGUE_SHA':SOURCE_SHA256}
+             'IMAGE_ID':'sha256:'+'c'*64,'CONTRACT_SHA':'d'*64,'DIALOGUE_SHA':SOURCE_SHA256,
+             'LLM_SHA':MODEL_SOURCE_SHA256}
         with tempfile.TemporaryDirectory() as temporary:
             result=subprocess.run([os.sys.executable,'-c',snippet],cwd=temporary,
                 env={**os.environ,**env},capture_output=True,text=True)
@@ -173,7 +176,8 @@ class DialoguePackagingTests(unittest.TestCase):
         self.assertEqual(value['provider_contract_sha256'],env['CONTRACT_SHA'])
         self.assertEqual(value['base_image'],BASE)
         self.assertEqual(value['maintenance_profile'],PROFILE)
-        self.assertEqual(value['source_files'],{'agent/dialogue_service.py':env['DIALOGUE_SHA']})
+        self.assertEqual(value['source_files'],{'agent/dialogue_service.py':env['DIALOGUE_SHA'],
+            'agent/llm.py':env['LLM_SHA']})
         self.assertFalse(value['hermes_runtime_inherited'])
         self.assertFalse(value['deployment_authorized'])
         self.assertTrue(value['missing_key_smoke_verified'])

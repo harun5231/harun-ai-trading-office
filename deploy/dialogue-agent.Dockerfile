@@ -5,4 +5,4 @@ ARG CONTRACT_SHA=e761f33a1575ff404535d71dc512d959eb80aca17b34a028b78640ee74d114f
 LABEL org.opencontainers.image.revision="${REVISION}" \
       io.harun.agent.contract.sha256="${CONTRACT_SHA}"
 ENV HARUN_SOURCE_COMMIT="${REVISION}"
-COPY --chmod=0444 deploy/.mini-dialogue-runtime/agent/dialogue_service.py /app/agent/
+COPY --chmod=0444 deploy/.mini-dialogue-runtime/agent/ /app/agent/

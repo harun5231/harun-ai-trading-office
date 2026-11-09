@@ -37,7 +37,7 @@ def request(index, *, phase='SCREENING', reply='BTCUSDT'):
 class MiniBuildProfileTests(unittest.TestCase):
     def copied_inputs(self, root):
         for relative in ('deploy/mini-dialogue-service-4a0e659.zlib.b85',
-                         'agent/dialogue_service.py', *profile.UNCHANGED_SOURCES):
+                         'agent/dialogue_service.py','agent/llm.py', *profile.UNCHANGED_SOURCES):
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / relative).read_bytes())
@@ -65,6 +65,7 @@ class MiniBuildProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); self.copied_inputs(root)
             first = profile.prepare(root); target=root/profile.GENERATED
+            self.assertEqual(profile.sha256((root/profile.GENERATED_LLM).read_bytes()),profile.MODEL_SOURCE_SHA256)
             before=target.stat()
             self.assertEqual(profile.prepare(root),first)
             self.assertEqual(target.stat().st_ino,before.st_ino)
@@ -83,7 +84,7 @@ class MiniBuildProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'MINI_RETAINED_SOURCE_CHANGED'):
                 profile.build_source(root)
             self.copied_inputs(root)
-            (root/'agent/llm.py').write_text('changed dependency')
+            (root/'agent/memory.py').write_text('changed dependency')
             with self.assertRaisesRegex(ValueError,'MINI_RETAINED_DEPENDENCY_CHANGED'):
                 profile.build_source(root)
             self.copied_inputs(root)
@@ -93,6 +94,15 @@ class MiniBuildProfileTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'MINI_UTC_SOURCE_UNVERIFIED'):
                 profile.build_source(root)
             self.assertFalse((root/profile.GENERATED).exists())
+
+    def test_changed_model_source_is_refused_before_either_generated_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);self.copied_inputs(root)
+            (root/'agent/llm.py').write_text('unreviewed model change')
+            with self.assertRaisesRegex(ValueError,'MINI_MODEL_SOURCE_CHANGED'):
+                profile.prepare(root)
+            self.assertFalse((root/profile.GENERATED).exists())
+            self.assertFalse((root/profile.GENERATED_LLM).exists())
 
     def test_sourced_utc_guard_survives_and_wrong_cutoff_remains_rejected(self):
         module=retained_module()

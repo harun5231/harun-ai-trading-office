@@ -12,7 +12,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from scripts.prepare_mini_dialogue_runtime import GENERATED, SOURCE_SHA256, prepare, sha256
+from scripts.prepare_mini_dialogue_runtime import GENERATED, SOURCE_SHA256, PROFILE, prepare, sha256
 
 
 def main():
@@ -30,9 +30,9 @@ def main():
     exec(compile(raw, str(path), 'exec'), module.__dict__)
     suite = unittest.defaultTestLoader.loadTestsFromNames([
         'tests.test_agent_llm', 'tests.test_agent_dialogue_service',
-        'tests.test_dialogue_sourced_utc'])
+        'tests.test_dialogue_sourced_utc','tests.test_mini_http_rejection'])
     result = unittest.TextTestRunner(verbosity=1).run(suite)
-    print(json.dumps({'profile': 'RESTORED_MINI_UTC_PROVENANCE_V1',
+    print(json.dumps({'profile': PROFILE,
         'source_sha256': SOURCE_SHA256, 'tests_run': result.testsRun,
         'provider_calls': 0, 'orders': 0, 'passed': result.wasSuccessful()}, sort_keys=True))
     return 0 if result.wasSuccessful() else 1
