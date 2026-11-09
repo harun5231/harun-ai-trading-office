@@ -529,10 +529,9 @@ class DialogueServiceTests(unittest.TestCase):
         link=self.base/'config-link';link.symlink_to(config)
         with self.assertRaises((d.DialogueError,OSError)):d.runtime_config_sha256(link,refs)
 
-    def test_production_engine_uses_owner_default_budget_and_hold_rounds_have_no_artificial_cap(self):
+    def test_production_engine_has_no_daily_business_cap_and_hold_rounds_have_no_artificial_cap(self):
         default=d.DialogueEngine(self.memory,self.key)
-        self.assertEqual(default.model.limits,
-            {'max_requests':48,'max_input_tokens':200000,'max_output_tokens':24000})
+        self.assertTrue(all(math.isinf(value) for value in default.model.limits.values()))
         self.output={'action':'HOLD','symbols':['BTCUSDT'],'question':''}
         for index in range(9):
             value=self.engine.process(request(phase='ANALYSIS',reply='BTCUSDT HOLD',index=index))
@@ -673,9 +672,11 @@ class DialogueServiceTests(unittest.TestCase):
             now[0]=value['deadline_epoch']+1
             return result
         self.memory.reserve_budget=reserve
-        with self.assertRaisesRegex(d.DialogueError,'DEADLINE_EXPIRED'):self.engine.process(value)
+        with self.assertRaisesRegex(d.DialogueError,'DIALOGUE_MODEL_NOT_SENT'):self.engine.process(value)
         self.assertEqual(self.calls,[])
-        self.assertEqual(self.memory.counts()['operations'],{'UNKNOWN':1})
+        self.assertEqual(self.memory.counts()['operations'],{'DONE':1})
+        self.assertEqual(json.loads(self.memory.db.execute('SELECT result FROM operations').fetchone()[0]),
+            {'_agent_not_sent':'DIALOGUE_DEADLINE_EXPIRED'})
 
     def test_token_owner_mode_hardlink_and_symlink_checks(self):
         token=self.base/'token';token.write_text('x'*48);token.chmod(0o600)

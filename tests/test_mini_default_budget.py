@@ -1,7 +1,8 @@
-"""Owner default limits honor existing reservations, with no provider calls."""
+"""Production has no daily business cap; explicit library budgets remain valid."""
 from datetime import datetime,timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from unittest.mock import Mock,patch
 
 from agent import dialogue_service as canonical_service
 from agent.memory import Memory
+from agent.llm import OpenAIDialogue
 from tests.test_mini_dialogue_profile import retained_module
 from tests.test_mini_http_cooldown import CompletedBody
 
@@ -25,20 +27,27 @@ class MiniDefaultBudgetTests(unittest.TestCase):
 
     def tearDown(self):self.memory.close();self.temporary.cleanup()
 
+    def explicit_finite_library_model(self):
+        model=OpenAIDialogue(self.key,self.memory,daily_requests=48,
+            daily_input_tokens=200000,daily_output_tokens=24000)
+        self.engine=self.module.DialogueEngine(self.memory,self.key,model=model,clock=lambda:self.clock[0])
+
     def request(self,index,*,phase='SCREENING',reply='BTCUSDT'):
         return {'schema_version':1,'request_id':hashlib.sha256(str(index).encode()).hexdigest(),
             'conversation_id':'offline-budget:'+str(index),'phase':phase,'reply':reply,
             'reply_sha256':hashlib.sha256(reply.encode()).hexdigest(),'market_context':None,
             'gate':{'robot_on':True,'native_dispatch_verified':True},'deadline_epoch':self.clock[0]+80}
 
-    def test_both_real_factory_paths_use_unchanged_default_limits(self):
+    def test_production_factories_have_no_daily_business_cap_and_library_defaults_remain_finite(self):
         expected={'max_requests':48,'max_input_tokens':200000,'max_output_tokens':24000}
         canonical=canonical_service.DialogueEngine(self.memory,self.key)
-        self.assertEqual(canonical.model.limits,expected)
-        self.assertEqual(self.engine.model.limits,expected)
+        self.assertTrue(all(math.isinf(value) for value in canonical.model.limits.values()))
+        self.assertTrue(all(math.isinf(value) for value in self.engine.model.limits.values()))
+        self.assertEqual(OpenAIDialogue(self.key,self.memory).limits,expected)
         self.assertEqual((self.engine.model.timeout,self.engine.model.max_output_tokens),(45,1024))
 
-    def test_historical_377_reservations_are_unchanged_and_block_before_any_api(self):
+    def test_explicit_finite_library_budget_preserves_377_reservations_and_blocks_api(self):
+        self.explicit_finite_library_model()
         original=('2026-11-09',377,193000,23000)
         self.memory.db.execute('INSERT INTO budgets VALUES(?,?,?,?)',original)
         opener=SimpleNamespace(open=Mock(side_effect=AssertionError('historical limit must prevent API')))
@@ -54,6 +63,7 @@ class MiniDefaultBudgetTests(unittest.TestCase):
         self.assertEqual(self.memory.db.execute("SELECT COUNT(*) FROM metadata WHERE key LIKE 'dialogue-model-api-%'").fetchone()[0],0)
 
     def test_next_wib_day_uses_new_row_without_resetting_or_deleting_historical_count(self):
+        self.explicit_finite_library_model()
         original=('2026-11-09',377,193000,23000)
         self.memory.db.execute('INSERT INTO budgets VALUES(?,?,?,?)',original)
         self.clock[0]+=60 # 00:00:30 WIB, not a production clock change.
@@ -68,7 +78,8 @@ class MiniDefaultBudgetTests(unittest.TestCase):
         self.assertEqual((new[0],new[1],new[3]),('2026-11-10',1,1024))
         self.assertLess(new[2],200000)
 
-    def test_literal_screening_and_readonly_health_need_no_budget_even_if_exhausted(self):
+    def test_literal_and_readonly_health_need_no_budget_even_if_explicit_library_limit_is_exhausted(self):
+        self.explicit_finite_library_model()
         from worker.prompts import SCREENING
         original=('2026-11-09',377,193000,23000)
         self.memory.db.execute('INSERT INTO budgets VALUES(?,?,?,?)',original)
@@ -84,6 +95,18 @@ class MiniDefaultBudgetTests(unittest.TestCase):
         opener.open.assert_not_called()
         self.assertEqual(tuple(self.memory.db.execute('SELECT * FROM budgets').fetchone()),original)
         self.assertEqual(self.memory.db.execute("SELECT COUNT(*) FROM metadata WHERE key LIKE 'dialogue-model-api-%'").fetchone()[0],0)
+
+    def test_production_historical_392_reservations_are_incremented_without_reset_or_daily_block(self):
+        original=('2026-11-09',392,293000,33000)
+        self.memory.db.execute('INSERT INTO budgets VALUES(?,?,?,?)',original)
+        result={'status':'completed','model':'gpt-5-mini','output':[{'type':'message','content':[
+            {'type':'output_text','text':json.dumps({'action':'SCREENING','symbols':['BTCUSDT'],'question':''})}]}]}
+        opener=SimpleNamespace(open=Mock(return_value=CompletedBody(json.dumps(result).encode())))
+        with patch('agent.llm.urllib.request.build_opener',return_value=opener):
+            self.assertEqual(self.engine.process(self.request('productive'))['decision']['action'],'SCREENING')
+        self.assertEqual(opener.open.call_count,1) # Local injected fake, not a provider.
+        after=tuple(self.memory.db.execute('SELECT * FROM budgets WHERE day=?',(original[0],)).fetchone())
+        self.assertEqual(after[1],393);self.assertGreater(after[2],original[2]);self.assertEqual(after[3],original[3]+1024)
 
 
 if __name__=='__main__':unittest.main()
