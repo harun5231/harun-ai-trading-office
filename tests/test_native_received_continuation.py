@@ -162,15 +162,47 @@ class ReceivedProofTests(unittest.TestCase):
     def invoke_failure(self, *, upload=False):
         c=self.fixture.case;c.actor.dispatch_check=lambda payload:True
         c.delegated.native_turn_batch=None
+        previous_names=c.raw.uploaded_names
+        previous_deadline,previous_contract=c.raw.operation_deadline,c.raw._operation_contract
         def failure(payload,check,**kwargs):
             self.assertEqual(c.room.offset,6)
             self.assertEqual(c.room.conversation_id,'neurobro:2026-11-05:'+'a'*32)
+            self.assertEqual(c.raw.uploaded_names,kwargs['_received']['turn_names'][-1])
             if upload:kwargs['_received']['before_upload']()
             raise RuntimeError('Actual local failure before Send')
         c.delegated._ask=Mock(side_effect=failure)
         value=dict(action=continuation.ACTION,payload=self.payload,grant=self.grant)
+        try:
+            with c.actor.claim,patch.object(continuation.time,'time',return_value=self.grant['started_at']):
+                return continuation.continue_received(c.actor,c.delegated,value)
+        finally:
+            self.assertIs(c.raw.uploaded_names,previous_names)
+            self.assertEqual(c.raw.operation_deadline,previous_deadline)
+            self.assertIs(c.raw._operation_contract,previous_contract)
+
+    def test_success_restores_hint_after_receipt_and_completed_grant_cannot_replay(self):
+        c=self.fixture.case;c.actor.dispatch_check=lambda payload:True
+        c.delegated.native_turn_batch=None
+        previous_names=c.raw.uploaded_names
+        previous_deadline,previous_contract=c.raw.operation_deadline,c.raw._operation_contract
+        def complete(payload,check,**kwargs):
+            self.assertEqual(c.raw.uploaded_names,kwargs['_received']['turn_names'][-1])
+            c.raw.uploaded_names=['new-followup-15m.png','new-followup-1h.png']
+            return dict(assistant_text='Actual received fixture reply',response_id='fixture-response',output={})
+        c.delegated._ask=Mock(side_effect=complete)
+        value=dict(action=continuation.ACTION,payload=self.payload,grant=self.grant)
         with c.actor.claim,patch.object(continuation.time,'time',return_value=self.grant['started_at']):
-            return continuation.continue_received(c.actor,c.delegated,value)
+            result=continuation.continue_received(c.actor,c.delegated,value)
+        self.assertEqual(result['kind'],continuation.KIND)
+        self.assertEqual(result['result']['response_id'],'fixture-response')
+        self.assertIs(c.raw.uploaded_names,previous_names)
+        self.assertEqual(c.raw.operation_deadline,previous_deadline)
+        self.assertIs(c.raw._operation_contract,previous_contract)
+        self.assertEqual(len(list(self.root.glob('*.completed.json'))),1)
+        with c.actor.claim,patch.object(continuation.time,'time',return_value=self.grant['started_at']):
+            with self.assertRaisesRegex(ValueError,'ALREADY_ADMITTED'):
+                continuation.continue_received(c.actor,c.delegated,value)
+        c.delegated._ask.assert_called_once()
 
     def test_real_actor_room_produces_positive_unsent_only_before_upload_and_retries_same_grant(self):
         result=self.invoke_failure()

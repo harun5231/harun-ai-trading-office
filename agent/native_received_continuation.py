@@ -522,7 +522,7 @@ def continue_received(actor,delegated,value):
             sent=True
     seed['before_send']=before_send
     seed['before_upload']=before_upload
-    raw=delegated.bridge;old=(raw.operation_deadline,raw._operation_contract)
+    raw=delegated.bridge;old=(raw.operation_deadline,raw._operation_contract,raw.uploaded_names)
     deadline=raw.clock()+min(900,grant['expires_at']-time.time())
     try:
         raw.operation_deadline=deadline;raw._operation_contract=raw._dom_contract
@@ -535,6 +535,10 @@ def continue_received(actor,delegated,value):
             room.day=record['day'];room.room_id=record['room_id'];room._binding=json.loads(selected[3])
             room.offset=seed['offset'];room.prefix=identities(seed['full_rows'][:room.offset])
             room.mode='RECEIVED_CONTINUATION';room._prepared=True
+            # A new bridge starts with an empty upload hint. The unchanged
+            # native reader needs the current positively witnessed turn's
+            # names to select its registered PNG/CSV projection.
+            raw.uploaded_names=list(seed['turn_names'][-1])
             result=delegated._ask(payload,lambda:actor.dispatch_check(payload),
                 chart_evidence=seed['initial_chart_evidence'],deadline=deadline,_received=seed)
         from .native_analysis_receipt import read_reviews
@@ -560,4 +564,4 @@ def continue_received(actor,delegated,value):
             saved=_write(room.store.root,base+'.closed-not-sent.json',receipt)
             return {**receipt,'disposition':{**saved,'value':receipt}}
         raise
-    finally:raw.operation_deadline,raw._operation_contract=old
+    finally:raw.operation_deadline,raw._operation_contract,raw.uploaded_names=old
