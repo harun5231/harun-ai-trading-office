@@ -576,8 +576,7 @@ class DialogueEngine:
         inferred = HERMES_BACKEND if isinstance(model, HermesDialogue) else MINI_BACKEND
         need(backend is None or backend == inferred, 'DIALOGUE_AUTHENTICATION_FAILED')
         self.backend = inferred
-        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45,
-            daily_requests=math.inf, daily_input_tokens=math.inf, daily_output_tokens=math.inf)
+        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45)
         self.lock = threading.RLock()
         self.stopping = threading.Event()
         self._authenticated_key_identity = None

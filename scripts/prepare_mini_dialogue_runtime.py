@@ -13,13 +13,13 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_TRADING_PURPOSE_V3'
+PROFILE = 'RESTORED_MINI_TRADING_BUDGET_V4'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
-SOURCE_SHA256 = '98cb4e8b2e4a058e10f1459ad2ad86e5fa6ed3174219b9a85dff2b3250bf0c4a'
+SOURCE_SHA256 = 'eb4a1d623dcfbe1212628c1a7bc5a7396a3f39f62e429bb9af70bd971aeef972'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
 MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
@@ -119,6 +119,12 @@ def apply_purpose_policy(raw):
     source=source.replace('def safe_error(error):\n',
         "def safe_error(error):\n    if isinstance(error,NotSent) and str(error)=='DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED':\n"
         "        return 'DIALOGUE_MODEL_NOT_SENT'\n",1)
+    budget_needle=('        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45,\n'
+        '            daily_requests=math.inf, daily_input_tokens=math.inf, daily_output_tokens=math.inf)')
+    if source.count(budget_needle)!=1:
+        raise ValueError('MINI_BUDGET_PATCH_TARGET_CHANGED')
+    source=source.replace(budget_needle,
+        '        self.model = model or OpenAIDialogue(self.key_file, memory, timeout=45)',1)
     return source.encode()
 
 
