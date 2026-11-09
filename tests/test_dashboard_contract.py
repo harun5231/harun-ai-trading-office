@@ -240,6 +240,40 @@ const writes=calls.filter(call=>call.method==='POST');assert.equal(writes.length
 document.getElementById('apiDisconnect').click();assert.equal(document.getElementById('robotRiskSave').disabled,true);
 """)
 
+    def test_focused_risk_keeps_draft_and_caret_while_toggle_tracks_both_backend_directions(self):
+        self.run_dom(r"""
+await connect();const button=document.getElementById('robotToggle'),risk=document.getElementById('robotRisk');
+assert.match(button.textContent,/: OFF$/);assert.equal(button.attributes['aria-pressed'],'false');
+risk.value='5';risk.oninput();risk.focus();risk.selectionStart=1;risk.selectionEnd=1;
+for(const enabled of [true,false]){
+ data.robot.robot_on=enabled;data.robot.bot_status=enabled?'WAITING':'OFF';[...intervals.values()][0]();await flush();
+ assert.equal(document.getElementById('robotToggle'),button);
+ assert.equal(button.textContent,'ROBOT TRADING: '+(enabled?'ON':'OFF'));
+ assert.equal(button.attributes['aria-pressed'],String(enabled));
+ assert.equal(document.getElementById('robotRisk'),risk);assert.equal(document.activeElement,risk);
+ assert.equal(risk.value,'5');assert.equal(risk.selectionStart,1);assert.equal(risk.selectionEnd,1);
+ assert.equal(calls.filter(call=>call.method==='POST').length,0);
+}
+""")
+
+    def test_focused_credentials_are_not_replaced_when_polled_toggle_state_changes(self):
+        self.run_dom(r"""
+await connect();
+for(const id of ['apiOrigin','apiToken']){
+ const input=document.getElementById(id),button=document.getElementById('robotToggle');
+ input.value=id==='apiOrigin'?'https://draft-worker.test':'D'.repeat(32);const draft=input.value;
+ input.focus();input.selectionStart=2;input.selectionEnd=4;
+ for(const enabled of [true,false]){
+  data.robot.robot_on=enabled;[...intervals.values()][0]();await flush();
+  assert.equal(document.getElementById(id),input);assert.equal(document.activeElement,input);assert.equal(input.value,draft);
+  assert.equal(input.selectionStart,2);assert.equal(input.selectionEnd,4);
+  assert.equal(document.getElementById('robotToggle'),button);assert.equal(button.textContent,'ROBOT TRADING: '+(enabled?'ON':'OFF'));
+  assert.equal(button.attributes['aria-pressed'],String(enabled));
+ }
+}
+assert.equal(calls.filter(call=>call.method==='POST').length,0);
+""")
+
     def test_risk_draft_survives_focused_poll_and_panel_reopen(self):
         self.run_dom(r"""
 await connect();const risk=document.getElementById('robotRisk');risk.value='6.125';risk.oninput();document.activeElement=risk;data.robot.risk_target_usdt='8';[...intervals.values()][0]();await flush();assert.equal(document.getElementById('robotRisk'),risk);assert.equal(risk.value,'6.125');

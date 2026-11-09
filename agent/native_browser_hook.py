@@ -430,6 +430,10 @@ class DelegatedDOMBridge:
                     or (not file_mode and json.dumps(projected, sort_keys=True, separators=(',', ':'),
                         ensure_ascii=False, allow_nan=False) not in rendered)):
                 unknown()
+            from .native_analysis_receipt import question_was_answered
+            if question_was_answered(payload,prefix,context=fresh['context'],
+                    rendered_question=rendered,intents=state['followup_intents']):
+                raise ReplyIncomplete('NEUROBRO_CLARIFICATION_NO_PROGRESS')
             composers = self.bridge._visible(self.bridge._dom_contract.composer)
             if len(composers) != 1 or composers[0].input_value():
                 unknown()
@@ -601,6 +605,19 @@ class DelegatedDOMBridge:
             facts = _source_facts(payload)
             if facts:
                 request['source_facts'] = facts
+            if phase in ('SCREENING','ANALYSIS','PENDING_REVIEW')and self.daily_room is not None:
+                # An already sealed redundant clarification is not another paid
+                # request after a tick/restart. A new answer or actual context
+                # remains productive; no discussion-round limit is imposed.
+                try:parse_reply_for_payload(answer,payload)
+                except (ReplyIncomplete,KeyError):
+                    from .native_analysis_receipt import refuse_reviewed_no_progress
+                    def render_prior(question):
+                        if phase=='SCREENING':return question
+                        return self.native.user_prompt(dict(payload,prompt=question,context=active_context))
+                    refuse_reviewed_no_progress(self.daily_room.store.root,payload,observed_turns,
+                        context=active_context,intents=state['followup_intents'],render_question=render_prior,
+                        conversation_id=self.daily_room.conversation_id)
             # Independently enforce the dialogue-only result protocol, including
             # no foreign symbols, prices or trading authority from the model.
             from .dialogue_service import DialogueError, validate_request, validate_result
@@ -628,7 +645,7 @@ class DelegatedDOMBridge:
             if transcript() != observed_turns:
                 unknown()
             sealed_review=None
-            if phase in ('ANALYSIS','SCREENING') and self.daily_room is not None:
+            if phase in ('ANALYSIS','SCREENING','PENDING_REVIEW') and self.daily_room is not None:
                 # Persist the actual accepted dialogue result before native
                 # final polling can be interrupted. Never synthesize approval
                 # while later recovering an uncertain browser outcome.

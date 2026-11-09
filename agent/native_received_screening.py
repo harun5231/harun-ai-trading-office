@@ -14,8 +14,10 @@ INCOMPLETE='NATIVE_RECEIVED_SCREENING_REVIEW_INCOMPLETE_V1'
 RETURN_FAILURE_KIND='NATIVE_SCREENING_ENDED_RETURN_V1'
 RETURN_FAILURE_PRODUCER='879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5'
 RETURN_FAILURE_HOOK='ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee903784b'
-CURRENT_RETURN_FAILURE_HOOK='8498214906365ec2081af01a1049f466308cb36498c1dda1f765083afc3d1d49'
+PREVIOUS_RETURN_FAILURE_HOOK='8498214906365ec2081af01a1049f466308cb36498c1dda1f765083afc3d1d49'
+CURRENT_RETURN_FAILURE_HOOK='235fb14a9932269beebf55dc669298cbeeef90d35d22e1b6e413e29129b5a007'
 RETURN_FAILURE_SOURCES=frozenset(((RETURN_FAILURE_PRODUCER,RETURN_FAILURE_HOOK),
+    (RETURN_FAILURE_PRODUCER,PREVIOUS_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CURRENT_RETURN_FAILURE_HOOK)))
 REVIEW_IDENTITY_KIND='NATIVE_SCREENING_RECEIVED_REVIEW_IDENTITIES_V1'
 
@@ -47,7 +49,7 @@ def read_ended_return(root,payload):
         and value.get('operation')==payload['operation']
         and value.get('request_sha256')==payload['request_sha256'],
         'SCREENING_RETURN_FAILURE_BINDING_UNVERIFIED')
-    # Both reviewed hooks retain the same no-further-send phase contract.
+    # These reviewed hooks retain the same no-further-send phase contract.
     # Refuse every other producer/hook pair; an unknown hook may reorder Send.
     source=Path(__file__).resolve().parent
     producer=hashlib.sha256((source/'native_turn_batch.py').read_bytes()).hexdigest()

@@ -789,7 +789,12 @@
     if (!force && view === 'billing' && !billingBusy && ['INPUT', 'SELECT'].includes(focused?.tagName) && content.querySelector('#'+focused.id) === focused) return;
     // Keep unfinished credential/risk input intact while worker facts refresh.
     if (['robot', 'neurobro'].includes(view) && ['apiOrigin', 'apiToken', 'robotRisk'].includes(focused?.id)) {
-      const toggle = document.getElementById('robotToggle'); if (toggle) toggle.disabled = !origin || !online || saving || !snapshot;
+      const toggle = document.getElementById('robotToggle');
+      if (toggle) {
+        toggle.disabled = !origin || !online || saving || !snapshot;
+        toggle.textContent = 'ROBOT TRADING: '+(snapshot?.robot ? snapshot.robot.robot_on ? 'ON' : 'OFF' : 'BELUM TERHUBUNG');
+        toggle.setAttribute('aria-pressed', String(snapshot?.robot?.robot_on === true));
+      }
       for (const id of ['robotRisk', 'robotRiskSave']) {
         const control = document.getElementById(id); if (control) control.disabled = !origin || !online || saving || !snapshot;
       }
