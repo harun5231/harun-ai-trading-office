@@ -92,6 +92,8 @@ QUESTION_DESCRIPTION = ('Bahasa Indonesia alami. Minta RISK REWARD 1:2 dan SL st
     'Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP. '
     'Jangan ungkap anggaran risiko pribadi atau meminta quantity/ukuran posisi, termasuk saran diskusi.')
 COMPOSE_TASK_HEADER = '\nTugas percakapan dari workflow pemilik:\n'
+PAID_DIALOGUE_PHASES = frozenset({'SCREENING','ANALYSIS','PENDING_REVIEW',
+    'COMPOSE_SCREENING','COMPOSE_ANALYSIS','COMPOSE_PENDING_REVIEW'})
 
 # The full authenticated caller facts remain in the local request/receipt.
 # Only chart levels and existing-order facts may inform a message to Neurobro.
@@ -380,9 +382,63 @@ class OpenAIDialogue:
         self._cooldown_cache = None
         self._cooldown_unpersisted = False
         self._completed_http_cooldown_event = None
+        self._operation_context = None
 
     def set_remaining_budget(self, callback):
         self._remaining_budget = callback
+
+    def bind_operation(self, operation_id, phase):
+        if (phase not in PAID_DIALOGUE_PHASES or type(operation_id) is not str
+                or re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}',operation_id) is None):
+            raise NotSent('DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED')
+        self._operation_context = {'operation_id':operation_id,'phase':phase}
+
+    def _api_dispatch(self, payload, context):
+        # Reservations are conservative limits, not billed usage. This records
+        # write-ahead dispatch intent; wire delivery/cost are not yet known.
+        value = {'schema_version':1,'authority':'OPENAI_API_OBSERVATION',**context,'model':self.model,
+            'stage':'DISPATCH_INTENT','request_sent':None,'provider_response_received':False,
+            'usage':None,'usage_state':'UNKNOWN','cost_usd':None,'cost_state':'UNKNOWN',
+            'observed_at':time.time(),'dispatch_nonce':time.monotonic_ns(),
+            'request_payload_sha256':hashlib.sha256(json.dumps(payload,sort_keys=True,
+                separators=(',',':'),allow_nan=False).encode()).hexdigest()}
+        key = 'dialogue-model-api-dispatch:'+hashlib.sha256(json.dumps(value,sort_keys=True).encode()).hexdigest()
+        try:
+            self.memory.put(key,value)
+        except Exception:
+            raise NotSent('MODEL_ACCOUNTING_UNAVAILABLE') from None
+        return key,context
+
+    def _api_result(self, dispatch, *, status=None, result=None, headers=None, response_received=False,not_sent=False):
+        try:
+            usage = result.get('usage') if type(result) is dict else None
+            official = None
+            if (type(usage) is dict and all(type(usage.get(key)) is int and 0<=usage[key]<=10**12
+                    for key in ('input_tokens','output_tokens','total_tokens'))
+                    and usage['total_tokens']==usage['input_tokens']+usage['output_tokens']):
+                official = {key:usage[key] for key in ('input_tokens','output_tokens','total_tokens')}
+                for field,key,maximum in (('input_tokens_details','cached_tokens',usage['input_tokens']),
+                        ('output_tokens_details','reasoning_tokens',usage['output_tokens'])):
+                    detail = usage.get(field)
+                    if type(detail) is dict and type(detail.get(key)) is int and 0<=detail[key]<=maximum:
+                        official[field] = {key:detail[key]}
+            value = {'schema_version':1,'authority':'OPENAI_API_OBSERVATION',**dispatch[1],'model':self.model,
+                'dispatch_key':dispatch[0],'stage':'NOT_SENT' if not_sent else
+                    'PROVIDER_RESPONSE' if response_received else 'OUTCOME_UNKNOWN',
+                'http_status':status,'request_sent':False if not_sent else True if response_received else None,
+                'provider_response_received':response_received,'usage':official,
+                'usage_state':'OPENAI_RESPONSE_USAGE' if official is not None else 'UNKNOWN',
+                'cost_usd':None,'cost_state':'UNKNOWN','observed_at':time.time()}
+            request_id = headers.get('x-request-id') if headers is not None else None
+            if type(request_id) is str and re.fullmatch(r'req_[A-Za-z0-9_-]{1,128}',request_id):
+                value['provider_request_id'] = request_id
+            response_id = result.get('id') if type(result) is dict else None
+            if type(response_id) is str and re.fullmatch(r'resp_[A-Za-z0-9_-]{1,160}',response_id):
+                value['provider_response_id'] = response_id
+            encoded = json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+            self.memory.put('dialogue-model-api-result:'+hashlib.sha256(encoded).hexdigest(),value)
+        except Exception:
+            pass # Never relabel a completed/ambiguous paid request as NotSent.
 
     def evidence(self):
         return {"verified": self._live_transport and self._completed_at is not None,
@@ -605,6 +661,15 @@ class OpenAIDialogue:
         return evidence['classification']
 
     def _request(self, payload):
+        context = self._operation_context
+        messages = payload.get('input') if type(payload) is dict else None
+        content = (messages[-1].get('content') if type(messages) is list and messages
+            and type(messages[-1]) is dict else None)
+        phase = re.match(r'^Fase: ([A-Z_]+)(?:\n|$)',content) if type(content) is str else None
+        if (type(context) is not dict or context.get('phase') not in PAID_DIALOGUE_PHASES
+                or context.get('phase')=='COMPOSE_SCREENING'
+                or phase is None or phase.group(1)!=context['phase']):
+            raise NotSent('DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED')
         try:
             api_key = read_api_key(self.key_file)
         except (OSError, UnicodeError):
@@ -617,8 +682,16 @@ class OpenAIDialogue:
         cooldown_event = self._check_http_cooldown(payload)
         timeout = min(self.timeout, self._remaining_budget())
         deadline = time.monotonic() + timeout
+        dispatch = self._api_dispatch(payload,context)
+        self._operation_context = None
+        response_received = False
+        timeout = deadline-time.monotonic()
+        if timeout <= 0:
+            self._api_result(dispatch,not_sent=True)
+            raise NotSent('MODEL_DEADLINE_EXPIRED')
         try:
             with opener.open(request, timeout=timeout) as response:
+                response_received = True
                 chunks, size = [], 0
                 while True:
                     remaining = deadline - time.monotonic()
@@ -641,18 +714,24 @@ class OpenAIDialogue:
                     if response.fp is None:
                         break
                 value = json.loads(b"".join(chunks))
+                self._api_result(dispatch,status=200,result=value,headers=getattr(response,'headers',None),response_received=True)
                 self._completed_http_cooldown_event = cooldown_event
                 return value
         except urllib.error.HTTPError as error:
             # These server rejections prove no model response was generated. Keep
             # the conservative budget reservation, but do not require a fictitious
             # successful-delivery receipt after the owner corrects configuration.
+            self._api_result(dispatch,status=error.code,headers=error.headers,response_received=True)
             classification = self._http_rejection(error,payload,deadline)
             if error.code in (400,401,403,404,413,422,429):
                 raise NotSent(classification) from None
             raise AgentError("MODEL_REQUEST_UNCONFIRMED") from None
+        except AgentError:
+            self._api_result(dispatch,status=200 if response_received else None,response_received=response_received)
+            raise
         except (OSError, ValueError):
             # Do not echo exception messages, response bodies, or headers.
+            self._api_result(dispatch,status=200 if response_received else None,response_received=response_received)
             raise AgentError("MODEL_REQUEST_UNCONFIRMED") from None
 
     def plan(self, history, reply, *, phase, jakarta_day, context=None, source_facts=None):
@@ -660,6 +739,11 @@ class OpenAIDialogue:
                          "COMPOSE_SCREENING", "COMPOSE_ANALYSIS", "COMPOSE_PENDING_REVIEW",
                          "POST_TRADE_EVALUATION", "COMPOSE_POST_TRADE_EVALUATION"):
             raise ValueError("DIALOGUE_PHASE_INVALID")
+        if phase not in PAID_DIALOGUE_PHASES:
+            raise NotSent('DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED')
+        if self._live_transport and (self._operation_context is None
+                or self._operation_context.get('phase')!=phase):
+            raise NotSent('DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED')
         if not isinstance(reply, str) or not 1 <= len(reply) <= 16000:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         if not isinstance(history, list) or len(history) > 12:
@@ -688,6 +772,22 @@ class OpenAIDialogue:
         if len(encoded) > MAX_MODEL_INPUT_BYTES:
             raise AgentError("MODEL_INPUT_TOO_LARGE")
         schema = dialogue_schema(phase, reply, context=context)
+        if phase == 'COMPOSE_SCREENING':
+            # This existing schema permits exactly the owner's literal text.
+            # It is an outgoing prompt, never a manufactured Neurobro decision.
+            try:
+                self._check_http_cooldown()
+                if not web_prompt_allowed(reply) or schema['properties']['question'].get('enum')!=[reply]:
+                    raise AgentError('MODEL_RESPONSE_INVALID')
+                record = {'schema_version':1,'authority':'OWNER_LITERAL_COMPOSITION',
+                    'operation_id':(self._operation_context or {}).get('operation_id'),'phase':phase,
+                    'source_prompt_sha256':hashlib.sha256(reply.encode()).hexdigest(),'model_calls':0}
+                key='dialogue-owner-literal:'+hashlib.sha256(json.dumps(record,sort_keys=True).encode()).hexdigest()
+                if self.memory.get(key) is None:
+                    self.memory.put(key,{**record,'observed_at':time.time()})
+                return DialogueDecision('PROMPT',(),reply)
+            finally:
+                self._operation_context = None
         instructions = INSTRUCTIONS + ("\nUntuk COMPOSE, susun pesan awal yang akan dikirim ke Neurobro berdasarkan tugas dan fakta ini. Gunakan action PROMPT, symbols [], dan tulis pesan bahasa Indonesia di question. Jangan mengulang schema teknis atau marker; integrasi menambah ringkasan/identitasnya. Jangan menentukan setup sendiri.\n" if composition else '')
         if phase == 'ANALYSIS':
             instructions += ('\nKHUSUS ANALYSIS: jika keputusan akhir Neurobro untuk coin saat ini '

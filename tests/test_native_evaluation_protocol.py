@@ -168,29 +168,25 @@ class NativeEvaluationDispatchTests(unittest.TestCase):
         runtime.after_trading_tick(coordinator,'2026-11-01',{'bot_status':'WAITING','wait_reason':'ROBOT_CAPACITY_FULL'})
         consumer.advance.assert_called_once()
 
-    def test_consumer_persists_once_before_same_provider_and_completion(self):
+    def test_consumer_recovers_original_claim_and_completion_without_new_provider_call(self):
         with tempfile.TemporaryDirectory() as directory:
             f=fixtures();self.addCleanup(f.coordinator.db.close)
             binding=evidence.bind_closed_trade(f.coordinator,f.position,history=f.history,
                 archive_reader=lambda *_:copy.deepcopy(f.archive),source_reader=f.source)
             journal.observe_calendar(directory,{'positions':[f.position]});journal.attach_evidence(directory,binding)
-            sent=[]
-            def ask(operation,prompt,schema,validate,context,**kwargs):
-                claim=journal.read_evaluation_claim(directory,operation)
-                self.assertIsNotNone(claim);self.assertEqual(claim['request']['room_id'],ROOM)
-                self.assertEqual(schema,evidence.EVALUATION_SCHEMA)
-                sent.append(claim);return evidence.parse_evaluation_reply(TEXT)
+            claim=journal.claim_evaluation(directory,'post-trade:'+f.position['id'],ROOM)
             def receipt(operation):
-                claim=sent[0]
                 return dict(protocol=evidence.PROTOCOL,phase=protocol.PHASE,provider='NEUROBRO_WEB',operation=operation,
                     request_sha256=claim['request_sha256'],input_evidence_sha256=claim['input_evidence_sha256'],room_id=ROOM,
                     sent_this_request=True,received_at=claim['reserved_at']+1,response_id='native-actual-fixture',
                     source_evidence_sha256='f'*64,assistant_text=TEXT,assistant_sha256=hashlib.sha256(TEXT.encode()).hexdigest())
-            consumer=runtime.EvaluationConsumer(directory,archive_reader=Mock(),room_reader=lambda:ROOM,native_receipt_reader=receipt)
-            neuro=SimpleNamespace(require_key=Mock(),ask=Mock(side_effect=ask))
+            room=Mock(side_effect=AssertionError('recovery must not reserve a new room'))
+            consumer=runtime.EvaluationConsumer(directory,archive_reader=Mock(),room_reader=room,native_receipt_reader=receipt)
+            neuro=SimpleNamespace(require_key=Mock(),ask=Mock())
             before=f.coordinator.db.serialize()
             result=consumer.advance(SimpleNamespace(neuro=neuro,allowed=lambda _:True),'2026-11-01')
-            self.assertEqual(result['state'],'EVALUATED');neuro.ask.assert_called_once()
+            self.assertEqual(result['state'],'EVALUATED');self.assertTrue(result['recovered'])
+            neuro.ask.assert_not_called();neuro.require_key.assert_not_called();room.assert_not_called()
             self.assertEqual(before,f.coordinator.db.serialize())
             self.assertEqual(journal.read_status(directory)['jobs'][0]['status'],'EVALUATED_INCONCLUSIVE')
 

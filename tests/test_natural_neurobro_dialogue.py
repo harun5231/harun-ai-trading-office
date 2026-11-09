@@ -599,27 +599,34 @@ class PromptRenderReceiptTests(unittest.TestCase):
 
 
 class ComposedPromptServiceTests(unittest.TestCase):
-    def test_compose_is_real_model_work_memoized_across_restart_and_new_transport_deadline(self):
+    def test_compose_analysis_is_model_work_memoized_across_restart_and_new_transport_deadline(self):
         from agent.llm import OpenAIDialogue
         from agent.memory import Memory
         from tests.test_agent_dialogue_service import request
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory); key = root / 'key'; key.write_text('offline-key-012345678901234567890')
             key.chmod(0o600); memory = Memory(root / 'agent.sqlite3'); calls = []
+            drafted = 'Mohon analisis struktur BTCUSDT pada chart Futures 1H dan 15M.'
             def transport(payload):
                 calls.append(payload)
                 return {'status': 'completed', 'output': [{'type': 'message', 'content': [
                     {'type': 'output_text', 'text': json.dumps({'action': 'PROMPT', 'symbols': [],
-                     'question': 'Screening 2 coin dari Binance Futures.'})}]}]}
+                     'question': drafted})}]}]}
             model = OpenAIDialogue(key, memory, transport=transport)
             engine = service.DialogueEngine(memory, key, model=model)
-            value = request(phase='SCREENING', reply='Screening 2 coin dari Binance Futures.')
-            value['phase'] = 'COMPOSE_SCREENING'
+            value = request(phase='ANALYSIS', reply='Analisis BTCUSDT dari chart Futures 1H dan 15M.')
+            value['phase'] = 'COMPOSE_ANALYSIS'
             first = engine.process(value)
             self.assertEqual(first['decision']['action'], 'PROMPT')
-            self.assertEqual(first['decision']['question'], value['reply'])
+            self.assertEqual(first['decision']['question'], drafted)
+            self.assertNotEqual(first['decision']['question'], value['reply'])
             self.assertFalse(first['needs_followup'])
             self.assertIn('COMPOSE', calls[0]['instructions'])
+            supplied=json.loads(calls[0]['input'][-1]['content'].rsplit('\n',1)[1])
+            self.assertEqual(supplied,value['market_context'])
+            self.assertEqual(supplied['symbol'],'BTCUSDT')
+            self.assertEqual({timeframe:len(rows) for timeframe,rows in supplied['candles'].items()},
+                {'1h':200,'15m':200})
             value['deadline_epoch'] += 2
             self.assertEqual(engine.process(value), first)
             memory.close(); memory = Memory(root / 'agent.sqlite3')
@@ -628,9 +635,45 @@ class ComposedPromptServiceTests(unittest.TestCase):
             value['deadline_epoch'] += 2
             self.assertEqual(engine.process(value), first)
             self.assertEqual(len(calls), 1)
+            self.assertEqual(memory.db.execute('SELECT requests FROM budgets').fetchone()[0],1)
             off = copy.deepcopy(value); off['gate']['robot_on'] = False
             with self.assertRaisesRegex(service.DialogueError, 'ROBOT_OFF'): engine.process(off)
             self.assertEqual(len(calls), 1); memory.close()
+
+    def test_owner_literal_screening_is_memoized_without_model_budget_or_authentication(self):
+        from agent.llm import OpenAIDialogue
+        from agent.memory import Memory
+        from tests.test_agent_dialogue_service import request
+        from worker.prompts import SCREENING
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);key=root/'key';key.write_text('offline-key-012345678901234567890')
+            key.chmod(0o600);memory=Memory(root/'agent.sqlite3')
+            transport=Mock(side_effect=AssertionError('owner literal must not call a model'))
+            model=OpenAIDialogue(key,memory,transport=transport)
+            engine=service.DialogueEngine(memory,key,model=model)
+            value=request(phase='SCREENING',reply=SCREENING);value['phase']='COMPOSE_SCREENING'
+            first=engine.process(value)
+            self.assertEqual(first['decision'],{'action':'PROMPT','symbols':[],'question':SCREENING})
+            self.assertFalse(first['needs_followup']);self.assertFalse(model.evidence()['verified'])
+            self.assertIsNone(model._completed_at)
+            records=[json.loads(row[0]) for row in memory.db.execute(
+                "SELECT value FROM metadata WHERE key LIKE 'dialogue-owner-literal:%'")]
+            self.assertEqual(len(records),1)
+            self.assertEqual(records[0]['authority'],'OWNER_LITERAL_COMPOSITION')
+            self.assertEqual(records[0]['source_prompt_sha256'],hashlib.sha256(SCREENING.encode()).hexdigest())
+            self.assertEqual(records[0]['model_calls'],0)
+            self.assertEqual(memory.db.execute('SELECT COUNT(*) FROM budgets').fetchone()[0],0)
+            value['deadline_epoch']+=2
+            self.assertEqual(engine.process(value),first)
+            before=list(memory.db.iterdump());memory.close();memory=Memory(root/'agent.sqlite3')
+            engine=service.DialogueEngine(memory,key,model=OpenAIDialogue(key,memory,transport=transport))
+            value['deadline_epoch']+=2
+            self.assertEqual(engine.process(value),first)
+            self.assertEqual(list(memory.db.iterdump()),before)
+            off=copy.deepcopy(value);off['gate']['robot_on']=False
+            with self.assertRaisesRegex(service.DialogueError,'ROBOT_OFF'):engine.process(off)
+            transport.assert_not_called();self.assertEqual(memory.counts()['operations'],{'DONE':1})
+            memory.close()
 
     def test_native_hook_uses_completed_mini_prompt_and_restores_same_render_for_receipts(self):
         from tests.test_native_browser_hook import Bridge, native, request, client

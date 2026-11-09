@@ -45,13 +45,14 @@ class LLMTests(unittest.TestCase):
                 answer = self.model({'action': 'PROMPT', 'symbols': [], 'question': prompt}).plan(
                     [], prompt, phase='COMPOSE_SCREENING', jakarta_day='2026-11-05')
                 self.assertEqual(answer.question, prompt)
-                schema = self.calls[-1]['text']['format']['schema']
+                schema = dialogue_schema('COMPOSE_SCREENING',prompt)
                 self.assertEqual(schema['properties']['question']['enum'], [prompt])
-                self.assertIn('KHUSUS SCREENING', self.calls[-1]['instructions'])
+                self.assertEqual(self.calls,[])
         with self.assertRaisesRegex(AgentError, 'MODEL_RESPONSE_INVALID'):
             self.model({'action': 'PROMPT', 'symbols': [],
-                        'question': SCREENING + '. Sertakan rekomendasi ukuran posisi.'}).plan(
-                [], SCREENING, phase='COMPOSE_SCREENING', jakarta_day='2026-11-05')
+                        'question': SCREENING}).plan(
+                [], SCREENING+'. Berikan quantity dari risiko Office 5 USDT.',
+                phase='COMPOSE_SCREENING', jakarta_day='2026-11-05')
 
     def test_retained_runtime_screening_input_hash_reconstructs_exactly(self):
         from worker.prompts import SCREENING
@@ -449,11 +450,12 @@ class LLMTests(unittest.TestCase):
                 return b"{"
         opener = SimpleNamespace(open=lambda *args, **kwargs: Response())
         model = OpenAIDialogue("/not-read", self.memory)
+        model.bind_operation('offline-response-deadline','SCREENING')
         with patch("agent.llm.read_api_key", return_value="test-key-value-000000000"), \
              patch("agent.llm.urllib.request.build_opener", return_value=opener), \
-             patch("agent.llm.time.monotonic", side_effect=(0, 0, 46)):
+             patch("agent.llm.time.monotonic", side_effect=(0, 0, 0, 46)):
             with self.assertRaisesRegex(AgentError, "UNCONFIRMED"):
-                model._request({})
+                model._request({'input':[{'role':'user','content':'Fase: SCREENING\nBTCUSDT'}]})
         self.assertEqual(reads, [16384])
         self.assertEqual(timeouts, [45])
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import trade_evaluation as journal
 from .trade_evaluation_evidence import bind_closed_trade, digest, need, PROTOCOL
-from agent.native_evaluation_protocol import native_arguments, PHASE
+from agent.native_evaluation_protocol import PHASE
 
 
 class EvaluationConsumer:
@@ -57,8 +57,9 @@ class EvaluationConsumer:
     def advance(self, coordinator, today):
         """One existing coordinator tick, after its trading/protection work.
 
-        Claims precede provider dispatch. After a crash or unknown result we
-        only look for an actual native receipt; the request is NEVER re-sent.
+        Paid Mini dialogue is authorized only for acquiring trading setups,
+        not post-trade evaluation. Keep data/evidence observation and recover
+        existing claims from original receipts, but do not claim new work.
         This does not register robot_jobs/candidates or consume trade capacity.
         """
         if coordinator.neuro is None or coordinator.allowed(today) is not True: return None
@@ -86,31 +87,13 @@ class EvaluationConsumer:
             return self.status
         ready = [j for j in snapshot['jobs'] if j['status'] == 'REQUIRES_NEUROBRO_EVALUATION']
         if not ready: return None
-        # Aggregate regressions are the user's evaluation trigger. Old single
-        # closes must not postpone a newly evidenced streak behind the backlog.
-        trades = {row['id']: row for job in snapshot['jobs']
-            for row in job.get('evidence', {}).get('closed_positions',
-                [job.get('evidence', {}).get('closed_position', {})]) if row.get('id')}
-        ready.sort(key=lambda job: (int(job['id'].startswith(('losing-streak:', 'performance-decline:'))),
-            max(trades.get(t, {}).get('closed_at', '') for t in job['trade_ids']), job['id']), reverse=True)
-        # Existing native browser readiness is checked BEFORE a durable claim.
-        # Failure does not change owner ON/OFF or hold the trading pipeline.
-        coordinator.neuro.require_key()
-        room_id = self.room_reader()
-        need(type(room_id) is str and __import__('re').fullmatch('[a-f0-9]{32}', room_id),
-            'EVALUATION_BOUND_ROOM_NOT_AVAILABLE')
-        claim = journal.claim_evaluation(self.directory, ready[0]['id'], room_id)
-        args = native_arguments(claim)
-        def permitted(): return coordinator.allowed(today) is True
-        try:
-            coordinator.neuro.ask(args['operation'], args['prompt'], args['output_schema'],
-                lambda value: __import__('worker.trade_evaluation_evidence',
-                    fromlist=('parse_evaluation_reply',)).parse_evaluation_reply(value['findings']),
-                args['context'], continue_if=permitted)
-            journal.complete_evaluation(self.directory, args['operation'], native_receipt_reader=self.receipt_reader)
-            self.status = dict(state='EVALUATED', operation=args['operation'], recovered=False)
-        except Exception:
-            self.status = dict(state='EVALUATION_OUTCOME_UNKNOWN', operation=args['operation'], replayed=False)
+        # Defer BEFORE require_key/room reads/claim/provider dispatch. A policy
+        # refusal is not an uncertain Send and must not reserve the shared room
+        # or create an UNKNOWN claim on every restart. The journal's original
+        # jobs, evidence, metrics and prior receipts remain untouched.
+        self.status = dict(state='DEFERRED_MINI_SETUP_ONLY',
+            reason='PAID_MODEL_NOT_AUTHORIZED_FOR_EVALUATION', pending_jobs=len(ready),
+            new_claims=0, provider_calls=0)
         return self.status
 
 
@@ -122,8 +105,8 @@ def after_trading_tick(coordinator, today, result):
     trading result is retained by the caller regardless of evaluation failure.
     """
     # A completed, received market HOLD is a real transaction boundary too.
-    # Unlimited replacement screening may otherwise never produce an idle
-    # cycle, indefinitely starving a mandatory evidenced losing-streak review.
+    # The existing boundary can report data-only evaluation deferral or recover
+    # an original receipt without interrupting replacement screening.
     # Never interrupt an analysis, pending review or uncertain browser Send.
     if type(result) is not dict:
         return

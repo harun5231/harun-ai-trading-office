@@ -1,11 +1,12 @@
 """Offline factual performance and scheduler regressions; no actual analyst run."""
 import copy
 import hashlib
+from pathlib import Path
 import sqlite3
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from tests.test_trade_evaluation import position
 from tests.test_trade_evaluation_evidence import fixtures
@@ -138,17 +139,25 @@ class EvaluationEvidenceConsumptionTests(unittest.TestCase):
         state = journal.observe_calendar(self.temp.name, dict(positions=[revised]))
         self.assertIsNone(state['monthly_performance'][0]['mean_actual_net_r'])
 
-    def test_newest_ready_streak_precedes_single_trade_backlog_and_still_claims_once(self):
+    def test_ready_streak_is_deferred_before_claim_and_remains_data_only_after_restart(self):
         self.seed(4)
         neuro = SimpleNamespace(require_key=Mock(), ask=Mock(side_effect=ValueError('SIMULATED_UNKNOWN_SEND')))
         actor = SimpleNamespace(neuro=neuro, allowed=lambda _:True)
-        consumer = self.consumer()
-        consumer.advance(actor, '2026-11-01')
-        operation = neuro.ask.call_args.args[0]
-        self.assertEqual(journal.read_evaluation_claim(self.temp.name, operation)['job_id'], 'losing-streak:3')
-        self.assertEqual(neuro.ask.call_count, 1)
-        consumer.advance(actor, '2026-11-01')
-        self.assertEqual(neuro.ask.call_count, 1)
+        before=journal.read_status(self.temp.name)
+        original=(Path(self.temp.name)/journal.FILENAME).read_bytes()
+        with patch.object(journal,'claim_evaluation',side_effect=AssertionError('policy must defer before a claim')):
+            for _ in range(3):
+                consumer = self.consumer()
+                result=consumer.advance(actor, '2026-11-01')
+                self.assertEqual(result['state'],'DEFERRED_MINI_SETUP_ONLY')
+                self.assertEqual(result['provider_calls'],0);self.assertEqual(result['new_claims'],0)
+                self.assertGreater(result['pending_jobs'],0)
+        neuro.ask.assert_not_called();neuro.require_key.assert_not_called()
+        self.assertEqual(journal.read_status(self.temp.name),before)
+        self.assertEqual((Path(self.temp.name)/journal.FILENAME).read_bytes(),original)
+        self.assertEqual(before['unresolved_evaluations'],[])
+        self.assertEqual(next(job for job in before['jobs']if job['id']=='losing-streak:3')['status'],
+            'REQUIRES_NEUROBRO_EVALUATION')
 
     def test_unknown_recovery_rotates_without_sending_more_or_holding_trading(self):
         self.seed(2)
@@ -220,7 +229,7 @@ class EvaluationEvidenceConsumptionTests(unittest.TestCase):
         runtime.after_trading_tick(actor, '2026-11-01', result)
         self.assertEqual(consumer.advance.call_count, 1)
 
-    def test_completed_market_hold_admits_streak_review_before_unlimited_replacement_loop(self):
+    def test_completed_market_hold_defers_paid_evaluation_without_holding_replacement_loop(self):
         self.seed(3)
         neuro = SimpleNamespace(require_key=Mock(), ask=Mock(side_effect=ValueError('SIMULATED_UNKNOWN_SEND')))
         consumer = self.consumer()
@@ -245,14 +254,14 @@ class EvaluationEvidenceConsumptionTests(unittest.TestCase):
         neuro.ask.assert_not_called()
         actor.unresolved_research = lambda:False
         runtime.after_trading_tick(actor, '2026-11-01', held)
-        neuro.ask.assert_called_once()
-        operation = neuro.ask.call_args.args[0]
-        self.assertEqual(journal.read_evaluation_claim(self.temp.name, operation)['job_id'], 'losing-streak:2')
-        # Future screening/analysis still gets its normal turn; this uncertain
-        # operation is read-only recovered and never sent a second time.
+        self.assertEqual(actor.evaluation_status['state'],'DEFERRED_MINI_SETUP_ONLY')
+        self.assertEqual(held['bot_status'],'HOLD');self.assertIsNone(held['failure_code'])
+        # Future screening/analysis retains its normal turn. No evaluation
+        # claim or provider operation was created to obstruct that cycle.
         runtime.after_trading_tick(actor, '2026-11-01', dict(bot_status='SCREENING'))
         runtime.after_trading_tick(actor, '2026-11-01', held)
-        self.assertEqual(neuro.ask.call_count, 1)
+        neuro.ask.assert_not_called();neuro.require_key.assert_not_called()
+        self.assertEqual(journal.read_status(self.temp.name)['unresolved_evaluations'],[])
 
     def test_historical_display_omits_private_budget_preserves_signed_facts_and_rejects_before_upload(self):
         from agent.native_evaluation_browser import HistoricalEvaluation

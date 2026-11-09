@@ -13,15 +13,16 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_HTTP_COOLDOWN_V2'
+PROFILE = 'RESTORED_MINI_TRADING_PURPOSE_V3'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
-SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
+UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
+SOURCE_SHA256 = '98cb4e8b2e4a058e10f1459ad2ad86e5fa6ed3174219b9a85dff2b3250bf0c4a'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
-MODEL_SOURCE_SHA256 = 'feda2b11871899561af453debe24a0fab4735ade794eed16ba801a5e9cb66a85'
+MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
 UNCHANGED_SOURCES = {
     'agent/memory.py': '0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272',
     'agent/dialogue_client.py': '87b873b40ebff100fef08481783a85d3b027e21d2f2be7ed3f06688fe8f04e92',
@@ -33,7 +34,7 @@ def sha256(raw):
     return hashlib.sha256(raw).hexdigest()
 
 
-def build_source(root=ROOT):
+def build_utc_source(root=ROOT):
     root = Path(root)
     encoded = b''.join((root / 'deploy/mini-dialogue-service-4a0e659.zlib.b85').read_bytes().splitlines())
     raw = zlib.decompress(base64.b85decode(encoded))
@@ -57,7 +58,7 @@ def build_source(root=ROOT):
         r"    without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', ''," +
         '\n        _without_sourced_utc_times(question,request))', 1)
     result = source.encode('utf-8')
-    if sha256(result) != SOURCE_SHA256:
+    if sha256(result) != UTC_SOURCE_SHA256:
         raise ValueError('MINI_DERIVED_SOURCE_CHANGED')
     tree = ast.parse(source)
     if any(isinstance(node, ast.ImportFrom) and 'hermes' in (node.module or '')
@@ -65,6 +66,68 @@ def build_source(root=ROOT):
         raise ValueError('MINI_HERMES_IMPORT_REFUSED')
     compile(source, 'retained-mini-dialogue-service.py', 'exec')
     return result
+
+
+PURPOSE_RECEIPT = '''    def _existing_purpose_receipt(self, request):
+        """Read exact historical receipts without funding a forbidden purpose."""
+        operation = 'delegated-model:' + request['request_id']
+        memo = ({key:value for key,value in request.items() if key != 'deadline_epoch'}
+            if request['phase'].startswith('COMPOSE_') else request)
+        with self.memory.lock:
+            row = self.memory.db.execute('SELECT kind,request_hash,state,result FROM operations '
+                'WHERE operation_id=?',(operation,)).fetchone()
+        if row is not None:
+            if row[2] in ('STARTED','UNKNOWN'):
+                raise DialogueError('DIALOGUE_OPERATION_UNKNOWN')
+            if (row[0] == 'DELEGATED_MODEL_DIALOGUE' and row[1] == hashlib.sha256(canonical(memo).encode()).hexdigest()
+                    and row[2] == 'DONE' and type(row[3]) is str):
+                result = decode_json(row[3].encode())
+                if type(result) is dict and '_agent_not_sent' not in result:
+                    return validate_result(result,request)
+        try:
+            denial = {'schema_version':1,'authority':'MODEL_PURPOSE_POLICY','operation_id':operation,
+                'phase':request['phase'],'reason':'DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED',
+                'request_sent':False,'provider_response_received':False}
+            key = 'dialogue-model-purpose-denied:'+hashlib.sha256(canonical(denial).encode()).hexdigest()
+            if self.memory.get(key) is None:
+                self.memory.put(key,{**denial,'observed_at':self.clock()})
+        except Exception:
+            pass
+        raise NotSent('DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED')
+
+'''
+
+
+def apply_purpose_policy(raw):
+    source=raw.decode()
+    source=source.replace('from .memory import Memory, canonical',
+        'from .llm import PAID_DIALOGUE_PHASES\nfrom .memory import Memory, canonical',1)
+    source=source.replace('    def process(self, request):',PURPOSE_RECEIPT+'    def process(self, request):',1)
+    needle='        request = validate_request(request, now=self.clock())\n        with self.lock:'
+    if source.count(needle)!=1:
+        raise ValueError('MINI_PURPOSE_PATCH_TARGET_CHANGED')
+    source=source.replace(needle,'        request = validate_request(request, now=self.clock())\n'
+        '        if request[\'phase\'] not in PAID_DIALOGUE_PHASES:\n'
+        '            with self.lock:\n'
+        '                return self._existing_purpose_receipt(request)\n        with self.lock:',1)
+    source=source.replace('                    return original_transport(payload)',
+        "                    self.model.bind_operation(current_id,request['phase'])\n"
+        '                    return original_transport(payload)',1)
+    source=source.replace("                    decision = self.model.plan(history, request['reply'], **arguments)",
+        "                    self.model.bind_operation(current_id,request['phase'])\n"
+        "                    decision = self.model.plan(history, request['reply'], **arguments)",1)
+    source=source.replace('def safe_error(error):\n',
+        "def safe_error(error):\n    if isinstance(error,NotSent) and str(error)=='DIALOGUE_MODEL_PURPOSE_NOT_ALLOWED':\n"
+        "        return 'DIALOGUE_MODEL_NOT_SENT'\n",1)
+    return source.encode()
+
+
+def build_source(root=ROOT):
+    raw=apply_purpose_policy(build_utc_source(root))
+    if sha256(raw)!=SOURCE_SHA256:
+        raise ValueError('MINI_PURPOSE_SOURCE_CHANGED')
+    compile(raw,'retained-mini-dialogue-service.py','exec')
+    return raw
 
 
 def prepare(root=ROOT):
