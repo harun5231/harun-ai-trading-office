@@ -55,7 +55,9 @@ class ReceivedHookTests(unittest.TestCase):
                 case.bridge.ask.assert_not_called();case.bridge._fresh_conversation.assert_not_called()
                 self.assertEqual(case.bridge.clicks,2);self.assertEqual(len(case.bridge.uploads),1)
                 self.assertEqual(calls,[('UPLOAD',1),('SEND',1)])
-                self.assertEqual(case.reasoner.request.call_count,1) # New answer only, no old Mini replay.
+                # A source-authored final market HOLD needs no paid model
+                # interpretation and must never open another setup debate.
+                case.reasoner.request.assert_not_called()
                 self.assertEqual(result['output']['side'],'HOLD')
                 self.assertEqual(result['response_id'],'dom-'+hashlib.sha256((case.bridge.page.url+'\n'+
                     case.value['marker']+'\n'+case.bridge.final).encode()).hexdigest())
@@ -65,7 +67,8 @@ class ReceivedHookTests(unittest.TestCase):
                 projected=case.hook.converter(case.bridge.uploads[0][0]['context'],now=case.now)
                 self.assertEqual({tf:len(rows)for tf,rows in projected['candles'].items()},{'15m':200,'1h':200})
                 self.assertEqual(set(projected['running_candles']),{'15m','1h'})
-                self.assertIn('batas waktu candle tertutup UTC',case.bridge.messages[-2]['text'])
+                self.assertIn('chart 1H/15M dan CSV terbaru',case.bridge.messages[-2]['text'])
+                self.assertNotIn('batas waktu candle tertutup UTC',case.bridge.messages[-2]['text'])
 
     def test_changed_received_prefix_streaming_or_owner_off_never_sends(self):
         for failure in ('prefix','streaming','off'):

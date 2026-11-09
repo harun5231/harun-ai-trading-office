@@ -169,7 +169,7 @@ def lookup_capture_paths(archive_root, operation, request, response):
 
 def _context(sidecar, payload):
     """Reconstruct only facts the existing ActorCharts may have refreshed."""
-    from agent.native_chart_followup import sha
+    from agent.native_chart_followup import sha, native_snapshot
     context = deepcopy(payload['context'])
     if sidecar.get('native_context_canonical_sha256') != sha(context):
         public = sidecar['public_market_context']
@@ -179,6 +179,18 @@ def _context(sidecar, payload):
             quantity_unit='base_asset', timeframes={tf: dict(symbol=public['symbol'],
                 timeframe=tf, candles=deepcopy(public['candles'][tf]) +
                     [deepcopy(public['running_candles'][tf])]) for tf in ('15m', '1h')})
+        if sidecar.get('native_context_canonical_sha256') != sha(context):
+            # ActorCharts constructs a fresh Market ABI rather than retaining
+            # original account/risk metadata. The converted public server time
+            # is already that snapshot's final collection clock. Reuse the
+            # same constructor and only the three ActorCharts-preserved keys;
+            # the immutable capture hash must prove every reconstructed byte.
+            context = native_snapshot(dict(public,
+                collection_finished_server_time_ms=public['server_time_ms']),
+                now=public['observed_at'])
+            for key in ('pending_review', 'pending_order_context', 'material_contract'):
+                if key in payload['context']:
+                    context[key] = deepcopy(payload['context'][key])
     need(sidecar.get('native_context_canonical_sha256') == sha(context),
         'EVALUATION_HISTORICAL_CONTEXT_MISMATCH')
     return context

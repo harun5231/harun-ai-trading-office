@@ -406,24 +406,16 @@ def _prompt(intent, intent_ref, order=None):
         'stop_loss': intent['protection']['stop_loss'],
         'take_profit': intent['protection']['take_profit']}
     # Operation hashes and schema belong to the integration, not the discussion.
-    lines = ['Tolong evaluasi kembali order LIMIT Binance Futures USDT Perpetual yang '
-        'sudah terpasang ini menggunakan dua screenshot terbaru 1H dan 15M serta '
-        '200 candle tertutup pada masing-masing timeframe.',
+    lines = ['Dengan chart terbaru 1H dan 15M, evaluasi kembali order yang sama untuk coin ini.',
         'Coin '+order['symbol']+', arah '+order['side']+', harga LIMIT '+order['entry_price']+
         ', quantity '+order['quantity']+', SL '+order['stop_loss']+', TP '+order['take_profit']+'.']
     if order.get('accepted_at'):
-        lines.append('Diterima Binance pada '+order['accepted_at']+'; sudah menunggu '+
-            str(round(order['age_seconds']/3600, 3))+' jam. Status '+order['status']+
+        lines.append('Diterima Binance pada '+order['accepted_at']+'. Status '+order['status']+
             ', quantity terisi '+str(order['filled_quantity'])+'.')
     # Budgets and detailed cost estimates remain in pending_order_context for
     # internal Risk Manager/receipts; they never become Neurobro WEB material.
-    lines.append('Apakah entry pada harga yang sudah terpasang masih valid? Jelaskan alasan '
-        'yang relevan dengan kondisi terbaru. TAHAN berarti mempertahankan order yang sama '
-        'dan mengevaluasinya lagi lima jam setelah keputusan ini. BATALKAN hanya berarti '
-        'membatalkan sisa entry yang belum terisi. Jangan mengubah entry, quantity, SL atau TP, '
-        'dan jangan menutup bagian yang sudah menjadi posisi. Akhiri dengan ringkasan COIN dan '
-        'keputusan TAHAN atau BATALKAN. Jika bahan analisis belum terbaca atau keputusan belum '
-        'jelas, sampaikan masalahnya; itu bukan alasan pasar untuk membatalkan order.')
+    lines.append('Apakah order dengan ENTRY, SL dan TP tersebut masih valid? '
+        'Berikan keputusan TAHAN atau BATALKAN beserta alasan singkat.')
     return '\n\n'.join(lines)
 
 
@@ -438,6 +430,254 @@ def _decision_receipt(db, operation, *, accepted_at=None, now=None):
         raise PendingReviewUnavailable('PENDING_REVIEW_DECISION_RECEIPT_UNVERIFIED')
     return {'accepted_at': accepted_at, 'decision_at': row['received_at'],
         'reason': row['assistant_text'], 'assistant_sha256': row['assistant_sha256']}
+
+
+def _completed_policy_output(coordinator, operation, kind, cycle, symbol, schema):
+    """Read a completed native job/API pair; labels alone carry no policy."""
+    from worker.neuroapi import canonical_output, screening_count
+    try:
+        db = coordinator.db
+        job = db.execute('SELECT * FROM robot_jobs WHERE operation=?', (operation,)).fetchone()
+        api = db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        if (not job or job['operation'] != operation or job['cycle'] != cycle
+                or job['kind'] != kind or job['symbol'] != symbol or job['state'] != 'COMPLETE'
+                or not api or api['state'] != 'COMPLETE' or api['attempts'] != 1
+                or type(api['attempts']) is not int or api['idempotency'] is not None
+                or api['failure_code'] is not None or not _finite(api['created'])
+                or type(api['body_hash']) is not str or re.fullmatch('[a-f0-9]{64}', api['body_hash']) is None
+                or type(api['output']) is not str):
+            return None
+        value = json.loads(api['output'])
+        catalog = ({item: {} for item in value.get('symbols', []) if type(item) is str}
+            if screening_count(schema) is not None and type(value) is dict else None)
+        if canonical_output(value, schema, catalog) != api['output']:
+            return None
+        table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_browser_requests'").fetchone()
+        source = db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone() if table else None
+        if source is not None:
+            native = _native()
+            body = json.loads(source['request_body'])
+            if (body.get('operation') != operation or body.get('output_schema') != schema
+                    or kind == 'ANALYSIS' and body.get('context', {}).get('symbol') != symbol):
+                return None
+            rebuilt, serialized, request_hash = native['research_provider'].request_body(
+                operation, body['prompt'], schema, body['context'])
+            if (rebuilt != body or serialized != source['request_body']
+                    or request_hash != source['request_sha256'] or request_hash != api['body_hash']):
+                return None
+            evidence = native['research_provider'].source_evidence(db, operation)
+            if (evidence.get('source_type') != native['research_provider'].BROWSER_SOURCE
+                    or type(evidence.get('provider_evidence_sha256')) is not str
+                    or re.fullmatch('[a-f0-9]{64}', evidence['provider_evidence_sha256']) is None):
+                return None
+        return value
+    except Exception:
+        return None
+
+
+def _entry_remainder_receipt(intent, entry, order_id, *, filled_at_least='0'):
+    """Project only the existing owned terminal GET returned by cancellation."""
+    if (type(entry) is not dict or entry.get('status') not in ('CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'FILLED')
+            or entry.get('clientOrderId') != intent['client_order_id']
+            or str(entry.get('orderId')) != str(order_id)
+            or re.fullmatch(r'[1-9]\d*', str(order_id)) is None
+            or not _number(filled_at_least, zero=True) <= _number(entry.get('executedQty'), zero=True)
+                <= _number(intent['entry']['quantity'])):
+        raise PendingReviewUnavailable('PENDING_REVIEW_CANCELLATION_UNVERIFIED')
+    return {'status': entry['status'], 'client_order_id': entry['clientOrderId'],
+        'order_id': str(entry['orderId']), 'filled_quantity': entry['executedQty']}
+
+
+def _confirmed_cancel_receipt(coordinator, candidate, journal, native, *, zero_fill=True):
+    """Recognize existing confirmed cancellation proof without freeing a fill."""
+    try:
+        db = coordinator.db
+        stored = db.execute('SELECT * FROM robot_candidates WHERE id=?', (candidate['id'],)).fetchone()
+        row = _intent_row(db, candidate['id'])
+        states = ('REJECTED',) if zero_fill else ('REJECTED', 'POSITION_PROTECTED', 'CLOSED')
+        if (not stored or dict(stored) != dict(candidate) or stored['status'] not in states
+                or not row or row['candidate_id'] != stored['id'] or row['state'] != stored['status']):
+            return None
+        intent, _ = _verified_from_store(db, row, native)
+        fill_receipt = db.execute('SELECT * FROM robot_entry_receipts WHERE id=?', (intent['client_order_id'],)).fetchone()
+        result = json.loads(row['result'])
+        filled = _number(result.get('filled_quantity'), zero=True)
+        partial = filled > 0
+        if (result.get('source') != 'BINANCE_FUTURES' or result.get('state') != row['state']
+                or result.get('symbol') != intent['symbol']
+                or result.get('client_order_id') != intent['client_order_id']
+                or type(result.get('order_id')) is not str
+                or re.fullmatch(r'[1-9]\d*', result['order_id']) is None
+                or partial and (zero_fill or row['state'] not in ('POSITION_PROTECTED', 'CLOSED')
+                    or filled >= _number(intent['entry']['quantity']) or not fill_receipt
+                    or fill_receipt['symbol'] != intent['symbol'])
+                or not partial and (row['state'] != 'REJECTED' or fill_receipt is not None)):
+            return None
+        claim = journal.execute('SELECT * FROM pending_reviews WHERE intent_id=? '
+            'ORDER BY sequence DESC LIMIT 1', (row['id'],)).fetchone()
+        intent_ref = _sha(row['payload'])
+        if (not claim or claim['state'] != 'COMPLETE' or claim['decision'] != 'BATALKAN'
+                or claim['intent_ref'] != intent_ref or claim['entry_created_at'] != row['created']
+                or type(claim['sequence']) is not int or claim['sequence'] < 1
+                or claim['operation'] != 'pending-review-v1:' + intent_ref[:32] + ':' + str(claim['sequence'])
+                or not _finite(claim['created'])):
+            return None
+        body = json.loads(claim['request_body'])
+        context = body.get('context', {})
+        if (body.get('operation') != claim['operation'] or body.get('output_schema') != REVIEW_SCHEMA
+                or context.get('symbol') != intent['symbol']
+                or context.get('pending_review') != {'intent_ref': intent_ref,
+                    'symbol': intent['symbol'], 'entry_created_at': row['created']}):
+            return None
+        rebuilt, serialized, request_hash = native['research_provider'].request_body(
+            claim['operation'], body['prompt'], REVIEW_SCHEMA, context)
+        source = db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (claim['operation'],)).fetchone()
+        api = db.execute('SELECT * FROM api_requests WHERE operation=?', (claim['operation'],)).fetchone()
+        if (rebuilt != body or serialized != claim['request_body'] or _sha(serialized) != request_hash
+                or request_hash != claim['request_sha256'] or not source
+                or source['request_body'] != serialized or source['request_sha256'] != request_hash
+                or not api or api['body_hash'] != request_hash or api['state'] != 'COMPLETE'
+                or api['attempts'] != 1 or type(api['attempts']) is not int or api['idempotency'] is not None
+                or api['failure_code'] is not None or not _finite(api['created'])
+                or api['created'] < claim['created']):
+            return None
+        value = json.loads(api['output'])
+        if (native['neuroapi'].canonical_output(value, REVIEW_SCHEMA) != api['output']
+                or value != {'symbol': intent['symbol'], 'order_ref': intent_ref, 'decision': 'BATALKAN'}):
+            return None
+        evidence = native['research_provider'].source_evidence(db, claim['operation'])
+        if (evidence.get('source_type') != native['research_provider'].BROWSER_SOURCE
+                or type(claim['source_sha256']) is not str
+                or re.fullmatch('[a-f0-9]{64}', claim['source_sha256']) is None
+                or evidence.get('provider_evidence_sha256') != claim['source_sha256']):
+            return None
+        receipt = _decision_receipt(db, claim['operation'])
+        if receipt['decision_at'] < api['created']:
+            return None
+        retained = json.loads(claim['result'])
+        observation = retained.get('gateway_observation', {})
+        if (retained.get('decision_not_applied_after_restart') is True
+                or retained.get('decision_not_applied_after_fill') is True
+                or observation.get('source') != 'BINANCE_FUTURES'
+                or observation.get('state') != ('POSITION_PROTECTED' if partial else 'REJECTED')
+                or observation.get('symbol') != intent['symbol']
+                or observation.get('client_order_id') != intent['client_order_id']
+                or observation.get('order_id') != result['order_id']
+                or _number(observation.get('filled_quantity'), zero=True) != filled
+                or any(key in retained and retained[key] != receipt[key]
+                    for key in ('decision_at', 'reason', 'assistant_sha256'))):
+            return None
+        if partial:
+            remainder = retained.get('entry_remainder')
+            if (type(remainder) is not dict
+                    or set(remainder) != {'status', 'client_order_id', 'order_id', 'filled_quantity'}
+                    or remainder['status'] not in ('CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH')
+                    or remainder['client_order_id'] != intent['client_order_id']
+                    or remainder['order_id'] != result['order_id']
+                    or _number(remainder['filled_quantity'], zero=True) != filled
+                    or observation.get('sl_confirmed') is not True or observation.get('tp_confirmed') is not True
+                    or _utc_instant(fill_receipt['confirmed_at']) > receipt['decision_at']
+                    or datetime.fromtimestamp(_utc_instant(fill_receipt['confirmed_at']),
+                        ZoneInfo('Asia/Jakarta')).date().isoformat() != fill_receipt['entry_day']):
+                return None
+        return receipt
+    except Exception:
+        return None
+
+
+def confirmed_cancel_result(coordinator, candidate):
+    """Return only a proven completed BATALKAN with no filled entry or receipt."""
+    if not coordinator.db.execute("SELECT 1 FROM api_requests WHERE operation GLOB 'pending-review-v1:*' LIMIT 1").fetchone():
+        return False
+    with _journal(coordinator.db) as journal:
+        if journal is None:
+            raise PendingReviewUnavailable('PENDING_REVIEW_JOURNAL_UNVERIFIED')
+        return _confirmed_cancel_receipt(coordinator, candidate, journal, _native()) is not None
+
+
+def screening_day_exclusions(coordinator, today):
+    """Exclude only proved market HOLDs or confirmed cancellations for this day."""
+    from worker.neuroapi import SETUP_SCHEMA, SETUP_SCHEMA_V4
+    if (type(today) is not str or re.fullmatch(r'\d{4}-\d{2}-\d{2}', today) is None
+            or datetime.fromisoformat(today).date().isoformat() != today):
+        raise PendingReviewUnavailable('PENDING_REVIEW_DAY_UNVERIFIED')
+    db = coordinator.db
+    excluded = set()
+    holds = (db.execute("SELECT p.* FROM robot_candidates p JOIN robot_cycles c ON c.id=p.cycle "
+        "WHERE p.status='HOLD' AND c.day=?", (today,))
+        if db.execute("SELECT 1 FROM robot_candidates WHERE status='HOLD' LIMIT 1").fetchone() else ())
+    for candidate in holds:
+        if candidate['cycle'][:10] != today or candidate['id'] != candidate['cycle'] + ':analysis-v9:' + candidate['symbol']:
+            continue
+        for schema in (SETUP_SCHEMA, SETUP_SCHEMA_V4):
+            value = _completed_policy_output(coordinator, candidate['id'], 'ANALYSIS',
+                candidate['cycle'], candidate['symbol'], schema)
+            if value is not None and value['side'] == 'HOLD' and value['symbol'] == candidate['symbol']:
+                excluded.add(candidate['symbol'])
+                break
+    if db.execute("SELECT 1 FROM api_requests WHERE operation GLOB 'pending-review-v1:*' LIMIT 1").fetchone():
+        with _journal(db) as journal:
+            if journal is None:
+                raise PendingReviewUnavailable('PENDING_REVIEW_JOURNAL_UNVERIFIED')
+            native = _native()
+            for candidate in db.execute("SELECT * FROM robot_candidates WHERE status IN ('REJECTED','POSITION_PROTECTED','CLOSED')"):
+                receipt = _confirmed_cancel_receipt(coordinator, candidate, journal, native, zero_fill=False)
+                if (receipt is not None and datetime.fromtimestamp(receipt['decision_at'],
+                        ZoneInfo('Asia/Jakarta')).date().isoformat() == today):
+                    excluded.add(candidate['symbol'])
+    return excluded
+
+
+def screening_day_replacement_due(coordinator, cycle, data):
+    """Count only completed last-screen choices blocked by proved daily policy."""
+    from worker.account_state import screening_contract
+    if (type(cycle) is not str or re.fullmatch(r'\d{4}-\d{2}-\d{2}:robot-v9:(0|[1-9]\d{0,11})', cycle) is None
+            or type(data) is not dict or type(data.get('screen')) is not int or data['screen'] < 0):
+        return 0
+    outputs = []
+    for count in (1, 2):
+        operation = cycle + ':screening:' + str(data['screen']) + ':' + str(count)
+        _, schema = screening_contract(count)
+        value = _completed_policy_output(coordinator, operation, 'SCREENING', cycle, None, schema)
+        if value is not None:
+            outputs.append(value['symbols'])
+    if len(outputs) != 1:
+        return 0
+    excluded = screening_day_exclusions(coordinator, cycle[:10])
+    return len(set(outputs[0]).intersection(excluded))
+
+
+def screening_day_rejected_result(coordinator, candidate):
+    """Reopen only a proved day-policy rejection before any analysis claim."""
+    from worker.account_state import screening_contract
+    try:
+        if (candidate['status'] != 'REJECTED' or candidate['failure_code'] != 'ROBOT_DAY_EXCLUDED'
+                or candidate['plan'] is not None):
+            return False
+        db = coordinator.db
+        stored = db.execute('SELECT * FROM robot_candidates WHERE id=?', (candidate['id'],)).fetchone()
+        cycle = db.execute('SELECT * FROM robot_cycles WHERE id=?', (candidate['cycle'],)).fetchone()
+        if (stored is None or dict(stored) != dict(candidate) or cycle is None
+                or cycle['day'] != candidate['cycle'][:10]
+                or candidate['id'] != candidate['cycle'] + ':analysis-v9:' + candidate['symbol']
+                or any(db.execute('SELECT 1 FROM '+table+' WHERE '+key+'=?', (candidate['id'],)).fetchone()
+                    for table, key in (('api_requests', 'operation'), ('robot_jobs', 'operation'),
+                        ('order_intents', 'candidate_id')))):
+            return False
+        data = json.loads(cycle['data'])
+        if type(data.get('screen')) is not int or data['screen'] < 0:
+            return False
+        choices = []
+        for count in (1, 2):
+            operation = candidate['cycle'] + ':screening:' + str(data['screen']) + ':' + str(count)
+            _, schema = screening_contract(count)
+            value = _completed_policy_output(coordinator, operation, 'SCREENING', candidate['cycle'], None, schema)
+            if value is not None:
+                choices.append(value['symbols'])
+        return (len(choices) == 1 and candidate['symbol'] in choices[0]
+            and candidate['symbol'] in screening_day_exclusions(coordinator, cycle['day']))
+    except Exception:
+        return False
 
 
 def _recover_completed_decisions(coordinator, journal, native, now):
@@ -550,6 +790,7 @@ def _recover_cancel_checkpoints(coordinator, journal, today, native):
                 or result.get('client_order_id') != intent['client_order_id']):
             continue
         resolved = row['state'] in ('REJECTED', 'CLOSED') and result.get('state') == row['state']
+        remainder = None
         if row['state'] == 'POSITION_PROTECTED':
             if result.get('sl_confirmed') is not True or result.get('tp_confirmed') is not True:
                 continue
@@ -560,10 +801,15 @@ def _recover_cancel_checkpoints(coordinator, journal, today, native):
                     coordinator.gateway._account_config()
                     entry = coordinator.gateway._entry(intent)
             resolved = entry['status'] in ('CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH', 'FILLED')
+            if resolved:
+                remainder = _entry_remainder_receipt(intent, entry, result.get('order_id'),
+                    filled_at_least=result.get('filled_quantity'))
         if resolved and _gate(coordinator, today):
-            _set_state(journal, claim['operation'], 'COMPLETE', result={
-                'resolution': 'NATIVE_GATEWAY_RECONCILED', 'gateway_observation': result,
-                'resolved_at': time.time()})
+            retained = {'resolution': 'NATIVE_GATEWAY_RECONCILED', 'gateway_observation': result,
+                'resolved_at': time.time()}
+            if remainder is not None:
+                retained['entry_remainder'] = remainder
+            _set_state(journal, claim['operation'], 'COMPLETE', result=retained)
 
 
 _TERMINAL_REVIEW = 'ORDER_TERMINAL_NOT_APPLIED'
@@ -979,7 +1225,9 @@ def review_then_advance(coordinator, account, today):
                         # rechecks current ROBOT ON, including a concurrent OFF.
                         phase = 'CANCEL_REMAINDER'
                         with guard.gateway_mutations(lambda: permitted()):
-                            coordinator.gateway._cancel_entry_remainder(intent, entry)
+                            after = coordinator.gateway._cancel_entry_remainder(intent, entry)
+                            receipt['entry_remainder'] = _entry_remainder_receipt(intent, after,
+                                entry['orderId'], filled_at_least=entry['executedQty'])
                     phase = 'AFTER_CANCEL_RECONCILE'
                     final = coordinator.gateway.reconcile(intent)
                     phase = 'GATEWAY_OBSERVATION'

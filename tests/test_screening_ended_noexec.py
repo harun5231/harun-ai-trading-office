@@ -371,6 +371,7 @@ class PassiveEndedCaptureTests(unittest.TestCase):
         self.assertEqual(native.RETURN_FAILURE_SOURCES, frozenset((
             (native.RETURN_FAILURE_PRODUCER, native.RETURN_FAILURE_HOOK),
             (native.RETURN_FAILURE_PRODUCER, native.PREVIOUS_RETURN_FAILURE_HOOK),
+            (native.RETURN_FAILURE_PRODUCER, native.CONTEXT_RETURN_FAILURE_HOOK),
             (native.RETURN_FAILURE_PRODUCER, native.CURRENT_RETURN_FAILURE_HOOK))))
         source = Path(native.__file__).resolve().parent
         producer_bytes = (source/'native_turn_batch.py').read_bytes()

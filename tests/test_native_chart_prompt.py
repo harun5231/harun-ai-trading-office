@@ -48,14 +48,14 @@ class NativeChartPromptTests(unittest.TestCase):
         self.assertNotIn('private_fee_canary', result)
         self.assertNotIn('5.123', result)
         self.assertNotIn('ukuran posisi', result)
-        self.assertIn('RISK REWARD 1:2', result)
-        self.assertIn('swing high/low', result)
+        self.assertIn('RISK REWARD minimal 1:2', result)
+        self.assertIn('wick dan invalidasi', result)
         self.assertNotIn('"candles"', result)
-        self.assertLess(len(result), 4000)
+        self.assertLess(len(result)-len(payload['prompt']),650)
         self.assertIs(namespace['user_prompt'], hook)
         self.assertTrue(hook.__harun_data_files_v1__)
         for file in files:
-            self.assertIn(file['name'], result)
+            self.assertNotIn(file['name'], result)
             self.assertEqual(file['closed_count'], 200)
             self.assertEqual(len(file['buffer'].decode().splitlines()), 201)
 
@@ -108,8 +108,9 @@ class NativeChartPromptTests(unittest.TestCase):
         self.assertTrue(rendered.endswith('Acuan percakapan: ' + payload['marker']))
         self.assertNotIn('OUTPUT_JSON_SCHEMA', rendered)
         for file in deliver_market_data_files(payload['context'], now=NOW):
-            self.assertIn(file['name'], rendered)
-        self.assertLess(len(rendered), 4000)
+            self.assertNotIn(file['name'], rendered)
+            self.assertEqual(len(file['buffer'].decode().splitlines()),201)
+        self.assertLess(len(rendered)-len(payload['prompt']),650)
 
     def test_truncating_formatter_is_rejected(self):
         _, hook = self.hook(lambda payload: payload['prompt'])

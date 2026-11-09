@@ -290,6 +290,67 @@ def parse_analysis_reply(reply, requested):
     return fields
 
 
+def author_market_hold(reply, requested):
+    """Prove a present authored HOLD without vetoing future market scenarios.
+
+    Parsing still owns the current coin/final-summary, input and direction
+    conflict checks. A condition attached to the direction (or leading into it)
+    is not a final decision. A later sentence about a possible future entry is
+    distinct from the author's current no-entry decision.
+    """
+    if not isinstance(reply, str) or not isinstance(requested, str):
+        return False
+    try:
+        if parse_analysis_reply(reply, requested)['side'] != 'HOLD':
+            return False
+        block = _inline_summary_fields(analysis_coin_block(reply, requested))
+    except ReplyIncomplete:
+        return False
+    # These are the same direction presentations accepted by _decision. Keep
+    # offsets in the authored current block; do not search chat history or
+    # turn a model's HOLD token into analyst authority.
+    labelled = list(re.finditer(r'(?:^|[;|\n])\s*(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)'
+        r'(?:\s+(?:AKHIR|FINAL|AKTIF))?\s*[:=]\s*HOLD\b', block, re.I))
+    plain = list(re.finditer(r'^\s*(?:' + PAIR + r'\s*(?:[-—:|]\s*|\s+))?'
+        r'HOLD(?=\s*(?:[.!]|$))', block, re.I | re.M))
+    pipes = []
+    for match in re.finditer(r'^\s*(?:Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*)?'
+            + _COIN_LABEL + r'\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M):
+        for cell in re.finditer(r'(?:^|\|)\s*HOLD\s*(?=\||$)', match.group(1), re.I):
+            pipes.append((match.start(1) + cell.start(), match.start(1) + cell.end()))
+    directions = [(match.start(), match.end()) for match in [*labelled, *plain]] + pipes
+    if not directions:
+        return False
+    text = clean(reply)
+    final = list(_FINAL.finditer(text))
+    if final:
+        text = text[final[-1].start():]
+    final_heading = r'\s*(?:(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\s*:?)?\s*'
+    headers = sorted(match.start() for pattern in (_COIN, _COIN_HEADING)
+        for match in pattern.finditer(text))
+    if headers and not re.fullmatch(final_heading, text[:headers[0]], re.I):
+        return False
+    first = min(start for start, _ in directions)
+    summaries = list(re.finditer(r'^\s*Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]',
+        block[:first], re.I | re.M))
+    scope = summaries[-1].end() if summaries else 0
+    preamble = block[scope:first]
+    # A coin/final-summary heading is positive scope. Arbitrary prose leading
+    # into HOLD, including an unfamiliar conditional phrase, stays with Mini.
+    heading = (final_heading + r'(?:(?:Ringkasan\s*[:=]?\s*)?(?:'
+        + _COIN_LABEL + r')?\$?' + PAIR + r'(?:[ \t]+Perpetual)?\s*\|?)?\s*')
+    if not re.fullmatch(heading, preamble, re.I):
+        return False
+    for _, end in directions:
+        # Only the exact present direction is authoritative here. Reasons and
+        # unfamiliar inline wording are interpreted by the existing dialogue;
+        # a separate future clause after punctuation/newline remains separate.
+        suffix = re.split(r'[;|\n]|[.!](?=\s|$)', block[end:], maxsplit=1)[0]
+        if not re.fullmatch(r'\s*(?:sekarang|(?:untuk\s+)?saat\s+ini)?\s*', suffix, re.I):
+            return False
+    return True
+
+
 def parse_screening_reply(reply):
     text = clean(reply)
     final = list(_FINAL.finditer(text))

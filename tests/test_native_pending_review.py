@@ -221,7 +221,7 @@ class Coordinator:
         self.db.execute("UPDATE api_requests SET state='COMPLETE',output=? WHERE operation=?",
                         (canonical(value, schema), operation))
         text = json.dumps(value)
-        captured = datetime.fromtimestamp(time.time(), timezone.utc).isoformat()
+        captured = datetime.fromtimestamp(int(time.time() * 1000) / 1000, timezone.utc).isoformat()
         charts = [{'source': 'BINANCE_USDM_FUTURES_WEBSITE_SCREENSHOT', 'symbol': context['symbol'],
             'timeframe': tf, 'captured_at': captured} for tf in ('1h', '15m')]
         self.db.execute('INSERT INTO research_browser_responses VALUES(?,?,?,?,?,?)',
@@ -349,6 +349,81 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 1)
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 0)
 
+    def test_confirmed_cancel_policy_uses_actual_decision_day_and_only_reads_existing_proof(self):
+        self.coordinator.decision = 'BATALKAN'
+        self.assertEqual(self.run_tick()['bot_status'], 'REJECTED')
+        candidate = self.db.execute('SELECT * FROM robot_candidates WHERE id=?', (self.operation,)).fetchone()
+        decision_at = self.db.execute('SELECT received_at FROM research_browser_responses').fetchone()[0]
+        day = datetime.fromtimestamp(decision_at, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        yesterday = datetime.fromtimestamp(decision_at-86400, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        tomorrow = datetime.fromtimestamp(decision_at+86400, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        ledger = tuple(self.db.iterdump())
+        claim = self.claims()
+        calls = tuple(self.coordinator.gateway.calls)
+
+        self.assertTrue(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, day), {'BTCUSDT'})
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, yesterday), set())
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, tomorrow), set())
+
+        self.assertEqual(tuple(self.db.iterdump()), ledger)
+        self.assertEqual(self.claims(), claim)
+        self.assertEqual(tuple(self.coordinator.gateway.calls), calls)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 1))
+
+    def test_confirmed_cancel_policy_rejects_unresolved_partial_and_changed_source_or_intent(self):
+        self.coordinator.decision = 'BATALKAN'
+        self.assertEqual(self.run_tick()['bot_status'], 'REJECTED')
+        candidate = self.db.execute('SELECT * FROM robot_candidates WHERE id=?', (self.operation,)).fetchone()
+        original = dict(self.db.execute('SELECT * FROM order_intents').fetchone())
+        claim = self.claims()[0]
+        response = dict(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+        self.assertTrue(pending.confirmed_cancel_result(self.coordinator, candidate))
+        for change in ('UNKNOWN', 'PAUSED', 'CANCEL_PREPARED', 'source', 'request', 'intent', 'partial', 'receipt'):
+            with self.subTest(change=change):
+                with pending._journal(self.db, create=True) as journal:
+                    if change in ('UNKNOWN', 'PAUSED', 'CANCEL_PREPARED'):
+                        journal.execute('UPDATE pending_reviews SET state=?',
+                            ('NEEDS_REVIEW' if change == 'UNKNOWN' else change,))
+                    elif change == 'source':
+                        journal.execute('UPDATE pending_reviews SET source_sha256=?', ('0'*64,))
+                    elif change == 'request':
+                        journal.execute('UPDATE pending_reviews SET request_sha256=?', ('0'*64,))
+                if change == 'intent':
+                    self.db.execute('UPDATE order_intents SET payload=?', ('{}',))
+                elif change == 'partial':
+                    result = json.loads(original['result']); result['filled_quantity'] = '0.4'
+                    self.db.execute('UPDATE order_intents SET result=?', (json.dumps(result),))
+                elif change == 'receipt':
+                    self.db.execute('UPDATE research_browser_responses SET assistant_sha256=?', ('0'*64,))
+                self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+                self.db.execute('UPDATE order_intents SET payload=?,result=?', (original['payload'], original['result']))
+                self.db.execute('UPDATE research_browser_responses SET assistant_sha256=?', (response['assistant_sha256'],))
+                with pending._journal(self.db, create=True) as journal:
+                    journal.execute('UPDATE pending_reviews SET state=?,source_sha256=?,request_sha256=?',
+                        (claim['state'], claim['source_sha256'], claim['request_sha256']))
+        self.db.execute('INSERT INTO robot_entry_receipts VALUES(?,?,?,?)',
+            (self.intent['client_order_id'], 'BTCUSDT', self.today, self.created))
+        self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 1))
+
+    def test_day_policy_requires_private_journal_if_any_native_pending_attempt_exists(self):
+        candidate = self.db.execute('SELECT * FROM robot_candidates').fetchone()
+        self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, self.today), set())
+        self.assertFalse((self.root / pending.JOURNAL_NAME).exists())
+        operation = 'pending-review-v1:' + 'a'*32 + ':1'
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            (operation, None, 'b'*64, 'PENDING', self.now, 1, None, None))
+        ledger = tuple(self.db.iterdump())
+        with self.assertRaises(pending.PendingReviewUnavailable):
+            pending.confirmed_cancel_result(self.coordinator, candidate)
+        with self.assertRaises(pending.PendingReviewUnavailable):
+            pending.screening_day_exclusions(self.coordinator, self.today)
+        self.assertEqual(tuple(self.db.iterdump()), ledger)
+        self.assertFalse((self.root / pending.JOURNAL_NAME).exists())
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (0, 0))
+
     def test_partial_fill_during_discussion_keeps_native_protection_and_entry_receipt(self):
         self.coordinator.decision = 'BATALKAN'
         def fill(_):
@@ -363,6 +438,80 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(json.loads(row['result'])['filled_quantity'], '0.4')
         self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 1)
         self.assertTrue(json.loads(self.claims()[0]['result'])['decision_not_applied_after_fill'])
+
+    def test_batalkan_cancels_already_protected_partial_remainder_without_changing_existing_fill(self):
+        self.coordinator.gateway.status = 'PARTIALLY_FILLED'
+        self.coordinator.gateway.filled = '0.4'
+        first = self.coordinator.gateway.reconcile(self.intent)
+        self.coordinator.record_gateway_observation(self.operation, self.operation, first, {})
+        before = dict(self.db.execute('SELECT * FROM order_intents').fetchone())
+        receipts = [tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')]
+        self.assertEqual(before['state'], 'POSITION_PROTECTED')
+        self.assertEqual(len(receipts), 1)
+        self.coordinator.decision = 'BATALKAN'
+
+        self.assertEqual(self.run_tick()['bot_status'], 'POSITION_PROTECTED')
+
+        self.assertEqual(self.coordinator.gateway.cancel_count, 1)
+        self.assertEqual(self.coordinator.gateway.status, 'CANCELED')
+        self.assertEqual(self.coordinator.gateway.filled, '0.4')
+        current = dict(self.db.execute('SELECT * FROM order_intents').fetchone())
+        result = json.loads(current['result'])
+        self.assertEqual(current['state'], 'POSITION_PROTECTED')
+        self.assertEqual((current['created'], current['payload']), (before['created'], before['payload']))
+        self.assertEqual(result['filled_quantity'], '0.4')
+        self.assertTrue(result['sl_confirmed'])
+        self.assertTrue(result['tp_confirmed'])
+        self.assertEqual((result['sl_order_id'], result['tp_order_id']), ('222', '333'))
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')], receipts)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 1)
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_candidates').fetchone()[0], 1)
+        claim = self.claims()[0]
+        self.assertEqual((claim['state'], claim['decision']), ('COMPLETE', 'BATALKAN'))
+        self.assertEqual(json.loads(claim['result'])['gateway_observation']['filled_quantity'], '0.4')
+
+    def test_confirmed_partial_cancel_stays_excluded_after_close_without_releasing_fill_quota(self):
+        self.coordinator.gateway.status = 'PARTIALLY_FILLED'
+        self.coordinator.gateway.filled = '0.4'
+        first = self.coordinator.gateway.reconcile(self.intent)
+        self.coordinator.record_gateway_observation(self.operation, self.operation, first, {})
+        receipts = [tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')]
+        self.assertEqual(len(receipts), 1)
+        self.coordinator.decision = 'BATALKAN'
+        self.assertEqual(self.run_tick()['bot_status'], 'POSITION_PROTECTED')
+        claim = self.claims()[0]
+        retained = json.loads(claim['result'])
+        self.assertEqual(retained['entry_remainder'], {'status': 'CANCELED',
+            'client_order_id': self.intent['client_order_id'], 'order_id': '111', 'filled_quantity': '0.4'})
+        decision_at = self.db.execute('SELECT received_at FROM research_browser_responses').fetchone()[0]
+        today = datetime.fromtimestamp(decision_at, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        tomorrow = datetime.fromtimestamp(decision_at+86400, ZoneInfo('Asia/Jakarta')).date().isoformat()
+        candidate = self.db.execute('SELECT * FROM robot_candidates').fetchone()
+        self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, today), {'BTCUSDT'})
+
+        row = self.db.execute('SELECT * FROM order_intents').fetchone()
+        closed = dict(json.loads(row['result']), state='CLOSED', sl_confirmed=False, tp_confirmed=False,
+            exit_order_id='444', observed_at=datetime.now(timezone.utc).isoformat(),
+            closed_at=datetime.fromtimestamp(time.time()-0.1, timezone.utc).isoformat())
+        self.coordinator.record_gateway_observation(self.operation, self.operation, closed, {})
+        candidate = self.db.execute('SELECT * FROM robot_candidates').fetchone()
+        self.assertEqual(candidate['status'], 'CLOSED')
+        self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, today), {'BTCUSDT'})
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, tomorrow), set())
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')], receipts)
+        self.assertEqual(self.coordinator.store.entries(receipts[0][2]), 1)
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 1))
+        self.assertEqual(self.db.execute('SELECT COUNT(*) FROM order_intents').fetchone()[0], 1)
+
+        historical = dict(retained); historical.pop('entry_remainder')
+        with pending._journal(self.db, create=True) as journal:
+            journal.execute('UPDATE pending_reviews SET result=? WHERE operation=?',
+                (pending._json(historical), claim['operation']))
+        self.assertEqual(pending.screening_day_exclusions(self.coordinator, today), set())
+        self.assertFalse(pending.confirmed_cancel_result(self.coordinator, candidate))
+        self.assertEqual([tuple(row) for row in self.db.execute('SELECT * FROM robot_entry_receipts')], receipts)
 
     def test_tahan_reconciles_a_fill_before_returning_from_discussion(self):
         def fill(_):
@@ -396,8 +545,23 @@ class PendingReviewTests(unittest.TestCase):
         self.assertNotIn('5.85', body['prompt'])
         self.assertNotIn('0.85 USDT', body['prompt'])
         self.assertNotIn('fee entry', body['prompt'])
-        self.assertIn('Jangan mengubah entry, quantity, SL atau TP', body['prompt'])
+        self.assertIn('harga LIMIT 100', body['prompt'])
+        self.assertIn('SL 99, TP 102', body['prompt'])
         self.assertEqual(self.db.execute('SELECT payload FROM order_intents').fetchone()[0], original)
+
+    def test_pending_prompt_keeps_order_facts_and_omits_private_policy_explanations(self):
+        original = json.dumps(self.intent)
+        prompt = pending._prompt(self.intent, 'private-order-reference', dict(symbol='BTCUSDT', side='LONG',
+            entry_price='100', quantity='1', stop_loss='99', take_profit='102', accepted_at=self.accepted,
+            status='PARTIALLY_FILLED', filled_quantity='0.4', age_seconds=18001,
+            risk_usdt='5', estimated_loss='5.85', estimated_profit='10.85'))
+        for fact in ('BTCUSDT', 'harga LIMIT 100', 'SL 99, TP 102', 'PARTIALLY_FILLED',
+                'quantity terisi 0.4', 'TAHAN atau BATALKAN', 'alasan singkat'):
+            self.assertIn(fact, prompt)
+        for private in ('private-order-reference', '5.85', '10.85', 'lima jam', 'scheduler', 'gateway',
+                'Risk Manager', 'bukan alasan pasar', 'Jangan mengubah', 'anggaran'):
+            self.assertNotIn(private, prompt)
+        self.assertEqual(json.dumps(self.intent), original)
 
     def test_first_review_uses_exchange_acceptance_not_local_claim_time(self):
         self.accepted = datetime.fromtimestamp(self.now - 60, timezone.utc).isoformat()
@@ -439,6 +603,51 @@ class PendingReviewTests(unittest.TestCase):
         row = self.db.execute('SELECT * FROM order_intents').fetchone()
         self.assertEqual(row['created'], self.created)
         self.assertEqual(json.loads(row['payload']), self.intent)
+
+    def test_tahan_reopen_preserves_due_clock_and_schedules_next_review_from_new_decision(self):
+        clock = [self.now]
+        with patch.object(pending.time, 'time', side_effect=lambda: clock[0]):
+            self.assertEqual(self.run_tick()['bot_status'], 'ENTRY_PENDING')
+            first = self.claims()[0]
+            first_reply = self.db.execute('SELECT received_at FROM research_browser_responses '
+                'WHERE operation=?', (first['operation'],)).fetchone()[0]
+            self.assertEqual(first['next_due'], first_reply + pending.REVIEW_SECONDS)
+            self.assertEqual(self.coordinator.ask_count, 1)
+            gateway = self.coordinator.gateway
+
+            # Reopen both local databases through a new Coordinator. The fake
+            # exchange retains its existing order, as it would across restart.
+            self.db.close()
+            self.db = sqlite3.connect(self.root / 'ledger.sqlite3', isolation_level=None)
+            self.db.row_factory = sqlite3.Row
+            self.coordinator = Coordinator(self)
+            self.coordinator.gateway = gateway
+            for name, function in native_methods().items():
+                setattr(self.coordinator, name, types.MethodType(function, self.coordinator))
+
+            clock[0] = first['next_due'] - 1
+            self.today = datetime.fromtimestamp(clock[0], ZoneInfo('Asia/Jakarta')).date().isoformat()
+            self.assertEqual(self.run_tick()['bot_status'], 'ORIGINAL_ADVANCE_UNCHANGED')
+            self.assertEqual(self.coordinator.ask_count, 0)
+            self.assertEqual(self.claims(), [first])
+
+            clock[0] = first['next_due'] + 1
+            self.today = datetime.fromtimestamp(clock[0], ZoneInfo('Asia/Jakarta')).date().isoformat()
+            self.assertEqual(self.run_tick()['bot_status'], 'ENTRY_PENDING')
+            claims = self.claims()
+            second = claims[-1]
+            second_reply = self.db.execute('SELECT received_at FROM research_browser_responses '
+                'WHERE operation=?', (second['operation'],)).fetchone()[0]
+            self.assertEqual(claims[0], first)
+            self.assertEqual([claim['sequence'] for claim in claims], [1, 2])
+            self.assertEqual(second['next_due'], second_reply + pending.REVIEW_SECONDS)
+            self.assertEqual(second_reply, clock[0])
+            self.assertEqual(self.coordinator.ask_count, 1)
+            self.assertEqual(self.coordinator.gateway.cancel_count, 0)
+            row = self.db.execute('SELECT * FROM order_intents').fetchone()
+            self.assertEqual(row['created'], self.created)
+            self.assertEqual(json.loads(row['payload']), self.intent)
+            self.assertEqual(self.db.execute('SELECT COUNT(*) FROM robot_entry_receipts').fetchone()[0], 0)
 
     def test_pending_long_discussion_survives_midnight_with_fresh_final_materials_and_same_order(self):
         clock = [pending._utc_instant('2026-11-01T16:59:00Z')]
