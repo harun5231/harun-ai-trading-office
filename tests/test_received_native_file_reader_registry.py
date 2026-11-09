@@ -96,13 +96,33 @@ class ReceivedNativeFileReaderTests(unittest.TestCase):
                 self.assertLess(raw.current,1)
 
     def test_registered_names_do_not_accept_missing_csv_or_undecoded_native_png(self):
-        for failure in ('csv','decode'):
-            with self.subTest(failure=failure):
-                raw,hook,payload,seed,refresh,reasoner=self.harness(followup=True,
-                    wrong_csv=failure=='csv',bad_decode=failure=='decode')
-                with self.assertRaises(OutcomeUnknown):hook._ask(payload,lambda:True,deadline=1,_received=seed)
-                refresh.assert_not_called();reasoner.request.assert_not_called();raw.ask.assert_not_called()
+        for followup in (False,True):
+            for failure in ('csv','decode'):
+                for hint in ([],['other-1h.png','other-15m.png']):
+                    with self.subTest(followup=followup,failure=failure,hint=hint):
+                        raw,hook,payload,seed,refresh,reasoner=self.harness(followup=followup,
+                            wrong_csv=failure=='csv',bad_decode=failure=='decode')
+                        raw.uploaded_names=hint
+                        with self.assertRaises(OutcomeUnknown):hook._ask(payload,lambda:True,deadline=1,_received=seed)
+                        refresh.assert_not_called();reasoner.request.assert_not_called();raw.ask.assert_not_called()
+                        self.assertEqual(raw.actions,[]);seed['before_upload'].assert_not_called();seed['before_send'].assert_not_called()
+                        self.assertIs(raw.uploaded_names,hint)
+
+    def test_received_initial_pair_with_empty_or_foreign_hint_reads_live_four_file_witnesses(self):
+        for hint in ([],['other-1h.png','other-15m.png']):
+            with self.subTest(hint=hint):
+                raw,hook,payload,seed,refresh,reasoner=self.harness()
+                raw.uploaded_names=hint
+                rows=copy.deepcopy(raw.rows)
+                with self.assertRaises(RefreshReached):hook._ask(payload,lambda:True,deadline=2,_received=seed)
+                self.assertIsInstance(raw._harun_file_turn_reader,NativeFileTurnReader)
+                names=seed['turn_names'][0]
+                self.assertEqual(raw._harun_file_turn_reader.turn_files[tuple(names)][:2],
+                                 (tuple(names[:2]),tuple(names[2:])))
+                refresh.assert_called_once();reasoner.request.assert_not_called();raw.ask.assert_not_called()
                 self.assertEqual(raw.actions,[]);seed['before_upload'].assert_not_called();seed['before_send'].assert_not_called()
+                self.assertIs(raw.uploaded_names,hint);self.assertEqual(raw.rows,rows)
+                self.assertLess(raw.current,1)
 
 
 if __name__=='__main__':unittest.main()

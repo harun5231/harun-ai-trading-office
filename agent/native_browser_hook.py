@@ -773,11 +773,10 @@ class DelegatedDOMBridge:
                 state['turn_names'] = [list(attachment_names)]
             if state['prefix'] is not None:
                 answer = final_answer()
-            elif (_received is not None and _received.get('manual_contexts')
-                    and len(_received['rows']) == 2):
-                # The native last-user reader sees the physical manual tail.
-                # Read only the LIVE owned pair after the sealed-context and
-                # per-turn file projection checks, never the cached seed text.
+            elif _received is not None and len(_received['rows']) == 2:
+                # A new native bridge may have no current upload-name hint.
+                # Read the LIVE owned pair with its per-turn file projection
+                # (and sealed-context checks), never the cached seed text.
                 gate()
                 turns = transcript()
                 if (turns != _received['rows'] or len(turns) != 2
