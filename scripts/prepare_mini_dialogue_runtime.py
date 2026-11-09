@@ -13,15 +13,19 @@ import zlib
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = 'RESTORED_MINI_PRODUCTIVE_DIALOGUE_V5'
+PROFILE = 'RESTORED_MINI_CONTEXT_PRIVACY_V6'
 BASE_IMAGE = 'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626'
 BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
-SOURCE_SHA256 = 'de20014917614a913b24a61b13ad1dcdb2eac6b74d92806d972f5c31c10c86aa'
+V5_SOURCE_SHA256 = 'de20014917614a913b24a61b13ad1dcdb2eac6b74d92806d972f5c31c10c86aa'
+SOURCE_SHA256 = 'c2605b7ad4228f0ade7192fd67437ffda296337ff3871a6d68544ec89d35a390'
+CANONICAL_SERVICE_SHA256 = '5b9b7b66ba29b862644e83edbd380c12080baf4dcbc3b1a72becbc252d79c700'
+PROMPT_SOURCE_SHA256 = '2e8887bd6a7edd4e659e3065c308a0f791a03f5cdbc6dd7cdf101679a0c3928d'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
+GENERATED_PROMPT = Path('deploy/.mini-dialogue-runtime/agent/native_prompt_composition.py')
 MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
 UNCHANGED_SOURCES = {
     'agent/memory.py': '0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272',
@@ -156,10 +160,64 @@ def apply_purpose_policy(raw,root=ROOT):
     return source.encode()
 
 
-def build_source(root=ROOT):
+def build_v5_source(root=ROOT):
     raw=apply_purpose_policy(build_utc_source(root),root)
-    if sha256(raw)!=SOURCE_SHA256:
+    if sha256(raw)!=V5_SOURCE_SHA256:
         raise ValueError('MINI_PURPOSE_SOURCE_CHANGED')
+    return raw
+
+
+def apply_context_privacy_policy(raw,root=ROOT):
+    if sha256(raw)!=V5_SOURCE_SHA256:
+        raise ValueError('MINI_V6_PARENT_CHANGED')
+    current=(Path(root)/'agent/dialogue_service.py').read_text()
+    if sha256(current.encode())!=CANONICAL_SERVICE_SHA256:
+        raise ValueError('MINI_V6_REVIEWED_SOURCE_CHANGED')
+    source=raw.decode();tree=ast.parse(current)
+    functions={node.name:ast.get_source_segment(current,node)for node in tree.body if isinstance(node,ast.FunctionDef)}
+    names=('validate_conversation_context','dialogue_operation_memo','dialogue_model_history','compose_recovery_payload')
+    if any(name not in functions for name in names):raise ValueError('MINI_V6_HELPERS_CHANGED')
+    source=source.replace('def validate_request(', '\n\n'.join(functions[name]for name in names)+'\n\n\ndef validate_request(',1)
+    for name in('validate_request','validate_decision','validate_web_question'):
+        nodes=[node for node in ast.parse(source).body if isinstance(node,ast.FunctionDef)and node.name==name]
+        if len(nodes)!=1:raise ValueError('MINI_V6_VALIDATOR_TARGET_CHANGED')
+        source=source.replace(ast.get_source_segment(source,nodes[0]),functions[name],1)
+    engine=next(node for node in tree.body if isinstance(node,ast.ClassDef)and node.name=='DialogueEngine')
+    methods={node.name:ast.get_source_segment(current,node)for node in engine.body if isinstance(node,ast.FunctionDef)}
+    old_engine=next(node for node in ast.parse(source).body if isinstance(node,ast.ClassDef)and node.name=='DialogueEngine')
+    old=next(node for node in old_engine.body if isinstance(node,ast.FunctionDef)and node.name=='_received_screening_child')
+    source=source.replace(ast.get_source_segment(source,old),methods['_received_screening_child'],1)
+    # The derived image is Mini-only. Do not introduce a backend selector or
+    # historical Hermes import just to project this one guarded read method.
+    known=methods['known_compose_response']
+    needle="self.backend!=MINI_BACKEND or "
+    if known.count(needle)!=1:raise ValueError('MINI_V6_MINI_ONLY_METHOD_CHANGED')
+    known=known.replace(needle,'',1)
+    source=source.replace('    def completed_screening(self, request):','    '+known+'\n    def completed_screening(self, request):',1)
+    patches={
+        '                history = self.memory.history(conversation, max_chars=8000, max_messages=12)':
+        '                history = dialogue_model_history(self.memory,request)',
+        "                memo_request = ({key: value for key, value in request.items()\n                    if key != 'deadline_epoch'} if request['phase'].startswith('COMPOSE_') else request)":
+        '                memo_request = dialogue_operation_memo(request)',
+        "            operation_id = 'delegated-model:' + request['request_id']\n":
+        "            operation_id = 'delegated-model:' + request['request_id']\n"
+        "            recovered=self.known_compose_response(request)\n"
+        "            if recovered is not None:\n"
+        "                need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_UNAVAILABLE')\n"
+        "                validate_request(request,now=self.clock())\n"
+        "                return validate_result(recovered,request)\n"}
+    for before,after in patches.items():
+        if source.count(before)!=1:raise ValueError('MINI_V6_PROCESS_TARGET_CHANGED')
+        source=source.replace(before,after,1)
+    if any(isinstance(node,ast.ImportFrom)and 'hermes'in(node.module or'')for node in ast.parse(source).body):
+        raise ValueError('MINI_HERMES_IMPORT_REFUSED')
+    return source.encode()
+
+
+def build_source(root=ROOT):
+    raw=apply_context_privacy_policy(build_v5_source(root),root)
+    if sha256(raw)!=SOURCE_SHA256:
+        raise ValueError('MINI_V6_DERIVED_SOURCE_CHANGED')
     compile(raw,'retained-mini-dialogue-service.py','exec')
     return raw
 
@@ -170,8 +228,11 @@ def prepare(root=ROOT):
     model = (root/'agent/llm.py').read_bytes()
     if sha256(model) != MODEL_SOURCE_SHA256:
         raise ValueError('MINI_MODEL_SOURCE_CHANGED')
-    payload = {GENERATED:raw,GENERATED_LLM:model}
-    # Validate every existing input before writing either generated file.
+    prompt=(root/'agent/native_prompt_composition.py').read_bytes()
+    if sha256(prompt)!=PROMPT_SOURCE_SHA256:
+        raise ValueError('MINI_SHARED_PROMPT_SOURCE_CHANGED')
+    payload = {GENERATED:raw,GENERATED_LLM:model,GENERATED_PROMPT:prompt}
+    # Validate every existing input before writing any of the three files.
     for name,value in payload.items():
         target=root/name
         if (target.exists() or target.is_symlink()) and (target.is_symlink() or target.read_bytes()!=value):
@@ -187,7 +248,8 @@ def prepare(root=ROOT):
         'base_source_commit': BASE_COMMIT, 'base_source_sha256': BASE_SHA256,
         'shared_utc_patch': UTC_PATCH, 'source_sha256': sha256(raw),
         'source_path': str(GENERATED), 'model': 'gpt-5-mini',
-        'source_files':{'agent/dialogue_service.py':SOURCE_SHA256,'agent/llm.py':MODEL_SOURCE_SHA256},
+        'source_files':{'agent/dialogue_service.py':SOURCE_SHA256,'agent/llm.py':MODEL_SOURCE_SHA256,
+            'agent/native_prompt_composition.py':PROMPT_SOURCE_SHA256},
         'hermes_runtime_inherited': False, 'deployment_authorized': False}
 
 

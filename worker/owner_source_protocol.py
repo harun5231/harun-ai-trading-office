@@ -83,7 +83,94 @@ def owner_material_request(body):
         and body['context'].get('material_contract') == MATERIAL_CONTRACT)
 
 
-def parse_bound_assistant_text(text, body, legacy_parser, *, max_assistant_bytes):
+SCREENING_INTERPRETATIONS_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_interpretations(
+ operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,assistant_sha256 TEXT NOT NULL,
+ proof_sha256 TEXT NOT NULL,proof TEXT NOT NULL,retained_at REAL NOT NULL);'''
+
+
+def _screening_interpretation_source(db, text, body):
+    from .neuroapi import screening_count
+    from .screening_response_recovery import stored_screening_request, _row, _sha
+    if type(body) is not dict or screening_count(body.get('output_schema')) not in (1, 2):
+        raise Review('INVALID_OUTPUT_SCHEMA')
+    stored, request_hash, _ = stored_screening_request(db, body.get('operation'))
+    api = _row(db, 'api_requests', 'operation', body['operation'])
+    receipt = _row(db, 'research_browser_responses', 'operation', body['operation'])
+    if (stored != body or api is None or receipt is None or api['body_hash'] != request_hash
+            or type(api['attempts']) is not int or api['attempts'] != 1 or api['idempotency'] is not None
+            or api['state'] not in ('PENDING', 'NEEDS_REVIEW', 'COMPLETE')
+            or receipt['assistant_text'] != text or receipt['assistant_sha256'] != _sha(text)):
+        raise Review('INVALID_OUTPUT_SCHEMA')
+    return {**stored, 'request_sha256': request_hash}, api['created'], receipt
+
+
+def _validated_screening_interpretation(db, text, body, proof, *, retained):
+    from .screening_response_recovery import screening_interpretation_proof_output, _sha
+    payload, created, receipt = _screening_interpretation_source(db, text, body)
+    output = screening_interpretation_proof_output(proof, payload, text,
+        created=created, received=receipt['received_at'], retained=retained)
+    if receipt['response_id'] != 'dom-' + _sha(proof['room']['url'] + '\n' + payload['marker'] + '\n' + text):
+        raise Review('INVALID_OUTPUT_SCHEMA')
+    return payload, output
+
+
+def retain_screening_interpretation(db, body, request_hash, text, proof):
+    """Append genuine Mini provenance after the unchanged raw native receipt."""
+    from .screening_response_recovery import _wire, _sha
+    retained = time.time()
+    payload, output = _validated_screening_interpretation(db, text, body, proof, retained=retained)
+    if payload['request_sha256'] != request_hash or db.in_transaction:
+        raise Review('INVALID_OUTPUT_SCHEMA')
+    raw = _wire(proof)
+    if len(raw.encode()) > 2 * 1024 * 1024:
+        raise Review('INVALID_OUTPUT_SCHEMA')
+    expected = (payload['operation'], request_hash, _sha(text), _sha(raw), raw)
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        db.execute(SCREENING_INTERPRETATIONS_SCHEMA)
+        existing = db.execute('SELECT operation,request_sha256,assistant_sha256,proof_sha256,proof '
+            'FROM screening_interpretations WHERE operation=?', (payload['operation'],)).fetchone()
+        if existing is None:
+            db.execute('INSERT INTO screening_interpretations VALUES(?,?,?,?,?,?)', (*expected, retained))
+        elif tuple(existing) != expected:
+            raise Review('INVALID_OUTPUT_SCHEMA')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+    return output
+
+
+def read_screening_interpretation(db, text, body):
+    """Revalidate saved provenance on every native source read, without RPCs."""
+    from .neuroapi import screening_count
+    from .screening_response_recovery import _wire, _sha
+    if type(body) is not dict or screening_count(body.get('output_schema')) not in (1, 2):
+        return None
+    table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='screening_interpretations'").fetchone()
+    if not table:
+        return None
+    saved = db.execute('SELECT * FROM screening_interpretations WHERE operation=?',
+        (body.get('operation'),)).fetchone()
+    if saved is None:
+        return None
+    try:
+        raw = saved['proof']
+        if (type(raw) is not str or len(raw.encode()) > 2 * 1024 * 1024
+                or saved['proof_sha256'] != _sha(raw) or saved['assistant_sha256'] != _sha(text)):
+            raise ValueError
+        proof = json.loads(raw)
+        if _wire(proof) != raw:
+            raise ValueError
+        payload, output = _validated_screening_interpretation(db, text, body, proof, retained=saved['retained_at'])
+        if saved['request_sha256'] != payload['request_sha256']:
+            raise ValueError
+        return output
+    except Exception:
+        raise Review('INVALID_OUTPUT_SCHEMA') from None
+
+
+def parse_bound_assistant_text(text, body, legacy_parser, *, max_assistant_bytes, db=None):
     """Read the same raw reply at live validation and historical re-validation.
 
     Native JSON keeps its original parser and decimal lexemes. Natural language
@@ -93,6 +180,10 @@ def parse_bound_assistant_text(text, body, legacy_parser, *, max_assistant_bytes
     if (not isinstance(text, str) or not text or type(max_assistant_bytes) is not int
             or max_assistant_bytes <= 0 or len(text.encode('utf-8')) > max_assistant_bytes):
         raise Review('INVALID_OUTPUT_SCHEMA')
+    if db is not None:
+        interpreted = read_screening_interpretation(db, text, body)
+        if interpreted is not None:
+            return interpreted
     try:
         value=legacy_parser(text)
         from .neuroapi import SETUP_SCHEMA_V4

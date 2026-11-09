@@ -37,13 +37,14 @@ def request(index, *, phase='SCREENING', reply='BTCUSDT'):
 class MiniBuildProfileTests(unittest.TestCase):
     def copied_inputs(self, root):
         for relative in ('deploy/mini-dialogue-service-4a0e659.zlib.b85',
-                         'agent/dialogue_service.py','agent/llm.py', *profile.UNCHANGED_SOURCES):
+                         'agent/dialogue_service.py','agent/llm.py','agent/native_prompt_composition.py', *profile.UNCHANGED_SOURCES):
             target = root / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((ROOT / relative).read_bytes())
 
     def test_generated_source_is_exact_reviewed_mini_plus_only_shared_utc_patch(self):
         self.assertEqual(profile.sha256(profile.build_source()),profile.SOURCE_SHA256)
+        self.assertEqual(profile.sha256(profile.build_v5_source()),profile.V5_SOURCE_SHA256)
         raw = profile.build_utc_source()
         self.assertEqual(profile.sha256(raw), profile.UTC_SOURCE_SHA256)
         retained = zlib.decompress(base64.b85decode(b''.join(
@@ -67,6 +68,7 @@ class MiniBuildProfileTests(unittest.TestCase):
             root = Path(temporary); self.copied_inputs(root)
             first = profile.prepare(root); target=root/profile.GENERATED
             self.assertEqual(profile.sha256((root/profile.GENERATED_LLM).read_bytes()),profile.MODEL_SOURCE_SHA256)
+            self.assertEqual(profile.sha256((root/profile.GENERATED_PROMPT).read_bytes()),profile.PROMPT_SOURCE_SHA256)
             before=target.stat()
             self.assertEqual(profile.prepare(root),first)
             self.assertEqual(target.stat().st_ino,before.st_ino)
@@ -104,6 +106,21 @@ class MiniBuildProfileTests(unittest.TestCase):
                 profile.prepare(root)
             self.assertFalse((root/profile.GENERATED).exists())
             self.assertFalse((root/profile.GENERATED_LLM).exists())
+
+    def test_shared_privacy_source_is_verified_before_any_generated_input_and_v6_is_mini_only(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);self.copied_inputs(root)
+            (root/'agent/native_prompt_composition.py').write_text('unreviewed shared normalizer')
+            with self.assertRaisesRegex(ValueError,'MINI_SHARED_PROMPT_SOURCE_CHANGED'):profile.prepare(root)
+            for relative in(profile.GENERATED,profile.GENERATED_LLM,profile.GENERATED_PROMPT):self.assertFalse((root/relative).exists())
+        source=profile.build_source().decode()
+        for name in('validate_conversation_context','dialogue_operation_memo','dialogue_model_history','compose_recovery_payload','known_compose_response'):
+            self.assertIn('def '+name+'(',source)
+        self.assertNotIn('HERMES_BACKEND',source);self.assertNotIn('MINI_BACKEND',source)
+        self.assertFalse(any(isinstance(node,ast.ImportFrom)and'hermes'in(node.module or'')for node in ast.parse(source).body))
+        self.assertIn('self.model.bind_operation(current_id',source)
+        self.assertIn('_archive_compose_request(self.memory,current_id',source)
+        self.assertIn('return self._existing_purpose_receipt(request)',source)
 
     def test_sourced_utc_guard_survives_and_wrong_cutoff_remains_rejected(self):
         module=retained_module()

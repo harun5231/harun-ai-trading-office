@@ -253,7 +253,7 @@ def source_evidence(db, operation):
         if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,160}', response['response_id']):
             raise ValueError
         value = parse_bound_assistant_text(response['assistant_text'], body, parse_assistant_text,
-            max_assistant_bytes=MAX_ASSISTANT_BYTES)
+            max_assistant_bytes=MAX_ASSISTANT_BYTES, db=db)
         schema = body['output_schema']
         catalog = {symbol: {} for symbol in value.get('symbols', []) if isinstance(symbol, str)} if screening_count(schema) is not None else None
         if canonical_output(value, schema, catalog) != journal['output']:
@@ -296,6 +296,6 @@ def create_provider(ledger, *, kind=None, api_factory=None, **kwargs):
 __import__('agent.native_pending_protocol', fromlist=('install_source_protocol',)).install_source_protocol(globals())
 
 
-__import__('agent.native_chart_history', fromlist=('install_website_chart_history',)).install_website_chart_history(globals(), legacy_source='BINANCE_USDM_FUTURES_WEB', release_cutoff_utc='2026-10-22T16:46:25Z', data_render_release_cutoff_utc=load_owner_release_cutoff(), source_evidence_sha256='855fd7e9ec580c9b0ecf62c62f0691d7cce1a69837341d03597237b8593d6bed', validator_sha256='03f8bb641720136904a3903e3528056578c22652694de2eaa0b8ad1748d1b185')
+__import__('agent.native_chart_history', fromlist=('install_website_chart_history',)).install_website_chart_history(globals(), legacy_source='BINANCE_USDM_FUTURES_WEB', release_cutoff_utc='2026-10-22T16:46:25Z', data_render_release_cutoff_utc=load_owner_release_cutoff(), source_evidence_sha256='49b35691c07ae05effe3077550031df9894cac3ac0c6b3fda8dfc21f2db64709', validator_sha256='03f8bb641720136904a3903e3528056578c22652694de2eaa0b8ad1748d1b185')
 
 __import__('agent.native_evaluation_protocol', fromlist=('install_source_protocol',)).install_source_protocol(globals())

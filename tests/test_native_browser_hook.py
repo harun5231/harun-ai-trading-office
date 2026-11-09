@@ -203,6 +203,21 @@ class ComposedMaterialGateTests(unittest.TestCase):
 
 
 class NativeHookTests(unittest.TestCase):
+ def distinct_questions_client(self):
+  reasoner=client();original=reasoner.request.side_effect
+  questions=iter(('Coin mana yang menjadi pilihan akhir?',
+   'Apakah coin tersebut pilihan utama atau pembanding?',
+   'Apa alasan pilihan utama tetap berlaku sekarang?',
+   'Coin mana yang masih didukung momentum?',
+   'Apakah likuiditas mendukung pilihan tersebut?',
+   'Apakah struktur pasar masih mendukung pilihan utama?',
+   'Pilihan mana yang paling jelas saat ini?',
+   'Apakah daftar pilihan sudah final?'))
+  def respond(request):
+   result=original(request)
+   if result['decision']['action']=='CLARIFY':result['decision']['question']=next(questions)
+   return result
+  reasoner.request.side_effect=respond;return reasoner
  def setup_hook(self,bridge=None,reasoner=None,module=None):
   self.bridge=bridge or Bridge();self.reasoner=reasoner or client();self.module=module or native()
   self.enabled=True
@@ -236,7 +251,7 @@ class NativeHookTests(unittest.TestCase):
  def test_eight_clarifications_stay_in_one_chat_and_bind_repeated_replies_to_distinct_turns(self):
   bridge=Bridge(initial='BTCUSDT belum lengkap',final='BTCUSDT belum lengkap')
   bridge.after_click=lambda b:b.messages[-1].update(text='FINAL_NATIVE_REPLY BTCUSDT' if b.clicks==9 else b.final)
-  hook=self.setup_hook(bridge=bridge);before=copy.deepcopy(request())
+  hook=self.setup_hook(bridge=bridge,reasoner=self.distinct_questions_client());before=copy.deepcopy(request())
   result=hook.ask(before,self.gate,deadline=80)
   self.assertEqual(result['assistant_text'],'FINAL_NATIVE_REPLY BTCUSDT')
   self.assertEqual(bridge.clicks,9);self.assertEqual(bridge.fresh_calls,1)
@@ -251,15 +266,17 @@ class NativeHookTests(unittest.TestCase):
   bridge=Bridge(initial='BTCUSDT incomplete',final='BTCUSDT incomplete')
   def after_click(b):
    if b.clicks==4:self.enabled=False
-  bridge.after_click=after_click;hook=self.setup_hook(bridge=bridge)
+  bridge.after_click=after_click;hook=self.setup_hook(bridge=bridge,reasoner=self.distinct_questions_client())
   with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=80)
   self.assertEqual(bridge.clicks,4)
 
- def test_repeated_incomplete_answers_obey_original_transport_deadline(self):
+ def test_incomplete_followup_wait_obeys_original_transport_deadline_without_repeating_question(self):
   bridge=Bridge(initial='BTCUSDT incomplete',final='BTCUSDT incomplete')
+  bridge.after_click=lambda b:b.messages[-1].update(complete=b.clicks==1)
   hook=self.setup_hook(bridge=bridge)
   with self.assertRaises(OutcomeUnknown):hook.ask(request(),self.gate,deadline=8)
-  self.assertGreater(bridge.clicks,2);self.assertLessEqual(bridge.current,8)
+  self.assertEqual(bridge.clicks,2);self.assertEqual(self.reasoner.request.call_count,1)
+  self.assertEqual(bridge.current,8)
 
  def test_malformed_initial_json_can_receive_one_question_without_inventing_output(self):
   module=native();module.exact_json.side_effect=ValueError('malformed initial JSON')
@@ -269,11 +286,11 @@ class NativeHookTests(unittest.TestCase):
   self.assertEqual(self.bridge.clicks,2)
 
  def test_model_screening_stop_returns_original_reply_and_does_not_supply_prices_or_setup(self):
-  hook=self.setup_hook(reasoner=client('SCREENING'))
+  hook=self.setup_hook(bridge=Bridge(initial='Pilihan utama saya BTCUSDT karena likuiditas.'),reasoner=client('SCREENING'))
   result=hook.ask(request(),self.gate,deadline=80)
   self.assertEqual(self.bridge.clicks,1)
   self.assertEqual(result['assistant_text'],self.bridge.initial)
-  self.assertIsNone(result['output'])
+  self.assertEqual(result['output'],{'symbols':['BTCUSDT']})
 
  def test_complete_during_screening_is_refused_before_a_followup_send(self):
   hook=self.setup_hook(reasoner=client('COMPLETE'))

@@ -356,7 +356,7 @@ def _review_entry(entry):
     return value
 
 
-def _screening_review(proof, payload, rows):
+def _screening_review(proof, payload, rows, *, with_request=False):
     """Return only an actual DONE Mini review of this exact native transcript."""
     reply = rows[-1]['text']; reply_sha = _sha(reply); transcript = _digest(rows)
     request_id = _digest(dict(operation=payload['operation'], request_sha256=payload['request_sha256'],
@@ -373,8 +373,11 @@ def _screening_review(proof, payload, rows):
         _require(value.get('schema_version') == 1 and type(value.get('schema_version')) is int
             and value.get('kind') == 'NATIVE_SCREENING_MINI_REVIEW_V1'
             and _finite(value.get('observed_at')) and value['observed_at'] <= proof['finished_at']
-            and type(request) is dict and set(request) == {'schema_version', 'request_id', 'conversation_id',
-                'phase', 'reply', 'reply_sha256', 'market_context', 'gate', 'deadline_epoch'}
+            and type(request) is dict and set(request) in (
+                {'schema_version', 'request_id', 'conversation_id', 'phase', 'reply',
+                    'reply_sha256', 'market_context', 'gate', 'deadline_epoch'},
+                {'schema_version', 'request_id', 'conversation_id', 'phase', 'reply',
+                    'reply_sha256', 'market_context', 'gate', 'deadline_epoch', 'conversation_context'})
             and type(request['schema_version']) is int and request['schema_version'] == 1
             and all(request[key] == identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
             and request['reply'] == reply and request['market_context'] is None
@@ -387,6 +390,13 @@ def _screening_review(proof, payload, rows):
             and all(response[key] == identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
             and response['authority'] == 'DIALOGUE_CONTROL_ONLY' and response['trading_authority'] is False
             and response['reason'] == 'DIALOGUE_DECISION' and type(response['needs_followup']) is bool)
+        if 'conversation_context' in request:
+            context = request['conversation_context']
+            _require(type(context) is dict
+                and set(context) == {'native_operation', 'native_request_sha256', 'turns'}
+                and context['native_operation'] == payload['operation']
+                and context['native_request_sha256'] == payload['request_sha256']
+                and context['turns'] == rows)
         decision = response['decision']
         _require(type(decision) is dict and set(decision) == {'action', 'symbols', 'question'}
             and decision['action'] in ('SCREENING', 'HOLD', 'CLARIFY') and type(decision['symbols']) is list
@@ -408,8 +418,88 @@ def _screening_review(proof, payload, rows):
         except (ValueError, TypeError):
             raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED') from None
         _require(actual == response)
-        return response
+        return (request, response) if with_request else response
     return None
+
+
+def _reviewed_screening_output(proof, payload, rows, *, require_approval=False):
+    """Project an actual sealed Mini SCREENING; preserve strict legacy reads."""
+    from agent.neurobro_reply import parse_reply_for_payload, screening_interpretation
+    receipt = _screening_review(proof, payload, rows, with_request=True)
+    request, review = receipt if receipt is not None else (None, None)
+    if require_approval:
+        # Request an actual read-only Mini review before imposing a local text
+        # layout. No symbols or native completion are admitted by this branch.
+        _require(review is not None, 'SCREENING_MINI_APPROVAL_NOT_RETAINED')
+    if (review is not None and review['decision']['action'] == 'SCREENING'
+            and review['needs_followup'] is False):
+        try:
+            output = screening_interpretation(rows[-1]['text'], payload, request, review, rows)
+        except ValueError:
+            raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED') from None
+    else:
+        # Historical observations with no actual matching Mini request and
+        # HOLD/CLARIFY decisions cannot acquire semantic selection authority.
+        output = parse_reply_for_payload(rows[-1]['text'], payload)
+    return output, review
+
+
+def screening_interpretation_proof_output(proof, payload, text, *, created, received, retained):
+    """Validate durable native/Mini provenance without a model or browser call."""
+    _require(type(proof) is dict and set(proof) == {'kind', 'operation', 'request_sha256',
+        'payload_sha256', 'assistant_sha256', 'room', 'turns', 'observed_at', 'review_receipt'}
+        and proof['kind'] == 'NATIVE_SCREENING_INTERPRETATION_V1'
+        and proof['operation'] == payload['operation']
+        and proof['request_sha256'] == payload['request_sha256']
+        and proof['payload_sha256'] == _digest(payload) and proof['assistant_sha256'] == _sha(text)
+        and _finite(created) and _finite(received) and _finite(retained) and _finite(proof['observed_at'])
+        and 0 < created <= received <= retained and created <= proof['observed_at'] <= retained)
+    room, rows, entry = proof['room'], proof['turns'], proof['review_receipt']
+    _require(type(room) is dict and set(room) == {'day', 'room_id', 'url'}
+        and room['day'] == payload['operation'][:10] and type(room['room_id']) is str
+        and re.fullmatch('[a-f0-9]{32}', room['room_id']) and type(room['url']) is str
+        and room['url'].startswith('https://app.neurobro.ai/')
+        and type(rows) is list and len(rows) >= 2 and len(rows) % 2 == 0
+        and type(entry) is dict and set(entry) == {'name', 'sha256', 'bytes', 'value'})
+    ids = []
+    for index, row in enumerate(rows):
+        _require(type(row) is dict and row.get('role') == ('user' if index % 2 == 0 else 'assistant')
+            and type(row.get('text')) is str and bool(row['text']) and row.get('attachments', []) == [])
+        if index % 2:
+            _require(row.get('complete') is True and type(row.get('id')) is str
+                and re.fullmatch('[A-Za-z0-9_.:-]{1,160}', row['id']))
+            ids.append(row['id'])
+    _require(len(ids) == len(set(ids)) and rows[-1]['text'] == text
+        and rows[0]['text'].count(payload['marker']) == 1
+        and all(payload['marker'] not in row['text'] for row in rows[2::2]))
+    native = dict(room=room, rows=rows, finished_at=proof['observed_at'], review_receipts=[entry])
+    request, review = _screening_review(native, payload, rows, with_request=True) or (None, None)
+    _require(review is not None and review['decision']['action'] == 'SCREENING'
+        and review['needs_followup'] is False and entry['value']['observed_at'] == proof['observed_at']
+        and entry['name'] == 'screening-review-' + _digest({key: payload[key]
+            for key in ('operation', 'request_sha256')}) + '-' + request['request_id'] + '.json')
+    from agent.neurobro_reply import screening_interpretation, _TECHNICAL
+    _require(_TECHNICAL.search(text) is None, 'NEUROBRO_INPUT_UNREADABLE')
+    try:
+        return screening_interpretation(text, payload, request, review, rows)
+    except ValueError:
+        raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED') from None
+
+
+def _received_interpretation_proof(proof, payload):
+    """Copy an existing final DONE review; never manufacture Mini approval."""
+    review = _screening_review(proof, payload, proof['rows'])
+    if review is None or review['decision']['action'] != 'SCREENING' or review['needs_followup']:
+        return None
+    entries = [entry for entry in proof['review_receipts']
+        if entry['value'].get('request_id') == review['request_id']]
+    _require(len(entries) == 1)
+    return dict(kind='NATIVE_SCREENING_INTERPRETATION_V1', operation=payload['operation'],
+        request_sha256=payload['request_sha256'], payload_sha256=_digest(payload),
+        assistant_sha256=_sha(proof['rows'][-1]['text']),
+        room={key: proof['room'][key] for key in ('day', 'room_id', 'url')},
+        turns=copy.deepcopy(proof['rows']), observed_at=entries[0]['value']['observed_at'],
+        review_receipt=copy.deepcopy(entries[0]))
 
 
 def _received_coin_summary(count):
@@ -786,14 +876,14 @@ def _sealed_ended_screening(db, journal, body, request_hash):
 def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
         retained=False, require_approval=True):
     """Check a no-send observation before admitting any native recorder write."""
-    from agent.neurobro_reply import parse_reply_for_payload, _TECHNICAL
+    from agent.neurobro_reply import _TECHNICAL
     from .neuroapi import screening_count
     proof = _received_screening_shape(envelope, payload, created,
         max_age=max_age, now=now, retained=retained)
     rows = proof['rows']; room = proof['room']; users = list(range(0, len(rows), 2))
     count = screening_count(payload['output_schema'])
     _require(count in (1, 2) and _TECHNICAL.search(rows[-1]['text']) is None, 'NEUROBRO_INPUT_UNREADABLE')
-    output = parse_reply_for_payload(rows[-1]['text'], payload)
+    output, review = _reviewed_screening_output(proof, payload, rows, require_approval=require_approval)
     selections(output, catalog, count)
     if payload['context'] is not None:
         _require(not set(output['symbols']) & set(payload['context']['excluded_symbols']))
@@ -803,11 +893,9 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
             _require(rows[index]['text'].strip() == prior['decision']['question'].strip())
         else:
             _require(rows[index]['text'].replace('\r\n', '\n').strip() == _received_coin_summary(count)
-                and parse_reply_for_payload(rows[index - 1]['text'], payload) == output)
-    review = _screening_review(proof, payload, rows)
+                and _reviewed_screening_output(proof, payload, rows[:index])[0] == output)
     stale = now - created > max_age or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat() != room['day']
     if require_approval:
-        _require(review is not None, 'SCREENING_MINI_APPROVAL_NOT_RETAINED')
         decision = review['decision']
         from agent.neurobro_reply import screening_market_hold
         held = screening_market_hold(rows[-1]['text'], output['symbols'])
@@ -853,7 +941,10 @@ def completed_screening_market_hold(db, operation):
                 or api['failure_code'] is not None or receipt is None
                 or receipt['assistant_sha256'] != _sha(receipt['assistant_text'])):
             return False
-        output = parse_reply_for_payload(receipt['assistant_text'], body)
+        from .owner_source_protocol import read_screening_interpretation
+        output = read_screening_interpretation(db, receipt['assistant_text'], body)
+        if output is None:
+            output = parse_reply_for_payload(receipt['assistant_text'], body)
         if len(output['symbols']) != int(match[4]):
             return False
         encoded = json.dumps({'symbols': output['symbols']})
@@ -912,6 +1003,9 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
             count=count, current=current, max_age=max_age, permitted=permitted)
     result, received, stale = validate_received_screening(provider, envelope, payload, api['created'],
         catalog=catalog, max_age=max_age, now=current, retained=journal is not None)
+    interpretation = _received_interpretation_proof(envelope['observation'], payload)
+    if interpretation is not None:
+        result['screening_interpretation'] = interpretation
     cached = canonical_output(result['output'], body['output_schema'], catalog)
     from agent.neurobro_reply import screening_market_hold
     held = screening_market_hold(result['assistant_text'], result['output']['symbols'])
@@ -1006,9 +1100,9 @@ def received_screening_replacement_due(db, cycle_id, data):
         if index:
             expected_data['replacements'] += 1
         if held:
-            from agent.neurobro_reply import parse_reply_for_payload, screening_market_hold
-            output = parse_reply_for_payload(final['text'], body)
-            review = _screening_review(proof, {**body, 'request_sha256': request_hash}, proof['rows'])
+            from agent.neurobro_reply import screening_market_hold
+            output, review = _reviewed_screening_output(proof,
+                {**body, 'request_sha256': request_hash}, proof['rows'])
             _require(screening_market_hold(final['text'], output['symbols']) and review is not None
                 and review['needs_followup'] is False and review['decision']['question'] == ''
                 and (review['decision'] == {'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}

@@ -27,26 +27,34 @@ def digest(value):
     return hashlib.sha256(canonical(value)).hexdigest()
 
 
-def outbound_question(question):
-    """Remove only standalone, value-free privacy reminders rejected as budget text."""
-    if web_prompt_allowed(question):
-        return question
-    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan)'
-    topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+pribadi)?'
-        r'|nominal\s+risiko(?:\s+pribadi)?|risiko\s+pribadi)')
+def normalize_privacy_reminders(question):
+    """Remove only complete, value-free negative internal privacy sentences."""
+    if type(question) is not str:
+        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
+    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan|sarankan|menyarankan)'
+    topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+(?:pribadi|akun))?'
+        r'|nominal\s+risiko(?:\s+(?:pribadi|akun))?|risiko\s+pribadi)')
     reminder = (r'(?:jangan|tidak\s+perlu)\s+' + verb
         + r'(?:\s+(?:atau|dan)\s+' + verb + r')*\s+' + topic
         + r'(?:\s*(?:/|,|\bdan\b|\batau\b)\s*' + topic + r')*[.!?;]?')
-    if type(question) is not str:
-        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
-    # Split only at sentence/line boundaries, retaining all other text verbatim.
-    parts = re.split(r'((?<=[.!?;])\s+|\n+)', question)
+    # A wrapped value on the next line belongs to the same sentence; a line
+    # break must not detach a real budget/quantity from its privacy subject.
+    internal_role_clauses={
+        'risk manager hanya menormalkan tp ke target bersih 2r saat eksekusi',
+        'risk manager hanya menormalkan tp eksekusi'}
+    parts = re.split(r'((?<=[.!?;])\s+)', question)
     for index in range(0, len(parts), 2):
-        if re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE):
+        clause=re.sub(r'\s+',' ',parts[index].strip()).rstrip('.!?;').casefold()
+        if re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE)or clause in internal_role_clauses:
             parts[index] = ''
             if index:
                 parts[index - 1] = ''
-    normalized = ''.join(parts)
+    return ''.join(parts)
+
+
+def outbound_question(question):
+    """Apply the same narrow privacy projection before the existing WEB guard."""
+    normalized=normalize_privacy_reminders(question)
     if not normalized.strip() or not web_prompt_allowed(normalized):
         raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
     return normalized
@@ -76,7 +84,7 @@ def compact_protocol(rendered, payload):
             'HOLD tidak perlu level order. Gunakan RISK REWARD 1:2. '
             'Tentukan SL berdasarkan struktur, swing high/low, likuiditas, volatilitas, '
             'wick, false breakout, dan titik invalidasi. '
-            'ENTRY dan SL ditetapkan Neurobro; Risk Manager hanya menormalkan TP eksekusi. '
+            'ENTRY dan SL ditetapkan Neurobro. '
             'Rekomendasi TP dengan RR 1:3 atau 1:4 tetap boleh disampaikan. '
             'HOLD pasar yang jelas mengakhiri pembahasan coin ini untuk mencari coin pengganti.')
     if not isinstance(marker, str) or not marker:

@@ -32,7 +32,11 @@ class DiscussionStructureSourceTests(unittest.TestCase):
             with self.subTest(source=service.__name__):
                 service.validate_question_sources(self.question,self.request)
                 service.validate_web_question(self.question,self.request)
-                self.assertEqual(service.validate_decision(decision,self.request),decision)
+                # The actual source draft/price fixture remains immutable; only
+                # its standalone internal privacy reminder is projected off WEB.
+                expected={**decision,'question':self.question.replace(
+                    ' jangan minta quantity atau ukuran posisi.','')}
+                self.assertEqual(service.validate_decision(decision,self.request),expected)
                 self.assertEqual(decision['question'],self.question)
 
     def test_unsourced_entry_sl_tp_prices_remain_rejected_inside_or_after_lists(self):
