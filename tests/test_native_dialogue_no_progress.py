@@ -74,6 +74,19 @@ class NativeDialogueNoProgressTests(unittest.TestCase):
         self.assertEqual(case.reasoner.request.call_count,calls)
         self.assertEqual({p.name:p.read_bytes()for p in root.iterdir()},before)
 
+    def test_previous_daily_room_review_is_not_current_room_no_progress_authority(self):
+        case,root=self.repeated();before={p.name:p.read_bytes()for p in root.iterdir()}
+        calls=case.reasoner.request.call_count
+        refuse_reviewed_no_progress(root,case.value,self.rows(case),context=case.fresh['context'],
+            intents=self.intents(case),render_question=lambda question:self.render(case,question),
+            conversation_id='neurobro:2026-11-06:'+'b'*32)
+        self.assertEqual(case.reasoner.request.call_count,calls)
+        self.assertEqual({p.name:p.read_bytes()for p in root.iterdir()},before)
+        with self.assertRaisesRegex(ValueError,'NEUROBRO_CLARIFICATION_NO_PROGRESS'):
+            refuse_reviewed_no_progress(root,case.value,self.rows(case),context=case.fresh['context'],
+                intents=self.intents(case),render_question=lambda question:self.render(case,question),
+                conversation_id=case.hook.daily_room.conversation_id)
+
     def received_seed(self,case):
         rows=self.rows(case);intents=self.intents(case)
         return dict(rows=rows,turn_names=[row['attachments']for row in rows[::2]],

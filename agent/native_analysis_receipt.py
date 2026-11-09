@@ -181,6 +181,7 @@ def refuse_reviewed_no_progress(root,payload,turns,*,context,intents,render_ques
     for entry in read_reviews(root,payload):
         value=entry['value'];request=value.get('request',{});response=value.get('response',{})
         if not(value.get('phase')==phase and value.get('context_sha256')==digest(context)
+                and (conversation_id is None or value.get('conversation_id')==conversation_id)
                 and request.get('reply')==turns[-1].get('text')):continue
         validate_result(response,request)
         prior=validate_conversation_context(request)
@@ -190,7 +191,6 @@ def refuse_reviewed_no_progress(root,payload,turns,*,context,intents,render_ques
         _need(request.get('request_id')==value.get('request_id')==expected
             and request.get('phase')==phase and request.get('reply_sha256')==value.get('reply_sha256')
             and request.get('conversation_id')==value.get('conversation_id')
-            and (conversation_id is None or value.get('conversation_id')==conversation_id)
             and value.get('reply_sha256')==hashlib.sha256(request['reply'].encode()).hexdigest()
             and (prior is None or digest(prior)==transcript))
         decision=response['decision']
