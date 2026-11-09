@@ -362,6 +362,7 @@ def read_api_key(path):
 class OpenAIDialogue:
     model = "gpt-5-mini"
     endpoint = "https://api.openai.com/v1/responses"
+    cooldown_key = 'dialogue-model-http-cooldown:v1'
 
     def __init__(self, key_file, memory, *, timeout=45, max_output_tokens=1024,
                  daily_requests=48, daily_input_tokens=200000, daily_output_tokens=24000,
@@ -376,6 +377,9 @@ class OpenAIDialogue:
         self._live_transport = transport is None
         self._completed_at = None
         self._remaining_budget = lambda: 120.0
+        self._cooldown_cache = None
+        self._cooldown_unpersisted = False
+        self._completed_http_cooldown_event = None
 
     def set_remaining_budget(self, callback):
         self._remaining_budget = callback
@@ -384,6 +388,121 @@ class OpenAIDialogue:
         return {"verified": self._live_transport and self._completed_at is not None,
                 "observed_at": self._completed_at, "model": self.model,
                 "transport": "OPENAI_HTTPS_RESPONSES"}
+
+    def _cooldown_state(self):
+        fallback = self._cooldown_cache[0] if self._cooldown_unpersisted and self._cooldown_cache else None
+        try:
+            value = self.memory.get(self.cooldown_key)
+        except Exception:
+            if fallback is not None:
+                return fallback
+            raise NotSent('MODEL_COOLDOWN_STATE_UNVERIFIED') from None
+        if value is None:
+            return fallback
+        if (type(value) is not dict or type(value.get('schema_version')) is not int
+                or value['schema_version'] != 1 or value.get('model') != self.model
+                or type(value.get('active')) is not bool
+                or value.get('reason') not in ('MODEL_INSUFFICIENT_QUOTA','MODEL_RATE_LIMITED')
+                or type(value.get('failures')) is not int or not 0 <= value['failures'] <= 16
+                or type(value.get('last_event')) is not str or not re.fullmatch('[a-f0-9]{64}',value['last_event'])
+                or any(type(value.get(key)) not in (int,float) or not math.isfinite(value[key])
+                    or value[key]<0 for key in ('delay_seconds','observed_at','retry_at'))
+                or not 0 <= value['delay_seconds'] <= 900
+                or value['active'] and (value['failures'] < 1 or value['delay_seconds'] < 60)
+                or value['retry_at'] != value['observed_at']+value['delay_seconds']):
+            if fallback is not None:
+                return fallback
+            raise NotSent('MODEL_COOLDOWN_STATE_UNVERIFIED')
+        if fallback is not None:
+            # An older durable row cannot erase the newer hold whose write
+            # failed. Adopt a proven newer 429 without shortening this wait.
+            if value['active'] and (value['last_event'] == fallback['last_event']
+                    or value['failures'] > fallback['failures'] or value['observed_at'] > fallback['observed_at']):
+                remaining = min(value['delay_seconds'],max(0,value['retry_at']-time.time()))
+                self._cooldown_cache = (value,max(self._cooldown_cache[1],time.monotonic()+remaining))
+                self._cooldown_unpersisted = False
+                return value
+            return fallback
+        return value
+
+    def _check_http_cooldown(self, payload=None):
+        state = self._cooldown_state()
+        if state is None or not state['active']:
+            self._cooldown_cache = None
+            return None
+        if self._cooldown_cache is None or self._cooldown_cache[0] != state:
+            # Resume a finite persisted wait after restart. Once anchored, wall
+            # clock changes cannot shorten or extend this process's wait.
+            remaining = min(state['delay_seconds'],max(0,state['retry_at']-time.time()))
+            self._cooldown_cache = (state,time.monotonic()+remaining)
+        remaining = self._cooldown_cache[1]-time.monotonic()
+        if remaining > 0:
+            evidence = {'schema_version':1,'authority':'PROVIDER_HTTP_COOLDOWN','model':self.model,
+                'request_sent':False,'provider_response_received':False,'model_output_received':False,
+                'source_http_status':429,'classification':state['reason'],
+                'cooldown_remaining_seconds':min(900,math.ceil(remaining)),
+                'source_rejection':state['last_event'],'observed_at':time.time()}
+            try:
+                encoded = json.dumps(evidence,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+                self.memory.put('dialogue-model-http-error:'+hashlib.sha256(encoded).hexdigest(),evidence)
+            except Exception:
+                pass
+            raise NotSent(state['reason'])
+        return state['last_event']
+
+    def _record_http_cooldown(self, evidence):
+        # Only a confirmed 429 creates a hold. Re-reading the same response is
+        # idempotent; separate responses update the shared state atomically.
+        identity = [evidence.get('provider_request_id') or evidence['observed_at'],
+            evidence['model_input_sha256'],evidence['classification']]
+        event = hashlib.sha256(json.dumps(identity,separators=(',',':')).encode()).hexdigest()
+        state = None
+        try:
+            with self.memory.transaction():
+                old = self._cooldown_state()
+                if old is not None and old['last_event'] == event:
+                    return
+                failures = min(16,(old['failures'] if old and old['active'] else 0)+1)
+                delay = (300 if evidence['classification'] == 'MODEL_INSUFFICIENT_QUOTA'
+                    else min(900,60*2**min(failures-1,4)))
+                # Sane Retry-After extends this finite technical wait; bogus or
+                # excessively long values never become an indefinite lockout.
+                retry_after = evidence.get('retry_after_seconds',0)
+                if 0 <= retry_after <= 900:
+                    delay = max(delay,retry_after)
+                observed = time.time()
+                if old and old['active']:
+                    remaining = (self._cooldown_cache[1]-time.monotonic()
+                        if self._cooldown_cache and self._cooldown_cache[0] == old else old['retry_at']-observed)
+                    delay = max(delay,min(900,max(0,remaining)))
+                state = {'schema_version':1,'model':self.model,'active':True,
+                    'reason':evidence['classification'],'failures':failures,
+                    'delay_seconds':delay,'observed_at':observed,'retry_at':observed+delay,'last_event':event}
+                self.memory.put(self.cooldown_key,state)
+            self._cooldown_unpersisted = False
+        except Exception:
+            # Even a diagnostic-disk failure must not create an in-process
+            # provider loop. Durable recovery remains unverified in that case.
+            self._cooldown_unpersisted = True
+            if state is None:
+                observed = time.time()
+                state = {'schema_version':1,'model':self.model,'active':True,
+                    'reason':evidence['classification'],'failures':1,'delay_seconds':300,
+                    'observed_at':observed,'retry_at':observed+300,'last_event':event}
+        self._cooldown_cache = (state,time.monotonic()+state['delay_seconds'])
+
+    def _clear_http_cooldown(self):
+        try:
+            with self.memory.transaction():
+                state = self._cooldown_state()
+                if state is not None and state['active'] and state['last_event'] == self._completed_http_cooldown_event:
+                    self.memory.put(self.cooldown_key,{**state,'active':False,'failures':0,'cleared_at':time.time()})
+                    self._cooldown_cache = None
+                    self._cooldown_unpersisted = False
+        except Exception:
+            # This runs only after a valid paid response. A housekeeping failure
+            # must never relabel that SENT response as NotSent or erase custody.
+            pass
 
     def _retain_raw_decision(self, text, value, *, decoded, phase, reply, encoded, response_id):
         # This is private diagnostic evidence, never an accepted decision or
@@ -477,6 +596,8 @@ class OpenAIDialogue:
             'MODEL_REQUEST_REJECTED' if error.code in (400,404,413,422) else 'MODEL_REQUEST_UNCONFIRMED')
         try:
             evidence['observed_at'] = time.time()
+            if error.code == 429:
+                self._record_http_cooldown(evidence)
             encoded = json.dumps(evidence,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
             self.memory.put('dialogue-model-http-error:'+hashlib.sha256(encoded).hexdigest(),evidence)
         except Exception:
@@ -493,6 +614,7 @@ class OpenAIDialogue:
                      "Content-Type": "application/json"}, method="POST")
         # Environment proxy values are not inherited by this credentialed client.
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        cooldown_event = self._check_http_cooldown(payload)
         timeout = min(self.timeout, self._remaining_budget())
         deadline = time.monotonic() + timeout
         try:
@@ -518,7 +640,9 @@ class OpenAIDialogue:
                         raise AgentError("MODEL_RESPONSE_TOO_LARGE")
                     if response.fp is None:
                         break
-                return json.loads(b"".join(chunks))
+                value = json.loads(b"".join(chunks))
+                self._completed_http_cooldown_event = cooldown_event
+                return value
         except urllib.error.HTTPError as error:
             # These server rejections prove no model response was generated. Keep
             # the conservative budget reservation, but do not require a fictitious
@@ -599,6 +723,7 @@ class OpenAIDialogue:
                 'Gunakan symbols [] dan klarifikasi bahasa Indonesia jika ada pertentangan yang relevan.\n')
         # Reserve a conservative UTF-8-byte upper bound before dispatch. Failed or
         # interrupted requests retain their reservation; there are no blind retries.
+        self._check_http_cooldown()
         self.memory.reserve_budget(jakarta_day, len(encoded) + len(instructions.encode()) + len(json.dumps(schema).encode()),
                                    self.max_output_tokens, **self.limits)
         payload = {"model": self.model, "store": False, "instructions": instructions,
@@ -643,6 +768,7 @@ class OpenAIDialogue:
             raise AgentError("MODEL_RESPONSE_INVALID")
         if self._live_transport:
             self._completed_at = time.time()
+            self._clear_http_cooldown()
         # Only CLARIFY uses a question; validate every raw field before discarding it.
         question = value["question"] if value["action"] in ("CLARIFY", "PROMPT") else ""
         return DialogueDecision(value["action"], tuple(value["symbols"]), question)

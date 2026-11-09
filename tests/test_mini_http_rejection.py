@@ -121,7 +121,7 @@ class MiniHTTPRejectionTests(unittest.TestCase):
 
     def test_diagnostic_read_uses_original_absolute_deadline(self):
         error,body=self.rejection(raw=b'x'*8000)
-        with patch('agent.llm.time.monotonic',side_effect=[0.0,2.0]):
+        with patch('agent.llm.time.monotonic',side_effect=[0.0,2.0,2.0]):
             result=self.model._http_rejection(error,{'input':[]},1.0)
         self.assertEqual(result,'MODEL_RATE_LIMITED')
         self.assertEqual(body.reads,1)
