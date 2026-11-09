@@ -43,8 +43,9 @@ class MiniBuildProfileTests(unittest.TestCase):
             target.write_bytes((ROOT / relative).read_bytes())
 
     def test_generated_source_is_exact_reviewed_mini_plus_only_shared_utc_patch(self):
-        raw = profile.build_source()
-        self.assertEqual(profile.sha256(raw), profile.SOURCE_SHA256)
+        self.assertEqual(profile.sha256(profile.build_source()),profile.SOURCE_SHA256)
+        raw = profile.build_utc_source()
+        self.assertEqual(profile.sha256(raw), profile.UTC_SOURCE_SHA256)
         retained = zlib.decompress(base64.b85decode(b''.join(
             (ROOT/'deploy/mini-dialogue-service-4a0e659.zlib.b85').read_bytes().splitlines())))
         self.assertEqual(profile.sha256(retained), profile.BASE_SHA256)

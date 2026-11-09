@@ -230,7 +230,7 @@ class DialogueServiceTests(unittest.TestCase):
         result = self.engine.process(value)
         self.assertEqual(result['decision'], self.output)
         self.assertEqual(result['request_id'], value['request_id'])
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 0) # Owner literal composition needs no new model.
         self.assertEqual(tuple(self.memory.db.execute('SELECT * FROM operations WHERE operation_id=?',
                                                      (parent_id,)).fetchone()), parent_before)
         self.assertEqual(self.memory.get(raw_key), raw)
@@ -247,7 +247,7 @@ class DialogueServiceTests(unittest.TestCase):
         self.model = OpenAIDialogue(self.key, self.memory, transport=self.transport)
         self.engine = d.DialogueEngine(self.memory, self.key, model=self.model)
         self.assertEqual(self.engine.process(value), result)
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 0)
 
     def test_network_unknown_without_received_rejected_raw_remains_blocked(self):
         value = self.compose_screening_request()
@@ -290,38 +290,27 @@ class DialogueServiceTests(unittest.TestCase):
 
     def test_unknown_child_without_new_raw_is_not_replayed_using_parent_receipt(self):
         value = self.compose_screening_request()
-        self.seed_rejected_screening(value, updated=time.time())
-        def disconnected(payload):
-            self.calls.append(payload)
-            raise RuntimeError('OFFLINE_UNCONFIRMED_TRANSPORT')
-        self.model.transport = disconnected
-        with self.assertRaises(d.DialogueError):
-            self.engine.process(value)
+        parent,_,_=self.seed_rejected_screening(value, updated=time.time())
+        memo={key:item for key,item in value.items() if key!='deadline_epoch'}
+        child,payload=self.engine._rejected_screening_child(value,parent,memo,memo)
+        self.memory.db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',
+            (child,'DELEGATED_MODEL_DIALOGUE',hashlib.sha256(d.canonical(payload).encode()).hexdigest(),
+                'UNKNOWN',None,time.time()))
         with self.assertRaisesRegex(d.DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
             self.engine.process(value)
-        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(len(self.calls), 0)
         self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 2})
 
-    def test_each_new_known_rejection_receipt_has_its_own_once_child_without_round_cap(self):
+    def test_known_rejected_compose_recovers_literal_once_without_new_model_rounds(self):
         value = self.compose_screening_request()
         self.seed_rejected_screening(value, updated=time.time())
-        def completed(payload):
-            self.calls.append(payload)
-            decision = {'action': 'PROMPT', 'symbols': [],
-                'question': REJECTED_SCREENING_QUESTION if len(self.calls) <= 4 else value['reply']}
-            return {'id': 'resp_offline_child_' + str(len(self.calls)), 'status': 'completed',
-                    'output': [{'type': 'message', 'content': [{'type': 'output_text',
-                                                               'text': json.dumps(decision)}]}]}
-        self.model.transport = completed
-        for _ in range(4):
-            with self.assertRaises(d.DialogueError):
-                self.engine.process(value)
+        self.model.transport=Mock(side_effect=AssertionError('literal must not call a model'))
         result = self.engine.process(value)
         self.assertEqual(result['decision']['question'], value['reply'])
-        self.assertEqual(len(self.calls), 5)
-        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 5, 'DONE': 1})
+        self.model.transport.assert_not_called()
+        self.assertEqual(self.memory.counts()['operations'], {'UNKNOWN': 1, 'DONE': 1})
         self.assertEqual(self.engine.process(value), result)
-        self.assertEqual(len(self.calls), 5)
+        self.model.transport.assert_not_called()
 
     def test_real_model_payload_and_success_never_have_tools_prices_or_trading_authority(self):
         value=self.engine.process(request())

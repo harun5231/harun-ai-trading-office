@@ -42,6 +42,7 @@ class MiniHTTPCooldownTests(unittest.TestCase):
             {'x-request-id':'req_offline_'+str(self.opener.open.call_count)},ErrorBody(raw))
 
     def plan(self):
+        self.model.bind_operation('offline-cooldown-operation','SCREENING')
         return self.model.plan([],'BTCUSDT',phase='SCREENING',jakarta_day='2026-11-09')
 
     def reject(self):
@@ -92,8 +93,9 @@ class MiniHTTPCooldownTests(unittest.TestCase):
 
     def test_last_network_boundary_holds_direct_transport_calls_too(self):
         self.reject();self.opener.open.reset_mock()
+        self.model.bind_operation('offline-direct-cooldown-operation','SCREENING')
         with self.assertRaisesRegex(NotSent,'MODEL_INSUFFICIENT_QUOTA'):
-            self.model._request({'input':[]})
+            self.model._request({'input':[{'role':'user','content':'Fase: SCREENING\nBTCUSDT'}]})
         self.opener.open.assert_not_called()
 
     def test_only_valid_live_completed_output_clears_and_next_rejection_starts_at_one(self):

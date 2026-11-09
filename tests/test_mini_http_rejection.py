@@ -46,11 +46,12 @@ class MiniHTTPRejectionTests(unittest.TestCase):
         return error,body
 
     def dispatch(self,error):
+        self.model.bind_operation('offline-http-rejection','SCREENING')
         opener=SimpleNamespace(open=Mock(side_effect=error))
         with patch('agent.llm.read_api_key',return_value='private-key-canary-never-log'),patch(
                 'agent.llm.urllib.request.build_opener',return_value=opener):
             try:
-                self.model._request({'model':'gpt-5-mini','input':[{'role':'user','content':'private-input-canary'}]})
+                self.model._request({'model':'gpt-5-mini','input':[{'role':'user','content':'Fase: SCREENING\nprivate-input-canary'}]})
             finally:
                 self.assertEqual(opener.open.call_count,1)
 
@@ -130,12 +131,17 @@ class MiniHTTPRejectionTests(unittest.TestCase):
 
     def test_diagnostic_storage_failure_does_not_change_rejection_or_retry(self):
         error,_=self.rejection(kind='insufficient_quota',code='insufficient_quota')
-        with patch.object(self.memory,'put',side_effect=OSError('private-storage-canary')):
+        original=self.memory.put
+        def put(key,value):
+            if key.startswith('dialogue-model-http-error:'):raise OSError('private-storage-canary')
+            return original(key,value)
+        with patch.object(self.memory,'put',side_effect=put):
             with self.assertRaisesRegex(NotSent,'^MODEL_INSUFFICIENT_QUOTA$'):self.dispatch(error)
 
     def test_rejected_operation_keeps_budget_and_cannot_be_replayed_after_restart(self):
         error,_=self.rejection(kind='insufficient_quota',code='insufficient_quota')
         opener=SimpleNamespace(open=Mock(side_effect=error))
+        self.model.bind_operation('delegated-model:offline','SCREENING')
         execute=lambda:self.model.plan([],'BTCUSDT',phase='SCREENING',jakarta_day='2026-11-09')
         with patch('agent.llm.read_api_key',return_value='private-key-canary-never-log'),patch(
                 'agent.llm.urllib.request.build_opener',return_value=opener):

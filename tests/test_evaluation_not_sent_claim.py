@@ -165,7 +165,7 @@ class EvaluationNotSentClaimTests(unittest.TestCase):
         self.assertEqual(self.job()['status'],'EVALUATION_OUTCOME_UNKNOWN')
         self.assertEqual((self.directory/journal.FILENAME).read_bytes(),before)
 
-    def test_restart_reuses_cached_closure_and_existing_consumer_advances_only_next_job(self):
+    def test_restart_reuses_cached_closure_and_defers_new_paid_evaluation_without_claim(self):
         journal.close_evaluation_not_sent(self.directory,self.claim['operation'],native_proof_reader=lambda _:self.proof)
         before=(self.directory/journal.FILENAME).read_bytes()
         # A separate interpreter reopens the durable journal without any proof reader.
@@ -182,15 +182,18 @@ print(json.dumps([state['unresolved_evaluations'],state['jobs'][0]['status'],
         next_job=self.add_job('next')
         neuro=SimpleNamespace(require_key=Mock(),ask=Mock(side_effect=ValueError('SIMULATED_UNCERTAIN_SEND')))
         receipt=Mock(side_effect=ValueError('RECEIPT_NOT_FOUND'))
-        consumer=EvaluationConsumer(self.directory,archive_reader=Mock(),room_reader=lambda:ROOM,native_receipt_reader=receipt)
+        room=Mock(side_effect=AssertionError('deferred evaluation must not reserve a room'))
+        consumer=EvaluationConsumer(self.directory,archive_reader=Mock(),room_reader=room,native_receipt_reader=receipt)
         actor=SimpleNamespace(neuro=neuro,allowed=lambda _:True)
         result=consumer.advance(actor,'2026-11-02')
         next_operation=journal.evaluation_operation(self.directory,next_job)
         self.assertNotEqual(next_operation,self.claim['operation'])
-        self.assertEqual(result['operation'],next_operation)
-        neuro.ask.assert_called_once();self.assertEqual(neuro.ask.call_args.args[0],next_operation)
+        self.assertEqual(result['state'],'DEFERRED_MINI_SETUP_ONLY')
+        self.assertEqual(result['new_claims'],0)
         consumer.advance(actor,'2026-11-02')
-        neuro.ask.assert_called_once();receipt.assert_called_once_with(next_operation)
+        neuro.ask.assert_not_called();neuro.require_key.assert_not_called();receipt.assert_not_called();room.assert_not_called()
+        self.assertEqual(journal.read_status(self.directory)['unresolved_evaluations'],[])
+        self.assertIsNone(journal.read_evaluation_claim(self.directory,next_operation))
         self.assertIsNone(journal.read_evaluation_claim(self.directory,self.claim['operation']))
         self.assertEqual(self.job()['status'],'EVALUATION_NOT_SENT')
 

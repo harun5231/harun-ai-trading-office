@@ -30,7 +30,7 @@ def main():
     exec(compile(raw, str(path), 'exec'), module.__dict__)
     suite = unittest.defaultTestLoader.loadTestsFromNames([
         'tests.test_agent_llm', 'tests.test_agent_dialogue_service',
-        'tests.test_dialogue_sourced_utc','tests.test_mini_http_rejection','tests.test_mini_http_cooldown'])
+        'tests.test_dialogue_sourced_utc','tests.test_mini_http_rejection','tests.test_mini_http_cooldown','tests.test_mini_paid_purpose'])
     result = unittest.TextTestRunner(verbosity=1).run(suite)
     print(json.dumps({'profile': PROFILE,
         'source_sha256': SOURCE_SHA256, 'tests_run': result.testsRun,
