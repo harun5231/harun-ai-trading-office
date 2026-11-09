@@ -116,7 +116,7 @@ def _decision(block, allowed):
     summary = []
     if set(allowed) == {'LONG', 'SHORT', 'HOLD'}:
         lines = re.findall(r'^\s*(?:Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*)?'
-            + _COIN_LABEL + r'\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M)
+            + _COIN_LABEL + r'\$?' + PAIR + r'(?:[ \t]+Perpetual)?\s*\|([^\n]*)', block, re.I | re.M)
         for line in lines:
             for field in line.split('|'):
                 match = re.fullmatch(expression, field.strip(), re.I)
@@ -323,7 +323,7 @@ def author_market_hold(reply, requested):
         r'HOLD(?=\s*(?:[.!]|$))', block, re.I | re.M))
     pipes = []
     for match in re.finditer(r'^\s*(?:Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*)?'
-            + _COIN_LABEL + r'\$?' + PAIR + r'\s*\|([^\n]*)', block, re.I | re.M):
+            + _COIN_LABEL + r'\$?' + PAIR + r'(?:[ \t]+Perpetual)?\s*\|([^\n]*)', block, re.I | re.M):
         for cell in re.finditer(r'(?:^|\|)\s*HOLD\s*(?=\||$)', match.group(1), re.I):
             pipes.append((match.start(1) + cell.start(), match.start(1) + cell.end()))
     directions = [(match.start(), match.end()) for match in [*labelled, *plain]] + pipes

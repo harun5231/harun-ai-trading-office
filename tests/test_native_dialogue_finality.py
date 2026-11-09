@@ -54,6 +54,26 @@ class NativeDialogueFinalityTests(TestCase):
         self.assertEqual(case.bridge.clicks, 1)
         case.refresh.assert_not_called()
 
+    def test_captured_fil_perpetual_hold_finishes_before_freshness_refresh_or_mini(self):
+        import json
+        from pathlib import Path
+        from tests.test_agent_closed_candles_200 import native_context_200
+        case=self.harness();saved=json.loads((Path(__file__).parent/'fixtures/neurobro_fil_captured_hold_20261110.json').read_text())
+        answer=saved['verbatim_summary_fragment'];case.bridge.initial=answer
+        boundary=(case.now//900+1)*900;case.now=boundary-.1
+        case.value['context']=native_context_200(case.now)
+        case.value['context']['symbol']='FILUSDT'
+        for frame in case.value['context']['timeframes'].values():frame['symbol']='FILUSDT'
+        for row in case.initial:row['symbol']='FILUSDT'
+        original=case.bridge.after_click
+        def cross_boundary(bridge):
+            original(bridge);case.now=boundary+.1
+        case.bridge.after_click=cross_boundary
+        result=case.ask()
+        self.assertEqual(result['assistant_text'],answer);self.assertEqual(result['output']['side'],'HOLD')
+        self.assertEqual(result['output']['symbol'],'FILUSDT');self.assertEqual(case.bridge.clicks,1)
+        case.refresh.assert_not_called();case.reasoner.request.assert_not_called()
+
     def test_unresolved_wick_clarification_never_accepts_parsed_setup(self):
         case = self.harness()
         answer = ('COIN: BTCUSDT\nARAH: SHORT\nENTRY: 65000\nTP: 64000\nSL: 65010')

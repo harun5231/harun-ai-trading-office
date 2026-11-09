@@ -1,6 +1,7 @@
 """Authored market HOLD custody; no model, browser or order calls."""
 from pathlib import Path
 import json
+import hashlib
 import unittest
 
 from agent.neurobro_reply import author_market_hold, parse_analysis_reply
@@ -42,6 +43,22 @@ class AuthorMarketHoldTests(unittest.TestCase):
         # A conditional final direction cannot borrow the earlier prose HOLD.
         conditional = saved['reply'].replace('| HOLD |', '| HOLD asalkan breakout gagal |')
         self.assertFalse(author_market_hold(conditional, 'RUNEUSDT'))
+
+    def test_captured_fil_perpetual_final_summary_is_current_hold_not_a_technical_failure(self):
+        saved=json.loads((Path(__file__).parent/'fixtures/neurobro_fil_captured_hold_20261110.json').read_text())
+        source=saved['provenance'];reply=saved['verbatim_summary_fragment']
+        self.assertFalse(source['original_raw_bytes_in_fixture'])
+        self.assertEqual(source['original_assistant_sha256'],'8345ddf921d190b306b65153a828674de014176ecd4c8ef9e111ec74b03e0466')
+        self.assertEqual(hashlib.sha256(saved['display_text'].encode()).hexdigest(),source['display_text_sha256'])
+        self.assertIn(reply,saved['display_text']);self.assertTrue(author_market_hold(reply,'FILUSDT'))
+        self.assertEqual(parse_analysis_reply(reply,'FILUSDT')['side'],'HOLD')
+        # The reader normalized newlines for display. Restore only the known
+        # summary boundary for this offline presentation check, not raw proof.
+        presentation=saved['display_text'].replace('  Ringkasan:', '\n\nRingkasan:')
+        self.assertTrue(author_market_hold(presentation,'FILUSDT'))
+        for invalid in(reply.replace('FILUSDT','ATOMUSDT'),reply.replace('| HOLD |','| HOLD asalkan retest terjadi |'),
+                'CSV belum diterima.\n'+reply,reply+'\nKEPUTUSAN: SHORT'):
+            with self.subTest(invalid=invalid):self.assertFalse(author_market_hold(invalid,'FILUSDT'))
 
     def test_conditional_direction_and_conflicts_are_not_terminal_market_hold(self):
         cases = (
