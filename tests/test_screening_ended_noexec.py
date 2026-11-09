@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agent import native_received_screening as native
 from agent import native_received_analysis as observer
@@ -45,7 +45,8 @@ def review_entry(payload, rows, question, observed, *, symbols=None):
     return dict(name='screening-review-' + rid + '.json', sha256=recovery._sha(raw), bytes=len(raw.encode()), value=value)
 
 
-def failure(payload, url, *, phase='FOLLOWUP_SENT', at=fixture.NOW - 772, model=False):
+def failure(payload, url, *, phase='FOLLOWUP_SENT', at=fixture.NOW - 772, model=False,
+        hook=native.RETURN_FAILURE_HOOK):
     files = {'hook': '/app/agent/native_browser_hook.py', 'dom': '/app/browser_runtime/dom.py',
         'client': '/app/agent/dialogue_client.py'}
     def error(kind, reason, stack):
@@ -67,7 +68,7 @@ def failure(payload, url, *, phase='FOLLOWUP_SENT', at=fixture.NOW - 772, model=
     raw = recovery._wire(value, ascii=True)
     return dict(kind=native.RETURN_FAILURE_KIND, name='native-return-failure-' + payload['request_sha256'] + '.json',
         sha256=recovery._sha(raw), bytes=len(raw.encode()), producer_source_sha256=native.RETURN_FAILURE_PRODUCER,
-        hook_source_sha256=native.RETURN_FAILURE_HOOK, value=value)
+        hook_source_sha256=hook, value=value)
 
 
 class EndedScreeningTests(unittest.TestCase):
@@ -147,6 +148,14 @@ class EndedScreeningTests(unittest.TestCase):
         self.assertEqual(proof['observation']['review_receipts'][0]['value']['response']['decision']['action'], 'CLARIFY')
         self.assertEqual(self.finances(), finances)
 
+    def test_current_hook_failure_retires_once_without_sending_or_changing_finances(self):
+        self.envelope['observation']['screening_ended_return']['hook_source_sha256'] = native.CURRENT_RETURN_FAILURE_HOOK
+        self.seal(); self.pre_api = self.row('api_requests'); finances = self.finances()
+        self.assertEqual(self.recover(), 'NOEXEC'); self.assert_sealed()
+        before = tuple(self.db.iterdump())
+        self.assertEqual(self.recover(), 'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()), before); self.assertEqual(self.finances(), finances)
+
     def test_original_model_unknown_is_not_replayed_and_no_approval_is_invented(self):
         proof = self.envelope['observation']; proof['rows'] = proof['rows'][:2]
         proof['review_receipts'] = []; self.resize_scope()
@@ -185,7 +194,7 @@ class EndedScreeningTests(unittest.TestCase):
         self.assertEqual(tuple(self.db.iterdump()), before)
 
     def test_missing_wrong_or_ambiguous_custody_stays_unresolved(self):
-        for mutation in ('missing', 'operation', 'hash', 'publisher', 'hook', 'phase', 'chain_send',
+        for mutation in ('missing', 'operation', 'hash', 'publisher', 'hook', 'publisher_type', 'hook_type', 'phase', 'chain_send',
                 'accepted', 'intent', 'question', 'unknown_review', 'extra_next_review', 'body', 'scope', 'incomplete'):
             with self.subTest(mutation=mutation):
                 envelope = copy.deepcopy(self.envelope); proof = envelope['observation']; ended = proof['screening_ended_return']
@@ -194,6 +203,8 @@ class EndedScreeningTests(unittest.TestCase):
                 elif mutation == 'hash': ended['sha256'] = 'e' * 64
                 elif mutation == 'publisher': ended['producer_source_sha256'] = 'e' * 64
                 elif mutation == 'hook': ended['hook_source_sha256'] = 'e' * 64
+                elif mutation == 'publisher_type': ended['producer_source_sha256'] = {}
+                elif mutation == 'hook_type': ended['hook_source_sha256'] = []
                 elif mutation == 'phase': ended['value']['phase'] = 'ACCEPT'
                 elif mutation == 'chain_send':
                     ended['value']['chain'][1]['frames'].insert(3, dict(file='/app/agent/native_browser_hook.py', function='send_followup', line=500))
@@ -325,7 +336,8 @@ class EndedScreeningTests(unittest.TestCase):
 class PassiveEndedCaptureTests(unittest.TestCase):
     def test_first_failure_reader_is_private_bounded_and_does_not_write(self):
         payload = dict(operation='2026-11-05:robot-v9:0:screening:2:2', request_sha256='a' * 64)
-        record = failure(payload, 'https://app.neurobro.ai/chat/' + 'a'*32)
+        record = failure(payload, 'https://app.neurobro.ai/chat/' + 'a'*32,
+            hook=native.CURRENT_RETURN_FAILURE_HOOK)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); name = record['name']; path = root/name
             self.assertIsNone(native.read_ended_return(root,payload))
@@ -351,8 +363,40 @@ class PassiveEndedCaptureTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'SCREENING_RETURN_FAILURE_BINDING_UNVERIFIED'):
                 native.read_ended_return(root,payload)
             path.write_text(recovery._wire(record['value'],ascii=True))
-            with patch.object(native,'RETURN_FAILURE_HOOK','e'*64),self.assertRaisesRegex(ValueError,'SCREENING_RETURN_FAILURE_PRODUCER_CHANGED'):
+            with patch.object(native,'RETURN_FAILURE_SOURCES',frozenset()),self.assertRaisesRegex(ValueError,'SCREENING_RETURN_FAILURE_PRODUCER_CHANGED'):
                 native.read_ended_return(root,payload)
+
+    def test_only_exact_historical_and_current_source_pairs_are_read_without_rewriting(self):
+        self.assertEqual(native.RETURN_FAILURE_SOURCES, recovery.ENDED_RETURN_SOURCES)
+        self.assertEqual(native.RETURN_FAILURE_SOURCES, frozenset((
+            (native.RETURN_FAILURE_PRODUCER, native.RETURN_FAILURE_HOOK),
+            (native.RETURN_FAILURE_PRODUCER, native.CURRENT_RETURN_FAILURE_HOOK))))
+        source = Path(native.__file__).resolve().parent
+        producer_bytes = (source/'native_turn_batch.py').read_bytes()
+        hook_bytes = (source/'native_browser_hook.py').read_bytes(); original_sha256 = hashlib.sha256
+        payload = dict(operation='2026-11-05:robot-v9:0:screening:2:2', request_sha256='a'*64)
+        record = failure(payload, 'https://app.neurobro.ai/chat/'+'a'*32)
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); path=root/record['name']
+            path.write_text(recovery._wire(record['value'],ascii=True)); path.chmod(0o600)
+            before=path.read_bytes(); stamp=path.stat()
+            for producer,hook in (*sorted(native.RETURN_FAILURE_SOURCES),
+                    ('e'*64,native.CURRENT_RETURN_FAILURE_HOOK),(native.RETURN_FAILURE_PRODUCER,'e'*64)):
+                def source_digest(value):
+                    if value==producer_bytes:return Mock(hexdigest=lambda:producer)
+                    if value==hook_bytes:return Mock(hexdigest=lambda:hook)
+                    return original_sha256(value)
+                with self.subTest(producer=producer,hook=hook),patch.object(native.hashlib,'sha256',side_effect=source_digest):
+                    if (producer,hook)in native.RETURN_FAILURE_SOURCES:
+                        result=native.read_ended_return(root,payload)
+                        self.assertEqual((result['producer_source_sha256'],result['hook_source_sha256']),(producer,hook))
+                        self.assertEqual(result['value'],record['value'])
+                    else:
+                        with self.assertRaisesRegex(ValueError,'SCREENING_RETURN_FAILURE_PRODUCER_CHANGED'):
+                            native.read_ended_return(root,payload)
+                self.assertEqual(path.read_bytes(),before)
+                after=path.stat();self.assertEqual((after.st_ino,after.st_mtime_ns,after.st_size),
+                    (stamp.st_ino,stamp.st_mtime_ns,stamp.st_size))
 
     def test_actual_passive_observer_recovers_reload_ids_from_existing_capture_only(self):
         from tests.test_received_screening_rounds import ReceivedScreeningRoundsTests

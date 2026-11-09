@@ -281,6 +281,9 @@ ENDED_NOEXEC = 'SCREENING_ENDED_STALE_NOEXEC_V1'
 ENDED_RETURN_KIND = 'NATIVE_SCREENING_ENDED_RETURN_V1'
 ENDED_RETURN_PRODUCER = '879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5'
 ENDED_RETURN_HOOK = 'ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee903784b'
+CURRENT_ENDED_RETURN_HOOK = '8498214906365ec2081af01a1049f466308cb36498c1dda1f765083afc3d1d49'
+ENDED_RETURN_SOURCES = frozenset(((ENDED_RETURN_PRODUCER, ENDED_RETURN_HOOK),
+    (ENDED_RETURN_PRODUCER, CURRENT_ENDED_RETURN_HOOK)))
 RECEIVED_NATIVE_SOURCE = '30ea13cd51706b1db65620cdfb5f8db6dec1c9b3b8a20c9b7ca1d6c9db07f72e'
 RECEIVED_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_response_recoveries(
  operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
@@ -677,8 +680,8 @@ def _ended_screening_return(proof, payload, created, *, max_age):
         'producer_source_sha256', 'hook_source_sha256', 'value'}
         and entry['kind'] == ENDED_RETURN_KIND
         and entry['name'] == 'native-return-failure-' + payload['request_sha256'] + '.json'
-        and entry['producer_source_sha256'] == ENDED_RETURN_PRODUCER
-        and entry['hook_source_sha256'] == ENDED_RETURN_HOOK)
+        and type(entry['producer_source_sha256']) is str and type(entry['hook_source_sha256']) is str
+        and (entry['producer_source_sha256'], entry['hook_source_sha256']) in ENDED_RETURN_SOURCES)
     value = entry['value']; raw = _wire(value, ascii=True)
     _require(entry['sha256'] == _sha(raw) and type(entry['bytes']) is int
         and entry['bytes'] == len(raw.encode()) and 0 < entry['bytes'] <= 65536
