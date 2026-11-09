@@ -73,6 +73,7 @@ def main():
     assert not Path('/app/worker/robot.py').exists()
     assert not Path('/app/worker/api_service.py').exists()
     assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
+    assert hashlib.sha256(Path('/app/agent/llm.py').read_bytes()).hexdigest()=='89a4d16ff32aa4bfc949260ac01e507b3fd962b6fb54a7bec746e7444531f973'
     assert not list(Path('/app/agent').glob('hermes*.py')), 'MINI_IMAGE_MUST_NOT_INCLUDE_HERMES_BRIDGES'
     assert importlib.util.find_spec('hermes_cli') is None
     assert importlib.util.find_spec('run_agent') is None

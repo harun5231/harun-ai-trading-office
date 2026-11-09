@@ -401,6 +401,88 @@ class OpenAIDialogue:
         except Exception:
             pass  # Evidence failure cannot replace a model/validation outcome.
 
+    def _http_rejection(self, error, payload, deadline):
+        """Keep bounded, allowlisted rejection evidence, never provider prose.
+
+        HTTP 429 alone does not distinguish exhausted credits from a transient
+        rate limit. This observes only this response; it never retries a request.
+        """
+        evidence = {'schema_version':1,'authority':'PROVIDER_HTTP_REJECTION',
+            'http_status':error.code,'model':self.model,'request_sent':True,
+            'provider_response_received':True,'model_output_received':False,
+            'error_type':None,'error_code':None,'body_state':'UNAVAILABLE',
+            'model_input_sha256':hashlib.sha256(json.dumps(payload.get('input'),
+                ensure_ascii=False).encode()).hexdigest()}
+        try:
+            headers = error.headers
+            request_id = headers.get('x-request-id') if headers is not None else None
+            if type(request_id) is str and re.fullmatch(r'req_[A-Za-z0-9_-]{1,128}',request_id):
+                evidence['provider_request_id'] = request_id
+            retry_after = headers.get('retry-after') if headers is not None else None
+            if type(retry_after) is str and re.fullmatch(r'\d{1,5}(?:\.\d{1,3})?',retry_after):
+                seconds = float(retry_after)
+                if 0 <= seconds <= 86400:
+                    evidence['retry_after_seconds'] = seconds
+            response = error.fp
+            chunks,size = [],0
+            while response is not None:
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    break
+                # A response body must share the original absolute deadline.
+                # If its socket cannot be bounded, retain status/header evidence
+                # only rather than allow diagnostics to delay the trading loop.
+                try:
+                    response.fp.raw._sock.settimeout(remaining)
+                except (AttributeError,OSError):
+                    break
+                chunk = response.read1(min(4096,8193-size))
+                if not chunk:
+                    evidence['body_state'] = 'COMPLETE'
+                    break
+                chunks.append(chunk);size += len(chunk)
+                if size > 8192:
+                    evidence['body_state'] = 'TOO_LARGE'
+                    break
+                if response.fp is None:
+                    evidence['body_state'] = 'COMPLETE'
+                    break
+            if evidence['body_state'] == 'COMPLETE':
+                value = json.loads(b''.join(chunks))
+                fields = value.get('error') if type(value) is dict else None
+                if type(fields) is dict:
+                    allowed_types = {'insufficient_quota','rate_limit_exceeded','tokens','requests',
+                        'invalid_request_error','server_error','authentication_error','permission_error'}
+                    allowed_codes = {'insufficient_quota','rate_limit_exceeded','billing_hard_limit_reached',
+                        'invalid_api_key','account_deactivated','model_not_found',
+                        'unsupported_country_region_territory'}
+                    for name,allowed in (('type',allowed_types),('code',allowed_codes)):
+                        item = fields.get(name)
+                        evidence['error_'+name] = item if type(item) is str and item in allowed else (
+                            None if item is None else 'UNRECOGNIZED')
+        except Exception:
+            # Provider bodies/exception text are intentionally never persisted.
+            pass
+        finally:
+            try:
+                error.close()
+            except Exception:
+                pass
+        insufficient = error.code == 429 and (
+            evidence['error_type'] == 'insufficient_quota'
+            or evidence['error_code'] in ('insufficient_quota','billing_hard_limit_reached'))
+        evidence['classification'] = ('MODEL_INSUFFICIENT_QUOTA' if insufficient else
+            'MODEL_RATE_LIMITED' if error.code == 429 else
+            'MODEL_AUTHENTICATION_REJECTED' if error.code in (401,403) else
+            'MODEL_REQUEST_REJECTED' if error.code in (400,404,413,422) else 'MODEL_REQUEST_UNCONFIRMED')
+        try:
+            evidence['observed_at'] = time.time()
+            encoded = json.dumps(evidence,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
+            self.memory.put('dialogue-model-http-error:'+hashlib.sha256(encoded).hexdigest(),evidence)
+        except Exception:
+            pass  # Diagnostic storage failure must preserve the original outcome.
+        return evidence['classification']
+
     def _request(self, payload):
         try:
             api_key = read_api_key(self.key_file)
@@ -441,12 +523,9 @@ class OpenAIDialogue:
             # These server rejections prove no model response was generated. Keep
             # the conservative budget reservation, but do not require a fictitious
             # successful-delivery receipt after the owner corrects configuration.
-            if error.code in (401, 403):
-                raise NotSent("MODEL_AUTHENTICATION_REJECTED") from None
-            if error.code == 429:
-                raise NotSent("MODEL_RATE_LIMITED") from None
-            if error.code in (400, 404, 413, 422):
-                raise NotSent("MODEL_REQUEST_REJECTED") from None
+            classification = self._http_rejection(error,payload,deadline)
+            if error.code in (400,401,403,404,413,422,429):
+                raise NotSent(classification) from None
             raise AgentError("MODEL_REQUEST_UNCONFIRMED") from None
         except (OSError, ValueError):
             # Do not echo exception messages, response bodies, or headers.

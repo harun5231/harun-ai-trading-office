@@ -3,5 +3,6 @@
 !deploy/.mini-dialogue-runtime
 !deploy/.mini-dialogue-runtime/agent
 !deploy/.mini-dialogue-runtime/agent/dialogue_service.py
+!deploy/.mini-dialogue-runtime/agent/llm.py
 !deploy/dialogue-agent.Dockerfile
 !deploy/dialogue-agent.Dockerfile.dockerignore

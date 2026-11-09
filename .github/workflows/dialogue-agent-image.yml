@@ -1,7 +1,7 @@
 name: Build and publish delegated Neurobro dialogue agent
 on:
   pull_request:
-    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/mini-dialogue-service-*.zlib.b85', 'deploy/neurobro-dialogue.contract.json', 'scripts/prepare_mini_dialogue_runtime.py', 'scripts/verify_mini_dialogue_runtime.py', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_mini_dialogue_profile.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_dialogue_sourced_utc.py', 'tests/fixtures/hermes_dot_composition_utc_cutoff_20261108.json', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
+    paths: ['agent/dialogue_*.py', 'agent/hermes_*.py', 'agent/native_*.py', 'agent/native_browser_hook.py', 'agent/llm.py', 'deploy/dialogue-agent.*', 'deploy/mini-dialogue-service-*.zlib.b85', 'deploy/neurobro-dialogue.contract.json', 'scripts/prepare_mini_dialogue_runtime.py', 'scripts/verify_mini_dialogue_runtime.py', 'scripts/smoke_dialogue_agent_image.py', 'scripts/patch_native_browser_hook.py', 'scripts/patch_native_pending_review.py', 'tests/test_mini_dialogue_profile.py', 'tests/test_mini_http_rejection.py', 'tests/test_native_*.py', 'tests/test_agent_dialogue*', 'tests/test_dialogue_sourced_utc.py', 'tests/fixtures/hermes_dot_composition_utc_cutoff_20261108.json', 'tests/test_hermes_*.py', 'tests/test_agent_native_market_context.py', '.github/workflows/dialogue-agent-image.yml']
   workflow_dispatch:
 permissions: {}
 defaults:
@@ -25,7 +25,7 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/dialogue-agent-tests"
           "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m pip install --disable-pip-version-check httpx==0.28.1
           python3 scripts/prepare_mini_dialogue_runtime.py
-          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_mini_dialogue_profile tests.test_dialogue_sourced_utc tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
+          PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" -m unittest tests.test_agent_closed_candles_200 tests.test_agent_charts_closed_200 tests.test_agent_market tests.test_agent_charts tests.test_agent_controller tests.test_agent_end_to_end tests.test_agent_dialogue_service tests.test_agent_dialogue_client tests.test_agent_dialogue_image_packaging tests.test_mini_dialogue_profile tests.test_mini_http_rejection tests.test_dialogue_sourced_utc tests.test_agent_native_market_context tests.test_agent_llm tests.test_agent_memory tests.test_native_chart_prompt tests.test_native_chart_capture tests.test_native_chart_rpc tests.test_native_chart_followup tests.test_native_chart_history tests.test_native_browser_hook tests.test_native_status_bridge tests.test_native_pending_protocol tests.test_native_pending_review tests.test_native_pending_patch tests.test_native_pending_journal tests.test_observed_manual_context tests.test_postsend_observer_projection tests.test_owner_source_protocol tests.test_hermes_dialogue tests.test_hermes_dialogue_service tests.test_hermes_dialogue_recovery tests.test_hermes_runtime tests.test_hermes_model_broker -v
           PYTHONPATH=.:tests "$RUNNER_TEMP/dialogue-agent-tests/bin/python" scripts/verify_mini_dialogue_runtime.py
       - name: Build from the immutable existing agent image
         run: |
@@ -65,7 +65,8 @@ jobs:
           digest="$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")"
           image_id="$(docker image inspect --format '{{.Id}}' "$image")"
           dialogue_sha="$(sha256sum deploy/.mini-dialogue-runtime/agent/dialogue_service.py | cut -d ' ' -f 1)"
-          SOURCE_COMMIT="$GITHUB_SHA" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" DIALOGUE_SHA="$dialogue_sha" python3 - <<'PY'
+          llm_sha="$(sha256sum deploy/.mini-dialogue-runtime/agent/llm.py | cut -d ' ' -f 1)"
+          SOURCE_COMMIT="$GITHUB_SHA" LLM_SHA="$llm_sha" IMAGE_DIGEST="$digest" IMAGE_ID="$image_id" CONTRACT_SHA="$contract_sha" DIALOGUE_SHA="$dialogue_sha" python3 - <<'PY'
           import json, os, re
           image=os.environ['IMAGE_DIGEST']
           assert re.fullmatch(r'ghcr.io/harun5231/harun-neurobro-agent@sha256:[0-9a-f]{64}',image)
@@ -74,14 +75,15 @@ jobs:
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['CONTRACT_SHA'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['DIALOGUE_SHA'])
           assert os.environ['DIALOGUE_SHA']=='8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
+          assert os.environ['LLM_SHA']=='89a4d16ff32aa4bfc949260ac01e507b3fd962b6fb54a7bec746e7444531f973'
           with open('dialogue-agent-image.json','w') as output:
               json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office',
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],
                   'provider_contract_sha256':os.environ['CONTRACT_SHA'],'mode':'NATIVE_DELEGATED_DIALOGUE',
                   'uid':10002,'native_caller_uid':10001,'missing_key_smoke_verified':True,
                   'base_image':'ghcr.io/harun5231/harun-neurobro-agent@sha256:83e5d17b04bfe2b577d9e401859a5e1221eeb564f7e5d776391b757909fa4626',
-                  'maintenance_profile':'RESTORED_MINI_UTC_PROVENANCE_V1',
-                  'source_files':{'agent/dialogue_service.py':os.environ['DIALOGUE_SHA']},
+                  'maintenance_profile':'RESTORED_MINI_HTTP_REJECTION_V1',
+                  'source_files':{'agent/dialogue_service.py':os.environ['DIALOGUE_SHA'],'agent/llm.py':os.environ['LLM_SHA']},
                   'hermes_runtime_inherited':False,
                   'deployment_authorized':False},output,sort_keys=True)
           PY
