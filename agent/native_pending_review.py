@@ -643,8 +643,21 @@ def screening_day_replacement_due(coordinator, cycle, data):
             outputs.append(value['symbols'])
     if len(outputs) != 1:
         return 0
+    # Daily policy may reject a new cycle's first encounter with an old coin.
+    # A coin already handled or returned in this cycle is the existing seen
+    # case; another completed reply must not manufacture a fresh trigger.
+    seen = {row['symbol'] for row in coordinator.db.execute(
+        'SELECT symbol FROM robot_candidates WHERE cycle=?', (cycle,))}
+    for job in coordinator.db.execute("SELECT operation FROM robot_jobs WHERE cycle=? AND kind='SCREENING'", (cycle,)):
+        match = re.fullmatch(re.escape(cycle) + r':screening:(0|[1-9]\d{0,11}):([12])', job['operation'])
+        if match is None or int(match[1]) >= data['screen']:
+            continue
+        _, schema = screening_contract(int(match[2]))
+        previous = _completed_policy_output(coordinator, job['operation'], 'SCREENING', cycle, None, schema)
+        if previous is not None:
+            seen.update(previous['symbols'])
     excluded = screening_day_exclusions(coordinator, cycle[:10])
-    return len(set(outputs[0]).intersection(excluded))
+    return len(set(outputs[0]).intersection(excluded).difference(seen))
 
 
 def screening_day_rejected_result(coordinator, candidate):

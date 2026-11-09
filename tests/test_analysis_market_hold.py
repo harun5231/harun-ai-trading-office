@@ -1,5 +1,6 @@
 """Authored market HOLD custody; no model, browser or order calls."""
 from pathlib import Path
+import json
 import unittest
 
 from agent.neurobro_reply import author_market_hold, parse_analysis_reply
@@ -31,6 +32,16 @@ class AuthorMarketHoldTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 reply = (Path(__file__).parent / 'fixtures' / filename).read_text()
                 self.assertTrue(author_market_hold(reply, symbol))
+
+    def test_actual_rune_final_summary_supersedes_nonfinal_narrative_hold_clause(self):
+        path = Path(__file__).parent / 'fixtures/neurobro_market_hold_20261105.json'
+        original = path.read_bytes(); saved = json.loads(original)
+        self.assertTrue(author_market_hold(saved['reply'], 'RUNEUSDT'))
+        self.assertEqual(parse_analysis_reply(saved['reply'], 'RUNEUSDT')['side'], 'HOLD')
+        self.assertEqual(path.read_bytes(), original)
+        # A conditional final direction cannot borrow the earlier prose HOLD.
+        conditional = saved['reply'].replace('| HOLD |', '| HOLD asalkan breakout gagal |')
+        self.assertFalse(author_market_hold(conditional, 'RUNEUSDT'))
 
     def test_conditional_direction_and_conflicts_are_not_terminal_market_hold(self):
         cases = (

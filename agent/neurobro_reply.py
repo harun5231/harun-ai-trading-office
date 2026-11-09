@@ -306,6 +306,14 @@ def author_market_hold(reply, requested):
         block = _inline_summary_fields(analysis_coin_block(reply, requested))
     except ReplyIncomplete:
         return False
+    # A final coin-qualified summary is stronger than an earlier narrative
+    # direction in this same reply. Full input/conflict checks above still run
+    # before selecting this positive authored boundary.
+    summaries = [match for match in re.finditer(r'^\s*Ringkasan(?:\s+(?:akhir|final|aktif))?\s*[:=]\s*'
+        + _COIN_LABEL + r'\$?(' + PAIR + r')\b', block, re.I | re.M)
+        if symbol(match.group(1)) == requested]
+    if summaries:
+        block = block[summaries[-1].start():]
     # These are the same direction presentations accepted by _decision. Keep
     # offsets in the authored current block; do not search chat history or
     # turn a model's HOLD token into analyst authority.
@@ -321,7 +329,7 @@ def author_market_hold(reply, requested):
     directions = [(match.start(), match.end()) for match in [*labelled, *plain]] + pipes
     if not directions:
         return False
-    text = clean(reply)
+    text = block if summaries else clean(reply)
     final = list(_FINAL.finditer(text))
     if final:
         text = text[final[-1].start():]

@@ -961,6 +961,32 @@ class OrderPipelineTests(unittest.TestCase):
         self.assertEqual(data['round_symbols'], [])
         self.assertEqual(data['replacements'], 1)
 
+    def test_cross_cycle_day_rejection_triggers_once_then_repeated_choice_has_no_new_trigger(self):
+        from agent.native_pending_review import screening_day_replacement_due
+        self.account.position('HYPEUSDT', '4.16')
+        self.screens = [['BTCUSDT'], ['BTCUSDT'], ['BTCUSDT']]
+        self.decisions['BTCUSDT'] = 'HOLD'
+        self.on()
+        self.robot.tick()
+        self.assertEqual(self.robot.tick()['bot_status'], 'HOLD')
+        # Exercise a later persisted cycle directly; the old HOLD still has
+        # its genuine completed analysis and original source rows.
+        cycle = day() + ':robot-v9:1'
+        data = dict(target=1, queue=[], seen=[], screen=-1, replacements=0, round_symbols=[])
+        self.ledger.db.execute('INSERT INTO robot_cycles VALUES(?,?,?,?,?)',
+            (cycle, day(), 1, 'ACTIVE', json.dumps(data)))
+        account = account_state(self.account, self.store, day())
+        self.assertEqual(self.robot.screen(cycle, data, 1, account, day(), True)['wait_reason'],
+            'SCREENING_NO_ELIGIBLE_SYMBOLS')
+        self.assertEqual(screening_day_replacement_due(self.robot, cycle, data), 1)
+        self.assertEqual(self.robot.screen(cycle, data, 1, account, day(), False)['wait_reason'],
+            'SCREENING_NO_ELIGIBLE_SYMBOLS')
+        self.assertEqual(screening_day_replacement_due(self.robot, cycle, data), 0)
+        self.assertEqual(self.robot.replacement_count(data, [], cycle), 0)
+        self.assertEqual(self.screen_counts(), [1, 1, 1])
+        self.assertEqual(self.ledger.db.execute('SELECT count(*) FROM robot_candidates').fetchone()[0], 1)
+        self.assertEqual(self.ledger.db.execute('SELECT count(*) FROM order_intents').fetchone()[0], 0)
+
     def test_legacy_active_cycle_is_not_resumed_by_current_namespace(self):
         previous = day() + ':robot-v8:0'
         previous_data = dict(target=2, queue=['ETHUSDT'], seen=['BTCUSDT'], screen=0,
