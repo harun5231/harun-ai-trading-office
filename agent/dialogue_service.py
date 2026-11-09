@@ -167,6 +167,68 @@ def _without_sourced_utc_times(question,request):
     return re.sub(pattern,'',question,flags=re.I)
 
 
+def _archive_compose_request(memory, operation_id, request, observed_at):
+    """Preserve exact pre-dispatch source/deadline evidence, never a receipt."""
+    if request['phase'] not in {'COMPOSE_ANALYSIS','COMPOSE_PENDING_REVIEW'}:
+        return
+    try:
+        original=decode_json(canonical(request).encode())
+        validate_request(original,now=observed_at)
+        need(operation_id=='delegated-model:'+original['request_id'],'DIALOGUE_OPERATION_ID_MISMATCH')
+        memo={key:value for key,value in original.items() if key!='deadline_epoch'}
+        request_hash=hashlib.sha256(canonical(memo).encode()).hexdigest()
+        key='dialogue-compose-request-v1:'+operation_id
+        with memory.transaction():
+            row=memory.db.execute('SELECT kind,request_hash,state FROM operations WHERE operation_id=?',
+                (operation_id,)).fetchone()
+            need(row is not None and row[:2]==('DELEGATED_MODEL_DIALOGUE',request_hash)
+                and row[2]=='STARTED','DIALOGUE_OPERATION_ID_MISMATCH')
+            old=memory.get(key)
+            if old is not None:
+                need(type(old) is dict and set(old)=={'schema_version','authority','operation_id',
+                    'request_hash','original_request','original_request_sha256','archived_at'}
+                    and old['schema_version']==1 and old['authority']=='VALIDATED_COMPOSE_REQUEST'
+                    and old['operation_id']==operation_id and old['request_hash']==request_hash
+                    and type(old['original_request']) is dict
+                    and hashlib.sha256(canonical(old['original_request']).encode()).hexdigest()==old['original_request_sha256']
+                    and {name:value for name,value in old['original_request'].items() if name!='deadline_epoch'}==memo,
+                    'DIALOGUE_OPERATION_ID_MISMATCH')
+                validate_request(old['original_request'],now=old['archived_at'])
+            else:
+                memory.put(key,{'schema_version':1,'authority':'VALIDATED_COMPOSE_REQUEST',
+                    'operation_id':operation_id,'request_hash':request_hash,'original_request':original,
+                    'original_request_sha256':hashlib.sha256(canonical(original).encode()).hexdigest(),
+                    'archived_at':observed_at})
+    except Exception:
+        raise NotSent('DIALOGUE_REQUEST_ARCHIVE_UNAVAILABLE') from None
+
+
+def _without_discussion_structure(question):
+    """Ignore proven list labels and explicit RR notation, never price levels."""
+    blocks=re.split(r'(\n[ \t]*\n)',question)
+    for index in range(0,len(blocks),2):
+        block=blocks[index]
+        labels=list(re.finditer(r'(?m)(^|[,;:\n])[ \t]*([1-9]\d?)\)[ \t]+(?=[^\W\d_])',block))
+        if len(labels)<2 or [int(item.group(2)) for item in labels]!=list(range(1,len(labels)+1)):
+            continue
+        first=labels[0];intro=block[:first.start()]
+        introduced=(first.start()==0 or first.group(1)==':'
+            and re.search(r'\b(?:output|jawaban|ringkasan|format|poin|langkah|syarat|kriteria|evaluasi|rincian)\b',intro,re.I)
+            and not re.search(r'\b(?:ENTRY|SL|TP|harga|price)\s*$',intro,re.I))
+        if introduced:
+            for item in reversed(labels):
+                start,end=item.span(2);block=block[:start]+block[end:]
+            blocks[index]=block
+    question=''.join(blocks)
+    ratio=r'1\s*:\s*[1-9]\d{0,2}(?!\d|[.,]\d)'
+    series=ratio+r'(?:\s*/\s*'+ratio+r')*'
+    question=re.sub(r'(?i)(\b(?:RISK\s*REWARD|R\s*:\s*R|RR)\s*'
+        r'(?:(?:minimal|minimum|target|sebesar|adalah)\s*)?)('+series+r')',r'\1',question)
+    question=re.sub(r'(?i)(\b(?:rekomendasi\s+)?TP\s*\(\s*'
+        r'(?:boleh|RR|R\s*:\s*R|RISK\s*REWARD)\s+)('+series+r')(\s*\))',r'\1\3',question)
+    return question
+
+
 def validate_question_sources(question, request, *, web_outbound=False):
     """Allow natural discussion of known facts without inventing new levels.
 
@@ -188,7 +250,7 @@ def validate_question_sources(question, request, *, web_outbound=False):
         known.update(_number_values(request.get('source_facts')))
     # These are the owner's fixed timeframe/reward vocabulary, not price data.
     without_timeframes = re.sub(r'(?i)\b(?:15\s*M|1\s*H|2\s*R|1\s*:\s*2)\b', '',
-        _without_sourced_utc_times(question,request))
+        _without_discussion_structure(_without_sourced_utc_times(question,request)))
     need(_number_values(without_timeframes) <= known, 'DIALOGUE_PRICE_PROPOSAL_REFUSED')
     # Unicode numeric lookalikes are not silently reinterpreted as price data.
     need(not any(char.isdigit() and char not in '0123456789' for char in question),
@@ -942,6 +1004,11 @@ class DialogueEngine:
                             raise NotSent('HERMES_RUNTIME_UNVERIFIED')
                     else:
                         dispatched_key[0] = key_identity(self.key_file)
+                        if isinstance(self.model,OpenAIDialogue):
+                            _archive_compose_request(self.memory,current_id,request,self.clock())
+                            validate_request(request,now=self.clock())
+                            need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_UNAVAILABLE')
+                            need(time.monotonic()<until,'DIALOGUE_DEADLINE_EXPIRED')
                     return original_transport(payload)
                 self.model.transport = gated_transport
                 try:

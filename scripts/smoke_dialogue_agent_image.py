@@ -72,7 +72,7 @@ def main():
     assert not Path('/app/worker/order_gateway.py').exists()
     assert not Path('/app/worker/robot.py').exists()
     assert not Path('/app/worker/api_service.py').exists()
-    assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='eb4a1d623dcfbe1212628c1a7bc5a7396a3f39f62e429bb9af70bd971aeef972'
+    assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='033e5b8c4758c3841350132dd58344460273310baf6d30bccad9e762ac748c37'
     assert hashlib.sha256(Path('/app/agent/llm.py').read_bytes()).hexdigest()=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
     assert not list(Path('/app/agent').glob('hermes*.py')), 'MINI_IMAGE_MUST_NOT_INCLUDE_HERMES_BRIDGES'
     assert importlib.util.find_spec('hermes_cli') is None

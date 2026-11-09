@@ -1,0 +1,13 @@
+{
+  "authority": "PUBLIC_DRAFT_REGRESSION_NOT_ORIGINAL_REQUEST_OR_RECOVERY_RECEIPT",
+  "symbol": "DOTUSDT",
+  "quoted_prices": [
+    "0.8506",
+    "0.8391",
+    "0.8577",
+    "0.8522",
+    "0.8510"
+  ],
+  "question": "Neurobro, analisis DOTUSDT perpetual Binance untuk scalping TF 15m dengan konteks TF 1h menggunakan data chart publik terlampir (OHLCV 15m & 1h sampai cutoff). Neurobro yang menentukan: arah (LONG/SHORT/HOLD), ENTRY, SL struktural, dan rekomendasi TP. Risk Manager hanya akan menormalkan TP ke target eksekusi 2R; jangan minta quantity atau ukuran posisi. \n\nSyarat wajib jawaban: berikan RISK REWARD minimal 1:2 dan SL diposisikan berdasarkan struktur pasar: swing high/low, area likuiditas, volatilitas, wick, kemungkinan false breakout, dan titik invalidasi — jangan tempatkan SL di area yang mudah tersapu wick. Pisahkan fakta OHLCV dari hipotesis dalam analisis singkat. \n\nData penting: running + closed candles 15m & 1h tersedia dalam payload; mark price dan candle terakhir ada di konteks. Evaluasi zona support 0.8506 dan historis 0.8391, serta penolakan 0.8577 dan close 0.8522 (konfirmasi: low menembus 0.8510 tetapi close 15m tetap di atas 0.8510). Jelaskan apakah ini kelanjutan bearish atau sapuan likuiditas yang memerlukan reclaim. \n\nOutput yang diminta: 1) ringkasan struktur dan alasan singkat (fakta vs hipotesis), 2) keputusan ARAH (LONG/SHORT/HOLD), 3) ENTRY (harga), 4) rekomendasi TP (boleh 1:3/1:4), 5) SL (harga) + titik invalidasi yang jelas, 6) perhitungan R:R 1:2 dan kelayakan target. Jika HOLD, jelaskan kondisi konfirmasi yang ditunggu. \n\nCatatan operasional: Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP. Jangan minta persetujuan ulang atau chart tambahan; jawab langsung berdasarkan data terlampir.",
+  "question_sha256": "665c1b1936b314ede83485ccd4379e39718cda992cee449f0eb331ad17dabfe9"
+}

@@ -19,7 +19,7 @@ BASE_COMMIT = '4a0e65910ac4c36a73c7dcf99b566edbdd02f16a'
 BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
-SOURCE_SHA256 = 'eb4a1d623dcfbe1212628c1a7bc5a7396a3f39f62e429bb9af70bd971aeef972'
+SOURCE_SHA256 = '033e5b8c4758c3841350132dd58344460273310baf6d30bccad9e762ac748c37'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
 MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
@@ -98,8 +98,17 @@ PURPOSE_RECEIPT = '''    def _existing_purpose_receipt(self, request):
 '''
 
 
-def apply_purpose_policy(raw):
+def apply_purpose_policy(raw,root=ROOT):
     source=raw.decode()
+    current=(Path(root)/'agent/dialogue_service.py').read_text()
+    helpers=[node for node in ast.parse(current).body if isinstance(node,ast.FunctionDef)
+        and node.name in {'_archive_compose_request','_without_discussion_structure'}]
+    if len(helpers)!=2:
+        raise ValueError('MINI_DISCUSSION_STRUCTURE_SOURCE_UNVERIFIED')
+    helper='\n\n\n'.join(ast.get_source_segment(current,node) for node in helpers)
+    source=source.replace('def validate_question_sources(',helper+'\n\n\ndef validate_question_sources(',1)
+    source=source.replace('_without_sourced_utc_times(question,request))',
+        '_without_discussion_structure(_without_sourced_utc_times(question,request)))',1)
     source=source.replace('from .memory import Memory, canonical',
         'from .llm import PAID_DIALOGUE_PHASES\nfrom .memory import Memory, canonical',1)
     source=source.replace('    def process(self, request):',PURPOSE_RECEIPT+'    def process(self, request):',1)
@@ -111,6 +120,10 @@ def apply_purpose_policy(raw):
         '            with self.lock:\n'
         '                return self._existing_purpose_receipt(request)\n        with self.lock:',1)
     source=source.replace('                    return original_transport(payload)',
+        "                    _archive_compose_request(self.memory,current_id,request,self.clock())\n"
+        "                    validate_request(request,now=self.clock())\n"
+        "                    need(not self.stopping.is_set() and self.configuration_ready(),'DIALOGUE_UNAVAILABLE')\n"
+        "                    need(time.monotonic()<until,'DIALOGUE_DEADLINE_EXPIRED')\n"
         "                    self.model.bind_operation(current_id,request['phase'])\n"
         '                    return original_transport(payload)',1)
     source=source.replace("                    decision = self.model.plan(history, request['reply'], **arguments)",
@@ -129,7 +142,7 @@ def apply_purpose_policy(raw):
 
 
 def build_source(root=ROOT):
-    raw=apply_purpose_policy(build_utc_source(root))
+    raw=apply_purpose_policy(build_utc_source(root),root)
     if sha256(raw)!=SOURCE_SHA256:
         raise ValueError('MINI_PURPOSE_SOURCE_CHANGED')
     compile(raw,'retained-mini-dialogue-service.py','exec')
