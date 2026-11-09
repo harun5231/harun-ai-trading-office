@@ -5,6 +5,8 @@ UDS authentication fixture is created. It observes honest BLOCKED health, clean
 SIGTERM, process restart, crash recovery, and zero model operations/history.
 """
 import json
+import hashlib
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -36,6 +38,7 @@ def observe(child, path, *, timeout=15):
     else:
         raise AssertionError('DIALOGUE_LIVENESS_UNVERIFIED')
     assert value['runtime_implemented'] is True
+    assert value['model']=='gpt-5-mini'
     assert value['uid']==10002
     assert value['state']=='BLOCKED' and value['model_key_state']=='MISSING'
     assert value['dialogue_ready'] is False and value['integration_verified'] is False
@@ -69,6 +72,10 @@ def main():
     assert not Path('/app/worker/order_gateway.py').exists()
     assert not Path('/app/worker/robot.py').exists()
     assert not Path('/app/worker/api_service.py').exists()
+    assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
+    assert not list(Path('/app/agent').glob('hermes*.py')), 'MINI_IMAGE_MUST_NOT_INCLUDE_HERMES_BRIDGES'
+    assert importlib.util.find_spec('hermes_cli') is None
+    assert importlib.util.find_spec('run_agent') is None
     with tempfile.TemporaryDirectory(prefix='dialogue-image-',dir='/data') as temporary:
         root=Path(temporary)
         data=root/'data';data.mkdir(mode=0o700)
@@ -80,8 +87,14 @@ def main():
         token.chmod(0o600)
         missing_key=root/'intentionally-absent-openai.key'
         assert not missing_key.exists()
+        config=root/'dialogue.json'
+        config.write_text(json.dumps({'schema_version':2,'mode':'NATIVE_DELEGATED_DIALOGUE',
+            'model':'gpt-5-mini','socket_path':str(path),'data_directory':str(data),
+            'dialogue_token_file':str(token),'openai_key_file':str(missing_key)}))
+        config.chmod(0o600)
         command=[sys.executable,'-m','agent.dialogue_service','--socket',str(path),
-            '--data-directory',str(data),'--token-file',str(token),'--key-file',str(missing_key)]
+            '--data-directory',str(data),'--token-file',str(token),'--key-file',str(missing_key),
+            '--runtime-config',str(config)]
         generations=[]
         child=None
         with (root/'daemon.log').open('wb') as log:
@@ -107,6 +120,7 @@ def main():
                 print(json.dumps({'status':'ISOLATED_DELEGATED_DIALOGUE_IMAGE_SMOKE_VERIFIED',
                     'uid':os.geteuid(),'socket_gid':10001,'socket_mode':'0660',
                     'runtime_mode':'NATIVE_DELEGATED_DIALOGUE','model_key_state':'MISSING',
+                    'model':'gpt-5-mini','hermes_runtime_inherited':False,
                     'health_live_verified':True,'health_ready':False,'model_operations':0,
                     'model_or_chat_calls':0,'orders':0,'production_contact':False,
                     'daemon_sigterm_clean':True,'daemon_restart_verified':True,
