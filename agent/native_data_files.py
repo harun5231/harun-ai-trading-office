@@ -20,6 +20,61 @@ CSV_COLUMNS = ('open_time_utc_ms', 'open', 'high', 'low', 'close', 'volume', 'cl
 CONTEXT_SEPARATOR = '\n\nCONTEXT_JSON:\n'
 SCHEMA_SEPARATOR = '\n\nOUTPUT_JSON_SCHEMA:\n'
 MAX_PROMPT_BYTES = 384 * 1024
+FINAL_JSON_REQUEST_ENDING = (
+    'Setelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta.')
+
+
+def final_json_prompt(payload, rendered):
+    """Add the public phase contract only at a NEW rendered-send boundary.
+
+    Do not call this while reading an old render receipt. The legacy native
+    renderer and persisted request remain byte-identical; the caller archives
+    the returned WEB text before its one authorized Send.
+    """
+    _need(type(payload) is dict and type(rendered) is str and bool(rendered))
+    required = payload.get('output_schema', {}).get('required')
+    _need(type(required) is list and all(type(name) is str for name in required))
+    fields = set(required)
+    context = payload.get('context') or {}
+    _need(type(context) is dict)
+    if fields == {'symbols'}:
+        limits = payload.get('output_schema', {}).get('properties', {}).get('symbols', {})
+        count = context.get('requested_count')
+        _need(count is None or type(count) is int and count in (1, 2))
+        minimum, maximum = limits.get('minItems'), limits.get('maxItems')
+        if minimum is not None or maximum is not None:
+            _need(type(minimum) is int and type(maximum) is int and minimum == maximum
+                and minimum in (1, 2) and (count is None or count == minimum))
+            count = minimum
+        _need(count is None or type(count) is int and count in (1, 2))
+        # Placeholders cannot accidentally seed a real coin recommendation.
+        symbols = ['<SIMBOL_USDT>'] if count is None else [
+            '<SIMBOL_USDT_' + str(index + 1) + '>' for index in range(count)]
+        instruction = ('Isi SYMBOLS dengan tepat ' + str(count) + ' coin'
+            if count is not None else 'Isi SYMBOLS sesuai jumlah coin yang diminta')
+        contract = (instruction + ', tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. '
+            'Format: ' + json.dumps({'SYMBOLS': symbols}, separators=(',', ':')) + '.')
+    elif fields == {'symbol', 'order_ref', 'decision'} or {'symbol', 'side'} <= fields:
+        symbol = context.get('symbol')
+        _need(symbol is None or type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,24}USDT', symbol))
+        symbol = symbol or '<SIMBOL_USDT>'
+        if fields == {'symbol', 'order_ref', 'decision'}:
+            contract = ('Untuk coin/order ini, pilih satu KEPUTUSAN TAHAN atau BATALKAN. Format: '
+                + json.dumps({'COIN': symbol, 'KEPUTUSAN': '<TAHAN/BATALKAN>'}, separators=(',', ':')) + '.')
+        else:
+            contract = ('Isi arah LONG/SHORT dan harga aktualmu: '
+                + json.dumps({'COIN': symbol, 'ARAH': '<LONG/SHORT>', 'ENTRY': '<harga>',
+                    'TP': '<harga>', 'SL': '<harga>'}, separators=(',', ':'))
+                + '. Jika HOLD: ' + json.dumps({'COIN': symbol, 'ARAH': 'HOLD',
+                    'ENTRY': None, 'TP': None, 'SL': None}, separators=(',', ':')) + '.')
+    else:
+        return rendered  # Historical evaluation keeps its distinct protocol.
+    suffix = contract + '\n' + FINAL_JSON_REQUEST_ENDING
+    result = rendered if rendered.endswith(suffix) else rendered.rstrip() + '\n\n' + suffix
+    marker = payload.get('marker')
+    _need(len(result.encode('utf-8')) <= MAX_PROMPT_BYTES and web_prompt_allowed(result)
+        and (type(marker) is not str or result.count(marker) == rendered.count(marker)))
+    return result
 
 
 def _need(value):

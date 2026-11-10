@@ -12,6 +12,7 @@ from agent.native_analysis_receipt import (digest,persist_review,read_reviews,pr
     question_was_answered,refuse_reviewed_no_progress,PENDING_KIND)
 from agent.native_pending_protocol import REVIEW_SCHEMA
 from agent.dialogue_service import DialogueError
+from agent.native_data_files import final_json_prompt
 from tests import test_native_browser_hook as native
 
 
@@ -50,8 +51,9 @@ class NativeDialogueNoProgressTests(unittest.TestCase):
             'native_assistant_role':'assistant'}[row['role']])for row in case.bridge.messages]
 
     def render(self,case,question,context=None):
-        return case.module.user_prompt(dict(case.value,prompt=question,
-            context=case.fresh['context']if context is None else context))
+        payload=dict(case.value,prompt=question,
+            context=case.fresh['context']if context is None else context)
+        return final_json_prompt(payload,case.module.user_prompt(payload))
 
     def test_unchanged_completed_clarification_stops_before_another_upload_or_send(self):
         case,root=self.repeated()

@@ -309,7 +309,7 @@ def refresh_unsubmitted(coordinator, row, plan, *, build_intent, clock=time.time
             raise Review('ORDER_EVIDENCE_UNVERIFIED') from None
     if row['status'] not in allowed or not 0<=clock()-plan['rules_checked_at']<=300:
         raise Review('STALE_ORDER_INTENT')
-    target=plan['risk_target_usdt']
+    target=coordinator.store.settings()['risk_target_usdt']
     # A pre-existing V4 candidate retains its frozen sizing arithmetic. Only
     # newly analyzed candidates opt into schema 2 account-margin sizing.
     frozen_rules=deserialize_sizing_rules(plan)
@@ -318,6 +318,8 @@ def refresh_unsubmitted(coordinator, row, plan, *, build_intent, clock=time.time
         coordinator.account_factory(),policy=DYNAMIC_RISK_MODEL,db=db,margin_sizing=margin_sizing)
     coordinator.market.fresh(context,row['symbol'])
     signal=source_signal(db,row['id'],row['symbol'],normalized=True,risk_model=DYNAMIC_RISK_MODEL)
+    # Settings may change while the read-only market/fee requests run.
+    target=coordinator.store.settings()['risk_target_usdt']
     fresh=risk_check(signal,rules,target,risk_model=DYNAMIC_RISK_MODEL,
         reward_risk_policy=DYNAMIC_REWARD_RISK_POLICY)
     fresh['risk_target_usdt']=target
@@ -327,6 +329,8 @@ def refresh_unsubmitted(coordinator, row, plan, *, build_intent, clock=time.time
     payload=build_intent(fresh,row['id'])
     db.execute('BEGIN IMMEDIATE')
     try:
+        if D(coordinator.store.settings()['risk_target_usdt'])!=D(target):
+            raise Review('RISK_SETTING_CHANGED')
         candidate=db.execute('SELECT * FROM robot_candidates WHERE id=?',(row['id'],)).fetchone()
         intent=db.execute('SELECT * FROM order_intents WHERE id=?',(row['id'],)).fetchone()
         if (candidate is None or candidate['plan']!=row['plan'] or candidate['status'] not in allowed

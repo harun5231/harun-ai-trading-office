@@ -1013,13 +1013,6 @@ def review_then_advance(coordinator, account, today):
         if not due:
             phase = 'ADVANCE_EXECUTION'
             return coordinator.advance_execution(account, today)
-        # A prior native browser send with unknown outcome must not be
-        # overlapped by a new pending-review conversation. Monitoring continues.
-        phase = 'CHECK_UNRESOLVED_RESEARCH'
-        if coordinator.unresolved_research():
-            phase = 'MONITOR_EXISTING'
-            monitored = _monitor_existing(coordinator, account, today, native)
-            return monitored or _report(coordinator, account, 'NEEDS_REVIEW', 'ROBOT_REQUEST_NEEDS_REVIEW')
         if len(due) > 2:
             raise PendingReviewUnavailable('PENDING_REVIEW_CAPACITY_UNVERIFIED')
         guard = native['research_guard']
@@ -1055,6 +1048,16 @@ def review_then_advance(coordinator, account, today):
             # repeatedly choose them or prevent another legitimate native task.
             phase = 'ADVANCE_EXECUTION'
             return coordinator.advance_execution(account, today)
+        # Only a verified pending entry remainder needs a new conversation.
+        # A fully filled protected position must not starve existing response
+        # recovery merely because its acceptance time is more than five hours old.
+        # A prior native browser send with unknown outcome must not be
+        # overlapped by a new pending-review conversation. Monitoring continues.
+        phase = 'CHECK_UNRESOLVED_RESEARCH'
+        if coordinator.unresolved_research():
+            phase = 'MONITOR_EXISTING'
+            monitored = _monitor_existing(coordinator, account, today, native)
+            return monitored or _report(coordinator, account, 'NEEDS_REVIEW', 'ROBOT_REQUEST_NEEDS_REVIEW')
         phase = 'VERIFY_INTENT'
         coordinator.verified_intent(fresh)
         if row['payload'] != fresh['payload'] or row['created'] != fresh['created']:

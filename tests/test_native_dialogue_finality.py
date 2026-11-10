@@ -96,6 +96,36 @@ class NativeDialogueFinalityTests(TestCase):
         self.assertEqual(len(case.bridge.uploads), 1)
         self.assertEqual(case.bridge.messages[-1]['text'], answer)
 
+    def test_screening_json_in_analysis_cannot_reuse_a_stale_native_setup_card(self):
+        from types import SimpleNamespace
+        from agent.binance_website_chart import SOURCE
+        from agent.native_data_files import FINAL_JSON_REQUEST_ENDING
+        case = self.harness()
+        # A completed old native card is not the present author's decision.
+        # Use the production cache-enabled branch and its real material guard.
+        case.hook.prompt_cache = SimpleNamespace(read=lambda _: True)
+        case.refresh.expected_source = SOURCE
+        for evidence in (case.initial, case.fresh['chart_evidence']):
+            for row in evidence:row['source'] = SOURCE
+        case.bridge.initial = '{"SYMBOLS":["BTCUSDT"]}'
+        case.bridge.final = ('Struktur saat ini belum layak, keputusan akhir HOLD.\n'
+            '{"COIN":"BTCUSDT","ARAH":"HOLD","ENTRY":null,"TP":null,"SL":null}')
+        stale = {'symbol': 'BTCUSDT', 'side': 'LONG', 'entry_price': 65000,
+            'stop_loss': 64900, 'take_profit': 65200, 'risk_reward': 2}
+        case.module.exact_json.side_effect = None
+        case.module.exact_json.return_value = stale
+        case.reasoner = native.client('COMPLETE'); case.hook.client = case.reasoner
+        result = case.ask()
+        self.assertEqual(result['output']['side'], 'HOLD')
+        self.assertEqual(result['assistant_text'], case.bridge.final)
+        self.assertEqual(case.bridge.messages[1]['text'], case.bridge.initial)
+        self.assertEqual(case.bridge.clicks, 2); case.refresh.assert_called_once()
+        case.reasoner.request.assert_called_once()
+        question = case.bridge.messages[2]['text']
+        self.assertIn('COIN, ARAH, ENTRY, TP, SL', question)
+        self.assertTrue(question.endswith(FINAL_JSON_REQUEST_ENDING))
+        self.assertEqual(stale['side'], 'LONG')  # Original evidence remains untouched.
+
     def test_unresolved_parsed_setup_is_not_reviewed_again_after_restart(self):
         from tests.test_native_dialogue_no_progress import NativeDialogueNoProgressTests
         fixture = NativeDialogueNoProgressTests()

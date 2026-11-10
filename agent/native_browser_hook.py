@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timezone
 
 from .native_file_upload import NativeDataFileDelivery, enabled as data_file_mode
+from .native_data_files import final_json_prompt
 from .neurobro_reply import (ReplyIncomplete, parse_reply_for_payload,
                             screening_interpretation, author_market_hold)
 from .llm import web_prompt_allowed
@@ -56,6 +57,24 @@ def _require_web_prompt(text):
 def _render_web_prompt(native, payload):
     formatter = getattr(native, 'user_prompt', None)
     return _require_web_prompt(formatter(payload) if callable(formatter) else payload.get('prompt'))
+
+
+def _store_new_composed_prompt(cache, payload, question, model_request_id):
+    """Archive the phase footer only on a genuinely new composed render.
+
+    The shallow view shares the existing atomic store, not mutable formatter
+    state. A stored historical render wins unchanged, even after restart. The
+    canonical native renderer stays untouched for old native receipt recovery.
+    Production installs this cache for every phase via archive_root/DailyRoom;
+    unconfigured cacheless probes retain their separate legacy protocol.
+    """
+    from .native_prompt_composition import compact_protocol
+    view = copy.copy(cache)
+    original = cache.original
+    def render(projected):
+        return final_json_prompt(payload, compact_protocol(original(projected), payload))
+    view.original = render
+    return view.store(payload, question, model_request_id)
 
 
 def _source_facts(payload):
@@ -419,7 +438,7 @@ class DelegatedDOMBridge:
                 unknown()
             followup_payload = copy.deepcopy(payload)
             followup_payload['context'], followup_payload['prompt'] = fresh['context'], question
-            rendered = self.native.user_prompt(followup_payload)
+            rendered = final_json_prompt(followup_payload, self.native.user_prompt(followup_payload))
             _require_web_prompt(rendered)
             if (type(rendered) is not str or not rendered.startswith(question)
                     or len(rendered.encode()) > 384*1024
@@ -490,6 +509,8 @@ class DelegatedDOMBridge:
         def send_followup(question, market, observed_turns, answer, phase):
             if _received is not None and _received.get('review_only')is True:
                 raise ValueError('SCREENING_RECOVERY_RECEIVED_REPLY_INCOMPLETE')
+            if phase == 'SCREENING':
+                question = final_json_prompt(payload, question)
             _require_web_prompt(question)
             prefix = copy.deepcopy(observed_turns)
             if (len(prefix) != 2 * len(state['turn_names'])
@@ -628,8 +649,16 @@ class DelegatedDOMBridge:
                 if progress_guard:
                     from .native_analysis_receipt import refuse_reviewed_no_progress
                     def render_prior(question):
-                        if phase=='SCREENING':return question
-                        return self.native.user_prompt(dict(payload,prompt=question,context=active_context))
+                        from .native_analysis_receipt import question_was_answered
+                        rendered=(question if phase=='SCREENING' else
+                            self.native.user_prompt(dict(payload,prompt=question,context=active_context)))
+                        # Old already-sent questions keep their exact text. A
+                        # new footer must never turn a known old answer into
+                        # permission to repeat its question after restart.
+                        if question_was_answered(payload,observed_turns,context=active_context,
+                                rendered_question=rendered,intents=state['followup_intents']):
+                            return rendered
+                        return final_json_prompt(dict(payload,context=active_context),rendered)
                     refuse_reviewed_no_progress(self.daily_room.store.root,payload,observed_turns,
                         context=active_context,intents=state['followup_intents'],render_question=render_prior,
                         conversation_id=self.daily_room.conversation_id,parsed_setup=parsed_setup)
@@ -694,6 +723,7 @@ class DelegatedDOMBridge:
                     # not round it or ask Neurobro to move ENTRY/SL to fit.
                     raise ValueError(parse_error) from None
                 if parse_error in {'NEUROBRO_INPUT_UNREADABLE', 'NEUROBRO_JSON_SUMMARY_INVALID',
+                        'NEUROBRO_JSON_PHASE_MISMATCH',
                         'NEUROBRO_LEVEL_INCOMPLETE', 'NEUROBRO_DECISION_CONFLICT',
                         'NEUROBRO_SETUP_CONDITIONAL', 'NEUROBRO_REVIEW_CONDITIONAL'}:
                     output = None  # Do not fall back to an old/conflicting card.
@@ -815,6 +845,8 @@ class DelegatedDOMBridge:
                     else:
                         question = ('Mohon ringkas coin pilihanmu sesuai kapasitas yang diminta '
                             'dalam bentuk COIN: simbol USDT Perpetual.')
+            if phase == 'SCREENING':
+                question = final_json_prompt(payload, question)
             if (question in state['asked_questions']or phase=='SCREENING'and any(
                     row.get('role')==observed_turns[0].get('role')
                     and _same_text(row.get('text'),question)for row in observed_turns)):
@@ -938,7 +970,7 @@ class DelegatedDOMBridge:
                     if result['decision']['action'] != 'PROMPT':
                         raise ValueError('NATIVE_COMPOSE_RESULT_UNVERIFIED')
                     gate(check_material=True)
-                    self.prompt_cache.store(payload, result['decision']['question'], identity)
+                    _store_new_composed_prompt(self.prompt_cache, payload, result['decision']['question'], identity)
                     gate(check_material=True)
                 except Exception:
                     raise self.native.NotSubmitted('UNAVAILABLE') from None
