@@ -72,6 +72,22 @@ class PublicPhaseJsonTests(unittest.TestCase):
                     self.assertEqual(parse_reply_for_payload(reply, screening(count)), {'symbols': names})
                     self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(), digest)
 
+    def test_native_symbols_abi_without_marker_requires_actual_mini_review(self):
+        from agent.neurobro_reply import screening_interpretation
+        from tests.test_semantic_screening import bound
+        reply = 'Pilihan coin sudah jelas.\n```json\n{"symbols":["ATOMUSDT","FILUSDT"]}\n```'
+        with self.assertRaisesRegex(ReplyIncomplete, 'SCREENING_INCOMPLETE'):
+            parse_reply_for_payload(reply, screening())
+        # The real source-bound Mini request/result still authorizes semantic
+        # reading of historical JSON; no receipt is invented by the parser.
+        self.assertEqual(screening_interpretation(reply,
+            *bound(reply, ['ATOMUSDT', 'FILUSDT'])), {'symbols': ['ATOMUSDT', 'FILUSDT']})
+        self.assertEqual(parse_reply_for_payload(reply.replace('"symbols"', '"SYMBOLS"'), screening()),
+            {'symbols': ['ATOMUSDT', 'FILUSDT']})
+        invalid = reply.replace('"symbols"', '"SYMBOLS"').replace(']}', '],"comparison":"BTCUSDT"}')
+        with self.assertRaises(ReplyIncomplete):
+            screening_interpretation(invalid, *bound(invalid, ['ATOMUSDT', 'FILUSDT']))
+
     def test_screening_keeps_actual_capacity_exclusion_and_unique_symbol_guards(self):
         cases = (
             ('{"SYMBOLS":["ATOMUSDT","ATOMUSDT"]}', screening()),

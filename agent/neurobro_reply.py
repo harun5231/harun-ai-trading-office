@@ -196,20 +196,21 @@ def _inline_summary_fields(block):
     return '\n'.join(lines)
 
 
-def _json_decoder():
+def _json_decoder(*, preserve_keys=False):
     def unique(items):
-        result = {}
+        result = {}; seen = set()
         for key, value in items:
-            key = key.upper()
-            if key in result:
+            normalized = key.upper()
+            if normalized in seen:
                 raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
-            result[key] = value
+            seen.add(normalized)
+            result[key if preserve_keys else normalized] = value
         return result
     return json.JSONDecoder(object_pairs_hook=unique, parse_float=Decimal,
         parse_int=Decimal, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
 
 
-def _json_tail(reply):
+def _json_tail(reply, *, preserve_keys=False):
     """Decode a complete final JSON value without editing its authored bytes.
 
     Text before the value remains available for contradiction/input checks.
@@ -225,7 +226,7 @@ def _json_tail(reply):
         if not body.startswith(('{', '[')):
             return None
         try:
-            value = _json_decoder().decode(body)
+            value = _json_decoder(preserve_keys=preserve_keys).decode(body)
         except (ValueError, TypeError, AttributeError, RecursionError):
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID') from None
         return value, text[:fences[-1].start()].strip()
@@ -235,7 +236,7 @@ def _json_tail(reply):
     for match in re.finditer(r'[\[{]', text):
         start = match.start()
         try:
-            value, end = _json_decoder().raw_decode(text, start)
+            value, end = _json_decoder(preserve_keys=preserve_keys).raw_decode(text, start)
         except (ValueError, TypeError, AttributeError, RecursionError):
             if (re.match(r'\{\s*"', text[start:]) and re.search(
                     r'"(?:SYMBOLS|COIN|ARAH|KEPUTUSAN)"[ \t]*:', text[start:], re.I)):
@@ -270,6 +271,12 @@ def _public_json_tail(reply, phase):
     if phase == 'SCREENING':
         if 'SYMBOLS' not in value:
             raise ReplyIncomplete('NEUROBRO_JSON_PHASE_MISMATCH')
+        # Lowercase `symbols` is the historical marker-bound native ABI.
+        # Only the explicit public key can authorize an unmarked deterministic
+        # WEB summary. Existing real Mini reviews can still read either form.
+        authored = _json_tail(reply, preserve_keys=True)[0]
+        if 'SYMBOLS' not in authored:
+            return None
     elif phase == 'ANALYSIS':
         if not {'COIN', 'ARAH'} <= set(value):
             raise ReplyIncomplete('NEUROBRO_JSON_PHASE_MISMATCH')
@@ -603,8 +610,8 @@ def _screening_json_choices(reply):
     if final:text=text[final[-1].end():].strip()
     # The public final object may follow an explanation without a heading.
     # Reuse the strict source parser so Mini cannot contradict this final list.
-    tail = _json_tail(text)
-    if tail is not None and type(tail[0]) is dict and set(tail[0]) == {'SYMBOLS'}:
+    tail = _json_tail(text, preserve_keys=True)
+    if tail is not None and type(tail[0]) is dict and 'SYMBOLS' in tail[0]:
         return parse_screening_reply(text)['symbols']
     fences=list(re.finditer(r'```(?:json)?[ \t]*\n?([\s\S]*?)\n?```',text,re.I))
     blocks=[match[1].strip()for match in fences]if fences else[text]

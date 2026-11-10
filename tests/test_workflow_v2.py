@@ -14,6 +14,7 @@ from worker.core import D, Review, day, now
 from worker.neuroapi import SETUP_SCHEMA, SCREEN_SCHEMA, SCREEN_ONE_SCHEMA, setup
 from worker.prompts import ANALYSIS, REPLACEMENT_SCREENING
 from worker.research_guard import gateway_mutations_allowed
+from worker.robot_provenance import verify
 
 
 def entry(symbol, *, algo=False, **changes):
@@ -180,24 +181,49 @@ class WorkflowV2Tests(unittest.TestCase):
         context['fetched_at']-=context_age
         self.assertTrue(f.robot.claim(operation,cycle['id'],'ANALYSIS','BTCUSDT',day(),'5',data=data,context=context))
         f.client.ask(operation, 'historical analysis literal', SETUP_SCHEMA,
-                     lambda value: setup(value,'BTCUSDT'), dict(symbol='BTCUSDT'))
+                     lambda value: setup(value,'BTCUSDT'), context)
         f.ledger.db.execute('UPDATE api_requests SET created=? WHERE operation=?',(time.time()-age,operation))
         f.ledger.db.execute('UPDATE robot_jobs SET state=? WHERE operation=?',(state,operation))
         return f,operation
 
-    def test_fresh_complete_paid_analysis_drains_without_new_body_and_keeps_captured_risk(self):
+    def test_fresh_complete_paid_analysis_uses_latest_new_plan_risk_without_rewriting_claim_or_request(self):
         for state in ('PENDING','COMPLETE'):
             with self.subTest(state=state):
                 f,operation = self.cached_analysis(state=state)
                 before = dict(f.ledger.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone())
+                claim = dict(f.ledger.db.execute('SELECT * FROM robot_jobs WHERE operation=?',(operation,)).fetchone())
+                request = copy.deepcopy(f.calls[-1])
+                packet = json.loads(request['message_history'][0]['content'])
+                context = packet['data'] if 'context_partition' in packet else packet
+                self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'], '5')
                 f.store.configure(dict(risk_target_usdt='10'));f.restart()
                 with patch.object(f.client,'ask',side_effect=AssertionError('paid replay')):
                     self.assertEqual(f.robot.tick()['bot_status'],'READY_FOR_EXECUTION')
                 self.assertEqual(dict(f.ledger.db.execute('SELECT * FROM api_requests WHERE operation=?',(operation,)).fetchone()), before)
-                plan = json.loads(self.candidate(f)['plan'])
-                self.assertEqual(plan['risk_target_usdt'],'5')
+                candidate = self.candidate(f);plan = json.loads(candidate['plan'])
+                # The original provider response/claim remains historical
+                # evidence. Only the new, not-yet-accepted plan uses current risk.
+                self.assertEqual((candidate['id'], plan['risk_target_usdt']), (operation, '10'))
+                self.assertGreater(D(plan['risk']), D('5'))
+                self.assertLessEqual(D(plan['risk']), D('10'))
+                output = json.loads(before['output'], parse_float=D)
+                self.assertEqual((D(plan['entry']), D(plan['sl'])), (output['limit_entry'], output['stop_loss']))
+                self.assertTrue(verify(f.ledger.db, plan, operation))
+                claim['state'] = 'COMPLETE'
+                self.assertEqual(dict(f.ledger.db.execute('SELECT * FROM robot_jobs WHERE operation=?',(operation,)).fetchone()), claim)
+                self.assertEqual(claim['risk_target'], '5')
+                self.assertEqual(f.calls[-1], request)
                 self.assertEqual(len(f.calls),2)
-                self.assertEqual(f.ledger.db.execute('SELECT state FROM robot_jobs WHERE operation=?',(operation,)).fetchone()[0],'COMPLETE')
+                gateway = f.connected()
+                self.assertEqual(f.robot.tick()['bot_status'], 'ENTRY_PENDING')
+                accepted = dict(f.intent());accepted_plan = candidate['plan']
+                self.assertEqual(gateway.submissions[0]['risk_target_usdt'], '10')
+                f.store.configure(dict(risk_target_usdt='2.75'));f.restart()
+                with patch.object(f.client,'ask',side_effect=AssertionError('paid replay')):
+                    f.robot.tick()
+                self.assertEqual(f.intent()['payload'], accepted['payload'])
+                self.assertEqual(self.candidate(f)['plan'], accepted_plan)
+                self.assertEqual((len(gateway.submissions), len(f.calls)), (1, 2))
 
     def test_unconfirmed_cached_analysis_is_rejected_without_paid_replay(self):
         f,operation = self.cached_analysis(confirmed=False)
