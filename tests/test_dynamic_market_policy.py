@@ -177,7 +177,11 @@ class DynamicMarketPolicyTests(unittest.TestCase):
         if state is not None:
             self.db.execute('INSERT INTO order_intents VALUES(?,?,?,?,?,?,?,?,?)',
                 (self.op,self.op,'ETHUSDT',state,json.dumps(build_intent(plan,self.op)),result,None,'created','updated'))
-        coordinator=SimpleNamespace(db=self.db,market=self.market,account_factory=lambda:self.account)
+        from worker.robot_store import RobotStore
+        self.db.execute('CREATE TABLE robot_settings(id INTEGER PRIMARY KEY,enabled INTEGER,risk TEXT)')
+        self.db.execute("INSERT INTO robot_settings VALUES(1,1,'5')")
+        coordinator=SimpleNamespace(db=self.db,market=self.market,account_factory=lambda:self.account,
+            store=RobotStore(self.db,initialize=False))
         row=self.db.execute('SELECT * FROM robot_candidates WHERE id=?',(self.op,)).fetchone()
         return coordinator,row,plan
 

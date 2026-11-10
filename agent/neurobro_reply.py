@@ -196,52 +196,174 @@ def _inline_summary_fields(block):
     return '\n'.join(lines)
 
 
-def _final_json_analysis(reply):
-    """Read only an author's short final summary, never JSON inside a scenario.
+def _json_decoder(*, preserve_keys=False):
+    def unique(items):
+        result = {}; seen = set()
+        for key, value in items:
+            normalized = key.upper()
+            if normalized in seen:
+                raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+            seen.add(normalized)
+            result[key if preserve_keys else normalized] = value
+        return result
+    return json.JSONDecoder(object_pairs_hook=unique, parse_float=Decimal,
+        parse_int=Decimal, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
 
-    The browser still binds the reply to the current operation and its native
-    receipt. This is an alternative presentation of the same authored fields,
-    not permission to supply missing prices from model output or chat history.
+
+def _json_tail(reply, *, preserve_keys=False):
+    """Decode a complete final JSON value without editing its authored bytes.
+
+    Text before the value remains available for contradiction/input checks.
+    Objects inside explanation or examples cannot replace the final answer.
+    This decoder grants no receipt, material, market or execution authority.
     """
     if not isinstance(reply, str):
         return None
     text = reply.strip()
-    # An explicit final heading supersedes older cards/scenarios in this reply,
-    # just as the prose parser does. Do not change price lexemes while stripping
-    # Markdown. Input complaints still cannot disappear behind a JSON object.
-    headings = list(re.finditer(r'(?im)^\s*(?:#{1,6}\s+)?(?:\*\*)?'
-        r'(?:ringkasan|keputusan|setup)\s+(?:akhir|final|aktif)\b(?:\*\*)?'
-        r'[ \t]*:?[ \t]*(?:\n|(?=\{)|(?=```))', text))
-    if headings:
-        prefix, text = text[:headings[-1].end()], text[headings[-1].end():].strip()
-        if _TECHNICAL.search(prefix):
-            raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
-    fenced = re.fullmatch(r'```(?:json)?\s*\n?([\s\S]*?)\n?```', text, re.I)
-    if fenced:
-        text = fenced.group(1).strip()
-    if not text.startswith('{'):
-        return None
-    def unique(items):
-        result = {}
-        for key, value in items:
-            key = key.upper()
-            if key in result:
+    fences = list(re.finditer(r'```(?:json)?[ \t]*\n?([\s\S]*?)\n?```', text, re.I))
+    if fences and not text[fences[-1].end():].strip():
+        body = fences[-1][1].strip()
+        if not body.startswith(('{', '[')):
+            return None
+        try:
+            value = _json_decoder(preserve_keys=preserve_keys).decode(body)
+        except (ValueError, TypeError, AttributeError, RecursionError):
+            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID') from None
+        return value, text[:fences[-1].start()].strip()
+    # raw_decode owns nested objects, string escapes and number lexemes. A
+    # candidate is final only when nothing follows its complete JSON value.
+    malformed = False
+    for match in re.finditer(r'[\[{]', text):
+        start = match.start()
+        try:
+            value, end = _json_decoder(preserve_keys=preserve_keys).raw_decode(text, start)
+        except (ValueError, TypeError, AttributeError, RecursionError):
+            if (re.match(r'\{\s*"', text[start:]) and re.search(
+                    r'"(?:SYMBOLS|COIN|ARAH|KEPUTUSAN)"[ \t]*:', text[start:], re.I)):
+                malformed = True
+            continue
+        if not text[end:].strip():
+            if malformed:
                 raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
-            result[key] = value
-        return result
-    try:
-        value = json.loads(text, object_pairs_hook=unique, parse_float=Decimal,
-            parse_int=Decimal, parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
-    except (ValueError, TypeError, AttributeError):
-        raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID') from None
-    if type(value) is dict and not {'COIN', 'ARAH'}.intersection(value):
+            return value, text[:start].strip()
+    if malformed:
+        raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+    return None
+
+
+def _explanation_scope(prefix):
+    text = clean(prefix) if prefix.strip() else ''
+    if _TECHNICAL.search(text):
+        raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
+    finals = list(_FINAL.finditer(text))
+    return text[finals[-1].start():] if finals else text
+
+
+def _public_json_tail(reply, phase):
+    tail = _json_tail(reply)
+    if tail is None:
+        return None
+    value, prefix = tail
+    if type(value) is not dict:
+        return None
+    if not {'COIN', 'ARAH', 'SYMBOLS', 'KEPUTUSAN'}.intersection(value):
         return None  # Existing marker-bound native protocol is a separate ABI.
+    if phase == 'SCREENING':
+        if 'SYMBOLS' not in value:
+            raise ReplyIncomplete('NEUROBRO_JSON_PHASE_MISMATCH')
+        # Lowercase `symbols` is the historical marker-bound native ABI.
+        # Only the explicit public key can authorize an unmarked deterministic
+        # WEB summary. Existing real Mini reviews can still read either form.
+        authored = _json_tail(reply, preserve_keys=True)[0]
+        if 'SYMBOLS' not in authored:
+            return None
+    elif phase == 'ANALYSIS':
+        if not {'COIN', 'ARAH'} <= set(value):
+            raise ReplyIncomplete('NEUROBRO_JSON_PHASE_MISMATCH')
+    elif phase == 'PENDING_REVIEW':
+        if not {'COIN', 'KEPUTUSAN'} <= set(value):
+            raise ReplyIncomplete('NEUROBRO_JSON_PHASE_MISMATCH')
+    _explanation_scope(prefix)  # Material complaints cannot disappear in JSON.
+    return value, prefix
+
+
+def _same_analysis_json(left, right):
+    if set(left) != set(right):
+        return False
+    if any(type(left.get(key)) is not str or type(right.get(key)) is not str
+            for key in ('COIN', 'ARAH')):
+        return False
+    if symbol(left['COIN']) != symbol(right['COIN']) or left['ARAH'].upper() != right['ARAH'].upper():
+        return False
+    try:
+        return all(left[key] is None and right[key] is None or
+            left[key] is not None and right[key] is not None and
+            Decimal(str(left[key]).replace(',', '.')) == Decimal(str(right[key]).replace(',', '.'))
+            for key in ('ENTRY', 'TP', 'SL'))
+    except (InvalidOperation, KeyError):
+        return False
+
+
+def _future_reassessment_clause(text):
+    return (not text.rstrip().endswith(':')
+        and re.search(r'\b(?:jika|apabila|asalkan)\b', text, re.I)
+        and re.search(r'\b(?:nanti|berikutnya|mendatang)\b', text, re.I)
+        and re.search(r'\b(?:evaluasi|tinjau|bahas|review)\b', text, re.I)
+        and not re.search(r'\b(?:bersyarat|alternatif|skenario)\b', text, re.I))
+
+
+def _conditional_json_intro(scope, allowed):
+    """A condition on the decision differs from a separate future caveat."""
+    intro = scope.strip().split('\n')[-1]
+    conditional = r'\b(?:jika|apabila|asalkan|bersyarat|alternatif|skenario)\b'
+    if re.search(conditional, intro, re.I):
+        if not _future_reassessment_clause(intro):
+            return True
+    direction = '(?:' + '|'.join(allowed) + ')'
+    return re.search(r'(?:^|[;|\n])\s*(?:(?:ARAH|POSISI|KEPUTUSAN|STATUS|SETUP)'
+        r'(?:\s+(?:AKHIR|FINAL|AKTIF))?\s*[:=]\s*)?' + direction
+        + r'\b[^.!?;|\n]*\b(?:jika|apabila|asalkan|bersyarat)\b', scope, re.I) is not None
+
+
+def _final_json_analysis(reply):
+    """Project an authored final public summary into the established ABI."""
+    tail = _public_json_tail(reply, 'ANALYSIS')
+    if tail is None:
+        return None
+    value, prefix = tail
     if (type(value) is not dict or set(value) != {'COIN', 'ARAH', 'ENTRY', 'TP', 'SL'}
             or type(value['COIN']) is not str or type(value['ARAH']) is not str
             or re.fullmatch(PAIR, value['COIN'], re.I) is None
             or value['ARAH'].upper() not in {'LONG', 'SHORT', 'HOLD'}):
         raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
     direction = value['ARAH'].upper()
+    selected = symbol(value['COIN'])
+    scope = _explanation_scope(prefix)
+    # Retain the existing final-heading boundary: it may supersede older
+    # scenarios, but a competing decision/level in this final scope cannot be
+    # silently overridden by the machine-readable version of that decision.
+    if scope.strip():
+        previous = _json_tail(scope)
+        if (previous is not None and type(previous[0]) is dict
+                and {'COIN', 'ARAH'} <= set(previous[0])
+                and not _same_analysis_json(previous[0], value)):
+            raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
+        try:
+            prose = _inline_summary_fields(coin_block(scope, selected))
+        except ReplyIncomplete as error:
+            if str(error) == 'NEUROBRO_FOREIGN_COIN':
+                raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT') from None
+            prose = scope
+        try:
+            prior_direction = _decision(prose, ('LONG', 'SHORT', 'HOLD'))
+        except ReplyIncomplete as error:
+            if str(error) == 'NEUROBRO_DECISION_CONFLICT':
+                raise
+        else:
+            if prior_direction != direction:
+                raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
+        if _conditional_json_intro(scope, ('LONG', 'SHORT', 'HOLD')):
+            raise ReplyIncomplete('NEUROBRO_SETUP_CONDITIONAL')
     if direction == 'HOLD':
         if any(value[key] is not None for key in ('ENTRY', 'TP', 'SL')):
             raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
@@ -254,6 +376,13 @@ def _final_json_analysis(reply):
         levels[key] = format(price, 'f') if type(price) is Decimal else price
         if not re.fullmatch(r'\d{1,32}(?:[.,]\d{1,24})?', levels[key]):
             raise ReplyIncomplete('NEUROBRO_LEVEL_AMBIGUOUS')
+        if scope.strip():
+            names = {'ENTRY': ('ENTRY', 'LIMIT ENTRY', 'ENTRY LIMIT', 'ENTRY_PRICE'),
+                'TP': ('TP', 'TAKE PROFIT', 'TAKE_PROFIT'),
+                'SL': ('SL', 'STOP LOSS', 'STOP_LOSS')}[key]
+            if re.search(r'(?:^|[;|\n])\s*(?:' + '|'.join(names) + r')\s*[:=]', prose, re.I):
+                if Decimal(_level(prose, names)) != Decimal(levels[key].replace(',', '.')):
+                    raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
     return ('COIN: ' + value['COIN'] + '\nARAH: ' + direction + '\n'
         + '\n'.join(key + ': ' + levels[key] for key in ('ENTRY', 'TP', 'SL')))
 
@@ -303,6 +432,17 @@ def author_market_hold(reply, requested):
     try:
         if parse_analysis_reply(reply, requested)['side'] != 'HOLD':
             return False
+        tail = _public_json_tail(reply, 'ANALYSIS')
+        if tail is not None:
+            # JSON is another presentation of the authored decision, not
+            # proof that contrary unlabelled prose can be discarded. Keep
+            # ambiguous present direction cues with the existing semantic
+            # review; clear HOLD and separate future reassessment stay final.
+            scope = _explanation_scope(tail[1])
+            for clause in re.split(r'[;|\n]|[.!?](?=\s|$)', scope):
+                if (re.search(r'\b(?:LONG|SHORT)\b', clause, re.I)
+                        and not _future_reassessment_clause(clause)):
+                    return False
         block = _inline_summary_fields(analysis_coin_block(reply, requested))
     except ReplyIncomplete:
         return False
@@ -359,7 +499,50 @@ def author_market_hold(reply, requested):
     return True
 
 
+def _screening_strong_final(text):
+    strong = (_FINAL.search(text) is not None or _SCREENING_PICK.search(text) is not None
+        or re.search(r'^[ \t]*(?:(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH|PILIHAN COIN|COIN PILIHAN)'
+            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$', text, re.I | re.M) is not None)
+    labels = list(re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]*[:=][ \t]*[^\n]+', text, re.I | re.M))
+    if len(labels) == 1 and labels[0].start() == 0:
+        tail = text[labels[0].end():]
+        competing = re.search(r'\b(?:pilihan|rekomendasi|daftar)[ \t]+(?:akhir|final)\b|\bYANG[ \t]+DIPILIH\b', tail, re.I)
+        strong = strong or competing is None
+    return strong
+
+
 def parse_screening_reply(reply):
+    structured = _public_json_tail(reply, 'SCREENING')
+    if structured is not None:
+        value, prefix = structured
+        if set(value) != {'SYMBOLS'} or type(value['SYMBOLS']) is not list:
+            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+        selected = []
+        for choice in value['SYMBOLS']:
+            if type(choice) is not str or re.fullmatch(PAIR, choice, re.I) is None:
+                raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+            selected.append(symbol(choice))
+        if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        scope = _explanation_scope(prefix)
+        if scope.strip():
+            # Reuse the same source-finality distinction as Mini's semantic
+            # projection: an earlier comparison table is not another choice.
+            prior_json = _json_tail(scope)
+            if (_screening_strong_final(scope) or prior_json is not None
+                    and type(prior_json[0]) is dict and 'SYMBOLS' in prior_json[0]):
+                try:
+                    previous = parse_screening_reply(scope)
+                except ReplyIncomplete as error:
+                    if str(error) in ('NEUROBRO_SCREENING_AMBIGUOUS',
+                            'NEUROBRO_SCREENING_DECISION_CONFLICT'):
+                        raise
+                else:
+                    if previous['symbols'] != selected:
+                        raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+            if _conditional_json_intro(scope, ('LONG', 'SHORT', 'HOLD')):
+                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+        return {'symbols': selected}
     text = clean(reply)
     final = list(_FINAL.finditer(text))
     if final:
@@ -425,6 +608,11 @@ def _screening_json_choices(reply):
     """Recognize explicit authored coin fields, never prices or comparisons."""
     text=reply.strip();final=list(_FINAL.finditer(text))
     if final:text=text[final[-1].end():].strip()
+    # The public final object may follow an explanation without a heading.
+    # Reuse the strict source parser so Mini cannot contradict this final list.
+    tail = _json_tail(text, preserve_keys=True)
+    if tail is not None and type(tail[0]) is dict and 'SYMBOLS' in tail[0]:
+        return parse_screening_reply(text)['symbols']
     fences=list(re.finditer(r'```(?:json)?[ \t]*\n?([\s\S]*?)\n?```',text,re.I))
     blocks=[match[1].strip()for match in fences]if fences else[text]
     found=[]
@@ -532,16 +720,7 @@ def screening_interpretation(reply, payload, request, response, turns):
     # Failure to fit a local text layout is not a second semantic decision:
     # Mini has read the original paragraph/table/JSON and identified its choices.
     text=clean(reply)
-    strong_final=(_FINAL.search(text)is not None or _SCREENING_PICK.search(text)is not None
-        or re.search(r'^[ \t]*(?:(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH|PILIHAN COIN|COIN PILIHAN)'
-            r'(?:[ \t]*\([12]\))?[ \t]*[:=][ \t]*$',text,re.I|re.M)is not None)
-    # A sole leading COIN summary is explicit; labels inside an earlier
-    # comparison table are not a competing semantic interpretation.
-    labels=list(re.finditer(r'^[ \t]*(?:COIN|KOIN)[ \t]*[:=][ \t]*[^\n]+',text,re.I|re.M))
-    if len(labels)==1 and labels[0].start()==0:
-        tail=text[labels[0].end():]
-        competing=re.search(r'\b(?:pilihan|rekomendasi|daftar)[ \t]+(?:akhir|final)\b|\bYANG[ \t]+DIPILIH\b',tail,re.I)
-        strong_final=strong_final or competing is None
+    strong_final = _screening_strong_final(text)
     try:explicit=parse_screening_reply(reply)if strong_final else None
     except ReplyIncomplete:explicit=None
     if explicit is not None:
@@ -646,6 +825,40 @@ def _screening_table(block):
 
 
 def parse_pending_reply(reply, requested):
+    structured = _public_json_tail(reply, 'PENDING_REVIEW')
+    if structured is not None:
+        value, prefix = structured
+        if (set(value) != {'COIN', 'KEPUTUSAN'} or type(value['COIN']) is not str
+                or re.fullmatch(PAIR, value['COIN'], re.I) is None
+                or type(value['KEPUTUSAN']) is not str
+                or value['KEPUTUSAN'].upper() not in ('TAHAN', 'BATALKAN')):
+            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+        if symbol(value['COIN']) != requested:
+            raise ReplyIncomplete('NEUROBRO_FOREIGN_COIN')
+        decision = value['KEPUTUSAN'].upper()
+        scope = _explanation_scope(prefix)
+        if scope.strip():
+            prior_json = _json_tail(scope)
+            prior_json = (prior_json if prior_json is not None and type(prior_json[0]) is dict
+                and {'COIN', 'KEPUTUSAN'} <= set(prior_json[0]) else None)
+            try:
+                block = coin_block(scope, requested)
+            except ReplyIncomplete as error:
+                if str(error) == 'NEUROBRO_FOREIGN_COIN':
+                    raise
+                block = scope
+            try:
+                prior = (parse_pending_reply(scope, requested) if prior_json is not None
+                    else _decision(block, ('TAHAN', 'BATALKAN')))
+            except ReplyIncomplete as error:
+                if str(error) in ('NEUROBRO_DECISION_CONFLICT', 'NEUROBRO_REVIEW_CONDITIONAL'):
+                    raise
+            else:
+                if prior != decision:
+                    raise ReplyIncomplete('NEUROBRO_DECISION_CONFLICT')
+            if _conditional_json_intro(scope, ('TAHAN', 'BATALKAN')):
+                raise ReplyIncomplete('NEUROBRO_REVIEW_CONDITIONAL')
+        return decision
     block = coin_block(reply, requested)
     if _TECHNICAL.search(block):
         raise ReplyIncomplete('NEUROBRO_INPUT_UNREADABLE')
@@ -681,6 +894,17 @@ def parse_reply_for_payload(reply, payload):
             raise ReplyIncomplete('NEUROBRO_SCHEMA_UNVERIFIED')
         if not minimum <= len(parsed['symbols']) <= maximum:
             raise ReplyIncomplete('NEUROBRO_SCREENING_COUNT_MISMATCH')
+        context = payload.get('context') or {}
+        if type(context) is not dict:
+            raise ReplyIncomplete('NEUROBRO_SCHEMA_UNVERIFIED')
+        if 'requested_count' in context and (type(context['requested_count']) is not int
+                or context['requested_count'] != len(parsed['symbols'])):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_COUNT_MISMATCH')
+        excluded = context.get('excluded_symbols', [])
+        if type(excluded) is not list or any(type(item) is not str for item in excluded):
+            raise ReplyIncomplete('NEUROBRO_SCHEMA_UNVERIFIED')
+        if set(parsed['symbols']).intersection(excluded):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_EXCLUDED_SYMBOL')
     elif fields == {'symbol', 'order_ref', 'decision'}:
         context = payload.get('context') or {}
         pending = context.get('pending_review') or {}

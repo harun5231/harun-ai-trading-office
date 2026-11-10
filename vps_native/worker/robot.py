@@ -390,6 +390,8 @@ class Coordinator:
             if str(error)=='STALE_ORDER_INTENT':
                 retired=retire_stale_unsubmitted(self,row,account,build_intent=build_intent)
                 return retired if retired is not None else self.store.report('WAITING',account,wait_reason='ORDER_STATE_CHANGED')
+            if str(error)=='RISK_SETTING_CHANGED':
+                return self.store.report('WAITING',account,wait_reason='RISK_SETTING_CHANGED')
             if str(error)=='ACCEPTED_OR_UNCERTAIN_INTENT_IMMUTABLE':
                 # An intervening accepted/uncertain lifecycle belongs to
                 # reconciliation. Never reject or rewrite that saved order.
@@ -433,11 +435,20 @@ class Coordinator:
         if row['symbol'] in self.exposed_symbols(account) or row['symbol'] in MANUAL_ONLY_SYMBOLS:
             return self.reject_intent(row,account,'ROBOT_SYMBOL_EXPOSED')
         if not self.execution_slots(account,today):return self.store.report('WAITING',account,wait_reason='ROBOT_CAPACITY_FULL')
+        if D(self.store.settings()['risk_target_usdt'])!=D(plan['risk_target_usdt']):
+            if plan.get('risk_model')==DYNAMIC_RISK_MODEL:
+                return self.store.report('WAITING',account,wait_reason='RISK_SETTING_CHANGED')
+            return self.reject_intent(row,account,'ORDER_COSTS_CHANGED')
         previous_state=self.db.execute('SELECT state FROM order_intents WHERE id=?',(row['id'],)).fetchone()[0]
         self.db.execute('BEGIN IMMEDIATE')
         try:
             if not self.allowed(today):
                 self.db.execute('ROLLBACK');return self.store.report('WAITING',account,wait_reason=self.pause_reason())
+            if D(self.store.settings()['risk_target_usdt'])!=D(plan['risk_target_usdt']):
+                self.db.execute('ROLLBACK')
+                if plan.get('risk_model')==DYNAMIC_RISK_MODEL:
+                    return self.store.report('WAITING',account,wait_reason='RISK_SETTING_CHANGED')
+                return self.reject_intent(row,account,'ORDER_COSTS_CHANGED')
             changed=self.db.execute("UPDATE order_intents SET state='SUBMITTING',failure_code=NULL,updated=? WHERE id=? AND state IN ('READY_FOR_EXECUTION','EXECUTION_BLOCKED')",(now(),row['id'])).rowcount
             self.db.execute('COMMIT')
         except BaseException:self.db.execute('ROLLBACK');raise
@@ -910,6 +921,10 @@ class Coordinator:
                     try:_,refreshed=analysis_context(self.market,symbol,target,self.account_factory(),policy=policy,db=self.db)
                     except ResearchReadPaused:pass
                     else:rules=refreshed
+                # The research claim remains immutable source evidence. A new
+                # executable plan uses the owner's latest saved risk, after
+                # provider/fee reads and immediately before local sizing.
+                target=self.store.settings()['risk_target_usdt']
                 plan=risk_check(signal,rules,target,risk_model=policy or RISK_MODEL,
                     reward_risk_policy=DYNAMIC_REWARD_RISK_POLICY if policy else NORMALIZED_REWARD_RISK_POLICY);plan['risk_target_usdt']=target
                 # The WEB reply owns final prices. A fresh fee/tick change must

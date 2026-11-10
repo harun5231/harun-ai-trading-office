@@ -337,7 +337,7 @@ class PassiveEndedCaptureTests(unittest.TestCase):
     def test_first_failure_reader_is_private_bounded_and_does_not_write(self):
         payload = dict(operation='2026-11-05:robot-v9:0:screening:2:2', request_sha256='a' * 64)
         record = failure(payload, 'https://app.neurobro.ai/chat/' + 'a'*32,
-            hook=native.CURRENT_RETURN_FAILURE_HOOK)
+            hook=native.PHASE_JSON_RETURN_FAILURE_HOOK)
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder); name = record['name']; path = root/name
             self.assertIsNone(native.read_ended_return(root,payload))
@@ -372,7 +372,8 @@ class PassiveEndedCaptureTests(unittest.TestCase):
             (native.RETURN_FAILURE_PRODUCER, native.RETURN_FAILURE_HOOK),
             (native.RETURN_FAILURE_PRODUCER, native.PREVIOUS_RETURN_FAILURE_HOOK),
             (native.RETURN_FAILURE_PRODUCER, native.CONTEXT_RETURN_FAILURE_HOOK),
-            (native.RETURN_FAILURE_PRODUCER, native.CURRENT_RETURN_FAILURE_HOOK))))
+            (native.RETURN_FAILURE_PRODUCER, native.CURRENT_RETURN_FAILURE_HOOK),
+            (native.RETURN_FAILURE_PRODUCER, native.PHASE_JSON_RETURN_FAILURE_HOOK))))
         source = Path(native.__file__).resolve().parent
         producer_bytes = (source/'native_turn_batch.py').read_bytes()
         hook_bytes = (source/'native_browser_hook.py').read_bytes(); original_sha256 = hashlib.sha256

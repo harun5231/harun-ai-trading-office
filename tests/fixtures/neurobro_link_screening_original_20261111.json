@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "source": "IMMUTABLE_NATIVE_SCREENING_MINI_REVIEW_FILE_REQUEST_REPLY",
+    "source_run": "42895069851",
+    "source_leaf": {
+      "bytes": 5958,
+      "job": "42895069851-1",
+      "name": "json-screening-review-leaf-private.json",
+      "sha256": "f5e0a06c006536d140c93e8c1ae849ae6d089dea2d0a49817c526dda590011eb"
+    },
+    "saved_payload_evidence": {
+      "bytes": 1416702,
+      "job": "42891814880-1",
+      "name": "mini-dialogue-continuation-full-private.json",
+      "sha256": "bc0b4823c0f196ac9e282faeee178a89adcda2bd206ce39a56062f53dd8a96ac"
+    },
+    "review_file": {
+      "bytes": 5532,
+      "name": "screening-review-dcb2f526c401f3236e53fdc3a2a4ad46fc891c03a767ffda4a40e8c7deebbd74-611528031a107e5536fe5951069a72f262bb547797c7951c88fbba1d79c36cd5.json",
+      "sha256": "92a5dfaef2886baa8bb7df436a6cdc957ff96997dcb4e5d33cb4a475e5ae53a9"
+    },
+    "reply_original_bytes": true,
+    "reply_utf8_bytes": 1235,
+    "reply_sha256": "15e3e25ac11373ef7c57efee46c155f26e6780e83babb07a44653904bf33e95a",
+    "native_completion_inferred": false,
+    "known_boundary": "MINI_REVIEW_DONE_IS_NOT_NATIVE_RESPONSE_COMMIT",
+    "baseline_parser_already_accepts_choice": true,
+    "offline_payload_projection": "Only SCREENING schema/count are supplied locally; no actionable analysis or native response is inferred."
+  },
+  "operation": "2026-11-11:robot-v9:0:screening:0:1",
+  "request_sha256": "68b548ceb5180c90aa34b6fe3baba7b2588a7776bd5f57c86ef9ebe8125d119c",
+  "request_id": "611528031a107e5536fe5951069a72f262bb547797c7951c88fbba1d79c36cd5",
+  "conversation_id": "neurobro:2026-11-11:d303ffc7092449408b3d792422200ac2",
+  "transcript_sha256": "07c5e2210a4c5cf423090a26ca7fe54091b5aec2d53130addc1bba252c6b7d89",
+  "latest_user": "pilihkan 1 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_29b03a7a141df23beccf294229d98090",
+  "reply": "Pilihan saya jatuh ke $LINK - bukan karena hype, tapi karena kombinasi support teknis + katalis institusional yang baru muncul (Charles Schwab resmi listing LINK), sementara koin dengan katalis serupa ($AVAX, $SOL) sudah masuk daftar eksklusi kamu.\n\nSETUP: LONG LINKUSDT Perpetual\n\nRating & R:R - konfidensi 7/10 dengan risk-reward 3.05 (moderate, net fees) - sudah di atas target minimal 1:2 kamu.\nAlasan - harga menyentuh support kuat di $10.19 (fib 0 = low 24h), RSI 37 + stochastic 7.7 = oversold dalam. Binance funding masih positif (+0.0023%) tapi kecil, dan OI sudah turun 11% dari period high - artinya leverage long lama sudah bersih, ruang bounce terbuka.\n\nLevel\tHarga\nEntry (limit)\t$10.20\nStop Loss\t$10.05\nTP1 (70%)\t$10.60\nTP2 (30%)\t$10.95\nLeverage\t5x\n\n⚖️ Neurobro adalah alat riset dan bukan financial advice! Kami terus mengembangkannya, tapi bisa saja salah - yang kamu trading dan risiko yang kamu ambil tetap keputusanmu sendiri.\n\nCatatan: breakout di bawah $10.05 = setup gagal, keluar tanpa nanya. LINK juga bisa kamu trading langsung di NeuroWallet kapan pun.\n\nCOIN: LINKUSDT Perpetual - long di support $10.19 dengan katalis listing Schwab dan kondisi oversold, paling berpeluang profit di rotasi kamu sekarang.",
+  "assistant_message_id": "4b980225-3fa4-4f98-a78a-82ea747d6b79",
+  "mini_response": {
+    "authority": "DIALOGUE_CONTROL_ONLY",
+    "conversation_id": "neurobro:2026-11-11:d303ffc7092449408b3d792422200ac2",
+    "decision": {
+      "action": "SCREENING",
+      "question": "",
+      "symbols": [
+        "LINKUSDT"
+      ]
+    },
+    "needs_followup": false,
+    "ok": true,
+    "phase": "SCREENING",
+    "reason": "DIALOGUE_DECISION",
+    "reply_sha256": "15e3e25ac11373ef7c57efee46c155f26e6780e83babb07a44653904bf33e95a",
+    "request_id": "611528031a107e5536fe5951069a72f262bb547797c7951c88fbba1d79c36cd5",
+    "schema_version": 1,
+    "trading_authority": false
+  }
+}

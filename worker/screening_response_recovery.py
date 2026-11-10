@@ -284,10 +284,12 @@ ENDED_RETURN_HOOK = 'ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee90
 PREVIOUS_ENDED_RETURN_HOOK = '8498214906365ec2081af01a1049f466308cb36498c1dda1f765083afc3d1d49'
 CONTEXT_ENDED_RETURN_HOOK = '235fb14a9932269beebf55dc669298cbeeef90d35d22e1b6e413e29129b5a007'
 CURRENT_ENDED_RETURN_HOOK = 'f4b5a212c6d5547dc97abe5f230353b1f744dfcc76704f2ee6b9fb578750b768'
+PHASE_JSON_ENDED_RETURN_HOOK = '5f73c0629157ee1a44346cc0e31287997a44a4dafd3f4f00e17ba69316617b47'
 ENDED_RETURN_SOURCES = frozenset(((ENDED_RETURN_PRODUCER, ENDED_RETURN_HOOK),
     (ENDED_RETURN_PRODUCER, PREVIOUS_ENDED_RETURN_HOOK),
     (ENDED_RETURN_PRODUCER, CONTEXT_ENDED_RETURN_HOOK),
-    (ENDED_RETURN_PRODUCER, CURRENT_ENDED_RETURN_HOOK)))
+    (ENDED_RETURN_PRODUCER, CURRENT_ENDED_RETURN_HOOK),
+    (ENDED_RETURN_PRODUCER, PHASE_JSON_ENDED_RETURN_HOOK)))
 RECEIVED_NATIVE_SOURCE = '30ea13cd51706b1db65620cdfb5f8db6dec1c9b3b8a20c9b7ca1d6c9db07f72e'
 RECEIVED_SCHEMA = '''CREATE TABLE IF NOT EXISTS screening_response_recoveries(
  operation TEXT PRIMARY KEY,request_sha256 TEXT NOT NULL,proof_sha256 TEXT NOT NULL,
@@ -363,6 +365,89 @@ def _review_entry(entry):
     return value
 
 
+def _received_screening_source_rows(proof, payload, rows, value):
+    """Reuse a sealed author's exact turns after a native assistant UUID rerender.
+
+    This projection grants no new model/native identity.  It is available only
+    inside a complete current NO-SEND observation of the same owned room and
+    operation.  Minimal interpretation artifacts cannot authorize ID drift.
+    Every source field other than completed assistant DOM IDs remains exact.
+    """
+    users = list(range(0, len(rows), 2)) if type(rows) is list else []
+    room = proof.get('room', {}); witness = proof.get('room_witness', {})
+    scope = proof.get('operation_scope', {}); cache = proof.get('rendered_prompt_receipt', {})
+    response = value.get('response', {}); decision = response.get('decision', {})
+    if not (type(room) is dict and type(witness) is dict and type(scope) is dict and type(cache) is dict
+            and type(response) is dict and type(decision) is dict
+            and decision.get('action') == 'SCREENING' and decision.get('question') == ''
+            and response.get('needs_followup') is False):
+        return None
+    if not (len(rows) >= 2 and len(rows) % 2 == 0 and proof.get('rows') == rows
+            and proof.get('kind') == RECEIVED_KIND and type(proof.get('schema_version')) is int
+            and proof['schema_version'] == 2
+            and proof.get('native_source_sha256') == RECEIVED_NATIVE_SOURCE
+            and proof.get('operation') == payload['operation']
+            and proof.get('request_sha256') == payload['request_sha256']
+            and proof.get('payload_sha256') == _digest(payload)
+            and proof.get('status') == 'CONNECTED' and proof.get('stage') == 'OBSERVED_WITHOUT_COMPLETION'
+            and proof.get('errors') == [] and type(proof.get('stable_snapshot_reads')) is int
+            and proof['stable_snapshot_reads'] == 4
+            and proof.get('room_initial_state') == 'BOUND'
+            and _finite(proof.get('observed_at')) and _finite(proof.get('finished_at'))
+            and 0 < proof['observed_at'] <= proof['finished_at']
+            and proof.get('operation_completed') is False
+            and all(type(proof.get(key)) is int and proof[key] == 0
+                for key in ('orders_sent', 'model_calls', 'provider_messages', 'uploads'))
+            and proof.get('file_tiles') == [] and proof.get('receipt_files') == {}
+            and proof.get('prepared_materials', []) == []
+            and room.get('day') == payload['operation'][:10]
+            and type(room.get('room_id')) is str and re.fullmatch('[a-f0-9]{32}', room['room_id'])
+            and room.get('url') == proof.get('page_url')
+            and type(room['url']) is str and room['url'].startswith('https://app.neurobro.ai/')
+            and witness.get('native_room_matches') is True and witness.get('same_loaded_room_verified') is True
+            and witness.get('journal_url_matches') is True
+            and witness.get('initial_screening_user_rows') == [0] and witness.get('followup_user_rows') == users[1:]
+            and scope.get('verified') is True and scope.get('initial_user') == 0
+            and scope.get('latest_user') == len(rows) - 2 and scope.get('reply_row') == len(rows) - 1
+            and scope.get('user_rows') == users and scope.get('reply_complete') is True
+            and scope.get('unmatched_intents') == []
+            and cache.get('operation') == payload['operation'] and cache.get('payload_sha256') == _digest(payload)
+            and type(cache.get('rendered_prompt')) is str and cache.get('rendered_sha256') == _sha(cache['rendered_prompt'])
+            and cache['rendered_prompt'] == rows[0].get('text') and cache['rendered_prompt'].count(payload['marker']) == 1):
+        return None
+    request = value.get('request', {}); context = request.get('conversation_context')
+    if not (type(context) is dict and set(context) == {'native_operation', 'native_request_sha256', 'turns'}
+            and context['native_operation'] == payload['operation']
+            and context['native_request_sha256'] == payload['request_sha256']
+            and type(context['turns']) is list and len(context['turns']) == len(rows)):
+        return None
+    original = context['turns']; original_ids = []; current_ids = []; changed = False
+    for index, (source, current) in enumerate(zip(original, rows)):
+        if not (type(source) is dict and type(current) is dict
+                and set(source) <= {'role', 'text', 'id', 'complete', 'attachments'}
+                and set(current) <= {'role', 'text', 'id', 'complete', 'attachments'}
+                and source.get('role') == current.get('role') == ('user' if index % 2 == 0 else 'assistant')
+                and type(source.get('text')) is str and bool(source['text'])
+                and source.get('attachments', []) == current.get('attachments', []) == []):
+            return None
+        if index % 2 == 0:
+            if source != current:
+                return None
+        else:
+            if not (source.get('complete') is current.get('complete') is True
+                    and all(type(row.get('id')) is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}', row['id'])
+                        for row in (source, current))
+                    and {key: item for key, item in source.items() if key != 'id'}
+                        == {key: item for key, item in current.items() if key != 'id'}):
+                return None
+            original_ids.append(source['id']); current_ids.append(current['id'])
+            changed = changed or source['id'] != current['id']
+    if not (changed and len(set(original_ids)) == len(original_ids)
+            and len(set(current_ids)) == len(current_ids)):
+        return None
+    return original
+
+
 def _screening_review(proof, payload, rows, *, with_request=False):
     """Return only an actual DONE Mini review of this exact native transcript."""
     reply = rows[-1]['text']; reply_sha = _sha(reply); transcript = _digest(rows)
@@ -374,8 +459,23 @@ def _screening_review(proof, payload, rows, *, with_request=False):
         conversation_id=conversation, transcript_sha256=transcript, request_id=request_id, reply_sha256=reply_sha)
     for entry in proof.get('review_receipts', []):
         value = _review_entry(entry)
+        source_rows = rows
         if any(value.get(key) != expected for key, expected in identity.items()):
-            continue
+            if entry.get('name') != ('screening-review-' + _digest({key: payload[key]
+                    for key in ('operation', 'request_sha256')}) + '-' + str(value.get('request_id')) + '.json'):
+                continue
+            source_rows = _received_screening_source_rows(proof, payload, rows, value)
+            if source_rows is None:
+                continue
+            source_transcript = _digest(source_rows)
+            source_request_id = _digest(dict(operation=payload['operation'], request_sha256=payload['request_sha256'],
+                reply_sha256=reply_sha, phase='SCREENING', transcript_sha256=source_transcript))
+            source_identity = {**identity, 'transcript_sha256': source_transcript, 'request_id': source_request_id}
+            if any(value.get(key) != expected for key, expected in source_identity.items()):
+                continue
+        else:
+            source_identity = identity
+        request_id = source_identity['request_id']
         request = value.get('request'); response = value.get('response'); done = value.get('model_operation')
         _require(value.get('schema_version') == 1 and type(value.get('schema_version')) is int
             and value.get('kind') == 'NATIVE_SCREENING_MINI_REVIEW_V1'
@@ -386,7 +486,7 @@ def _screening_review(proof, payload, rows, *, with_request=False):
                 {'schema_version', 'request_id', 'conversation_id', 'phase', 'reply',
                     'reply_sha256', 'market_context', 'gate', 'deadline_epoch', 'conversation_context'})
             and type(request['schema_version']) is int and request['schema_version'] == 1
-            and all(request[key] == identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
+            and all(request[key] == source_identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
             and request['reply'] == reply and request['market_context'] is None
             and request['gate'] == {'robot_on': True, 'native_dispatch_verified': True}
             and all(type(flag) is bool for flag in request['gate'].values())
@@ -394,7 +494,7 @@ def _screening_review(proof, payload, rows, *, with_request=False):
             and type(response) is dict and set(response) == {'schema_version', 'ok', 'request_id', 'conversation_id',
                 'phase', 'reply_sha256', 'authority', 'trading_authority', 'decision', 'needs_followup', 'reason'}
             and type(response['schema_version']) is int and response['schema_version'] == 1 and response['ok'] is True
-            and all(response[key] == identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
+            and all(response[key] == source_identity[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256'))
             and response['authority'] == 'DIALOGUE_CONTROL_ONLY' and response['trading_authority'] is False
             and response['reason'] == 'DIALOGUE_DECISION' and type(response['needs_followup']) is bool)
         if 'conversation_context' in request:
@@ -403,7 +503,7 @@ def _screening_review(proof, payload, rows, *, with_request=False):
                 and set(context) == {'native_operation', 'native_request_sha256', 'turns'}
                 and context['native_operation'] == payload['operation']
                 and context['native_request_sha256'] == payload['request_sha256']
-                and context['turns'] == rows)
+                and context['turns'] == source_rows)
         decision = response['decision']
         _require(type(decision) is dict and set(decision) == {'action', 'symbols', 'question'}
             and decision['action'] in ('SCREENING', 'HOLD', 'CLARIFY') and type(decision['symbols']) is list
@@ -441,7 +541,8 @@ def _reviewed_screening_output(proof, payload, rows, *, require_approval=False):
     if (review is not None and review['decision']['action'] == 'SCREENING'
             and review['needs_followup'] is False):
         try:
-            output = screening_interpretation(rows[-1]['text'], payload, request, review, rows)
+            source_rows = request.get('conversation_context', {}).get('turns', rows)
+            output = screening_interpretation(rows[-1]['text'], payload, request, review, source_rows)
         except ValueError:
             raise Review('SCREENING_RESPONSE_RECOVERY_UNVERIFIED') from None
     else:
@@ -495,7 +596,8 @@ def screening_interpretation_proof_output(proof, payload, text, *, created, rece
 
 def _received_interpretation_proof(proof, payload):
     """Copy an existing final DONE review; never manufacture Mini approval."""
-    review = _screening_review(proof, payload, proof['rows'])
+    matched = _screening_review(proof, payload, proof['rows'], with_request=True)
+    request, review = matched if matched is not None else (None, None)
     if review is None or review['decision']['action'] != 'SCREENING' or review['needs_followup']:
         return None
     entries = [entry for entry in proof['review_receipts']
@@ -505,7 +607,8 @@ def _received_interpretation_proof(proof, payload):
         request_sha256=payload['request_sha256'], payload_sha256=_digest(payload),
         assistant_sha256=_sha(proof['rows'][-1]['text']),
         room={key: proof['room'][key] for key in ('day', 'room_id', 'url')},
-        turns=copy.deepcopy(proof['rows']), observed_at=entries[0]['value']['observed_at'],
+        turns=copy.deepcopy(request.get('conversation_context', {}).get('turns', proof['rows'])),
+        observed_at=entries[0]['value']['observed_at'],
         review_receipt=copy.deepcopy(entries[0]))
 
 

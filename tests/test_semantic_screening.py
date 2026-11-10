@@ -179,7 +179,9 @@ class SemanticScreeningHookTests(unittest.TestCase):
   case.reasoner.request.side_effect=lambda request:receipt(request,[],action='CLARIFY',question=question)
   with self.assertRaises(fixtures.OutcomeUnknown):case.hook.ask(payload,lambda:True,deadline=80)
   self.assertEqual(case.bridge.clicks,2);self.assertEqual(case.reasoner.request.call_count,2)
-  self.assertEqual([r['text']for r in case.bridge.messages if r['role']=='native_user_role'].count(question),1)
+  from agent.native_data_files import final_json_prompt
+  rendered=final_json_prompt(payload,question)
+  self.assertEqual([r['text']for r in case.bridge.messages if r['role']=='native_user_role'].count(rendered),1)
   self.assertNotIn('HOLD',[r['text']for r in case.bridge.messages])
 
  def test_excluded_actual_choice_gets_one_replacement_question_then_updated_natural_selection(self):

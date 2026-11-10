@@ -103,7 +103,7 @@ class RobotRiskSettingTests(unittest.TestCase):
         self.assertEqual(context['risk_constraints']['target_loss_at_sl_usdt'], '10')
         self.assertTrue(verify(f.ledger.db, plan, self.candidate()['id']))
 
-    def test_risk_change_during_paid_request_keeps_claim_and_intent_immutable(self):
+    def test_risk_change_during_request_uses_latest_new_plan_and_keeps_original_claim(self):
         f = self.prepare_one_slot()
         original = f.client.transport
         def transport(*args, **kwargs):
@@ -114,11 +114,12 @@ class RobotRiskSettingTests(unittest.TestCase):
         f.client.transport = transport
         self.assertEqual(f.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
         before = self.candidate()['plan']
-        self.assertEqual(self.plan()['risk_target_usdt'], '5')
-        self.assertEqual(D(self.plan()['risk']), D('4.99992'))
+        self.assertEqual(self.plan()['risk_target_usdt'], '10')
+        self.assertEqual(D(self.plan()['risk']), D('9.99984'))
+        self.assertEqual(f.ledger.db.execute("SELECT risk_target FROM robot_jobs WHERE kind='ANALYSIS'").fetchone()[0], '5')
         f.robot.tick()
         intent = dict(f.intent())
-        self.assertEqual(json.loads(intent['payload'])['risk_target_usdt'], '5')
+        self.assertEqual(json.loads(intent['payload'])['risk_target_usdt'], '10')
         self.assertEqual(f.store.settings()['risk_target_usdt'], '10')
         f.restart()
         f.ticks(3)
@@ -126,13 +127,12 @@ class RobotRiskSettingTests(unittest.TestCase):
         self.assertEqual(f.intent()['payload'], intent['payload'])
         self.assertEqual(len(f.calls), 2)
 
-    def test_risk_change_affects_next_analysis_without_repricing_first_candidate(self):
+    def test_risk_change_affects_next_analysis_without_repricing_first_accepted_intent(self):
         f = self.fixture
         f.on()
         f.robot.tick()
         f.robot.tick()
         before = self.candidate()['plan']
-        f.store.configure(dict(risk_target_usdt='10'))
         gateway = f.connected()
         captured = {}
         def submit(intent):
@@ -142,6 +142,7 @@ class RobotRiskSettingTests(unittest.TestCase):
         gateway.on_submit = submit
         gateway.on_reconcile = lambda intent: gateway.observation(intent, 'POSITION_PROTECTED', intent['entry']['quantity'], **captured)
         self.assertEqual(f.robot.tick()['bot_status'], 'POSITION_PROTECTED')
+        f.store.configure(dict(risk_target_usdt='10'))
         self.assertEqual(f.robot.tick()['bot_status'], 'READY_FOR_EXECUTION')
         self.assertEqual(self.candidate()['plan'], before)
         self.assertEqual(self.plan()['risk_target_usdt'], '5')
@@ -165,18 +166,19 @@ class RobotRiskSettingTests(unittest.TestCase):
         self.assertEqual(intent['evidence_sha256'], plan['provenance']['payload_sha256'])
         self.assertEqual(f.receipt_count(), 0)
 
-    def test_lower_current_setting_does_not_rewrite_captured_ready_intent(self):
+    def test_lower_current_setting_rejects_unsent_legacy_intent_without_rewriting(self):
         f = self.prepare_one_slot('10')
         f.robot.tick()
         f.robot.tick()
         before = dict(f.intent())
         f.store.configure(dict(risk_target_usdt='2'))
         gateway = f.connected()
-        self.assertEqual(f.robot.tick()['bot_status'], 'ENTRY_PENDING')
+        result = f.robot.tick()
+        self.assertEqual((result['bot_status'], result['failure_code']), ('REJECTED', 'ORDER_COSTS_CHANGED'))
         self.assertEqual(f.store.settings()['risk_target_usdt'], '2')
-        self.assertEqual(gateway.submissions[0], json.loads(before['payload']))
+        self.assertEqual(gateway.submissions, [])
         self.assertEqual(f.intent()['payload'], before['payload'])
-        self.assertEqual(gateway.submissions[0]['risk_target_usdt'], '10')
+        self.assertEqual(json.loads(f.intent()['payload'])['risk_target_usdt'], '10')
 
     def test_gateway_rejects_risk_above_captured_target_and_unbounded_target(self):
         f = self.prepare_one_slot('10')
