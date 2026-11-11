@@ -594,6 +594,121 @@ def received_nonexecuted(db,row):
     except Exception:return False
 
 
+def _resumable_cached_analysis(provider,operation,*,now):
+    """Prove an already recorded decision without refreshing or sending it."""
+    from .research_provider import request_body,source_evidence,BROWSER_SOURCE
+    db=provider.db
+    need(not db.in_transaction and finite(now) and now>0)
+    match=re.fullmatch(r'(\d{4}-\d{2}-\d{2}):robot-v9:(0|[1-9]\d{0,11}):analysis-v9:([A-Z0-9]{2,18}USDT)',operation)
+    need(match is not None)
+    cycle_id=operation.rsplit(':analysis-v9:',1)[0];symbol=match[3]
+    current=_snapshot(db,operation,cycle_id)
+    api,job,request,receipt,candidate,cycle,settings=(current[key]for key in(
+        'api_requests','robot_jobs','research_browser_requests','research_browser_responses',
+        'robot_candidates','robot_cycles','robot_settings'))
+    journal=_row(db,'analysis_response_recoveries','operation',operation)
+    need(all(row is not None for row in(api,job,request,receipt,cycle,settings,journal))
+        and settings['enabled']==1 and api['state']=='COMPLETE' and api['failure_code'] is None
+        and job['state']=='PENDING'
+        and api['attempts']==1 and api['idempotency'] is None
+        and type(api['output']) is str and bool(api['output'])
+        and job['cycle']==cycle_id and job['kind']=='ANALYSIS' and job['symbol']==symbol
+        and cycle['day']==match[1] and cycle['entry_epoch']==int(match[2])
+        and cycle['state'] in('ACTIVE','COMPLETE')
+        and journal['phase']=='RESUME_CACHED' and journal['proof_sha256']==sha(journal['proof'])
+        and all(finite(value)for value in(api['created'],journal['created'],journal['updated']))
+        and 0<api['created']<=journal['created']<=journal['updated']<=now
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?',(operation,)).fetchone())
+    body=json.loads(request['request_body'])
+    rebuilt,serialized,request_hash=request_body(operation,body['prompt'],body['output_schema'],body['context'])
+    need(body==rebuilt and serialized==request['request_body'] and body['output_schema']==SETUP_SCHEMA_V4
+        and request['request_sha256']==api['body_hash']==journal['request_sha256']==request_hash
+        and body['context']['symbol']==symbol)
+    before=json.loads(journal['preimage']);original_api=before['api_requests'];original_job=before['robot_jobs']
+    need(before['research_browser_requests']==request and before['robot_candidates']==candidate
+        and original_api['operation']==operation and original_api['state'] in('PENDING','NEEDS_REVIEW')
+        and original_api['output'] is None and original_api['body_hash']==api['body_hash']
+        and original_api['created']==api['created'] and original_api['attempts']==1
+        and original_api['idempotency'] is None
+        and original_job['state'] in('PENDING','NEEDS_REVIEW')
+        and all(original_job[key]==job[key]for key in('operation','cycle','kind','symbol','risk_target'))
+        and (candidate is None or candidate['status']=='REJECTED' and candidate['plan'] is None
+            and candidate['id']==operation and candidate['cycle']==cycle_id and candidate['symbol']==symbol))
+    data=json.loads(cycle['data'])
+    need(type(data.get('queue')) is list and data['queue'] and data['queue'][0]==symbol
+        and data['queue'].count(symbol)==1 and type(data.get('seen')) is list and symbol not in data['seen'])
+    payload={**body,'request_sha256':request_hash};proof=json.loads(journal['proof'])
+    result,received,stale=validate_observation(provider,proof,payload,api['created'],
+        now=journal['created'],retained=True)
+    need(not stale and canonical_output(result['output'],body['output_schema'])==api['output']
+        and result['assistant_text']==receipt['assistant_text']
+        and sha(receipt['assistant_text'])==receipt['assistant_sha256']
+        and result['response_id']==receipt['response_id'] and received==receipt['received_at']
+        and sha(api['output'])==receipt['output_sha256']
+        and wire(result['chart_evidence'])==receipt['chart_evidence'])
+    source=source_evidence(db,operation)
+    need(source.get('source_type')==BROWSER_SOURCE
+        and re.fullmatch('[a-f0-9]{64}',str(source.get('provider_evidence_sha256'))))
+    aged=(not chart_windows_current(result['chart_evidence'],int(now*1000))
+        or datetime.fromtimestamp(now,ZoneInfo('Asia/Jakarta')).date().isoformat()!=match[1])
+    return current,journal,result,data,aged
+
+
+def _consume_cached_analysis(coordinator,operation,today,account):
+    """Drain one proven cached reply before its failed skeleton uses budget."""
+    provider=coordinator.neuro;db=provider.db;current=time.time()
+    before,journal,result,data,aged=_resumable_cached_analysis(provider,operation,now=current)
+    job=before['robot_jobs'];cycle=before['robot_cycles'];symbol=job['symbol'];hold=result['output']['side']=='HOLD'
+    if not hold and not aged:
+        from .account_state import MANUAL_ONLY_SYMBOLS
+        need(symbol not in coordinator.exposed_symbols(account) and symbol not in MANUAL_ONLY_SYMBOLS,
+            'ROBOT_SYMBOL_EXPOSED')
+        # This native cached path retains every Risk Manager/execution guard.
+        # Its COMPLETE request is already proved above; it cannot Send again.
+        return coordinator.analyze(cycle['id'],data,symbol,account,today)
+    need(coordinator.allowed(today),'RESEARCH_PAUSED')
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        need(coordinator.allowed(today) and _snapshot(db,operation,cycle['id'])==before
+            and _row(db,'analysis_response_recoveries','operation',operation)==journal
+            and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?',(operation,)).fetchone())
+        # HOLD is the original final no-entry decision, not a fresh setup. Its
+        # old charts cannot turn it into a new debate or authorize an order.
+        # An aged actionable setup remains a proved nonexecution instead.
+        state,reason=('HOLD',None)if hold else('REJECTED','STALE_MARKET_CONTEXT')
+        if not hold:
+            need(db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",
+                (reason,operation)).rowcount==1)
+        record_analysis_candidate(db,(operation,cycle['id'],symbol,state,None,reason))
+        need(db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state='PENDING'",
+            (operation,)).rowcount==1)
+        data['queue'].pop(0)
+        if symbol not in data['seen']:data['seen'].append(symbol)
+        need(db.execute('UPDATE robot_cycles SET state=?,data=? WHERE id=?',
+            ('ACTIVE'if cycle['day']==today else'COMPLETE',json.dumps(data),cycle['id'])).rowcount==1)
+        need(_row(db,'analysis_response_recoveries','operation',operation)['phase']=='CONSUMED')
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK');raise
+    return (coordinator.store.report('HOLD',account)if hold else
+        coordinator.store.report('WAITING',account,wait_reason='ANALYSIS_RECEIVED_STALE_REPLACEMENT_PENDING'))
+
+
+def resume_previous_cached_analysis(coordinator,job,today,account):
+    """Finish only an old-day sealed cached reply before legacy settlement."""
+    if (job['kind']!='ANALYSIS' or job['state']!='PENDING'
+            or job['cycle'][:10]>=today):return None
+    db=coordinator.db
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analysis_response_recoveries'").fetchone():
+        return None
+    journal=_row(db,'analysis_response_recoveries','operation',job['operation'])
+    if journal is None or journal['phase']!='RESUME_CACHED':return None
+    try:
+        return _consume_cached_analysis(coordinator,job['operation'],today,account)
+    except Exception:
+        return coordinator.store.report('WAITING',account,wait_reason='ANALYSIS_RESPONSE_RECOVERY_UNVERIFIED')
+
+
 def resume_uncertain_analysis(coordinator,today,account):
     """The ordinary scheduler's read-only observation, before its unknown gate."""
     observe=getattr(coordinator.neuro,'observe_received_analysis',None)
@@ -615,7 +730,8 @@ def resume_uncertain_analysis(coordinator,today,account):
             JOIN api_requests a ON a.operation=j.operation
             JOIN analysis_response_recoveries r ON r.operation=j.operation
             WHERE j.kind='ANALYSIS' AND j.state IN ('PENDING','NEEDS_REVIEW')
-            AND a.state='COMPLETE' AND a.attempts=1 AND r.phase='PREPARED'
+            AND a.state='COMPLETE' AND a.attempts=1
+            AND (r.phase='PREPARED' OR (r.phase='RESUME_CACHED' AND j.state='PENDING'))
             AND r.request_sha256=a.body_hash ORDER BY a.created LIMIT 2'''))
         jobs.extend(job for job in prepared if job['operation'] not in {row['operation'] for row in jobs})
     if len(jobs)!=1:return None
@@ -624,8 +740,10 @@ def resume_uncertain_analysis(coordinator,today,account):
     try:
         api=_row(coordinator.db,'api_requests','operation',operation)
         if api['state']=='COMPLETE':
-            coordinator.neuro.require_key()
             journal=_row(coordinator.db,'analysis_response_recoveries','operation',operation)
+            if journal is not None and journal['phase']=='RESUME_CACHED':
+                return _consume_cached_analysis(coordinator,operation,today,account)
+            coordinator.neuro.require_key()
             need(journal is not None and journal['phase']=='PREPARED' and journal['proof_sha256']==sha(journal['proof']))
             envelope=json.loads(journal['proof'])
         else:envelope=observe(operation)
