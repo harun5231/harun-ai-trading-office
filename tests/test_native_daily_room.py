@@ -9,7 +9,7 @@ import tempfile
 import shutil
 import subprocess
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, HISTORY_DIAGNOSTIC_JS, HISTORY_OLDER_UI_JS
 from agent.native_browser_hook import DelegatedDOMBridge
@@ -103,6 +103,194 @@ class History:
  def select(self,row,*,occurrence=0):
   matches=[item for item in self.rooms if item[0]==row['text']]
   self.selected.append(row['text']);self.bridge.messages=copy.deepcopy(matches[occurrence][1])
+
+
+class DailyRoomFirstCandidateEvidenceTests(unittest.TestCase):
+ def setUp(self):
+  self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+  self.now=datetime(2026,11,13,19,53,tzinfo=timezone.utc).timestamp()
+
+ def actual_rows(self):
+  # Original day-14 prefix verified by FS run43512563510 and saved screen0.
+  row=json.loads((Path(__file__).parent/'fixtures/neurobro_screening_alias_20261114.json').read_text())
+  prompt=('pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\n'
+   'Akhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\n'
+   'Acuan percakapan: HARUN_a92bd982bd77c13c02fa115ad5f9089d\n\n'
+   'Isi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. '
+   'Format: {"SYMBOLS":["<SIMBOL_USDT_1>","<SIMBOL_USDT_2>"]}.\n'
+   'Setelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta.')
+  self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(),
+   '4114bc0c72557eae02fdc92ccf8b495ebacead0e102430480d63f8c265e26f02')
+  self.assertEqual(hashlib.sha256(row['reply'].encode()).hexdigest(),row['reply_sha256'])
+  return [dict(role='user',text=prompt,attachments=[]),dict(role='assistant',text=row['reply'],
+   complete=True,id='6802464d-0f95-4106-8c22-c8ea4cf38bc4')]
+
+ def setup_room(self):
+  bridge,room,hook,reasoner=DailyRoomTests.setup(self)
+  bridge.operation_deadline=80
+  room.day='2026-11-14';room.room_id='44a82f8094e64429b39f610b23cab583'
+  room._payload={'operation':'2026-11-14:robot-v9:0:screening:1:2',
+   'request_sha256':'56eb8934084be7206b87abaf3ff6fde7edf75d643cbb459cf6b65a925fb9055a'}
+  binding={'first_prompt_sha256':'4114bc0c72557eae02fdc92ccf8b495ebacead0e102430480d63f8c265e26f02',
+   'marker':'HARUN_a92bd982bd77c13c02fa115ad5f9089d','history_titles':[]}
+  return bridge,room,binding,reasoner
+
+ def evidence(self):
+  path=Path(self.directory.name)/'on-daily-room-first-candidate.json'
+  self.assertLessEqual(path.stat().st_size,131072)
+  self.assertEqual(path.stat().st_mode&0o777,0o600)
+  return json.loads(path.read_text())
+
+ def record(self,room,binding,rows,**extra):
+  values=dict(selected=True,status='CONNECTED',matched=False,samples=4,stable=3,
+   disposition='FOREIGN_STABLE',elapsed=.15,exception_class=None)
+  values.update(extra)
+  room.retain_first_restore_candidate({'index':3,'text':'Observed existing chat','label':'Hari ini'},
+   0,identities(self.actual_rows()),binding,'BOUND',rows,**values)
+
+ def test_actual_day14_prefix_first_match_is_private_and_preserves_complete_source_rows(self):
+  bridge,room,binding,reasoner=self.setup_room();owned=self.actual_rows();anchors=identities(owned)
+  room.history.rooms=[('Renamed existing title',owned)]
+  self.assertEqual(room.restore(anchors,binding,'BOUND'),owned)
+  receipt=self.evidence()
+  self.assertEqual(receipt['disposition'],'MATCHED');self.assertTrue(receipt['matches_result'])
+  self.assertEqual(receipt['native_rows'],owned);self.assertTrue(receipt['full_rows_retained'])
+  self.assertEqual(receipt['native_rows_sha256'],hashlib.sha256(json.dumps(owned,
+   sort_keys=True,separators=(',',':'),ensure_ascii=True).encode()).hexdigest())
+  self.assertEqual(receipt['candidate']['title'],'Renamed existing title')
+  self.assertEqual(receipt['row_diagnostics'][0]['text_sha256'],binding['first_prompt_sha256'])
+  self.assertTrue(receipt['row_diagnostics'][0]['first_prompt_hash_matches'])
+  self.assertTrue(receipt['row_diagnostics'][0]['bound_marker_present'])
+  self.assertEqual(receipt['row_diagnostics'][1]['id'],owned[1]['id'])
+  self.assertFalse(receipt['diagnostic_browser_inputs_performed'])
+  self.assertEqual(receipt['journal_database_writes'],0)
+  self.assertFalse((Path(self.directory.name)/JOURNAL_NAME).exists())
+  self.assertEqual((bridge.clicks,bridge.fresh_calls),(0,0));reasoner.request.assert_not_called()
+
+ def test_first_foreign_then_owned_keeps_first_evidence_and_identical_browser_event_order(self):
+  def run(recording):
+   bridge,room,binding,reasoner=self.setup_room();owned=self.actual_rows()
+   room.history.rooms=[('Foreign existing title',rows()),('Owned existing title',owned)]
+   events=[]
+   for target,name in ((room,'composer'),(room,'full_turns'),(room,'matches'),
+    (room.history,'rows'),(room.history,'select'),(bridge,'status'),(bridge,'clock'),(bridge,'wait')):
+    original=getattr(target,name)
+    def wrapper(*args,_fn=original,_name=name,**kw):
+     events.append((_name,bridge.current));return _fn(*args,**kw)
+    setattr(target,name,wrapper)
+   bridge.page.wait_for_timeout=bridge.wait
+   if not recording:room.retain_first_restore_candidate=Mock()
+   result=room.restore(identities(owned),binding,'BOUND')
+   self.assertEqual(result,owned);self.assertEqual(room.history.selected,
+    ['Foreign existing title','Owned existing title'])
+   self.assertEqual((bridge.clicks,bridge.fresh_calls),(0,0));reasoner.request.assert_not_called()
+   return events
+  baseline=run(False);observed=run(True)
+  self.assertEqual(observed,baseline)
+  receipt=self.evidence();self.assertEqual(receipt['candidate']['title'],'Foreign existing title')
+  self.assertEqual(receipt['native_rows'],rows());self.assertEqual(receipt['disposition'],'FOREIGN_STABLE')
+  self.assertFalse(receipt['matches_result']);self.assertEqual(receipt['stable'],3)
+
+ def test_writer_failure_cannot_change_return_or_original_exception(self):
+  for original_error in (None,RuntimeError('password=SECRET_SENTINEL_DO_NOT_LOG')):
+   with self.subTest(error=original_error is not None):
+    bridge,room,binding,_=self.setup_room();owned=self.actual_rows();room.history.rooms=[('Owned',owned)]
+    if original_error:room.matches=Mock(side_effect=original_error)
+    with patch('agent.native_turn_batch._write',side_effect=KeyboardInterrupt('cleanup failed'))as writer:
+     if original_error:
+      with self.assertRaises(RuntimeError)as caught:room.restore(identities(owned),binding,'BOUND')
+      self.assertIs(caught.exception,original_error)
+     else:self.assertEqual(room.restore(identities(owned),binding,'BOUND'),owned)
+    writer.assert_called_once()
+
+ def test_selection_exception_never_fabricates_a_native_row_observation(self):
+  bridge,room,binding,_=self.setup_room();owned=self.actual_rows();room.history.rooms=[('Owned',owned)]
+  error=RuntimeError('password=SECRET_SENTINEL_DO_NOT_LOG');room.history.select=Mock(side_effect=error)
+  with self.assertRaises(RuntimeError)as caught:room.restore(identities(owned),binding,'BOUND')
+  self.assertIs(caught.exception,error)
+  receipt=self.evidence();self.assertFalse(receipt['selected']);self.assertFalse(receipt['rows_observed'])
+  self.assertEqual(receipt['disposition'],'EXCEPTION');self.assertEqual(receipt['exception_class'],'RuntimeError')
+  self.assertNotIn('SECRET_SENTINEL',json.dumps(receipt))
+
+ def test_security_challenge_keeps_original_refusal_and_does_not_read_more_rows(self):
+  bridge,room,binding,_=self.setup_room();room.history.rooms=[('Owned',self.actual_rows())]
+  original=room.history.select
+  def select(*args,**kwargs):
+   original(*args,**kwargs);bridge.status=lambda:'CHALLENGE_REQUIRED'
+  room.history.select=select;room.full_turns=Mock(wraps=room.full_turns)
+  with self.assertRaises(DailyRoomUnavailable):room.restore(identities(self.actual_rows()),binding,'BOUND')
+  self.assertEqual(room.full_turns.call_count,1)  # Original pre-selection snapshot only.
+  receipt=self.evidence();self.assertFalse(receipt['rows_observed'])
+  self.assertEqual(receipt['status'],'CHALLENGE_REQUIRED');self.assertEqual(receipt['disposition'],'EXCEPTION')
+  self.assertEqual((bridge.clicks,bridge.fresh_calls),(0,0))
+
+ def test_timeout_uses_only_cached_rows_or_marks_observation_not_reached(self):
+  for before_sample in (True,False):
+   with self.subTest(before_sample=before_sample):
+    bridge,room,binding,_=self.setup_room();owned=self.actual_rows();foreign=rows();foreign[-1]['complete']=False
+    room.history.rooms=[('Foreign',foreign)];bridge.operation_deadline=0 if before_sample else .1
+    room.retain_restore_failure=Mock()
+    with self.assertRaisesRegex(DailyRoomUnavailable,'NEUROBRO_DAILY_ROOM_NOT_FOUND'):
+     room.restore(identities(owned),binding,'BOUND')
+    receipt=self.evidence();self.assertEqual(receipt['disposition'],'TIMEOUT')
+    self.assertEqual(receipt['rows_observed'],not before_sample)
+    self.assertEqual(receipt['native_rows'],None if before_sample else foreign)
+
+ def test_older_history_success_records_the_actual_returned_rows_not_stale_short_window(self):
+  bridge,room,binding,_=self.setup_room();owned=self.actual_rows();short=rows()
+  room.history.rooms=[('Known title',short)];binding['history_titles']=['Known title']
+  room.matches=Mock(return_value=False);room.restore_older=Mock(return_value=owned)
+  self.assertIs(room.restore(['a'*64]*4,binding,'BOUND'),owned)
+  receipt=self.evidence();self.assertEqual(receipt['disposition'],'RESTORED_OLDER')
+  self.assertEqual(receipt['native_rows'],owned);self.assertIsNone(receipt['matches_result'])
+  self.assertEqual(room.matches.call_count,1);room.restore_older.assert_called_once()
+
+ def test_raw_byte_limit_and_sensitive_fields_never_become_false_complete_proof(self):
+  _,room,binding,_=self.setup_room()
+  cases=([dict(role='user',text='é'*70000)],
+   [dict(role='user',text='Public text',api_key='SECRET_SENTINEL_DO_NOT_LOG')],
+   [dict(role='user',text='api_key:\nSECRET_SENTINEL_DO_NOT_LOG')],
+   [dict(role='user',text='password=secret')],
+   [dict(role='user',text='api_key: abc123')],
+   [dict(role='user',text='{"password":"SECRET_SENTINEL_DO_NOT_LOG"}')],
+   [dict(role='user',text='{"api_key":"abc123"}')],
+   [dict(role='user',text='{"password":"!@#$"}')],
+   [dict(role='assistant',text='Public text',id='sk-proj-SECRET_SENTINEL_DO_NOT_LOG')])
+  for observed in cases:
+   with self.subTest(shape=list(observed[0])):
+    self.record(room,binding,observed)
+    receipt=self.evidence();self.assertFalse(receipt['full_rows_retained'])
+    self.assertIsNone(receipt['native_rows']);self.assertIn('raw_omission_reason',receipt)
+    self.assertNotIn('SECRET_SENTINEL',json.dumps(receipt));self.assertNotIn('api_key',json.dumps(receipt))
+    self.assertNotIn('password=secret',json.dumps(receipt));self.assertNotIn('abc123',json.dumps(receipt))
+  self.record(room,binding,[dict(role='assistant',text='Public text',id='password=secret')])
+  self.assertNotIn('password=secret',json.dumps(self.evidence()))
+  room.retain_first_restore_candidate({'index':3,'text':'api_key: abc123','label':'Hari ini'},0,
+   identities(self.actual_rows()),binding,'BOUND',self.actual_rows(),selected=True,status='CONNECTED',
+   matched=True,samples=1,stable=0,disposition='MATCHED',elapsed=0,exception_class=None)
+  self.assertIsNone(self.evidence()['candidate']['title']);self.assertNotIn('abc123',json.dumps(self.evidence()))
+
+ def test_whitespace_hashes_are_diagnostics_only_and_do_not_admit_changed_prompt(self):
+  bridge,room,binding,_=self.setup_room();owned=self.actual_rows();changed=copy.deepcopy(owned)
+  changed[0]['text']=changed[0]['text'].replace('\n\n','\n')
+  room.history.rooms=[('Changed',changed)];room.retain_restore_failure=Mock()
+  with self.assertRaisesRegex(DailyRoomUnavailable,'NEUROBRO_DAILY_ROOM_NOT_FOUND'):
+   room.restore(identities(owned),binding,'BOUND')
+  receipt=self.evidence();first=receipt['row_diagnostics'][0]
+  self.assertFalse(receipt['matches_result']);self.assertFalse(first['first_prompt_hash_matches'])
+  self.assertEqual(first['whitespace_sha256'],hashlib.sha256(' '.join(owned[0]['text'].split()).encode()).hexdigest())
+
+ def test_missing_history_has_no_invented_first_candidate(self):
+  bridge,room,binding,_=self.setup_room();bridge.operation_deadline=.1;room.retain_restore_failure=Mock()
+  with self.assertRaises(DailyRoomUnavailable):room.restore(identities(self.actual_rows()),binding,'BOUND')
+  self.assertFalse((Path(self.directory.name)/'on-daily-room-first-candidate.json').exists())
+
+ def test_repeated_attempts_replace_only_the_one_private_diagnostic_file(self):
+  _,room,binding,_=self.setup_room();owned=self.actual_rows()
+  room.history.rooms=[('First existing title',owned)];room.restore(identities(owned),binding,'BOUND')
+  room.history.rooms=[('Renamed existing title',owned)];room.restore(identities(owned),binding,'BOUND')
+  self.assertEqual(self.evidence()['candidate']['title'],'Renamed existing title')
+  self.assertEqual([p.name for p in Path(self.directory.name).iterdir()],['on-daily-room-first-candidate.json'])
 
 
 class DailyRoomTests(unittest.TestCase):

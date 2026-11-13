@@ -16,6 +16,7 @@ import re
 from pathlib import Path
 import sqlite3
 import stat
+import sys
 import threading
 import time
 import uuid
@@ -443,47 +444,158 @@ class DailyRoom:
             occurrences[key] = occurrence + 1
             ordered.append((row, occurrence))
         ordered.sort(key=lambda item: item[0]['text'] not in hints)
-        for row, occurrence in ordered:
-            before = identities(self.full_turns())
-            self.history.select(row, occurrence=occurrence)
-            until = self.bridge._until(5)
-            previous, stable = None, 0
-            older_attempted = False
-            while self.bridge.clock() < until:
-                status = self.bridge.status()
-                if status == 'UNAVAILABLE':
-                    # Native detection can be unavailable while this selected
-                    # history room renders. Wait within its existing budget;
-                    # never resubmit, create a room or interact with a challenge.
-                    previous, stable = None, 0
+        for candidate, (row, occurrence) in enumerate(ordered):
+            # Passive evidence uses only observations already reached below.
+            # Never poll, match, navigate or read a draft for this diagnostic.
+            selected = False; before = rows = observed_rows = status = matched = None
+            samples = stable = 0; disposition = 'EXCEPTION'
+            started = time.monotonic() if candidate == 0 else None
+            try:
+                before = identities(self.full_turns())
+                self.history.select(row, occurrence=occurrence)
+                selected = True
+                until = self.bridge._until(5)
+                previous, stable = None, 0
+                older_attempted = False
+                while self.bridge.clock() < until:
+                    status = self.bridge.status()
+                    if status == 'UNAVAILABLE':
+                        # Native detection can be unavailable while this selected
+                        # history room renders. Wait within its existing budget;
+                        # never resubmit, create a room or interact with a challenge.
+                        previous, stable = None, 0
+                        self.bridge.page.wait_for_timeout(50)
+                        continue
+                    need(status == 'CONNECTED')
+                    rows = self.full_turns()
+                    samples += 1
+                    matched = self.matches(rows, anchors, binding, state, archive_root=self.store.root,prefix_identity=prefix_identity)
+                    if matched:
+                        disposition = 'MATCHED'
+                        return rows
+                    # A saved title is only a navigation hint. Load its older UI
+                    # history, then require the exact unchanged identity contract.
+                    unique_hint = (row['text'] in hints and sum(
+                        (choice['text'], choice['label']) == (row['text'], row['label'])
+                        for choice in choices) == 1)
+                    if (not older_attempted and unique_hint and state == 'BOUND'
+                            and 2 <= len(rows) < len(anchors)
+                            and rows[-2].get('role') == 'user'
+                            and rows[-1].get('role') == 'assistant'
+                            and rows[-1].get('complete') is True):
+                        older_attempted = True
+                        restored = self.restore_older(rows, anchors, binding, state,prefix_identity=prefix_identity)
+                        if restored is not None:
+                            observed_rows = restored
+                            disposition = 'RESTORED_OLDER'
+                            return restored
+                    observed = identities(rows)
+                    stable = stable + 1 if observed == previous else 0
+                    previous = observed
+                    if observed != before and stable >= 3 and rows and rows[-1].get('complete') is True:
+                        disposition = 'FOREIGN_STABLE'
+                        break  # Loaded another historical room; inspect no reply there.
                     self.bridge.page.wait_for_timeout(50)
-                    continue
-                need(status == 'CONNECTED')
-                rows = self.full_turns()
-                if self.matches(rows, anchors, binding, state, archive_root=self.store.root,prefix_identity=prefix_identity):
-                    return rows
-                # A saved title is only a navigation hint. Load its older UI
-                # history, then require the exact unchanged identity contract.
-                unique_hint = (row['text'] in hints and sum(
-                    (choice['text'], choice['label']) == (row['text'], row['label'])
-                    for choice in choices) == 1)
-                if (not older_attempted and unique_hint and state == 'BOUND'
-                        and 2 <= len(rows) < len(anchors)
-                        and rows[-2].get('role') == 'user'
-                        and rows[-1].get('role') == 'assistant'
-                        and rows[-1].get('complete') is True):
-                    older_attempted = True
-                    restored = self.restore_older(rows, anchors, binding, state,prefix_identity=prefix_identity)
-                    if restored is not None:
-                        return restored
-                observed = identities(rows)
-                stable = stable + 1 if observed == previous else 0
-                previous = observed
-                if observed != before and stable >= 3 and rows and rows[-1].get('complete') is True:
-                    break  # Loaded another historical room; inspect no reply there.
-                self.bridge.page.wait_for_timeout(50)
+                else:
+                    disposition = 'TIMEOUT'
+            finally:
+                if candidate == 0:
+                    try:
+                        self.retain_first_restore_candidate(row, occurrence, anchors, binding, state,
+                            rows if observed_rows is None else observed_rows, selected=selected,
+                            status=status, matched=matched if disposition != 'RESTORED_OLDER' else None,
+                            samples=samples, stable=stable, disposition=disposition,
+                            elapsed=time.monotonic()-started, before=before,
+                            exception_class=(sys.exc_info()[0].__name__
+                                if disposition == 'EXCEPTION' and sys.exc_info()[0] else None))
+                    except BaseException:
+                        pass  # Evidence never changes the original return/error.
         self.retain_restore_failure(choices)
         raise DailyRoomUnavailable('NEUROBRO_DAILY_ROOM_NOT_FOUND')
+
+    def retain_first_restore_candidate(self, choice, occurrence, anchors, binding, state, rows,
+            *, selected, status, matched, samples, stable, disposition, elapsed, exception_class, before=None):
+        """Best-effort bounded PRIVATE evidence; never a room admission receipt.
+
+        Raw rows are retained only for known native fields without credential
+        patterns. Missing/oversize/sensitive observations are explicit; hashes
+        and whitespace comparisons never authorize a room or alter its journal.
+        """
+        try:
+            sensitive = re.compile(r'(?i)(?:\bsk-[A-Za-z0-9_-]{12,}|'
+                r'\b(?:api[_ -]?key|api[_ -]?secret|secret[_ -]?key|client[_ -]?secret|'
+                r'authorization|bearer|password|access[_ -]?token|refresh[_ -]?token)'
+                r'\b(?:[\'"]?\s*[:=]|\s+\S)|'
+                r'(?<![A-Za-z0-9])[A-Za-z0-9]{64,}(?![A-Za-z0-9]))')
+            safe = lambda value, size: (value if type(value) is str and len(value) <= size
+                and sensitive.search(value) is None else None)
+            text_sha = lambda text: hashlib.sha256(text.encode()).hexdigest()
+            digest = lambda value: value if type(value) is str and re.fullmatch('[a-f0-9]{64}', value) else None
+            payload = self._payload if type(self._payload) is dict else {}
+            marker = binding.get('marker')
+            marker = marker if type(marker) is str and re.fullmatch('HARUN_[a-f0-9]{32}', marker) else None
+            observed = rows if type(rows) is list else None
+            record = dict(schema_version=1, kind='NATIVE_DAILY_ROOM_FIRST_CANDIDATE_V1',
+                at=time.time(), source_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                day=self.day if type(self.day) is str and re.fullmatch(r'\d{4}-\d\d-\d\d',self.day) else None,
+                room_id=self.room_id if type(self.room_id) is str and re.fullmatch('[a-f0-9]{32}',self.room_id) else None,
+                state=state if state in ('CLAIMED','PREPARED','SENT','BOUND') else None,
+                operation=safe(payload.get('operation'), 160), request_sha256=digest(payload.get('request_sha256')),
+                anchors_sha256=text_sha(canonical(anchors)), first_prompt_sha256=digest(binding.get('first_prompt_sha256')),
+                marker=marker, candidate=dict(index=0, occurrence=occurrence,
+                    button_index=choice.get('index') if type(choice.get('index')) is int else None,
+                    title=safe(choice.get('text'), 256), label=safe(choice.get('label'), 80),
+                    title_sha256=text_sha(choice['text']) if type(choice.get('text')) is str else None),
+                selected=selected, status=status if status in ('CONNECTED','UNAVAILABLE','LOGIN_REQUIRED','CHALLENGE_REQUIRED','BUSY') else None,
+                matches_result=matched if type(matched) is bool else None, disposition=disposition,
+                samples=samples, stable=stable, elapsed_seconds=elapsed, exception_class=safe(exception_class,80),
+                rows_observed=observed is not None, native_row_count=len(observed) if observed is not None else None,
+                rows_observation='LAST_EXISTING_NATIVE_READ' if observed is not None else 'NOT_REACHED',
+                before_identities_sha256=text_sha(canonical(before)) if type(before) is list else None,
+                native_rows=None, full_rows_retained=False, row_diagnostics=[],
+                diagnostic_browser_inputs_performed=False, model_calls=0, journal_database_writes=0)
+            if observed is not None:
+                # Metadata is bounded independently of the raw-row byte budget.
+                summary = observed if len(observed) <= 128 else observed[:2]+observed[-2:]
+                record['row_diagnostics_truncated'] = len(summary) != len(observed)
+                for row in summary:
+                    text = row.get('text') if type(row) is dict else None
+                    if type(text) is not str:
+                        record['row_diagnostics'].append({'text_observed': False})
+                        continue
+                    normalized = text.replace('\r\n', '\n').strip()
+                    record['row_diagnostics'].append(dict(role=row.get('role') if row.get('role') in
+                        ('user','assistant','unknown') else None, complete=row.get('complete') if type(row.get('complete')) is bool else None,
+                        id=safe(row.get('id'),160), text_characters=len(text), text_sha256=text_sha(text),
+                        normalized_sha256=text_sha(normalized), whitespace_sha256=text_sha(re.sub(r'\s+', ' ', normalized)),
+                        first_prompt_hash_matches=text_sha(normalized)==binding.get('first_prompt_sha256'),
+                        bound_marker_present=bool(marker and re.search(r'(?<![A-Za-z0-9_])'+re.escape(marker)+r'(?![A-Za-z0-9_])',text))))
+                known = {'role','text','id','complete','attachments'}
+                supported = (len(observed) <= 128 and all(type(row) is dict and set(row) <= known
+                    and type(row.get('text')) is str and row.get('role') in ('user','assistant','unknown')
+                    and sensitive.search(row['text']) is None
+                    and (row.get('id') is None or safe(row['id'],160) == row['id'])
+                    and (row.get('complete') is None or type(row['complete']) is bool)
+                    and type(row.get('attachments',[])) is list
+                    and all(type(name) is str and safe(name,256) == name for name in row.get('attachments',[]))
+                    for row in observed))
+                if supported:
+                    raw = canonical(observed)
+                    record['native_rows_sha256'] = text_sha(raw)
+                    if len(raw.encode()) <= 120000 and sensitive.search(raw) is None:
+                        record.update(native_rows=observed, full_rows_retained=True)
+                    else:
+                        record['raw_omission_reason'] = 'SENSITIVE_OR_OVERSIZE'
+                else:
+                    record['raw_omission_reason'] = 'UNSUPPORTED_OR_OVERSIZE'
+            if len(canonical(record).encode()) > 131072:
+                record.update(native_rows=None, full_rows_retained=False, raw_omission_reason='BYTE_LIMIT')
+            if len(canonical(record).encode()) > 131072:
+                return
+            from .native_turn_batch import _write
+            _write(self.store.root, 'on-daily-room-first-candidate.json', record, replace=True)
+        except Exception:
+            pass  # Includes serialization, write, replace and writer cleanup.
 
     def retain_history_window(self, rows, anchors, binding, container):
         """Persist actual identities before any older-history scroll."""
