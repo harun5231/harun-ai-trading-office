@@ -388,6 +388,69 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
         entry.update(sha256=sha(raw), bytes=len(raw.encode()))
         return self.seal(envelope)
 
+    def actual_alias_fixture(self):
+        row = json.loads((ROOT / 'tests/fixtures/neurobro_screening_alias_20261114.json').read_text())
+        self.assertEqual(sha(row['reply']), row['reply_sha256'])
+        operation = self.two_coin_contract()
+        symbols = row['mini_decision']['symbols']
+        self.catalog.update({symbol: {} for symbol in symbols})
+        return operation, symbols, self.contextual_review(self.fixture(operation=operation,
+            reply=row['reply'], symbols=symbols))
+
+    def test_actual_alias_reply_recovers_once_after_interruption_and_screening_advances_without_send(self):
+        from worker import robot as robot_module
+        operation, symbols, envelope = self.actual_alias_fixture()
+        finances = self.finances(); native_record = self.provider._record_browser_response
+        def interrupted(*args, **kwargs):
+            native_record(*args, **kwargs)
+            raise RuntimeError('offline interruption after alias reply receipt')
+        self.provider._record_browser_response = interrupted
+        with self.assertRaisesRegex(RuntimeError, 'offline interruption'):
+            self.recover(envelope)
+        receipt = self.row('research_browser_responses', operation)
+        self.assertEqual(receipt['assistant_text'], envelope['observation']['rows'][-1]['text'])
+        self.provider._record_browser_response = self.forbid
+        self.assertEqual(self.recover(envelope, now=NOW+1), 'RESUME_CACHED')
+        self.assertEqual(self.row('research_browser_responses', operation), receipt)
+        api = self.row('api_requests', operation)
+        self.assertEqual((api['attempts'], api['created']), (1, self.created))
+        self.assertEqual(json.loads(api['output']), {'symbols': symbols})
+        snapshot = tuple(self.db.iterdump())
+        self.assertEqual(self.recover(envelope, now=NOW+2), 'RESUME_CACHED')
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
+        robot = object.__new__(robot_module.Coordinator)
+        robot.db = self.db; robot.neuro = self.provider; robot.allowed = lambda today: today == DAY
+        robot.market = SimpleNamespace(catalog=lambda: self.catalog, max_age=180)
+        robot.exposed_symbols = lambda account: set()
+        robot.store = SimpleNamespace(report=lambda status, account=None, reason=None, **kw:
+            dict(bot_status=status, reason=reason, **kw))
+        with patch.object(robot_module.time, 'time', return_value=NOW+3):
+            result = robot.screen(CYCLE, copy.deepcopy(self.data), 2, {}, DAY, True)
+        self.assertEqual(result['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+        self.assertEqual(self.row('robot_jobs', operation)['state'], 'COMPLETE')
+        self.assertEqual(json.loads(self.row('robot_cycles')['data']),
+            {**self.data, 'screen': 0, 'queue': symbols, 'round_symbols': symbols})
+        self.assertEqual(self.finances(), finances)
+
+    def test_actual_alias_stale_reply_retires_under_original_operation_without_replay_or_setup(self):
+        operation, symbols, envelope = self.actual_alias_fixture()
+        finances = self.finances()
+        self.created = NOW-1000
+        self.db.execute('UPDATE api_requests SET created=? WHERE operation=?', (self.created, operation))
+        self.assertEqual(self.recover(envelope), 'NOEXEC')
+        api = self.row('api_requests', operation)
+        self.assertEqual((api['state'], api['failure_code'], api['output'], api['attempts']),
+            ('RECEIVED_STALE_NOT_EXECUTED', 'SCREENING_RESPONSE_RECEIVED_STALE', None, 1))
+        self.assertEqual(self.row('robot_jobs', operation)['state'], 'COMPLETE')
+        self.assertEqual(json.loads(self.row('robot_cycles')['data']),
+            {**self.data, 'screen': 0, 'replacement_due': 2})
+        self.assertEqual(self.row('research_browser_responses', operation)['assistant_text'],
+            envelope['observation']['rows'][-1]['text'])
+        self.assertEqual(self.finances(), finances)
+        snapshot = tuple(self.db.iterdump())
+        self.assertEqual(self.recover(envelope, now=NOW+86400), 'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
+
     def test_actual_mini_interprets_fil_atom_paragraph_list_table_and_json_without_format_question(self):
         operation = self.two_coin_contract()
         replies = (

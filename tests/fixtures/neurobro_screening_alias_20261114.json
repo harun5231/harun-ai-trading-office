@@ -1,0 +1,14 @@
+{
+  "source": "Retained native screening observation 43497402642; read-only saved export 43500673540. Original analyst text and actual Mini decision only; no provider fixture calls.",
+  "operation": "2026-11-14:robot-v9:0:screening:0:2",
+  "reply_sha256": "0368ab478316f7f3ec53ecd7e865bf47645cd7ec2c049e2c56588337739310d6",
+  "reply": "Berdasarkan data futures Binance (funding, likuidasi, volume) dan daftar eksklusi rotasimu, saya pilih $OP dan $ENA - dua-duanya bukan megacap, likuid, dan menunjukkan pola crowded short yang matang buat di-day-trade.\n\nSHORT SQUEEZE SEDANG MATANG\n\nKedua coin ini lagi koreksi tipis (-1.8% s/d -2.2%) tapi likuidasi short meledak jauh melebihi long:\n\nCoin\tFunding Binance\tLikuidasi Short vs Long\tVolume 24h\tOI\n$OP\t-0.5% (negatif)\t$294K vs $28K (10x)\t$27.8M\t$11.6M\n$ENA\t+0.08% (landai)\t$1.46M vs $92K (16x)\t$208M\t$69M\n\nArtinya posisi short lagi terdesak - koreksi ini justru jadi entry long yang bagus, bukan sinyal jual.\n\nLEVEL & RISIKO\n\n$OP UST Perpetual (confidence 6, R:R 1.78) - entry $0.0925, TP1 $0.0965 / TP2 $0.1005, SL $0.0895. Modal moderat dengan leverage 5x.\n\n$ENA USDT Perpetual (confidence 6, R:R 1.72) - entry $0.135, TP1 $0.142 / TP2 $0.149, SL $0.1295. Paling likuid dari kandidat ($208M volume), jadi spread-nya bersahabat buat scalp harian.\n\nKeduanya sesuai pola yang kamu suka: likuiditas tinggi + funding landai, dan dua-duanya di luar daftar eksklusi rotasi kamu. Kamu bisa langsung eksekusi keduanya di Binance futures - atau kalau mau lewat NeuroWallet, juga bisa.\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial - dan bisa saja salah. Yang kamu tradingkan dan risiko yang kamu ambil tetap keputusanmu sendiri.\n\n\n```json\n{\"SYMBOLS\":[\"OP\",\"ENA\"]}\n```",
+  "mini_decision": {
+    "action": "SCREENING",
+    "question": "",
+    "symbols": [
+      "OPUSDT",
+      "ENAUSDT"
+    ]
+  }
+}

@@ -39,6 +39,79 @@ def bound(reply,symbols,*,count=2):
  return payload,request,receipt(request,symbols),turns
 
 class SemanticScreeningTests(unittest.TestCase):
+ def test_actual_nov14_bare_json_uses_original_mini_reading_without_screening_prices(self):
+  row=json.loads((Path(__file__).parent/'fixtures/neurobro_screening_alias_20261114.json').read_text())
+  reply=row['reply'];symbols=row['mini_decision']['symbols'];args=bound(reply,symbols);before=copy.deepcopy(args)
+  self.assertEqual(hashlib.sha256(reply.encode()).hexdigest(),row['reply_sha256'])
+  self.assertEqual(row['mini_decision'],{'action':'SCREENING','symbols':['OPUSDT','ENAUSDT'],'question':''})
+  with self.assertRaisesRegex(ReplyIncomplete,'JSON_SUMMARY_INVALID'):parse_screening_reply(reply)
+  self.assertEqual(screening_interpretation(reply,*args),{'symbols':symbols})
+  self.assertEqual(args,before)
+  # Unsolicited screening prices, sides and R:R are never an ANALYSIS setup.
+  from agent.neurobro_reply import parse_analysis_reply
+  with self.assertRaises(ReplyIncomplete):parse_analysis_reply(reply,'OPUSDT')
+
+ def test_semantic_alias_summary_is_generic_and_keeps_original_source_and_phase(self):
+  for summary in ('{"SYMBOLS":["LINK","FET"]}',
+   '```json\n{"SYMBOLS":["link","FETUSDT"]}\n```'):
+   reply='Pilihan final saya $LINK dan $FET; $BTC hanya pembanding.\n\n'+summary
+   args=bound(reply,['LINKUSDT','FETUSDT']);before=copy.deepcopy(args)
+   self.assertEqual(screening_interpretation(reply,*args),{'symbols':['LINKUSDT','FETUSDT']})
+   self.assertEqual(args,before)
+   with self.assertRaises(ReplyIncomplete):parse_screening_reply(reply)
+
+ def test_alias_summary_keeps_attribution_uniqueness_capacity_and_exclusion_guards(self):
+  for reply in ('{"SYMBOLS":["OP","ENA"]}',
+   '$OPBTC dan $ENA merupakan pembanding.\n{"SYMBOLS":["OP","ENA"]}',
+   '$OP dan $ENA adalah pilihan.\n{"SYMBOLS":["OP","OTHER"]}',
+   '$OP dan $ENA adalah pilihan.\n{"SYMBOLS":["OP","OPUSDT"]}',
+   '$OP dan $ENA adalah pilihan.\n{"SYMBOLS":["OP"]}',
+   '$OP dan $ENA adalah pilihan.\n{"SYMBOLS":["OP","ENA"],"ENTRY":"1"}'):
+   with self.subTest(reply=reply),self.assertRaises(ReplyIncomplete):
+    screening_interpretation(reply,*bound(reply,['OPUSDT','ENAUSDT']))
+  reply='$OP dan $ENA adalah pilihan.\n{"SYMBOLS":["OP","ENA"]}'
+  args=bound(reply,['OPUSDT','ENAUSDT']);args[0]['context']['excluded_symbols']=['ENAUSDT']
+  with self.assertRaisesRegex(ReplyIncomplete,'EXCLUDED_SYMBOL'):screening_interpretation(reply,*args)
+  args=bound(reply,['OPUSDT','ENAUSDT']);args[0]['context']['requested_count']=1
+  with self.assertRaisesRegex(ReplyIncomplete,'COUNT_MISMATCH'):screening_interpretation(reply,*args)
+
+ def test_alias_json_cannot_hide_conflicting_explicit_finals_or_prior_json(self):
+  for prefix in ('Keputusan final\nCOIN: BTCUSDT, ETHUSDT',
+   'Keputusan final\nCOIN: $BTC, $ETH',
+   'Keputusan final\nCOIN: $BTC, $ETH.',
+   'Keputusan final: $BTC dan $ETH',
+   'Keputusan final: BTCUSDT dan ETHUSDT.',
+   'Pilihan final saya $BTC dan $ETH',
+   'Pilihan final saya $BTC dan $ETH.',
+   'Ringkasan Picks:\n$BTC\n$ETH',
+   'COIN YANG DIPILIH:\n$BTC\n$ETH',
+   'Keputusan final\nCOIN: $BTC, $ETH\n\nRingkasan Picks:\n$OP\n$ENA',
+   'Keputusan final\nCOIN: $BTC, $ETH\n\nCOIN YANG DIPILIH:\n$OP\n$ENA',
+   '{"SYMBOLS":["BTCUSDT","ETHUSDT"]}',
+   '{"SYMBOLS":["BTC","ETH"]}'):
+   reply='OPUSDT dan ENAUSDT hanya pembanding.\n\n'+prefix+'\n\n{"SYMBOLS":["OP","ENA"]}'
+   with self.subTest(prefix=prefix),self.assertRaises(ReplyIncomplete):
+    screening_interpretation(reply,*bound(reply,['OPUSDT','ENAUSDT']))
+  # Reasons/comparisons do not become final choices, even with cashtags.
+  reply=('Keputusan final\nCOIN: $OP, $ENA\n\nAlasan: lebih layak dibanding $BTC dan $ETH.'
+   '\n\n{"SYMBOLS":["OP","ENA"]}')
+  self.assertEqual(screening_interpretation(reply,*bound(reply,['OPUSDT','ENAUSDT'])),
+   {'symbols':['OPUSDT','ENAUSDT']})
+  for prefix in ('Keputusan final\nCOIN: $OPUSDT, $ENAUSDT',
+   'Keputusan final\nCOIN: $OP\nCOIN: $ENA',
+   'Keputusan final\nCOIN: OPUSDT\nCOIN: ENAUSDT',
+   'Keputusan final\nCOIN: $OP, $ENA.\n\nTabel pembanding:\nCOIN: $BTC, $ETH',
+   'Ringkasan Picks:\n$OP\n$ENA'):
+   reply=prefix+'\n\n{"SYMBOLS":["OP","ENA"]}'
+   with self.subTest(valid_prefix=prefix):
+    self.assertEqual(screening_interpretation(reply,*bound(reply,['OPUSDT','ENAUSDT'])),
+     {'symbols':['OPUSDT','ENAUSDT']})
+  for prefix in ('$OP dan $ENA. Pilihan jika breakout:',
+   '$OP dan $ENA. Data chart belum terbaca.'):
+   reply=prefix+'\n{"SYMBOLS":["OP","ENA"]}'
+   with self.subTest(prefix=prefix),self.assertRaises(ReplyIncomplete):
+    screening_interpretation(reply,*bound(reply,['OPUSDT','ENAUSDT']))
+
  def test_actual_nov10_replies_use_mini_semantics_without_asking_the_same_format_again(self):
   fixture=json.loads((Path(__file__).parent/'fixtures/neurobro_screening_semantic_20261110.json').read_text())
   self.assertEqual(len(fixture['replies']),6)
@@ -143,6 +216,17 @@ class SemanticScreeningHookTests(unittest.TestCase):
   request=case.reasoner.request.call_args.args[0]
   self.assertEqual(request['conversation_context']['turns'],case.bridge._turns())
   self.assertEqual(request['conversation_context']['native_operation'],payload['operation'])
+
+ def test_actual_bare_json_selection_needs_no_repeat_send_or_model_and_has_no_setup_output(self):
+  row=json.loads((Path(__file__).parent/'fixtures/neurobro_screening_alias_20261114.json').read_text())
+  reply=row['reply'];symbols=row['mini_decision']['symbols'];case,payload=self.setup_hook(reply)
+  case.reasoner.request.side_effect=lambda request:receipt(request,symbols)
+  result=case.hook.ask(payload,lambda:True,deadline=80)
+  self.assertEqual(result['output'],{'symbols':symbols})
+  self.assertEqual(result['assistant_text'],reply)
+  self.assertEqual(result['chart_evidence'],[])
+  self.assertEqual(case.bridge.clicks,1)
+  case.reasoner.request.assert_called_once();case.converter.assert_not_called()
 
  def test_normal_result_carries_only_actual_sealed_done_review_and_unchanged_native_text(self):
   from agent.native_analysis_receipt import read_reviews
