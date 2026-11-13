@@ -191,6 +191,9 @@ class Coordinator:
         for job in self.db.execute("SELECT * FROM robot_jobs WHERE state='PENDING' ORDER BY rowid"):
             cycle,data=self.research_job(job)
             if cycle['day']>=today:continue
+            from .analysis_response_recovery import resume_previous_cached_analysis
+            recovered=resume_previous_cached_analysis(self,job,today,account)
+            if recovered is not None:return recovered
             try:
                 api,_=self.completed_research(job['operation'],job['cycle'],job['kind'],job['symbol'])
                 value=json.loads(api['output'],parse_float=D)
