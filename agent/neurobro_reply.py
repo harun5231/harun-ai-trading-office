@@ -511,38 +511,124 @@ def _screening_strong_final(text):
     return strong
 
 
+def _screening_explicit_alias_conflict(scope, selected):
+    """Compare explicit final fields, never ticker mentions in their reasons.
+
+    Actual Mini/source verification already owns the interpretation. This only
+    preserves the existing contradiction guard for labelled standalone
+    cashtags that the strict pair parser cannot read. It completes no ticker.
+    """
+    identity = r'(?:\$?' + PAIR + r'|\$[A-Z0-9]{2,20})'
+    choices = identity + r'(?:[ \t]*(?:,|&|\bdan\b)[ \t]*' + identity + r')?'
+    label = r'(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)(?:[ \t]*\([12]\))?[ \t]*[:=]'
+    final = r'(?:ringkasan|keputusan|setup)[ \t]+(?:akhir|final|aktif)'
+
+    def identities(body):
+        clause = re.split(r';|[ \t]+(?:karena|[-—])[ \t]+', body, maxsplit=1, flags=re.I)[0].strip()
+        clause = re.sub(r'[.!]$', '', clause).strip()
+        return re.findall(identity, clause, re.I) if re.fullmatch(choices, clause, re.I) else None
+
+    def compare(tokens):
+        authored = []
+        for token in tokens:
+            plain = token.removeprefix('$')
+            if re.fullmatch(PAIR, plain, re.I):
+                authored.append(symbol(plain))
+                continue
+            base = plain.upper()
+            if re.fullmatch('[0-9]+[KMBT]?', base):
+                return  # A money amount is not a source coin identity.
+            matches = [pair for pair in selected if pair[:-4] == base]
+            if len(matches) != 1:
+                raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+            authored.append(matches[0])
+        if authored != selected:
+            raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+
+    # Complete explicit clauses are independent finals. Read the choice part
+    # only, without consuming any comparison/reason after its clear boundary.
+    clauses = final + r'[ \t]*[:=]|pilihan[ \t]+(?:akhir|final)[ \t]+saya[ \t]+'
+    for match in re.finditer(r'^[ \t]*(?:' + clauses + r')[ \t]*([^\n]+)', scope, re.I | re.M):
+        tokens = identities(match[1])
+        if tokens:
+            compare(tokens)
+
+    # Aggregate adjacent COIN fields/identity rows in their explicitly named
+    # final selection section. A later reason or comparison section ends it.
+    lines = scope.strip().splitlines()
+    if lines and re.fullmatch(final + r'[ \t]*:?', lines[0].strip(), re.I):
+        lines = lines[1:]
+    picks = [index for index, line in enumerate(lines) if _SCREENING_PICK.fullmatch(line)
+        or re.fullmatch(r'[ \t]*(?:COIN|KOIN)[ \t]+YANG[ \t]+DIPILIH[ \t]*[:=]?[ \t]*', line, re.I)]
+    sections = [(lines, False)] if _screening_strong_final(scope) else []
+    sections.extend((lines[index + 1:], True) for index in picks)
+    for section, named in sections:
+        tokens = []
+        for line in section:
+            if not line.strip():
+                continue
+            field = re.fullmatch(r'[ \t]*' + label + r'[ \t]*(.+)', line, re.I)
+            row = identities(field[1] if field else line) if field or named else None
+            if row is None:
+                break
+            tokens.extend(row)
+        if tokens:
+            compare(tokens)
+
+
+def _screening_public_summary(value, prefix, *, semantic_symbols=None):
+    """Validate an authored summary; aliases require the actual Mini reading.
+
+    The caller first validates the Mini receipt and independent source
+    attribution. This helper only compares a bare base with those already
+    admitted USDT pairs, without rewriting the analyst reply or its hashes.
+    The deterministic/public parser never supplies this capability.
+    """
+    if set(value) != {'SYMBOLS'} or type(value['SYMBOLS']) is not list:
+        raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+    selected = []
+    for choice in value['SYMBOLS']:
+        if type(choice) is not str:
+            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+        if re.fullmatch(PAIR, choice, re.I) is not None:
+            selected.append(symbol(choice))
+            continue
+        matches = ([pair for pair in semantic_symbols if pair[:-4] == choice.upper()]
+            if semantic_symbols is not None else [])
+        if len(matches) != 1:
+            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
+        selected.append(matches[0])
+    if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
+        raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+    scope = _explanation_scope(prefix)
+    if scope.strip():
+        # A comparison table is not another final choice. Preserve the same
+        # prefix/conditional checks for both full pairs and semantic aliases.
+        prior_json = _json_tail(scope)
+        prior_summary = (prior_json is not None and type(prior_json[0]) is dict
+            and 'SYMBOLS' in prior_json[0])
+        if _screening_strong_final(scope) or prior_summary:
+            try:
+                previous = (_screening_public_summary(*prior_json, semantic_symbols=semantic_symbols)
+                    if semantic_symbols is not None and prior_summary else parse_screening_reply(scope))
+            except ReplyIncomplete as error:
+                if semantic_symbols is not None and prior_summary or str(error) in (
+                        'NEUROBRO_SCREENING_AMBIGUOUS', 'NEUROBRO_SCREENING_DECISION_CONFLICT'):
+                    raise
+            else:
+                if previous['symbols'] != selected:
+                    raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+        if semantic_symbols is not None:
+            _screening_explicit_alias_conflict(scope, selected)
+        if _conditional_json_intro(scope, ('LONG', 'SHORT', 'HOLD')):
+            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
+    return {'symbols': selected}
+
+
 def parse_screening_reply(reply):
     structured = _public_json_tail(reply, 'SCREENING')
     if structured is not None:
-        value, prefix = structured
-        if set(value) != {'SYMBOLS'} or type(value['SYMBOLS']) is not list:
-            raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
-        selected = []
-        for choice in value['SYMBOLS']:
-            if type(choice) is not str or re.fullmatch(PAIR, choice, re.I) is None:
-                raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
-            selected.append(symbol(choice))
-        if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
-            raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
-        scope = _explanation_scope(prefix)
-        if scope.strip():
-            # Reuse the same source-finality distinction as Mini's semantic
-            # projection: an earlier comparison table is not another choice.
-            prior_json = _json_tail(scope)
-            if (_screening_strong_final(scope) or prior_json is not None
-                    and type(prior_json[0]) is dict and 'SYMBOLS' in prior_json[0]):
-                try:
-                    previous = parse_screening_reply(scope)
-                except ReplyIncomplete as error:
-                    if str(error) in ('NEUROBRO_SCREENING_AMBIGUOUS',
-                            'NEUROBRO_SCREENING_DECISION_CONFLICT'):
-                        raise
-                else:
-                    if previous['symbols'] != selected:
-                        raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
-            if _conditional_json_intro(scope, ('LONG', 'SHORT', 'HOLD')):
-                raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
-        return {'symbols': selected}
+        return _screening_public_summary(*structured)
     text = clean(reply)
     final = list(_FINAL.finditer(text))
     if final:
@@ -604,15 +690,18 @@ def parse_screening_reply(reply):
     return {'symbols': result}
 
 
-def _screening_json_choices(reply):
+def _screening_json_choices(reply, *, semantic_symbols=None):
     """Recognize explicit authored coin fields, never prices or comparisons."""
+    # The public final object may follow an explanation without a heading.
+    # Keep the complete original prefix: trimming its final heading first can
+    # hide an authored same-line choice. Aliases are available only after the
+    # actual Mini/source validation in screening_interpretation.
+    tail = _json_tail(reply.strip(), preserve_keys=True)
+    if tail is not None and type(tail[0]) is dict and 'SYMBOLS' in tail[0]:
+        structured = _public_json_tail(reply, 'SCREENING')
+        return _screening_public_summary(*structured, semantic_symbols=semantic_symbols)['symbols']
     text=reply.strip();final=list(_FINAL.finditer(text))
     if final:text=text[final[-1].end():].strip()
-    # The public final object may follow an explanation without a heading.
-    # Reuse the strict source parser so Mini cannot contradict this final list.
-    tail = _json_tail(text, preserve_keys=True)
-    if tail is not None and type(tail[0]) is dict and 'SYMBOLS' in tail[0]:
-        return parse_screening_reply(text)['symbols']
     fences=list(re.finditer(r'```(?:json)?[ \t]*\n?([\s\S]*?)\n?```',text,re.I))
     blocks=[match[1].strip()for match in fences]if fences else[text]
     found=[]
@@ -725,7 +814,7 @@ def screening_interpretation(reply, payload, request, response, turns):
     except ReplyIncomplete:explicit=None
     if explicit is not None:
         need(explicit['symbols']==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
-    structured=_screening_json_choices(reply)
+    structured=_screening_json_choices(reply, semantic_symbols=selected)
     if structured is not None:
         need(structured==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
     return {'symbols':selected}
