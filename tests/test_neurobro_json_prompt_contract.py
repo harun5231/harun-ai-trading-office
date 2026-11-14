@@ -64,7 +64,7 @@ class FinalJsonPromptTests(unittest.TestCase):
                 self.assertNotIn(secret, result)
             if phase == 'ANALYSIS':
                 self.assertIn('"ARAH":"HOLD","ENTRY":null,"TP":null,"SL":null', result)
-                self.assertIn('"ENTRY":"<harga>"', result)
+                self.assertIn('"ENTRY":"harga"', result)
                 self.assertNotIn('"KEPUTUSAN"', result)
             else:
                 self.assertIn('"KEPUTUSAN"', result)
