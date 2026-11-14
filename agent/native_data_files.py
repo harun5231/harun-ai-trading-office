@@ -47,9 +47,10 @@ def final_json_prompt(payload, rendered):
                 and minimum in (1, 2) and (count is None or count == minimum))
             count = minimum
         _need(count is None or type(count) is int and count in (1, 2))
-        # Placeholders cannot accidentally seed a real coin recommendation.
-        symbols = ['<SIMBOL_USDT>'] if count is None else [
-            '<SIMBOL_USDT_' + str(index + 1) + '>' for index in range(count)]
+        # Plain placeholders neither seed a real coin recommendation nor
+        # become HTML tags removed by Neurobro's historical message renderer.
+        symbols = ['SIMBOL_USDT'] if count is None else [
+            'SIMBOL_USDT_' + str(index + 1) for index in range(count)]
         instruction = ('Isi SYMBOLS dengan tepat ' + str(count) + ' coin'
             if count is not None else 'Isi SYMBOLS sesuai jumlah coin yang diminta')
         contract = (instruction + ', tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. '
@@ -57,14 +58,14 @@ def final_json_prompt(payload, rendered):
     elif fields == {'symbol', 'order_ref', 'decision'} or {'symbol', 'side'} <= fields:
         symbol = context.get('symbol')
         _need(symbol is None or type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,24}USDT', symbol))
-        symbol = symbol or '<SIMBOL_USDT>'
+        symbol = symbol or 'SIMBOL_USDT'
         if fields == {'symbol', 'order_ref', 'decision'}:
             contract = ('Untuk coin/order ini, pilih satu KEPUTUSAN TAHAN atau BATALKAN. Format: '
-                + json.dumps({'COIN': symbol, 'KEPUTUSAN': '<TAHAN/BATALKAN>'}, separators=(',', ':')) + '.')
+                + json.dumps({'COIN': symbol, 'KEPUTUSAN': 'TAHAN/BATALKAN'}, separators=(',', ':')) + '.')
         else:
             contract = ('Isi arah LONG/SHORT dan harga aktualmu: '
-                + json.dumps({'COIN': symbol, 'ARAH': '<LONG/SHORT>', 'ENTRY': '<harga>',
-                    'TP': '<harga>', 'SL': '<harga>'}, separators=(',', ':'))
+                + json.dumps({'COIN': symbol, 'ARAH': 'LONG/SHORT', 'ENTRY': 'harga',
+                    'TP': 'harga', 'SL': 'harga'}, separators=(',', ':'))
                 + '. Jika HOLD: ' + json.dumps({'COIN': symbol, 'ARAH': 'HOLD',
                     'ENTRY': None, 'TP': None, 'SL': None}, separators=(',', ':')) + '.')
     else:

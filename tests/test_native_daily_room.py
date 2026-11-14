@@ -3,6 +3,7 @@ import copy
 from datetime import datetime, timezone
 import hashlib
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -11,7 +12,7 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, HISTORY_DIAGNOSTIC_JS, HISTORY_OLDER_UI_JS
+from agent.native_daily_room import DailyRoom, DailyRoomHistory, DailyRoomUnavailable, JOURNAL_NAME, identities, canonical, HISTORY_DIAGNOSTIC_JS, HISTORY_OLDER_UI_JS
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_file_upload import NativeFileTurnReader
 from tests.test_native_browser_hook import request as base_request, client, OutcomeUnknown, NotSubmitted
@@ -291,6 +292,163 @@ class DailyRoomFirstCandidateEvidenceTests(unittest.TestCase):
   room.history.rooms=[('Renamed existing title',owned)];room.restore(identities(owned),binding,'BOUND')
   self.assertEqual(self.evidence()['candidate']['title'],'Renamed existing title')
   self.assertEqual([p.name for p in Path(self.directory.name).iterdir()],['on-daily-room-first-candidate.json'])
+
+
+class DailyRoomHistoricalTemplateTests(unittest.TestCase):
+ def setUp(self):
+  self.directory=tempfile.TemporaryDirectory();self.addCleanup(self.directory.cleanup)
+  self.now=datetime(2026,11,13,19,53,tzinfo=timezone.utc).timestamp()
+
+ def actual_case(self):
+  bridge,room,binding,reasoner=DailyRoomFirstCandidateEvidenceTests.setup_room(self)
+  original=DailyRoomFirstCandidateEvidenceTests.actual_rows(self)
+  observed=copy.deepcopy(original)
+  observed[0]['text']=observed[0]['text'].replace('<SIMBOL_USDT_1>','').replace('<SIMBOL_USDT_2>','')
+  observed[1]['id']='a5fec3b3-7298-47a0-ae0f-3479692d8866'
+  # Run43570392773 source-pinned candidate: exact persisted native text hashes.
+  self.assertEqual(len(observed[0]['text']),456)
+  self.assertEqual(hashlib.sha256(observed[0]['text'].encode()).hexdigest(),
+   'c30ffafc492f73f4190150dabc9818a3ea88fcd899dd0e744eb651fc21493838')
+  self.assertEqual(hashlib.sha256(observed[1]['text'].encode()).hexdigest(),
+   '0368ab478316f7f3ec53ecd7e865bf47645cd7ec2c049e2c56588337739310d6')
+  from agent.native_daily_room import retain_prefix_snapshot
+  receipt=retain_prefix_snapshot(self.directory.name,room.day,room.room_id,original)
+  return bridge,room,binding,reasoner,original,observed,receipt
+
+ def matches(self,room,original,observed,binding,**kw):
+  return DailyRoom.matches(observed,identities(original),binding,'BOUND',
+   archive_root=self.directory.name,prefix_identity=(room.day,room.room_id),**kw)
+
+ def test_actual_rendered_pair_restores_original_room_without_model_or_send(self):
+  bridge,room,binding,reasoner,original,observed,receipt=self.actual_case()
+  self.assertFalse(DailyRoom.matches(observed,identities(original),binding,'BOUND'))
+  self.assertTrue(self.matches(room,original,observed,binding))
+  path=Path(self.directory.name)/receipt['name'];archived=path.read_bytes()
+  room.history.rooms=[('Pilih Dua Coin Menguntungkan',observed)]
+  self.assertEqual(room.restore(identities(original),binding,'BOUND'),observed)
+  self.assertEqual(path.read_bytes(),archived)
+  self.assertEqual((bridge.clicks,bridge.fresh_calls),(0,0));reasoner.request.assert_not_called()
+  # Identifying historical ownership cannot relax a running operation's prefix.
+  room.offset=len(original);room.prefix=identities(original)
+  with self.assertRaises(DailyRoomUnavailable):room.verify_prefix(observed)
+
+ def test_modified_prompt_marker_user_identity_reply_completion_or_id_is_not_admitted(self):
+  _,room,binding,_,original,observed,_=self.actual_case()
+  for kind in('prompt','marker','user_id','reply','symbol','price','incomplete','invalid_assistant_id','missing_reply'):
+   with self.subTest(kind=kind):
+    current=copy.deepcopy(observed)
+    if kind=='prompt':current[0]['text']=current[0]['text'].replace('2 coin','1 coin',1)
+    elif kind=='marker':current[0]['text']=current[0]['text'].replace(binding['marker'],'HARUN_'+'b'*32)
+    elif kind=='user_id':current[0]['id']='new-user-id'
+    elif kind=='reply':current[1]['text']+=' Changed recommendation'
+    elif kind=='symbol':current[1]['text']=current[1]['text'].replace('OP','OTHER')
+    elif kind=='price':current[1]['text']=current[1]['text'].replace('0.0925','0.0926')
+    elif kind=='incomplete':current[1]['complete']=False
+    elif kind=='invalid_assistant_id':current[1]['id']='INVALID/ID'
+    else:current.pop()
+    self.assertFalse(self.matches(room,original,current,binding))
+
+ def test_missing_or_tampered_archive_wrong_binding_and_unbound_state_remain_refused(self):
+  _,room,binding,_,original,observed,receipt=self.actual_case()
+  for changed in(dict(binding,marker='HARUN_'+'b'*32),dict(binding,first_prompt_sha256='0'*64)):
+   self.assertFalse(self.matches(room,original,observed,changed))
+  self.assertFalse(DailyRoom.matches(observed,identities(original),binding,'SENT',
+   archive_root=self.directory.name,prefix_identity=(room.day,room.room_id)))
+  self.assertFalse(DailyRoom.matches(observed,identities(original),binding,'BOUND',
+   archive_root=self.directory.name,prefix_identity=(room.day,'0'*32)))
+  path=Path(self.directory.name)/receipt['name'];archived=json.loads(path.read_text())
+  archived['rows'][1]['text']+=' Tampered'
+  path.write_text(json.dumps(archived))
+  self.assertFalse(self.matches(room,original,observed,binding))
+
+ def test_template_render_recovery_never_becomes_generic_html_or_repeated_tag_stripping(self):
+  from agent.native_daily_room import retain_prefix_snapshot
+  _,room,binding,_,original,_,_=self.actual_case()
+  for kind in('repeated_example','extra_placeholder','arbitrary_tag','missing_format_clause'):
+   with self.subTest(kind=kind):
+    old=copy.deepcopy(original)
+    if kind=='repeated_example':old[0]['text']+='\nFormat: {"SYMBOLS":["<SIMBOL_USDT_1>","<SIMBOL_USDT_2>"]}.'
+    elif kind=='extra_placeholder':old[0]['text']+='\n<SIMBOL_USDT_1>'
+    elif kind=='arbitrary_tag':old[0]['text']=old[0]['text'].replace('<SIMBOL_USDT_1>','<OTHER_TAG>')
+    else:old[0]['text']=old[0]['text'].replace('Format: ','Example: ')
+    current=copy.deepcopy(old);current[0]['text']=re.sub(r'<[^>]+>','',current[0]['text'])
+    current[1]['id']='a5fec3b3-7298-47a0-ae0f-3479692d8866'
+    changed=dict(binding,first_prompt_sha256=hashlib.sha256(old[0]['text'].encode()).hexdigest())
+    retain_prefix_snapshot(self.directory.name,room.day,room.room_id,old)
+    self.assertFalse(self.matches(room,old,current,changed))
+
+ def test_existing_checkpoint_keeps_original_proof_and_reopens_after_restart(self):
+  bridge,room,binding,reasoner,original,observed,receipt=self.actual_case()
+  archive=Path(self.directory.name)/receipt['name'];original_bytes=archive.read_bytes()
+  with room.store.open()as db:
+   db.execute('INSERT INTO daily_rooms VALUES(?,?,?,?,?,?,?)',(room.day,room.room_id,'BOUND',
+    bridge.page.url,json.dumps(identities(original)),json.dumps(binding),self.now))
+  room.history.rooms=[('Pilih Dua Coin Menguntungkan',observed)]
+  with room.operation(request()):
+   room.fresh();self.assertEqual(room.mode,'REUSED');self.assertEqual(room.prefix,identities(observed))
+  restarted,restored,_,reasoner2=DailyRoomTests.setup(self,Bridge(observed))
+  with restored.operation(request()):
+   restored.fresh();self.assertEqual(restored.room_id,'44a82f8094e64429b39f610b23cab583')
+   self.assertEqual(restored.prefix,identities(observed));self.assertEqual(restored.mode,'REUSED')
+  self.assertEqual(archive.read_bytes(),original_bytes)
+  with restored.store.open()as db:
+   rows_in_db=db.execute('SELECT room_id,state,anchors FROM daily_rooms').fetchall()
+  self.assertEqual(rows_in_db,[(restored.room_id,'BOUND',canonical(identities(observed)))])
+  self.assertEqual((bridge.clicks,bridge.fresh_calls,restarted.clicks,restarted.fresh_calls),(0,0,0,0))
+  reasoner.request.assert_not_called();reasoner2.request.assert_not_called()
+
+ def test_cached_legacy_second_prompt_survives_checkpoint_reload_and_another_restart(self):
+  from agent.native_daily_room import retain_prefix_snapshot
+  bridge,room,binding,reasoner,original,observed,receipt=self.actual_case()
+  original_archive=Path(self.directory.name)/receipt['name'];original_bytes=original_archive.read_bytes()
+  cached=copy.deepcopy(original[0]);cached['text']=cached['text'].replace(binding['marker'],'HARUN_'+'c'*32)
+  reply={'role':'assistant','text':'Pilihan akhir BTCUSDT dan ETHUSDT','complete':True,'id':'second-original-id'}
+  with room.store.open()as db:
+   db.execute('INSERT INTO daily_rooms VALUES(?,?,?,?,?,?,?)',(room.day,room.room_id,'BOUND',
+    bridge.page.url,json.dumps(identities(original)),json.dumps(binding),self.now))
+  room.history.rooms=[('Pilih Dua Coin Menguntungkan',observed)]
+  with room.operation(request()):
+   room.fresh()
+   # The compose cache is immutable: existing native Send can append a legacy
+   # prompt after the first room recovery. Simulate its actual DOM checkpoint.
+   bridge.messages+=copy.deepcopy([cached,reply])
+  archived=copy.deepcopy(bridge.messages)
+  archived_receipt=retain_prefix_snapshot(self.directory.name,room.day,room.room_id,archived)
+  cached_bytes=canonical(archived).encode()
+  reloaded=copy.deepcopy(archived)
+  reloaded[2]['text']=reloaded[2]['text'].replace('<SIMBOL_USDT_1>','').replace('<SIMBOL_USDT_2>','')
+  reloaded[1]['id']='first-persisted-id';reloaded[3]['id']='second-persisted-id'
+  self.assertTrue(self.matches(room,archived,reloaded,binding))
+  for kind in('first_text','second_text','second_marker','second_reply','incomplete_reply'):
+   with self.subTest(kind=kind):
+    altered=copy.deepcopy(reloaded)
+    if kind=='first_text':altered[0]['text']+=' Changed'
+    elif kind=='second_text':altered[2]['text']=altered[2]['text'].replace('2 coin','1 coin',1)
+    elif kind=='second_marker':altered[2]['text']=altered[2]['text'].replace('HARUN_'+'c'*32,'HARUN_'+'d'*32)
+    elif kind=='second_reply':altered[3]['text']='Pilihan akhir SOLUSDT dan ETHUSDT'
+    else:altered[3]['complete']=False
+    self.assertFalse(self.matches(room,archived,altered,binding))
+  for attempt in range(2):
+   restarted,restored,_,reasoner2=DailyRoomTests.setup(self,Bridge(reloaded))
+   with restored.operation(request()):
+    restored.fresh();self.assertEqual(restored.room_id,'44a82f8094e64429b39f610b23cab583')
+    self.assertEqual(restored.prefix,identities(reloaded))
+   self.assertEqual((restarted.clicks,restarted.fresh_calls),(0,0));reasoner2.request.assert_not_called()
+  self.assertEqual(original_archive.read_bytes(),original_bytes)
+  archive=json.loads((Path(self.directory.name)/archived_receipt['name']).read_text())
+  self.assertEqual(canonical(archive['rows']).encode(),canonical([{k:v for k,v in row.items()if k!='attachments'}for row in archived]).encode())
+  self.assertEqual(canonical(archived).encode(),cached_bytes);self.assertIn('<SIMBOL_USDT_1>',cached['text'])
+  self.assertEqual((bridge.clicks,bridge.fresh_calls),(0,0));reasoner.request.assert_not_called()
+
+ def test_single_symbol_format_uses_only_the_exact_archived_template(self):
+  from agent.native_daily_room import retain_prefix_snapshot
+  _,room,binding,_,original,_,_=self.actual_case()
+  original[0]['text']=original[0]['text'].replace(',"<SIMBOL_USDT_2>"','')
+  binding=dict(binding,first_prompt_sha256=hashlib.sha256(original[0]['text'].encode()).hexdigest())
+  observed=copy.deepcopy(original);observed[0]['text']=observed[0]['text'].replace('<SIMBOL_USDT_1>','')
+  observed[1]['id']='persisted-one-symbol-id'
+  retain_prefix_snapshot(self.directory.name,room.day,room.room_id,original)
+  self.assertTrue(self.matches(room,original,observed,binding))
 
 
 class DailyRoomTests(unittest.TestCase):

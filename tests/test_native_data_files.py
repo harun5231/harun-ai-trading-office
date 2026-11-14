@@ -3,6 +3,7 @@ import csv
 import hashlib
 import io
 import json
+from html.parser import HTMLParser
 import sys
 import unittest
 from pathlib import Path
@@ -10,12 +11,47 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from test_agent_closed_candles_200 import NOW, native_context_200
 from agent.native_data_files import (CSV_COLUMNS, CONTEXT_SEPARATOR, SCHEMA_SEPARATOR,
-    deliver_market_data_files, prepare_data_files, render_short_prompt)
+    FINAL_JSON_REQUEST_ENDING, deliver_market_data_files, final_json_prompt,
+    prepare_data_files, render_short_prompt)
 from agent.native_market_context import (NativeContextUnavailable,
     candle_digest, convert_native_market_context)
 
 
 class NativeDataFileTests(unittest.TestCase):
+    def test_new_json_examples_survive_history_html_rendering_for_every_phase(self):
+        class HistoryText(HTMLParser):
+            def __init__(self):
+                super().__init__(); self.text = []
+            def handle_data(self, data): self.text.append(data)
+        cases = [
+            ({'required':['symbols'], 'properties':{'symbols':{'minItems':count,'maxItems':count}}},
+                {'requested_count':count}, {'SYMBOLS':['SIMBOL_USDT_'+str(i+1) for i in range(count)]})
+            for count in (1, 2)]
+        cases += [
+            ({'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']},
+                {'symbol':'ATOMUSDT'}, {'COIN':'ATOMUSDT','ARAH':'LONG/SHORT','ENTRY':'harga','TP':'harga','SL':'harga'}),
+            ({'required':['symbol','order_ref','decision']}, {'symbol':'FILUSDT'},
+                {'COIN':'FILUSDT','KEPUTUSAN':'TAHAN/BATALKAN'}),
+            ({'required':['symbol','side']}, {},
+                {'COIN':'SIMBOL_USDT','ARAH':'LONG/SHORT','ENTRY':'harga','TP':'harga','SL':'harga'}),
+            ({'required':['symbols']}, {}, {'SYMBOLS':['SIMBOL_USDT']})]
+        for schema, context, example in cases:
+            with self.subTest(schema=schema,context=context):
+                payload={'output_schema':schema,'context':context,'marker':'HARUN_'+'a'*32}
+                original='Analisis bahan terbaru.\n'+payload['marker']; before=copy.deepcopy(payload)
+                result=final_json_prompt(payload,original)
+                self.assertEqual(payload,before)
+                self.assertTrue(result.startswith(original+'\n\n'))
+                self.assertIn(json.dumps(example,separators=(',',':')),result)
+                self.assertEqual(result.count(payload['marker']),1)
+                self.assertTrue(result.endswith(FINAL_JSON_REQUEST_ENDING))
+                self.assertEqual(final_json_prompt(payload,result),result)
+                self.assertNotIn('<',result);self.assertNotIn('>',result);self.assertNotIn('`',result)
+                rendered=HistoryText();rendered.feed(result);rendered.close()
+                self.assertEqual(''.join(rendered.text),result)
+                self.assertEqual(hashlib.sha256(''.join(rendered.text).encode()).digest(),
+                    hashlib.sha256(result.encode()).digest())
+
     def context(self):
         value = native_context_200()
         for frame in value['timeframes'].values():

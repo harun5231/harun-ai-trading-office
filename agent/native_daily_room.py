@@ -84,8 +84,8 @@ def retain_prefix_snapshot(root, day, room_id, rows):
     return {key:receipt[key]for key in('name','sha256','bytes')}
 
 
-def prefix_snapshot_matches(root, day, room_id, anchors, rows):
-    """Use exact archived native rows when a reloaded UUID changes."""
+def prefix_snapshot_matches(root, day, room_id, anchors, rows, *, binding=None):
+    """Verify archived native rows across known history rendering changes."""
     try:
         receipt=read_prefix_snapshot(root,day,room_id,anchors)
         if receipt is None or not rows:return False
@@ -97,6 +97,41 @@ def prefix_snapshot_matches(root, day, room_id, anchors, rows):
                     and type(after.get('id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',after['id'])
                     or identities([before])==identities([after]))for before,after in zip(prior,current)))
         if len(rows)>=len(old)and same(old,rows[:len(old)]):return True
+        # Neurobro's persisted HTML omits these literal example tags. Cached
+        # compose requests must keep their original bytes, so the same exact
+        # rendering change can affect later archived screening turns as well.
+        # Verify the original authored prompt hash/marker and the WHOLE archived
+        # prefix; never normalize arbitrary HTML, text, prices or whitespace.
+        if (type(binding)is dict and len(old)>=2 and len(rows)>=len(old)
+                and old[0].get('role')=='user'and old[1].get('role')=='assistant'
+                and old[1].get('complete')is True and type(old[0].get('text'))is str):
+            examples=[]
+            for count in(1,2):
+                example='Format: '+canonical({'SYMBOLS':['<SIMBOL_USDT_'+str(index)+'>'for index in range(1,count+1)]})+'.'
+                examples.append((count,example,example.replace('<SIMBOL_USDT_1>','').replace('<SIMBOL_USDT_2>','')))
+            markers=lambda text:set(re.findall(r'(?<![A-Za-z0-9_])HARUN_[a-f0-9]{32}(?![A-Za-z0-9_])',text))
+            digest=lambda text:hashlib.sha256(text.replace('\r\n','\n').strip().encode()).hexdigest()
+            first=old[0]['text'];authored=[first]
+            # After recovery, the existing checkpoint archives the rendered
+            # first prompt. Reconstruct only its exact known example clause and
+            # require the original authored SHA, not a new identity or alias.
+            if (not any(tag in first for tag in('<SIMBOL_USDT_1>','<SIMBOL_USDT_2>'))
+                    and sum(first.count(rendered)for _,_,rendered in examples)==1):
+                authored.extend(first.replace(rendered,example,1)for _,example,rendered in examples if first.count(rendered)==1)
+            if (type(binding.get('marker'))is str and markers(first)=={binding['marker']}
+                    and any(digest(text)==binding.get('first_prompt_sha256')for text in authored)):
+                restored=[];changed=False;valid=True
+                for index,before in enumerate(old):
+                    current=before;text=before.get('text')
+                    if before.get('role')=='user'and type(text)is str:
+                        for count,example,rendered in examples:
+                            if (text.count(example)==1 and text.count('<SIMBOL_USDT_1>')==1
+                                    and text.count('<SIMBOL_USDT_2>')==count-1):
+                                valid=valid and len(markers(text))==1 and index+1<len(old)and old[index+1].get('role')=='assistant'and old[index+1].get('complete')is True
+                                current={**before,'text':text.replace(example,rendered,1)};changed=True
+                                break
+                    restored.append(current)
+                if valid and changed and same(restored,rows[:len(old)]):return True
         if (len(rows)>=2 and len(rows)<len(old)and rows[-2].get('role')=='user'
                 and rows[-1].get('role')=='assistant'and rows[-1].get('complete')is True):
             if same(old[-len(rows):],rows):return True
@@ -412,7 +447,8 @@ class DailyRoom:
             if type(marker) is str and values == {marker}:
                 return True
         if archive_root is not None and type(prefix_identity)is tuple and len(prefix_identity)==2:
-            return prefix_snapshot_matches(archive_root,*prefix_identity,anchors,rows)
+            return prefix_snapshot_matches(archive_root,*prefix_identity,anchors,rows,
+                binding=binding if state=='BOUND'else None)
         return False
 
     def restore(self, anchors, binding, state, *, prefix_identity=None):
