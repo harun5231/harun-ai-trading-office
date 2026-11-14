@@ -31,7 +31,7 @@ def normalize_privacy_reminders(question):
     """Remove only complete, value-free negative internal privacy sentences."""
     if type(question) is not str:
         raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
-    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan|sarankan|menyarankan)'
+    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan|sarankan|menyarankan|tentukan|menentukan)'
     topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+(?:pribadi|akun))?'
         r'|nominal\s+risiko(?:\s+(?:pribadi|akun))?|risiko\s+pribadi)')
     reminder = (r'(?:jangan|tidak\s+perlu)\s+' + verb
@@ -41,6 +41,8 @@ def normalize_privacy_reminders(question):
     # break must not detach a real budget/quantity from its privacy subject.
     internal_role_clauses={
         'risk manager hanya menormalkan tp ke target bersih 2r saat eksekusi',
+        'risk manager nantinya hanya menormalkan tp ke target bersih 2r',
+        'risk manager hanya menormalkan tp ke eksekusi 2r',
         'risk manager hanya menormalkan tp eksekusi'}
     parts = re.split(r'((?<=[.!?;])\s+)', question)
     for index in range(0, len(parts), 2):

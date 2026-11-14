@@ -221,7 +221,7 @@ def _without_discussion_structure(question):
             blocks[index]=block
     question=''.join(blocks)
     ratio=r'1\s*:\s*[1-9]\d{0,2}(?!\d|[.,]\d)'
-    series=ratio+r'(?:\s*/\s*'+ratio+r')*'
+    series=ratio+r'(?:\s*(?:/|\batau\b)\s*'+ratio+r')*'
     question=re.sub(r'(?i)(\b(?:RISK\s*REWARD|R\s*:\s*R|RR)\s*'
         r'(?:(?:minimal|minimum|target|sebesar|adalah)\s*)?)('+series+r')',r'\1',question)
     question=re.sub(r'(?i)(\b(?:rekomendasi\s+)?TP\s*\(\s*'
@@ -261,6 +261,11 @@ def validate_web_question(question, request):
     """Future WEB policy; never retroactively invalidate a Mini receipt."""
     from .native_prompt_composition import normalize_privacy_reminders
     question=normalize_privacy_reminders(question)
+    # An explicit quantity request is not authorized merely because its number
+    # also occurs in market/UTC facts. Valid value-free negative reminders were
+    # removed above; retain historical internal decision validation unchanged.
+    need(not re.search(r'\b(?:minta|meminta)\s+(?:'+POSITION_SIZE+r'|kuantitas|qty)\b',
+        question,re.I),'DIALOGUE_MODEL_RESULT_INVALID')
     validate_question_sources(question, request, web_outbound=True)
     validate_position_size_discussion(question, request['phase'])
     return question

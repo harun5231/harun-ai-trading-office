@@ -72,9 +72,9 @@ def main():
     assert not Path('/app/worker/order_gateway.py').exists()
     assert not Path('/app/worker/robot.py').exists()
     assert not Path('/app/worker/api_service.py').exists()
-    assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='c2605b7ad4228f0ade7192fd67437ffda296337ff3871a6d68544ec89d35a390'
+    assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='f90a3fe4ca6d22f8776794dbcf29a4d0ec8a93b601c2b12f5e0eb2d858c1af14'
     assert hashlib.sha256(Path('/app/agent/llm.py').read_bytes()).hexdigest()=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
-    assert hashlib.sha256(Path('/app/agent/native_prompt_composition.py').read_bytes()).hexdigest()=='2e8887bd6a7edd4e659e3065c308a0f791a03f5cdbc6dd7cdf101679a0c3928d'
+    assert hashlib.sha256(Path('/app/agent/native_prompt_composition.py').read_bytes()).hexdigest()=='4a9a1c32168a3c1ff19bc45f196e1e8d1972326321b40b774f6746e5cf2aee28'
     assert not list(Path('/app/agent').glob('hermes*.py')), 'MINI_IMAGE_MUST_NOT_INCLUDE_HERMES_BRIDGES'
     assert importlib.util.find_spec('hermes_cli') is None
     assert importlib.util.find_spec('run_agent') is None

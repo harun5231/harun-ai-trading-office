@@ -20,13 +20,16 @@ BASE_SHA256 = '4700ad77d5e7d05857d3eb1bc8f14c5d3cb3731e36fbbec80025a378b9c42ca7'
 UTC_PATCH = 'b06fdf08abee9feeedc686f5ef5b25aa717ea03f'
 UTC_SOURCE_SHA256 = '8ff6f3d25a4dc72c644b101205620196b4f6c202b0e32af947fbd1cc948fbcde'
 V5_SOURCE_SHA256 = 'de20014917614a913b24a61b13ad1dcdb2eac6b74d92806d972f5c31c10c86aa'
-SOURCE_SHA256 = 'c2605b7ad4228f0ade7192fd67437ffda296337ff3871a6d68544ec89d35a390'
-CANONICAL_SERVICE_SHA256 = '5b9b7b66ba29b862644e83edbd380c12080baf4dcbc3b1a72becbc252d79c700'
-PROMPT_SOURCE_SHA256 = '2e8887bd6a7edd4e659e3065c308a0f791a03f5cdbc6dd7cdf101679a0c3928d'
+SOURCE_SHA256 = 'f90a3fe4ca6d22f8776794dbcf29a4d0ec8a93b601c2b12f5e0eb2d858c1af14'
+CANONICAL_SERVICE_SHA256 = 'b87b01326cce6d21bfa366b0be87b4ea85aac0a69a6d64da044b553d4b05d37f'
+PROMPT_SOURCE_SHA256 = '4a9a1c32168a3c1ff19bc45f196e1e8d1972326321b40b774f6746e5cf2aee28'
 GENERATED = Path('deploy/.mini-dialogue-runtime/agent/dialogue_service.py')
 GENERATED_LLM = Path('deploy/.mini-dialogue-runtime/agent/llm.py')
 GENERATED_PROMPT = Path('deploy/.mini-dialogue-runtime/agent/native_prompt_composition.py')
 MODEL_SOURCE_SHA256 = 'f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
+# Preserve the source-verified V5 preimage; apply new grammar only after V6 derivation.
+V5_DISCUSSION_SOURCE = 'def _without_discussion_structure(question):\n    """Ignore proven list labels and explicit RR notation, never price levels."""\n    blocks=re.split(r\'(\\n[ \\t]*\\n)\',question)\n    for index in range(0,len(blocks),2):\n        block=blocks[index]\n        labels=list(re.finditer(r\'(?m)(^|[,;:\\n])[ \\t]*([1-9]\\d?)\\)[ \\t]+(?=[^\\W\\d_])\',block))\n        if len(labels)<2 or [int(item.group(2)) for item in labels]!=list(range(1,len(labels)+1)):\n            continue\n        first=labels[0];intro=block[:first.start()]\n        introduced=(first.start()==0 or first.group(1)==\':\'\n            and re.search(r\'\\b(?:output|jawaban|ringkasan|format|poin|langkah|syarat|kriteria|evaluasi|rincian)\\b\',intro,re.I)\n            and not re.search(r\'\\b(?:ENTRY|SL|TP|harga|price)\\s*$\',intro,re.I))\n        if introduced:\n            for item in reversed(labels):\n                start,end=item.span(2);block=block[:start]+block[end:]\n            blocks[index]=block\n    question=\'\'.join(blocks)\n    ratio=r\'1\\s*:\\s*[1-9]\\d{0,2}(?!\\d|[.,]\\d)\'\n    series=ratio+r\'(?:\\s*/\\s*\'+ratio+r\')*\'\n    question=re.sub(r\'(?i)(\\b(?:RISK\\s*REWARD|R\\s*:\\s*R|RR)\\s*\'\n        r\'(?:(?:minimal|minimum|target|sebesar|adalah)\\s*)?)(\'+series+r\')\',r\'\\1\',question)\n    question=re.sub(r\'(?i)(\\b(?:rekomendasi\\s+)?TP\\s*\\(\\s*\'\n        r\'(?:boleh|RR|R\\s*:\\s*R|RISK\\s*REWARD)\\s+)(\'+series+r\')(\\s*\\))\',r\'\\1\\3\',question)\n    return question'
+V5_DISCUSSION_SHA256 = 'bc9c9b2ca6921eef2bd7f99244fe72b9858943f2eb4c5c6899eb2f69bfb7c7fa'
 UNCHANGED_SOURCES = {
     'agent/memory.py': '0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272',
     'agent/dialogue_client.py': '87b873b40ebff100fef08481783a85d3b027e21d2f2be7ed3f06688fe8f04e92',
@@ -106,10 +109,10 @@ def apply_purpose_policy(raw,root=ROOT):
     source=raw.decode()
     current=(Path(root)/'agent/dialogue_service.py').read_text()
     helpers=[node for node in ast.parse(current).body if isinstance(node,ast.FunctionDef)
-        and node.name in {'_archive_compose_request','_without_discussion_structure'}]
-    if len(helpers)!=2:
+        and node.name == '_archive_compose_request']
+    if len(helpers)!=1 or sha256(V5_DISCUSSION_SOURCE.encode())!=V5_DISCUSSION_SHA256:
         raise ValueError('MINI_DISCUSSION_STRUCTURE_SOURCE_UNVERIFIED')
-    helper='\n\n\n'.join(ast.get_source_segment(current,node) for node in helpers)
+    helper='\n\n\n'.join([*(ast.get_source_segment(current,node) for node in helpers),V5_DISCUSSION_SOURCE])
     source=source.replace('def validate_question_sources(',helper+'\n\n\ndef validate_question_sources(',1)
     source=source.replace('_without_sourced_utc_times(question,request))',
         '_without_discussion_structure(_without_sourced_utc_times(question,request)))',1)
@@ -178,7 +181,7 @@ def apply_context_privacy_policy(raw,root=ROOT):
     names=('validate_conversation_context','dialogue_operation_memo','dialogue_model_history','compose_recovery_payload')
     if any(name not in functions for name in names):raise ValueError('MINI_V6_HELPERS_CHANGED')
     source=source.replace('def validate_request(', '\n\n'.join(functions[name]for name in names)+'\n\n\ndef validate_request(',1)
-    for name in('validate_request','validate_decision','validate_web_question'):
+    for name in('validate_request','validate_decision','validate_web_question','_without_discussion_structure'):
         nodes=[node for node in ast.parse(source).body if isinstance(node,ast.FunctionDef)and node.name==name]
         if len(nodes)!=1:raise ValueError('MINI_V6_VALIDATOR_TARGET_CHANGED')
         source=source.replace(ast.get_source_segment(source,nodes[0]),functions[name],1)
