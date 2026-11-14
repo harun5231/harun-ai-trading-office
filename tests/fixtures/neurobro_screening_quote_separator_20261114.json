@@ -1,0 +1,93 @@
+{
+  "operation": "2026-11-14:robot-v9:0:screening:5:2",
+  "request_sha256": "8f3d9a3c9c2a1150a7dc08bf05f9769241c27139ae91211629a7c12c198d901e",
+  "actual_reply": "Pilih $AVAX dan $NEAR untuk kandidat pengganti di Binance Futures - keduanya likuid, tetapi kondisi pasar sedang berisiko karena tekanan jual dan likuidasi pasar.\n\nKANDIDAT UTAMA\n\n$AVAXUSDT Perpetual - volume 24 jam sekitar $121.9M; turun 7.96%, dengan open interest turun 12.59%. Volatilitasnya cocok dipantau untuk day trading, tetapi jangan mengejar penurunan.\n\n$NEARUSDT Perpetual - volume 24 jam sekitar $321.1M dan open interest sekitar $163.7M; turun 6.97%. Likuiditasnya kuat, namun harga masih tertekan.\n\nKeduanya kandidat pantauan, bukan jaminan profit atau sinyal masuk saat ini - tunggu konfirmasi struktur sebelum membuka posisi.\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial; analisis bisa salah. Keputusan trading dan risiko yang kamu ambil tetap tanggung jawabmu.\n\n{\"SYMBOLS\":[\"AVAX_USDT\",\"NEAR_USDT\"]}",
+  "reply_bytes": 830,
+  "reply_sha256": "8912707b0d0d5df0bf425954e52f76e36794cae3c19cd5226407bcb6c0d936b9",
+  "requested_count": 2,
+  "excluded_symbols": [
+    "DOGEUSDT",
+    "DOTUSDT",
+    "FILUSDT",
+    "HYPEUSDT",
+    "ICPUSDT",
+    "LINKUSDT",
+    "XLMUSDT"
+  ],
+  "requested_schema": {
+    "additionalProperties": false,
+    "properties": {
+      "symbols": {
+        "description": "Exactly two distinct active Binance USD-M Futures trading symbols.",
+        "items": {
+          "description": "Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation.",
+          "pattern": "^[A-Z0-9]{2,18}USDT$",
+          "type": "string"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array",
+        "uniqueItems": true
+      }
+    },
+    "required": [
+      "symbols"
+    ],
+    "type": "object"
+  },
+  "retained_screening_reviews": [
+    {
+      "identity": {
+        "observed_at": 1794671106.740806,
+        "operation": "2026-11-14:robot-v9:0:screening:5:2",
+        "phase": "SCREENING",
+        "reply_sha256": "8912707b0d0d5df0bf425954e52f76e36794cae3c19cd5226407bcb6c0d936b9",
+        "request_id": "64562db2bc66162c80b98e9b0bc25c474203cda04e5620ac8d18fba9fc2e71e5",
+        "request_sha256": "8f3d9a3c9c2a1150a7dc08bf05f9769241c27139ae91211629a7c12c198d901e"
+      },
+      "model_operation": {
+        "kind": "DELEGATED_MODEL_DIALOGUE",
+        "operation_id": "delegated-model:64562db2bc66162c80b98e9b0bc25c474203cda04e5620ac8d18fba9fc2e71e5",
+        "request_hash": "945d285189ca8b6fb163b3b94c5e4725e99e4464ffd2b3c98fc764ab327e490c",
+        "state": "DONE",
+        "updated_at": 1794671106.5032992
+      },
+      "model_result_sha256": "a9cd06a91b19d88aae3e1fe0ab141950ba3e6f793e017d74eed5b2617475bc36",
+      "receipt": {
+        "bytes": 5159,
+        "name": "screening-review-b1107ee321d1d0b3db8180b6754a456d3b1131dfb36c3f677b4f97099e6eb7f4-64562db2bc66162c80b98e9b0bc25c474203cda04e5620ac8d18fba9fc2e71e5.json",
+        "sha256": "8bbf9c6a96eb3a11de1b61f1c17824cdc88a403b0ddecfa81a1ddab402ea419f"
+      },
+      "response": {
+        "decision": {
+          "action": "SCREENING",
+          "question": "",
+          "symbols": [
+            "AVAXUSDT",
+            "NEARUSDT"
+          ]
+        },
+        "needs_followup": false,
+        "ok": true,
+        "phase": "SCREENING",
+        "request_id": "64562db2bc66162c80b98e9b0bc25c474203cda04e5620ac8d18fba9fc2e71e5"
+      }
+    }
+  ],
+  "source": {
+    "bytes": 478100,
+    "capture_bytes": 38479,
+    "capture_sha256": "07f325f989ff14a8ad1045ea12c902c072a01b4f32d042c65e93e16eb51cd11a",
+    "job": "43613865639-1",
+    "mode": "SAVED_SCREENING_JSON_REPLY_V1",
+    "name": "mini-dialogue-continuation-full-private.json",
+    "operation": "2026-11-14:robot-v9:0:screening:5:2",
+    "reply_bytes": 830,
+    "reply_sha256": "8912707b0d0d5df0bf425954e52f76e36794cae3c19cd5226407bcb6c0d936b9",
+    "request_sha256": "8f3d9a3c9c2a1150a7dc08bf05f9769241c27139ae91211629a7c12c198d901e",
+    "sha256": "3c03ed8c50e11cc78e93691519c9cacffb5fd4d86731edff4bf0196572207ecd",
+    "source_commit": "7fe56dc919e13fe5472d9180383c09e2aa2cb29b",
+    "source_sha256": "406058bb17e1cf49bbd94931134168d64f33c893a588bf8c88cb9aaabca3033a"
+  },
+  "provenance": "Saved-only original screening reply, actual Mini decision, and retained production receipt metadata from run 43614477238; no model calls or browser sends. Browser/worker behavior tests use controlled offline request and DONE-lookup bindings while preserving the exact original reply and chosen symbols."
+}
