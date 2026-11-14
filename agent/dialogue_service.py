@@ -261,6 +261,11 @@ def validate_web_question(question, request):
     """Future WEB policy; never retroactively invalidate a Mini receipt."""
     from .native_prompt_composition import normalize_privacy_reminders
     question=normalize_privacy_reminders(question)
+    # An explicit quantity request is not authorized merely because its number
+    # also occurs in market/UTC facts. Valid value-free negative reminders were
+    # removed above; retain historical internal decision validation unchanged.
+    need(not re.search(r'\b(?:minta|meminta)\s+(?:'+POSITION_SIZE+r'|kuantitas|qty)\b',
+        question,re.I),'DIALOGUE_MODEL_RESULT_INVALID')
     validate_question_sources(question, request, web_outbound=True)
     validate_position_size_discussion(question, request['phase'])
     return question

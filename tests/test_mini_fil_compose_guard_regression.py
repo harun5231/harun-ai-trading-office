@@ -16,6 +16,7 @@ from agent.memory import Memory
 from agent.native_prompt_composition import normalize_privacy_reminders,outbound_question
 from tests import test_compose_privacy_recovery as legacy_privacy
 from tests.test_mini_dialogue_profile import retained_module
+from scripts import prepare_mini_dialogue_runtime as mini_profile
 
 FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_fil_compose_guard_20261114.json').read_text())
 
@@ -88,11 +89,30 @@ class ActualFilComposeGuardTests(unittest.TestCase):
     with self.subTest(source=service.__name__,sentence=sentence),self.assertRaises((service.DialogueError,ValueError)):
      service.validate_web_question(sentence,request)
 
+ def test_market_number_cannot_authorize_a_quantity_request_or_reminder(self):
+  for service in self.services:
+   for price in('2','2.001'):
+    request={'phase':'COMPOSE_ANALYSIS','reply':'Analisis FILUSDT, harga sumber '+price+'.','market_context':None}
+    for question in('Jangan minta quantity\n2 FIL.','Minta quantity 2 FIL.',
+     'Jangan meminta ukuran posisi\n2 FIL.','Meminta kuantitas 2 FIL.'):
+     with self.subTest(source=service.__name__,price=price,question=question),self.assertRaisesRegex(service.DialogueError,'DIALOGUE_MODEL_RESULT_INVALID'):
+      service.validate_web_question(question,request)
+   request={'phase':'PENDING_REVIEW','reply':'Order FILUSDT quantity terisi 2 FIL.','market_context':None}
+   self.assertEqual(service.validate_web_question(request['reply'],request),request['reply'])
+   self.assertEqual(service.validate_web_question('Analisa FILUSDT. Jangan minta quantity.',request),'Analisa FILUSDT.')
+
 
 class ActualFilComposeRecoveryTests(unittest.TestCase):
  def setUp(self):
   legacy_privacy.ComposePrivacyRecoveryTests.setUp(self)
   self.service=retained_module()
+  # A clean checkout has not prepared the Docker build input. Recovery verifies
+  # the sibling llm.py bytes, so materialize that exact source in this test's
+  # private directory rather than depending on a previous local image build.
+  source=mini_profile.build_source();model=Path(current.__file__).with_name('llm.py').read_bytes()
+  self.assertEqual(hashlib.sha256(model).hexdigest(),mini_profile.MODEL_SOURCE_SHA256)
+  self.service.__file__=str(self.base/'dialogue_service.py')
+  Path(self.service.__file__).write_bytes(source);(self.base/'llm.py').write_bytes(model)
  def tearDown(self):legacy_privacy.ComposePrivacyRecoveryTests.tearDown(self)
 
  def transport(self,payload):

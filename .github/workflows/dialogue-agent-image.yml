@@ -75,7 +75,7 @@ jobs:
           assert re.fullmatch(r'[0-9a-f]{40}',os.environ['SOURCE_COMMIT'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['CONTRACT_SHA'])
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['DIALOGUE_SHA'])
-          assert os.environ['DIALOGUE_SHA']=='9a771c80362956284bb3b20a98a5942eb1cfc58435b5cd8bd12e59c5d3768773'
+          assert os.environ['DIALOGUE_SHA']=='f90a3fe4ca6d22f8776794dbcf29a4d0ec8a93b601c2b12f5e0eb2d858c1af14'
           assert os.environ['LLM_SHA']=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
           assert os.environ['PROMPT_SHA']=='4a9a1c32168a3c1ff19bc45f196e1e8d1972326321b40b774f6746e5cf2aee28'
           with open('dialogue-agent-image.json','w') as output:
