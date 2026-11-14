@@ -58,6 +58,16 @@ class GenericReceivedAnalysisTests(unittest.TestCase):
         c=self.case
         with c.actor.claim:return recover(c.actor,c.delegated,self.request)
 
+    def bind_first_prompt_identity(self):
+        # Tail-mutation tests must identify the existing owned room by a real
+        # first prompt/marker too; HARUN_old is deliberately not a valid marker.
+        c=self.case;marker='HARUN_'+observer.text_sha('owned-generic-first-screen')[:32]
+        c.raw.messages[0]['text']+=' '+marker
+        with c.room.store.open()as db:
+            binding=json.loads(db.execute('SELECT binding FROM daily_rooms').fetchone()[0])
+            binding.update(first_prompt_sha256=observer.text_sha(c.raw.messages[0]['text']),marker=marker)
+            db.execute('UPDATE daily_rooms SET anchors=?,binding=?',(json.dumps(identities(c.raw._turns())),json.dumps(binding)))
+
     def test_doge_latest_reply_and_operation_scoped_proof_are_not_hardcoded_to_rune(self):
         result=self.invoke();proof=result['observation']
         self.assertEqual(result['kind'],observer.GENERIC_KIND)
@@ -77,6 +87,7 @@ class GenericReceivedAnalysisTests(unittest.TestCase):
 
     def test_initial_only_another_coin_and_incomplete_reply_remain_observation(self):
         self.configure('TIAUSDT',followup=False)
+        self.bind_first_prompt_identity()
         result=self.invoke();proof=result['observation']
         self.assertEqual(proof['row_offset'],6);self.assertEqual(len(proof['rows']),2)
         self.assertTrue(proof['operation_scope']['verified'])
@@ -87,6 +98,7 @@ class GenericReceivedAnalysisTests(unittest.TestCase):
         self.assertFalse(result['operation_completed'])
 
     def test_unmatched_latest_intent_cannot_fall_back_to_initial_technical_hold(self):
+        self.bind_first_prompt_identity()
         self.case.raw.messages=self.case.raw.messages[:8]
         result=self.invoke();scope=result['observation']['operation_scope']
         self.assertFalse(scope['verified']);self.assertTrue(scope['unmatched_intents'])

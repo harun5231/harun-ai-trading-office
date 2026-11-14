@@ -704,12 +704,13 @@ def observe(actor, delegated, value):
             capture['stage'] = 'INITIAL_NATIVE_ROWS'
             rows = room.full_turns(); capture['rows'] = rows
             _save(room.store.root, capture)
-            if not rows and capture['status'] == 'CONNECTED':
-                restore_state='BOUND'if snapshot is None else snapshot['state']
+            restore_state='BOUND'if snapshot is None else snapshot['state']
+            binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
+            if record['identifier_reconciliation'] is not None:
+                binding['identifier_reconciliation'] = record['identifier_reconciliation']
+            if (capture['status'] == 'CONNECTED'and not DailyRoom.matches(rows,record['anchors'],binding,
+                    restore_state,archive_root=room.store.root,prefix_identity=(record['day'],record['room_id']))):
                 capture['history_restore_attempted'] = True; capture['stage'] = restore_state+'_ROOM_RESTORE'
-                binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
-                if record['identifier_reconciliation'] is not None:
-                    binding['identifier_reconciliation'] = record['identifier_reconciliation']
                 _gate(actor)
                 try:rows = room.restore(record['anchors'], binding, restore_state,
                     prefix_identity=(record['day'],record['room_id']))

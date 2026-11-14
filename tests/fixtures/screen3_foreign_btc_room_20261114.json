@@ -1,0 +1,66 @@
+{
+  "source": {
+    "bytes": 10160,
+    "job": "43585267127-1",
+    "mode": "SAVED_SCREEN3_ORIGINAL_CAPTURE_V1",
+    "name": "screen3-original-native-capture-private.json",
+    "sha256": "7a2020982496e00ce035c2b4da5f6ff511222c9bb6a0e9fa89016e19888a2f1e",
+    "source_commit": "d1108d2323ba351d47452bd25b54ed8f4aa2e48f",
+    "source_sha256": "fd049f44a3a422ccda67890765d605176f0306bc247c34631b188432517e13f8"
+  },
+  "operation": "2026-11-14:robot-v9:0:screening:3:2",
+  "request_sha256": "5576219c258ae1732e5114d88dee7d5f4164a3a9c95e71c04b19403d7e03e544",
+  "expected_room": {
+    "anchors": [
+      "85ecd9750fd726f2d7d5f9e8acd403ea9530cdf1e715c1ef9058d4b4f1c8f440",
+      "91a574587b7d3fefcc5633fa0d7782d0bc2cd5f5261749aaa052dbadefaa8d01",
+      "13387b01074d46b66065203ceea625af8854d12030559df08468dee9d864a9d3",
+      "d7488c22f6cf12f8f642e4ac6d58b8e3c418ec5ae3c0a2517b3fac5bc85ff36e",
+      "e67a68cc67b63c6036c62a73011210e7c47cee6851962cfe7cb5fb38596182ac",
+      "2fdf636f900fe7a7f8a938a41c0c928b67fcbbc4d71753d5acf14f826a359a52",
+      "f1873e3b847a0426417e679be6851aaf6ea30b97054c7f03b127c0e979c750d1",
+      "4fd362b6b0e1b07b44f0b851023e1a59c26c8b21f6941ec847699da64de35f1a",
+      "0737e8eb333f8a0e51076513ea82ad56b104cd0e4b55b455fb1c2c5cc4734261",
+      "1b645a90daad01b91eb3b67e6887f44e844d903994b7fd835e5d7f4d5343aff9",
+      "cbef77624d3bf30602e637fbc1e59a07ad2fbe24c6a6eb7d34c1d3f192c8ed85",
+      "492fc4c06b1c6e511c7df87aa837fae9027fd7fa899943b049b3e4a4d42e4b66",
+      "37da3d8e547b3b332c9203eec66dfb1068ce756093eb67636b6560daab139eaa",
+      "b93f53775393c3cdcbdcd99815f3ef6d57ad3d6e31f1a76ae2837a2c8c7e07c3"
+    ],
+    "binding": {},
+    "day": "2026-11-14",
+    "first_prompt_sha256": "4114bc0c72557eae02fdc92ccf8b495ebacead0e102430480d63f8c265e26f02",
+    "marker": "HARUN_a92bd982bd77c13c02fa115ad5f9089d",
+    "room_id": "44a82f8094e64429b39f610b23cab583",
+    "url": "https://app.neurobro.ai/"
+  },
+  "expected_rendered_prompt": "pilihkan 2 coin pengganti yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nKapasitas saat ini 2 coin. Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: DOTUSDT, FILUSDT, HYPEUSDT, ICPUSDT, XLMUSDT.\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_1d14cb3c45058655062a0b47d6de2ddc\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta.",
+  "rows": [
+    {
+      "role": "user",
+      "text": "Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : yang tidak mudah terkena wick atau di jilat para bandar.\nRISK REWARD 1:2\n\nBahan Binance Futures USDT Perpetual untuk BTCUSDT, diambil 2026-11-03T23:07:56.196588+00:00. Dua CSV terlampir masing-masing berisi 200 candle tertutup 15M dan 1H dengan OHLCV asli. Waktu CSV adalah Unix millisecond UTC; candle berjalan dipisahkan dari 200 candle itu.\n15M: BTCUSDT_15m_200_closed_3b9ac01f.csv\n1H: BTCUSDT_1h_200_closed_71939220.csv\nHarga mark saat pengambilan data: 77791.16041304 USDT. Periksa juga dua gambar chart terlampir: simbol, timeframe, rentang waktu, dan harga harus terbaca. Candle paling kanan dapat masih berjalan; jangan menghitungnya sebagai candle tertutup. Jika gambar/CSV tidak terbaca atau tidak konsisten, jelaskan bahan yang perlu diperbaiki; itu bukan keputusan HOLD berdasarkan pasar.\n\nJika keputusan sudah jelas, akhiri dengan ringkasan COIN, LONG/SHORT/HOLD, ENTRY, TP, dan SL. Jika HOLD adalah penilaian pasar, jelaskan alasannya; jangan mengarang level yang belum ditetapkan. Quantity dihitung Risk Manager, jadi tidak perlu menentukan ukuran posisi.\nAcuan percakapan: HARUN_340d9c12496267666ff6782dac842021"
+    },
+    {
+      "role": "assistant",
+      "text": "HOLD untuk scalping $BTCUSDT sekarang. Harga Binance Futures yang terbaca saat ini sekitar 77.792 USDT; pada 15M, harga sedang menguji area 77.840-77.950, sementara struktur 1H masih berupa pemulihan setelah penurunan besar - entry langsung di bawah resistance memberi risiko wick dan setup 1:2 yang kurang bersih.\n\nYANG TERLIHAT DI CHART\n\nCSV-nya selaras dengan waktu pengambilan: candle 15M terakhir yang sudah tutup berakhir pukul 23:00 UTC, dan candle 1H terakhir tutup pada waktu yang sama; candle 23:00 di screenshot masih berjalan, jadi tidak saya perlakukan sebagai candle tertutup. Catatan: screenshot kedua juga tampak menyorot 15M, bukan 1H, sehingga pembacaan 1H saya dasarkan pada CSV 1H.\n\nLEVEL YANG SAYA TUNGGU\n\nJangan kejar LONG tepat di bawah resistance, dan SHORT juga belum terkonfirmasi selama pantulan 15M masih bertahan di atas area support dekat 77.690-77.700. Tunggu candle 15M tutup dengan jelas di atas resistance untuk menilai LONG, atau breakdown dan retest gagal di bawah support untuk menilai SHORT; tanpa konfirmasi itu, ENTRY / TP / SL tidak ditetapkan.\n\nRangkuman: COIN: $BTCUSDT | KEPUTUSAN: HOLD | ENTRY: - | TP: - | SL: - | R:R: belum ditetapkan.\n\n⚖️ Neurobro adalah alat riset, bukan penasihat keuangan; analisisnya tetap bisa salah - keputusan trading dan risiko yang Anda ambil tetap tanggung jawab Anda.",
+      "id": "cd20063a-0367-4d2b-9cfb-7754e89ae230",
+      "complete": true
+    },
+    {
+      "role": "user",
+      "text": "Mohon periksa kembali lampiran asli yang sudah ada di percakapan ini, tanpa unggah ulang. Pada jawaban sebelumnya Anda menyebut gambar kedua tampak 15M. Gambar 1H bernama HARUN_340d9c12496267666ff6782dac842021-1h-91b190f497d9.png, sedangkan gambar 15m bernama HARUN_340d9c12496267666ff6782dac842021-15m-52bd4556cfc6.png. Snapshot UI asli 1H menunjukkan sumbu waktu 26 Oktober–4 November dengan sekitar 200 bar per jam; gambar arsip tidak diedit. Tolong cek sendiri interval dan rentangnya pada kedua gambar asli serta CSV BTCUSDT_1h_200_closed_71939220.csv dan BTCUSDT_15m_200_closed_3b9ac01f.csv (masing-masing 200 candle tertutup). Ini klarifikasi data historis yang sama, bukan data realtime baru atau permintaan order. Jelaskan apakah perbedaan timeframe itu masih Anda temukan dan berikan kesimpulan alami dalam bahasa Indonesia berdasarkan data yang benar-benar terbaca. Jika lampiran tidak terbaca atau belum cukup, katakan terus terang; jangan mengarang atau memaksakan kesimpulan."
+    },
+    {
+      "role": "assistant",
+      "text": "Ya, setelah dicocokkan, perbedaan timeframe tidak lagi saya temukan. Saya keliru pada jawaban sebelumnya: gambar kedua cocok dengan 1H, bukan 15M - sumbu waktunya membentang sekitar 26 Oktober hingga 4 November, sedangkan gambar pertama cocok dengan 15M dan rentang sekitar 1-4 November.\n\nCSV juga konsisten dengan itu: data 1H mencakup 200 candle dari 26 Okt 15:00 UTC hingga candle yang tutup 3 Nov 23:00 UTC; data 15M mencakup 200 candle dari 1 Nov 21:00 UTC hingga tutup 3 Nov 23:00 UTC. Jadi pasangan lampiran dan CSV sesuai: gambar/CSV 1H untuk struktur lebih luas, gambar/CSV 15M untuk detail entry.",
+      "id": "90a2a168-6095-4617-a6be-ce6f7a97ae13",
+      "complete": true
+    }
+  ],
+  "row_text_sha256": [
+    "4f76a94f4c848c40fdfe6b47568d372f840fa45ee635287a3b5da12575273d09",
+    "403acca38f541dde373197ace07c7f9c014c2354b913192aa1d543935289b62d",
+    "e032b19dc0e6f4cff1f76dc052423eab52d68018a571ace8052d8a15b3327bcb",
+    "0988f74951ce8db4e521d765abcf913b47c5551f895eaef47f121a1a960b7cb4"
+  ]
+}
