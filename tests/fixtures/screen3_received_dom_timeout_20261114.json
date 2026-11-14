@@ -1,0 +1,111 @@
+{
+  "source_run": 43608892836,
+  "source_private_evidence": {
+    "bytes": 110291,
+    "job": "43608892836-1",
+    "name": "mini-dialogue-continuation-full-private.json",
+    "sha256": "28bb4556d6478b941fc7a52542c8988bff1da9126181045221cff7ecd758cf6e"
+  },
+  "positive_capture": {
+    "bytes": 22030,
+    "errors": [],
+    "finished_at": 1794669149.3354347,
+    "history_match_state": "BOUND",
+    "observed_at": 1794669148.2420518,
+    "operation_completed": false,
+    "operation_scope": {
+      "initial_user": 0,
+      "latest_user": 0,
+      "reply_complete": true,
+      "reply_row": 1,
+      "verified": true
+    },
+    "ownership": {
+      "bound_room_day": "2026-11-14",
+      "bound_room_marker_sha256": "49ec0e66df50276898e2b4dd7e506d6e6eb0c79b14634083b073017b4db98004",
+      "final_reply_present": true,
+      "history_restore_attempted": false,
+      "history_restored": false,
+      "initial_user_present": true,
+      "native_room_matches": true,
+      "reply_complete": true,
+      "request_user_present": true,
+      "same_loaded_room_verified": true,
+      "scope_reason": null,
+      "scope_verified": true
+    },
+    "projected_row_count": 2,
+    "review_receipt_count": 0,
+    "room_anchor_count": 16,
+    "room_initial_state": "BOUND",
+    "room_recovery": {
+      "prefix_authority": {
+        "snapshot": {}
+      }
+    },
+    "sha256": "8b33a9ecebffa851d9b1606fad61ca5f7044b0d3be0f73fde687feb8507a24d9",
+    "stable_snapshot_reads": 4,
+    "stage": "OBSERVED_WITHOUT_COMPLETION",
+    "status": "CONNECTED"
+  },
+  "assistant": {
+    "excerpt": "{\"SYMBOLS\":[\"INJUSDT\",\"AVAXUSDT\"]}",
+    "final_json_marker_present": true,
+    "sha256": "697e53efa7dedd4482b54bd7bcc0777d36ed37f7d6466c3ce0e5dd874bc85533",
+    "utf8_bytes": 754
+  },
+  "original_ended_return": {
+    "kind": "NATIVE_SCREENING_ENDED_RETURN_V1",
+    "name": "native-return-failure-5576219c258ae1732e5114d88dee7d5f4164a3a9c95e71c04b19403d7e03e544.json",
+    "sha256": "a0ce99324cc05aee25e9587e364eb4bf89f021c2e8f2c4260cc205384f35004b",
+    "bytes": 843,
+    "producer_source_sha256": "879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5",
+    "hook_source_sha256": "5f73c0629157ee1a44346cc0e31287997a44a4dafd3f4f00e17ba69316617b47",
+    "value": {
+      "operation": "2026-11-14:robot-v9:0:screening:3:2",
+      "request_sha256": "5576219c258ae1732e5114d88dee7d5f4164a3a9c95e71c04b19403d7e03e544",
+      "phase": "INITIAL",
+      "accepted_reply_sha256": null,
+      "followup_intent_sha256": [],
+      "clock": 392431.912649857,
+      "deadline": 392431.708371267,
+      "at": 1794644059.1885688,
+      "chain": [
+        {
+          "class": "OutcomeUnknown",
+          "frames": [
+            {
+              "file": "/app/agent/native_browser_hook.py",
+              "function": "_ask",
+              "line": 1000
+            },
+            {
+              "file": "/app/browser_runtime/dom.py",
+              "function": "ask",
+              "line": 544
+            }
+          ],
+          "message_characters": 0,
+          "message_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reason": null
+        },
+        {
+          "class": "OutcomeUnknown",
+          "frames": [
+            {
+              "file": "/app/browser_runtime/dom.py",
+              "function": "ask",
+              "line": 537
+            }
+          ],
+          "message_characters": 0,
+          "message_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "reason": null
+        }
+      ],
+      "schema_version": 1
+    }
+  },
+  "original_created": 1794643158.9303768,
+  "observation_scope": "Actual source-bound positive capture and native843-byte timeout; worker tests explicitly rebind only requestSHA to a controlled local request."
+}

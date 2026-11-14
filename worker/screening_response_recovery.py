@@ -1109,8 +1109,20 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
             and len(envelope['observation'].get('rows', [])) >= 2
             and len(envelope['observation'].get('review_receipts', []))
                 == len(envelope['observation']['rows']) // 2 - 1):
-        return _retire_ended_screening(provider, envelope, payload, before, index=index,
-            count=count, current=current, max_age=max_age, permitted=permitted)
+        proof = _received_screening_shape(envelope, payload, api['created'],
+            max_age=max_age, now=current)
+        try:
+            _ended_screening_return(proof, payload, api['created'], max_age=max_age)
+        except Review as error:
+            if str(error) != 'SCREENING_RESPONSE_RECOVERY_UNVERIFIED':
+                raise
+            # A retained timeout is not proof that interpretation ended before
+            # another Send. Positive received custody still follows the normal
+            # source-bound Mini approval path; never infer NOT_SENT or replay.
+            pass
+        else:
+            return _retire_ended_screening(provider, envelope, payload, before, index=index,
+                count=count, current=current, max_age=max_age, permitted=permitted)
     result, received, stale = validate_received_screening(provider, envelope, payload, api['created'],
         catalog=catalog, max_age=max_age, now=current, retained=journal is not None)
     interpretation = _received_interpretation_proof(envelope['observation'], payload)
