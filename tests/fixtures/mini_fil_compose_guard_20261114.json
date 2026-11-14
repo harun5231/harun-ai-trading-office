@@ -1,0 +1,104 @@
+{
+  "source_run": 43575573802,
+  "private_evidence": {
+    "bytes": 476271,
+    "job": "43575573802-1",
+    "name": "mini-fil-compose-raw-private.json",
+    "sha256": "c66db32e01a5329b82e404a369a55005c3c3fd88e19038f7160296b6ec55d809"
+  },
+  "actual_runtime_service_sha256": "c2605b7ad4228f0ade7192fd67437ffda296337ff3871a6d68544ec89d35a390",
+  "market_context_fixture_note": "Offline source guard fixture uses mandatory native closed_count=200 and same symbol; it does not reconstruct historical market prices.",
+  "examples": [
+    {
+      "failure_codes": [
+        "DIALOGUE_PRICE_PROPOSAL_REFUSED"
+      ],
+      "operation_id": "delegated-model:a9c8e5d5238d48b421434eacc2fc8c671b25365494b2ea6c0d97ebbab8c1a96f",
+      "original_request": {
+        "phase": "COMPOSE_ANALYSIS",
+        "reply": "Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : berdasarkan struktur pasar, swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi; jangan letakkan di area yang mudah tersapu wick.\nRISK REWARD 1:2",
+        "reply_sha256": "f3c70406b175b3d8bf0e6939e8ea20001c1ba30a9a7eecfeffceba5da115c016",
+        "request_id": "a9c8e5d5238d48b421434eacc2fc8c671b25365494b2ea6c0d97ebbab8c1a96f",
+        "source_facts": [
+          {
+            "operation": "2026-11-14:robot-v9:0:analysis-v9:FILUSDT",
+            "producer": "RISK_MANAGER",
+            "sha256": "f8436df923769d07c3542a4354816b83b2d2837cfcb610e26747cf3d74f3112b",
+            "values": {
+              "fee_entry_rate": "0.000500",
+              "fee_exit_rate": "0.000500",
+              "observed_at": 1794641704.987,
+              "risk_usdt": "5",
+              "symbol": "FILUSDT"
+            }
+          }
+        ]
+      },
+      "raw_decision": {
+        "action": "PROMPT",
+        "question": "Data: FILUSDT (Binance Futures) timeframe 1H & 15M disertakan. Saya mau scalping entry di 15M. Neurobro, analisa dan tentukan: LONG / SHORT / HOLD untuk entry 15M, plus level ENTRY dan SL struktural (berdasarkan swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi). Minta juga rekomendasi TP (Neurobro boleh kasih RR 1:3 atau 1:4); Risk Manager nantinya hanya menormalkan TP ke target bersih 2R. Tolong sertakan RISK-REWARD minimal 1:2 dan jelaskan logika singkat level SL (jangan taruh SL di area wick yang mudah tersapu). Jangan minta ukuran posisi atau anggaran risiko. Gunakan data candle 15M dan 1H yang saya berikan sebagai sumber.",
+        "symbols": []
+      },
+      "raw_key": "dialogue-model-raw:2424632f87a14914cce4a53b6dca184164ba6ed58dab6fa9c363fc3087758bbe",
+      "raw_output_text": "{\"action\":\"PROMPT\",\"symbols\":[\n \t\t\t\n\t\t] , \"question\":\"Data: FILUSDT (Binance Futures) timeframe 1H & 15M disertakan. Saya mau scalping entry di 15M. Neurobro, analisa dan tentukan: LONG / SHORT / HOLD untuk entry 15M, plus level ENTRY dan SL struktural (berdasarkan swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi). Minta juga rekomendasi TP (Neurobro boleh kasih RR 1:3 atau 1:4); Risk Manager nantinya hanya menormalkan TP ke target bersih 2R. Tolong sertakan RISK-REWARD minimal 1:2 dan jelaskan logika singkat level SL (jangan taruh SL di area wick yang mudah tersapu). Jangan minta ukuran posisi atau anggaran risiko. Gunakan data candle 15M dan 1H yang saya berikan sebagai sumber.\"}",
+      "raw_sha256": "12b659afec0467f035df637ffca43f8fde582c09adff61baac2baebfeadf1e3c",
+      "question_sha256": "bab65c41add5c953e6c91752e4a7b5b84086facebab9f809d8ae889a819eccf8",
+      "question_characters": 669,
+      "before_validation": {
+        "ok": false,
+        "code": "DIALOGUE_PRICE_PROPOSAL_REFUSED"
+      }
+    },
+    {
+      "failure_codes": [
+        "DIALOGUE_MODEL_RESULT_INVALID"
+      ],
+      "operation_id": "delegated-model:844b1eb21635713eadfc368184afc9f0c38dd243877a4113456ca4656941f723",
+      "original_request": {
+        "phase": "COMPOSE_ANALYSIS",
+        "reply": "Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : berdasarkan struktur pasar, swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi; jangan letakkan di area yang mudah tersapu wick.\nRISK REWARD 1:2",
+        "reply_sha256": "f3c70406b175b3d8bf0e6939e8ea20001c1ba30a9a7eecfeffceba5da115c016",
+        "request_id": "844b1eb21635713eadfc368184afc9f0c38dd243877a4113456ca4656941f723",
+        "source_facts": [
+          {
+            "operation": "2026-11-14:robot-v9:0:analysis-v9:FILUSDT",
+            "producer": "RISK_MANAGER",
+            "sha256": "e9cc87075d1249c7d90eb5214a605dffb0550d6000217cfd574e4ca19f9288a0",
+            "values": {
+              "fee_entry_rate": "0.000500",
+              "fee_exit_rate": "0.000500",
+              "observed_at": 1794641842.726,
+              "risk_usdt": "5",
+              "symbol": "FILUSDT"
+            }
+          }
+        ]
+      },
+      "raw_decision": {
+        "action": "PROMPT",
+        "question": "Saya berikan data chart Binance Futures FILUSDT TF 1H & 15M (200 closed candles; running candle 15M open). Saya ingin scalping entry di TF 15M. Analisa dan tentukan: LONG / SHORT / HOLD, ENTRY (15M), SL (berdasarkan struktur pasar: swing high/low, likuiditas, volatilitas, wick, false breakout, titik invalidasi — jangan letakkan SL di area yang mudah tersapu wick), dan rekomendasi TP. Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP ke eksekusi 2R. Minta RISK REWARD minimal 1:2 saat menyusun TP. Gunakan data yang diberikan (candles 1H & 15M, mark_price, running_candles). Jangan minta atau tentukan quantity/ukuran posisi. Sertakan alasan singkat untuk arah, pilihan level ENTRY/SL/TP, dan titik invalidasi setup. SImpan angka harga persis sesuai data.",
+        "symbols": []
+      },
+      "raw_key": "dialogue-model-raw:62debae7250a6608f622320a11dd90524baaff21c207212bdada4911a44c252b",
+      "raw_output_text": "{\"action\":\"PROMPT\",\"symbols\":[\n \t\t\t\n\t\t] , \"question\":\"Saya berikan data chart Binance Futures FILUSDT TF 1H & 15M (200 closed candles; running candle 15M open). Saya ingin scalping entry di TF 15M. Analisa dan tentukan: LONG / SHORT / HOLD, ENTRY (15M), SL (berdasarkan struktur pasar: swing high/low, likuiditas, volatilitas, wick, false breakout, titik invalidasi — jangan letakkan SL di area yang mudah tersapu wick), dan rekomendasi TP. Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP ke eksekusi 2R. Minta RISK REWARD minimal 1:2 saat menyusun TP. Gunakan data yang diberikan (candles 1H & 15M, mark_price, running_candles). Jangan minta atau tentukan quantity/ukuran posisi. Sertakan alasan singkat untuk arah, pilihan level ENTRY/SL/TP, dan titik invalidasi setup. SImpan angka harga persis sesuai data.\"}",
+      "raw_sha256": "9f4764de307263cc3baab71c8a83e8bcc1acc5b26a60e4668ad64fbadb9eb9b0",
+      "question_sha256": "d0013f2c5ffef22993a5b74ba2aeb9a5c83aa095b6282490e87e364014594340",
+      "question_characters": 776,
+      "before_validation": {
+        "ok": false,
+        "code": "DIALOGUE_MODEL_RESULT_INVALID"
+      }
+    }
+  ],
+  "browser_prompt_before": {
+    "source_sha256": "2e8887bd6a7edd4e659e3065c308a0f791a03f5cdbc6dd7cdf101679a0c3928d",
+    "functions": {
+      "normalize_privacy_reminders": "def normalize_privacy_reminders(question):\n    \"\"\"Remove only complete, value-free negative internal privacy sentences.\"\"\"\n    if type(question) is not str:\n        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')\n    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan|sarankan|menyarankan)'\n    topic = (r'(?:ukuran(?:\\s+posisi)?|quantity|kuantitas|anggaran\\s+risiko(?:\\s+(?:pribadi|akun))?'\n        r'|nominal\\s+risiko(?:\\s+(?:pribadi|akun))?|risiko\\s+pribadi)')\n    reminder = (r'(?:jangan|tidak\\s+perlu)\\s+' + verb\n        + r'(?:\\s+(?:atau|dan)\\s+' + verb + r')*\\s+' + topic\n        + r'(?:\\s*(?:/|,|\\bdan\\b|\\batau\\b)\\s*' + topic + r')*[.!?;]?')\n    # A wrapped value on the next line belongs to the same sentence; a line\n    # break must not detach a real budget/quantity from its privacy subject.\n    internal_role_clauses={\n        'risk manager hanya menormalkan tp ke target bersih 2r saat eksekusi',\n        'risk manager hanya menormalkan tp eksekusi'}\n    parts = re.split(r'((?<=[.!?;])\\s+)', question)\n    for index in range(0, len(parts), 2):\n        clause=re.sub(r'\\s+',' ',parts[index].strip()).rstrip('.!?;').casefold()\n        if re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE)or clause in internal_role_clauses:\n            parts[index] = ''\n            if index:\n                parts[index - 1] = ''\n    return ''.join(parts)",
+      "outbound_question": "def outbound_question(question):\n    \"\"\"Apply the same narrow privacy projection before the existing WEB guard.\"\"\"\n    normalized=normalize_privacy_reminders(question)\n    if not normalized.strip() or not web_prompt_allowed(normalized):\n        raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')\n    return normalized"
+    },
+    "function_sha256": {
+      "normalize_privacy_reminders": "d7b054b69ad87702f4fa800d06fbaf65616b2f72ec4a4dc1866df872a83e0d7c",
+      "outbound_question": "1c5dcde0199e23734c655f7162624afdd30823d8a53cc364bee5a6276364005e"
+    }
+  }
+}

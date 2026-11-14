@@ -221,7 +221,7 @@ def _without_discussion_structure(question):
             blocks[index]=block
     question=''.join(blocks)
     ratio=r'1\s*:\s*[1-9]\d{0,2}(?!\d|[.,]\d)'
-    series=ratio+r'(?:\s*/\s*'+ratio+r')*'
+    series=ratio+r'(?:\s*(?:/|\batau\b)\s*'+ratio+r')*'
     question=re.sub(r'(?i)(\b(?:RISK\s*REWARD|R\s*:\s*R|RR)\s*'
         r'(?:(?:minimal|minimum|target|sebesar|adalah)\s*)?)('+series+r')',r'\1',question)
     question=re.sub(r'(?i)(\b(?:rekomendasi\s+)?TP\s*\(\s*'
