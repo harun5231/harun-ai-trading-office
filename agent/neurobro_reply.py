@@ -593,7 +593,12 @@ def _screening_public_summary(value, prefix, *, semantic_symbols=None):
         if re.fullmatch(PAIR, choice, re.I) is not None:
             selected.append(symbol(choice))
             continue
-        matches = ([pair for pair in semantic_symbols if pair[:-4] == choice.upper()]
+        # A public quote separator is presentation only after the actual
+        # Mini/source checks have already admitted that exact USDT pair. Do
+        # not remove underscores inside a base or grant aliases to the local
+        # deterministic parser.
+        matches = ([pair for pair in semantic_symbols
+            if choice.strip().upper() in (pair, pair[:-4], pair[:-4] + '_USDT')]
             if semantic_symbols is not None else [])
         if len(matches) != 1:
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
@@ -601,16 +606,21 @@ def _screening_public_summary(value, prefix, *, semantic_symbols=None):
     if not 1 <= len(selected) <= 2 or len(selected) != len(set(selected)):
         raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
     scope = _explanation_scope(prefix)
+    # Compare explicit prior decisions using the same whole-token quote
+    # presentation. This validation-only view never changes source bytes or
+    # supplies attribution/selection authority to the deterministic parser.
+    comparison_scope = (re.sub(r'(?<![A-Z0-9_])([A-Z0-9]{2,20})_USDT(?![A-Z0-9_])',
+        r'\1USDT', scope, flags=re.I) if semantic_symbols is not None else scope)
     if scope.strip():
         # A comparison table is not another final choice. Preserve the same
         # prefix/conditional checks for both full pairs and semantic aliases.
-        prior_json = _json_tail(scope)
+        prior_json = _json_tail(comparison_scope)
         prior_summary = (prior_json is not None and type(prior_json[0]) is dict
             and 'SYMBOLS' in prior_json[0])
-        if _screening_strong_final(scope) or prior_summary:
+        if _screening_strong_final(comparison_scope) or prior_summary:
             try:
                 previous = (_screening_public_summary(*prior_json, semantic_symbols=semantic_symbols)
-                    if semantic_symbols is not None and prior_summary else parse_screening_reply(scope))
+                    if semantic_symbols is not None and prior_summary else parse_screening_reply(comparison_scope))
             except ReplyIncomplete as error:
                 if semantic_symbols is not None and prior_summary or str(error) in (
                         'NEUROBRO_SCREENING_AMBIGUOUS', 'NEUROBRO_SCREENING_DECISION_CONFLICT'):
@@ -619,8 +629,8 @@ def _screening_public_summary(value, prefix, *, semantic_symbols=None):
                 if previous['symbols'] != selected:
                     raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
         if semantic_symbols is not None:
-            _screening_explicit_alias_conflict(scope, selected)
-        if _conditional_json_intro(scope, ('LONG', 'SHORT', 'HOLD')):
+            _screening_explicit_alias_conflict(comparison_scope, selected)
+        if _conditional_json_intro(comparison_scope, ('LONG', 'SHORT', 'HOLD')):
             raise ReplyIncomplete('NEUROBRO_SCREENING_AMBIGUOUS')
     return {'symbols': selected}
 
