@@ -545,7 +545,9 @@ def _sent_window_alignment(room,capture):
     if omitted<=0 or omitted%2:return None
     # Check the historical suffix alone: the current operation's pair is
     # independently bound by cache, attachments and four stable native reads.
-    if not prefix_snapshot_matches(room.store.root,record['day'],record['room_id'],record['anchors'],rows[:offset]):return None
+    prior=old[:omitted]+rows[:offset]
+    if not prefix_snapshot_matches(room.store.root,record['day'],record['room_id'],record['anchors'],prior,
+            binding=record,allow_window=False):return None
     return dict(omitted=omitted,rows=old[:omitted]+rows,
         authority=dict(kind='EXACT_NATIVE_PREFIX_SNAPSHOT_WINDOW',visible_row_offset=omitted,
             visible_prior_rows=offset,snapshot={key:retained[key]for key in('name','sha256','bytes')}))
@@ -719,14 +721,18 @@ def observe(actor, delegated, value):
             rows = room.full_turns(); capture['rows'] = rows
             _save(room.store.root, capture)
             restore_state='BOUND'if snapshot is None else snapshot['state']
+            # History ownership is a read-only BOUND view, as in _room_witness.
+            # Preserve real SENT and require its unchanged strict seal/CAS below.
+            history_state='BOUND'if restore_state=='SENT'else restore_state
+            capture['history_match_state']=history_state
             binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
             if record['identifier_reconciliation'] is not None:
                 binding['identifier_reconciliation'] = record['identifier_reconciliation']
             if (capture['status'] == 'CONNECTED'and not DailyRoom.matches(rows,record['anchors'],binding,
-                    restore_state,archive_root=room.store.root,prefix_identity=(record['day'],record['room_id']))):
+                    history_state,archive_root=room.store.root,prefix_identity=(record['day'],record['room_id']))):
                 capture['history_restore_attempted'] = True; capture['stage'] = restore_state+'_ROOM_RESTORE'
                 _gate(actor)
-                try:rows = room.restore(record['anchors'], binding, restore_state,
+                try:rows = room.restore(record['anchors'], binding, history_state,
                     prefix_identity=(record['day'],record['room_id']))
                 except BaseException:
                     # A history load can expose a challenge or another room.
