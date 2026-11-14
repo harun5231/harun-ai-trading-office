@@ -68,5 +68,8 @@
   },
   "current_user_identity": "86feff9ab1f19b09053c17d2cee18f03364d1871b38ac6dfdc0ae3ae025d3c10",
   "authored_user_identity": "13387b01074d46b66065203ceea625af8854d12030559df08468dee9d864a9d3",
-  "prefix_count": 14
+  "prefix_count": 14,
+  "current_reply": "Saya pilih $INJUSDT dan $AVAXUSDT sebagai kandidat pantauan, bukan jaminan profit. $INJ mencatat kenaikan 24 jam 7.35%, volume Binance Futures $163.6M, dan kenaikan open interest 24.48% - tetapi indikator 5 menit melemah, jadi jangan kejar kenaikannya; tunggu momentum pulih. $AVAX punya volume $117.6M dan funding negatif -0.0113%, namun masih lemah dekat support $7.99 - tunggu support bertahan sebelum mencari setup long.\n\n⚖️ Neurobro adalah alat riset, bukan saran finansial; analisis bisa salah. Keputusan trading dan risiko yang kamu ambil tetap tanggung jawabmu.\n\nCOIN terpilih: $INJUSDT - momentum dan aktivitas futures tinggi; $AVAXUSDT - likuiditas baik dan funding negatif, tetapi perlu konfirmasi arah.\n\n{\"SYMBOLS\":[\"INJUSDT\",\"AVAXUSDT\"]}",
+  "current_reply_sha256": "697e53efa7dedd4482b54bd7bcc0777d36ed37f7d6466c3ce0e5dd874bc85533",
+  "current_rendered_prompt": "pilihkan 2 coin pengganti yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nKapasitas saat ini 2 coin. Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: DOTUSDT, FILUSDT, HYPEUSDT, ICPUSDT, XLMUSDT.\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_1d14cb3c45058655062a0b47d6de2ddc\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta."
 }

@@ -72,7 +72,8 @@ class ReceivedRoomOwnershipRestoreTests(unittest.TestCase):
         c.room.history.rooms=[('Analisis RUNE',owned)];c.raw.messages=copy.deepcopy(self.foreign)
         with patch.object(c.room,'restore',wraps=c.room.restore)as restore:
             result=sent.invoke()
-        self.assertEqual(restore.call_args.args[2],'SENT');self.assertTrue(result['history_restored'])
+        self.assertEqual(restore.call_args.args[2],'BOUND');self.assertTrue(result['history_restored'])
+        self.assertEqual(result['observation']['room_initial_state'],'SENT')
         self.assertEqual(result['error_count'],0);self.assertEqual(sent.row()['state'],'BOUND')
         for key in('day','room_id','url','binding'):self.assertEqual(sent.row()[key],before[key])
         after=sent.row();c.raw.messages=copy.deepcopy(self.foreign)

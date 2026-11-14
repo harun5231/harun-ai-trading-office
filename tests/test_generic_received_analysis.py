@@ -292,7 +292,8 @@ class SentRoomCompletionObservationTests(unittest.TestCase):
         self.c.raw.messages=[]
         with patch.object(self.c.room,'restore',wraps=self.c.room.restore)as restore:
             result=self.invoke()
-        self.assertEqual(restore.call_args.args[2],'SENT')
+        self.assertEqual(restore.call_args.args[2],'BOUND')
+        self.assertEqual(result['observation']['room_initial_state'],'SENT')
         self.assertTrue(result['history_restore_attempted']);self.assertTrue(result['history_restored'])
         self.assertEqual(self.c.room.history.selected,['Analisis SUI existing'])
         after=self.row();self.assertEqual(after['state'],'BOUND')
