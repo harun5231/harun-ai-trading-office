@@ -407,7 +407,18 @@ class PassiveEndedCaptureTests(unittest.TestCase):
         from agent.native_daily_room import retain_prefix_snapshot
         case=ReceivedScreeningRoundsTests()
         case.setUp();self.addCleanup(case.doCleanups)
-        c=case.case; initial=case.invoke()['observation']['rows']; question='Tegaskan coin pilihan yang dimaksud.'
+        c=case.case
+        # The room remains owned when its later text/receipt is deliberately
+        # corrupted below. Establish the native first-prompt identity too;
+        # the legacy fixture's HARUN_old marker is absent from that prompt.
+        marker='HARUN_'+hashlib.sha256(b'passive-ended-owned-first-prompt').hexdigest()[:32]
+        c.raw.messages[0]['text']+=' '+marker
+        with c.room.store.open()as db:
+            binding=json.loads(db.execute('SELECT binding FROM daily_rooms').fetchone()[0])
+            binding.update(first_prompt_sha256=hashlib.sha256(c.raw.messages[0]['text'].encode()).hexdigest(),marker=marker)
+            db.execute('UPDATE daily_rooms SET binding=?',(json.dumps(binding),))
+        case.anchor()
+        initial=case.invoke()['observation']['rows']; question='Tegaskan coin pilihan yang dimaksud.'
         entry=review_entry(case.payload,initial,question,time.time()-10,symbols=[])
         root=c.room.store.root;path=root/(prefix(case.payload)+entry['value']['request_id']+'.json')
         path.write_text(recovery._wire(entry['value'],ascii=True));path.chmod(0o600)
