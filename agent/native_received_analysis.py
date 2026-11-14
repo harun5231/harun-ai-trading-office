@@ -425,12 +425,26 @@ def _prior_review_user(root, rows, assistant, review, cache, receipts):
 
 
 def _sent_prefix_authority(room, capture, snapshot, prefix_count):
-    """Translate only assistant IDs, backed by old native rows or prior reviews."""
-    from .native_daily_room import read_prefix_snapshot
+    """Verify archived rendering or assistant-ID changes before sealing."""
+    from .native_daily_room import read_prefix_snapshot,prefix_snapshot_matches
     from .dialogue_service import validate_result
     record=capture['room'];rows=capture['rows'];anchors=record['anchors'];actual=identities(rows)
     changed=[i for i in range(prefix_count)if actual[i]!=anchors[i]]
     if not changed:return None
+    if any(rows[index].get('role')=='user'for index in changed):
+        # Cached legacy screening examples can lose only their literal HTML
+        # placeholder tags on reload. Reuse the complete archived room proof;
+        # never normalize the active request or accept an unverified user edit.
+        need(all(key in record for key in('first_prompt_sha256','marker','history_titles')),
+            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        binding={key:record[key]for key in('first_prompt_sha256','marker','history_titles')}
+        need(record.get('identifier_reconciliation')is None and prefix_count==len(anchors)and prefix_snapshot_matches(room.store.root,
+            record['day'],record['room_id'],anchors,rows[:prefix_count],binding=binding,allow_window=False),
+            'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        retained=read_prefix_snapshot(room.store.root,record['day'],record['room_id'],anchors)
+        need(retained is not None,'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')
+        return dict(kind='EXACT_NATIVE_PREFIX_SNAPSHOT_RENDERED_SCREENING',changed_prefix_rows=changed,
+            snapshot={key:retained[key]for key in('name','sha256','bytes')})
     need(all(i%2==1 and rows[i].get('role')=='assistant'and rows[i].get('complete')is True
         and type(rows[i].get('id'))is str and re.fullmatch('[A-Za-z0-9_.:-]{1,160}',rows[i]['id'])for i in changed),
         'RECEIVED_ANALYSIS_SENT_PREFIX_UNVERIFIED')

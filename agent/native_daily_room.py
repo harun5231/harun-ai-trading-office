@@ -84,7 +84,7 @@ def retain_prefix_snapshot(root, day, room_id, rows):
     return {key:receipt[key]for key in('name','sha256','bytes')}
 
 
-def prefix_snapshot_matches(root, day, room_id, anchors, rows, *, binding=None):
+def prefix_snapshot_matches(root, day, room_id, anchors, rows, *, binding=None, allow_window=True):
     """Verify archived native rows across known history rendering changes."""
     try:
         receipt=read_prefix_snapshot(root,day,room_id,anchors)
@@ -132,6 +132,7 @@ def prefix_snapshot_matches(root, day, room_id, anchors, rows, *, binding=None):
                                 break
                     restored.append(current)
                 if valid and changed and same(restored,rows[:len(old)]):return True
+        if allow_window is not True:return False
         if (len(rows)>=2 and len(rows)<len(old)and rows[-2].get('role')=='user'
                 and rows[-1].get('role')=='assistant'and rows[-1].get('complete')is True):
             if same(old[-len(rows):],rows):return True
