@@ -1,0 +1,72 @@
+{
+  "source": {
+    "bytes": 21988,
+    "job": "43595643088-1",
+    "mode": "SAVED_HISTORY_OPERATION_CAPTURE_V1",
+    "name": "history-original-operation-capture-private.json",
+    "sha256": "d59a6b19de67dcb1ff19d8e8b937f545efb4c7b3ed93c1e921702a49d25f9a38",
+    "source_commit": "13e6b53fe3fd32e6beedb0bf676089015e14304a",
+    "source_sha256": "996448e52b72b34ee3ddbf1006d68907eede53f24c82b93991de36ce19634a96"
+  },
+  "operation": "2026-11-14:robot-v9:0:screening:3:2",
+  "request_sha256": "5576219c258ae1732e5114d88dee7d5f4164a3a9c95e71c04b19403d7e03e544",
+  "room": {
+    "anchors": [
+      "85ecd9750fd726f2d7d5f9e8acd403ea9530cdf1e715c1ef9058d4b4f1c8f440",
+      "91a574587b7d3fefcc5633fa0d7782d0bc2cd5f5261749aaa052dbadefaa8d01",
+      "13387b01074d46b66065203ceea625af8854d12030559df08468dee9d864a9d3",
+      "d7488c22f6cf12f8f642e4ac6d58b8e3c418ec5ae3c0a2517b3fac5bc85ff36e",
+      "e67a68cc67b63c6036c62a73011210e7c47cee6851962cfe7cb5fb38596182ac",
+      "2fdf636f900fe7a7f8a938a41c0c928b67fcbbc4d71753d5acf14f826a359a52",
+      "f1873e3b847a0426417e679be6851aaf6ea30b97054c7f03b127c0e979c750d1",
+      "4fd362b6b0e1b07b44f0b851023e1a59c26c8b21f6941ec847699da64de35f1a",
+      "0737e8eb333f8a0e51076513ea82ad56b104cd0e4b55b455fb1c2c5cc4734261",
+      "1b645a90daad01b91eb3b67e6887f44e844d903994b7fd835e5d7f4d5343aff9",
+      "cbef77624d3bf30602e637fbc1e59a07ad2fbe24c6a6eb7d34c1d3f192c8ed85",
+      "492fc4c06b1c6e511c7df87aa837fae9027fd7fa899943b049b3e4a4d42e4b66",
+      "37da3d8e547b3b332c9203eec66dfb1068ce756093eb67636b6560daab139eaa",
+      "b93f53775393c3cdcbdcd99815f3ef6d57ad3d6e31f1a76ae2837a2c8c7e07c3"
+    ],
+    "day": "2026-11-14",
+    "first_prompt_sha256": "4114bc0c72557eae02fdc92ccf8b495ebacead0e102430480d63f8c265e26f02",
+    "history_titles": [
+      "Pilih Dua Coin Menguntungkan",
+      "Dua Coin Menguntungkan Binance Futures",
+      "Rekomendasi Coin Future Binance",
+      "Coin Pilihan Futures Binance",
+      "Coin Pilihan Binance Futures",
+      "Coin Pilihan Binance Futures",
+      "Binance Futures Coin Pilihan",
+      "Pilih 2 Coin Binance Futures",
+      "Analisis Entry BTCUSDT Binance Futures",
+      "Entry Limit Belum Terjemput",
+      "Pilih Dua Coin Profit Tinggi",
+      "Coin Pilihan Binance Futures",
+      "Rekomendasi coin futures binance"
+    ],
+    "identifier_reconciliation": null,
+    "marker": "HARUN_a92bd982bd77c13c02fa115ad5f9089d",
+    "room_id": "44a82f8094e64429b39f610b23cab583",
+    "updated_at": 1794643160.863271,
+    "url": "https://app.neurobro.ai/"
+  },
+  "changed_prefix_indices": [
+    2,
+    3,
+    5,
+    7,
+    9,
+    11,
+    13
+  ],
+  "changed_user_indices": [
+    2
+  ],
+  "current_user_row": {
+    "role": "user",
+    "text": "pilihkan 2 coin pengganti yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nKapasitas saat ini 2 coin. Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: HYPEUSDT.\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_ca4591178093c5328078cf7d453f8284\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"\",\"\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta."
+  },
+  "current_user_identity": "86feff9ab1f19b09053c17d2cee18f03364d1871b38ac6dfdc0ae3ae025d3c10",
+  "authored_user_identity": "13387b01074d46b66065203ceea625af8854d12030559df08468dee9d864a9d3",
+  "prefix_count": 14
+}
