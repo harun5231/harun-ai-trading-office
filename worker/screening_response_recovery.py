@@ -1781,6 +1781,14 @@ def _resume_completed_stale_screening(coordinator, today, account):
     db = coordinator.db
     if not coordinator.allowed(today):
         return None
+    # Research-only recovery callers retain their smaller existing interface.
+    # This optional transition needs the real coordinator's quota/budget view.
+    if not all(callable(method) for method in (
+            getattr(coordinator.store, 'entries', None),
+            getattr(coordinator.store, 'results', None),
+            getattr(coordinator, 'execution_slots', None),
+            getattr(coordinator, 'research_budget', None))):
+        return None
     if db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
             "('research_browser_requests','research_browser_responses')").fetchone()[0] != 2:
         return None

@@ -411,6 +411,16 @@ class CompletedStaleScreeningResumeTests(unittest.TestCase):
             self.assertIsNone(recovery._resume_completed_stale_screening(
                 self.robot, fixtures.DAY, self.account))
 
+    def test_research_only_recovery_contract_does_not_require_coordinator_quota_methods(self):
+        self.make_historical_stall()
+        minimal = SimpleNamespace(db=self.db, neuro=self.case.provider,
+            allowed=self.robot.allowed, market=self.robot.market,
+            store=SimpleNamespace(report=self.robot.store.report))
+        snapshot = tuple(self.db.iterdump())
+        with patch.object(recovery.time, 'time', return_value=self.clock):
+            self.assertIsNone(recovery.resume_uncertain_screening(minimal, fixtures.DAY, {}))
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
+
     def retain_original_resume_cached(self):
         self.db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
             tuple(self.primary_recovery[name] for name in ('operation', 'request_sha256',
