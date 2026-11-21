@@ -157,7 +157,7 @@ class Coordinator:
         self.gateway = Gateway(case)
         self.market = types.SimpleNamespace(fresh=self.market_fresh,
             data=lambda symbol: native_context(time.time()), max_age=180)
-        self.neuro = types.SimpleNamespace(ask=self.ask)
+        self.neuro = types.SimpleNamespace(ask=self.ask, require_key=lambda: None)
         self.ask_count = self.advance_count = 0
         self.decision = 'TAHAN'
         self.after_reply = None

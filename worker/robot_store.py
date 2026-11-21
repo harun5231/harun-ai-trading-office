@@ -193,20 +193,32 @@ class RobotStore:
     def report(self, state, account=None, reason=None, wait_reason=None):
         observation = account_observation(account) if account else empty_account()
         encoded = json.dumps(observation)
+        passive = (account is None and state in ('ENTRY_PENDING', 'POSITION_PROTECTED')
+                   and reason is None and wait_reason is None)
         previous = self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
         previous = json.loads(previous[0]) if previous else {}
-        self.db.execute('''INSERT OR REPLACE INTO robot_status
+        published = self.db.execute('''INSERT OR REPLACE INTO robot_status
           SELECT 1,json_set(CASE WHEN ? AND robot_account_newer(?,previous)
             THEN json_patch(previous,?) ELSE previous END,
             '$.bot_status',?,'$.failure_code',?,'$.wait_reason',?,'$.checked_at',?)
-          FROM (SELECT COALESCE((SELECT data FROM robot_status WHERE id=1),?) AS previous)''',
-          (bool(account), encoded, encoded, state, reason, wait_reason, now(), json.dumps(empty_account())))
-        if (previous.get('bot_status'), previous.get('failure_code'), previous.get('wait_reason')) != (state, reason, wait_reason):
+          FROM (SELECT COALESCE((SELECT data FROM robot_status WHERE id=1),?) AS previous)
+          WHERE NOT (? AND COALESCE(json_extract(previous,'$.bot_status'),'') IN ('WAITING','NEEDS_REVIEW')
+            AND (COALESCE(json_extract(previous,'$.failure_code'),'') GLOB 'PENDING_REVIEW_*'
+              OR COALESCE(json_extract(previous,'$.wait_reason'),'') GLOB 'PENDING_REVIEW_*'))''',
+          (bool(account), encoded, encoded, state, reason, wait_reason, now(),
+           json.dumps(empty_account()), passive)).rowcount
+        if published and (previous.get('bot_status'), previous.get('failure_code'), previous.get('wait_reason')) != (state, reason, wait_reason):
             agent = {'SCREENING': 'Market Analyst', 'ANALYZING': 'Neurobro',
                      'VALIDATING': 'Risk Manager', 'EXECUTING': 'Trading Agent',
                      'EXECUTION_BLOCKED': 'Trading Agent'}.get(state, 'Coordinator')
             self.event(state, agent, state + (': ' + reason if reason else ''))
-        return self.snapshot()
+        result = self.snapshot()
+        if not published and result['robot_on']:
+            # Financial persistence succeeded for this owned receipt. Keep the
+            # shared review guard visible, while acknowledging the actual
+            # gateway state to the independent FillPriority callback.
+            result.update(bot_status=state, failure_code=reason, wait_reason=wait_reason)
+        return result
 
     def report_account(self, account=None, reason=None):
         observation = account_observation(account, reason, stamp=True)
