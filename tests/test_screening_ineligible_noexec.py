@@ -96,7 +96,7 @@ class IneligibleScreeningNoexecTests(unittest.TestCase):
         self.assertEqual(retirement['kind'], recovery.INELIGIBLE_NOEXEC)
         self.assertEqual(retirement['selected_symbols'], ['SUIUSDT', 'CRVUSDT'])
         self.assertEqual(retirement['missing_symbols'], ['SUIUSDT'])
-        self.assertEqual(retirement['catalog_keys'], ['CRVUSDT', 'INJUSDT'])
+        self.assertEqual(retirement['catalog_keys'], sorted(self.case.catalog))
         self.assertEqual(retirement['catalog_keys_sha256'], recovery._digest(retirement['catalog_keys']))
         self.assertEqual(seal['observation'], self.envelope['observation'])
         before = tuple(self.db.iterdump()); changes = self.db.total_changes
@@ -128,7 +128,8 @@ class IneligibleScreeningNoexecTests(unittest.TestCase):
         self.envelope = copy.deepcopy(actual['envelope'])
         now = self.envelope['observation']['finished_at'] + 10
         finances = c.finances(); quota = tuple(self.db.execute('SELECT * FROM robot_entry_receipts')); changes = self.db.total_changes
-        self.assertEqual(self.recover(catalog={'CRVUSDT': {}, 'BTCUSDT': {}}, now=now), 'NOEXEC')
+        catalog = {'CRVUSDT': {}, 'BTCUSDT': {}, 'AUSDT': {}, '测试USDT': {}}
+        self.assertEqual(self.recover(catalog=catalog, now=now), 'NOEXEC')
         self.assertEqual(self.db.total_changes - changes, 4)
         self.assertEqual(self.row('api_requests')['failure_code'], 'INVALID_SCREENING_SYMBOL')
         self.assertIsNone(self.row('api_requests')['output'])
@@ -139,6 +140,8 @@ class IneligibleScreeningNoexecTests(unittest.TestCase):
         seal = json.loads(self.row('screening_response_recoveries')['proof'])
         self.assertEqual(seal['observation'], actual['envelope']['observation'])
         self.assertEqual(seal['retirement']['selected_symbols'], ['TONUSDT','CRVUSDT'])
+        self.assertEqual(seal['retirement']['catalog_keys'], sorted(catalog))
+        self.assertEqual(seal['retirement']['catalog_keys_sha256'], recovery._digest(sorted(catalog)))
         self.assertEqual(c.finances(), finances)
         self.assertEqual(tuple(self.db.execute('SELECT * FROM robot_entry_receipts')), quota)
         before = tuple(self.db.iterdump()); changes = self.db.total_changes
@@ -146,6 +149,21 @@ class IneligibleScreeningNoexecTests(unittest.TestCase):
         self.assertEqual(self.db.total_changes, changes)
         self.assertEqual(tuple(self.db.iterdump()), before)
         self.assertEqual(path.read_bytes(), original_bytes)
+
+    def test_full_catalog_keys_are_evidence_not_selected_symbol_syntax(self):
+        # Representative public catalog names, not claims about an observed
+        # listing: a one-letter base and Unicode key must remain unmodified.
+        self.case.catalog.update({'AUSDT': {}, '测试USDT': {}})
+        from worker.neuroapi import selections
+        for symbol in ('AUSDT', '测试USDT'):
+            with self.subTest(symbol=symbol), self.assertRaisesRegex(Review, '^INVALID_SCREENING_SYMBOL$'):
+                selections({'symbols': [symbol, 'CRVUSDT']}, self.case.catalog, count=2)
+        self.assert_retired(age=20)
+
+    def test_unbounded_or_nontext_catalog_keys_remain_rejected_without_state_changes(self):
+        for catalog in ({'X' * 129: {}, 'CRVUSDT': {}}, {None: {}, 'CRVUSDT': {}}, {'': {}, 'CRVUSDT': {}}):
+            with self.subTest(catalog_keys=list(catalog)):
+                self.assert_refused(catalog=catalog)
 
     def test_fresh_request_retires_known_ineligible_choice_without_waiting_for_expiry(self):
         self.assert_retired(age=20)
