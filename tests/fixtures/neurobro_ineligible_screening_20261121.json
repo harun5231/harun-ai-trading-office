@@ -1,0 +1,247 @@
+{
+  "api": {
+    "attempts": 1,
+    "body_hash": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+    "created": 1795223466.3648596,
+    "failure_code": "NEUROBRO_BROWSER_OUTCOME_UNKNOWN",
+    "idempotency": null,
+    "operation": "2026-11-21:robot-v9:0:screening:0:2",
+    "output": null,
+    "state": "NEEDS_REVIEW"
+  },
+  "envelope": {
+    "capture_bytes": 11156,
+    "capture_name": "received-analysis-observation-373b714b6865aca1-563cb80f1f9d0da23a3211ef891635ae5537298290cc5eab4415b915efa105ae.json",
+    "capture_sha256": "563cb80f1f9d0da23a3211ef891635ae5537298290cc5eab4415b915efa105ae",
+    "error_count": 0,
+    "kind": "NATIVE_RECEIVED_SCREENING_OBSERVATION_V1",
+    "observation": {
+      "errors": [],
+      "file_tiles": [],
+      "finished_at": 1795224385.4870908,
+      "history_match_state": "BOUND",
+      "history_restore_attempted": false,
+      "history_restored": false,
+      "in_process_data_file_deliveries": [],
+      "initial_page_url": "https://app.neurobro.ai/",
+      "kind": "NATIVE_RECEIVED_SCREENING_OBSERVATION_V1",
+      "model_calls": 0,
+      "native_history_prefix_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "native_source_sha256": "30ea13cd51706b1db65620cdfb5f8db6dec1c9b3b8a20c9b7ca1d6c9db07f72e",
+      "observed_at": 1795224384.3916843,
+      "operation": "2026-11-21:robot-v9:0:screening:0:2",
+      "operation_completed": false,
+      "operation_scope": {
+        "initial_user": 0,
+        "latest_user": 0,
+        "reason": null,
+        "reply_complete": true,
+        "reply_row": 1,
+        "unmatched_intents": [],
+        "user_rows": [
+          0
+        ],
+        "verified": true
+      },
+      "orders_sent": 0,
+      "page_url": "https://app.neurobro.ai/",
+      "payload_sha256": "888cda3eacfaede8dcd11cd6ef3dd8c729cef2dea3d91be02a2aa3508651bdd8",
+      "prepared_materials": [],
+      "provider_messages": 0,
+      "receipt_files": {},
+      "rendered_prompt_receipt": {
+        "model_request_id": "8d51a1d180cda732305916458bfffced0298e3306f842d672cef55c7751b086d",
+        "operation": "2026-11-21:robot-v9:0:screening:0:2",
+        "payload_sha256": "888cda3eacfaede8dcd11cd6ef3dd8c729cef2dea3d91be02a2aa3508651bdd8",
+        "rendered_prompt": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_443723fc91f3c8eccbf622c7b1cf7b0d\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta.",
+        "rendered_sha256": "c43d4b62aa6e763d1299e63231535af6a516c26317648e8c5a330dab6528d10b",
+        "schema_version": 1
+      },
+      "request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+      "review_receipts": [
+        {
+          "bytes": 5648,
+          "name": "screening-review-373b714b6865aca1dccbe1fa870aa842974f53347e4d6d47e61b81a52fc4170b-d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b.json",
+          "sha256": "68b13d47ba1a5da2a2c7f45082767f24898f7e3fb7f7a9b437cda1ebd2faf9b6",
+          "value": {
+            "context_sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+            "conversation_id": "neurobro:2026-11-21:4a07e63c7675450f88cef9607ad19418",
+            "kind": "NATIVE_SCREENING_MINI_REVIEW_V1",
+            "model_operation": {
+              "kind": "DELEGATED_MODEL_DIALOGUE",
+              "operation_id": "delegated-model:d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b",
+              "request_hash": "660e5568a9c69cd1951eb7d8ffcb10a772f66f1c8c98e5f81012b2069debefef",
+              "result": "{\"authority\":\"DIALOGUE_CONTROL_ONLY\",\"conversation_id\":\"neurobro:2026-11-21:4a07e63c7675450f88cef9607ad19418\",\"decision\":{\"action\":\"SCREENING\",\"question\":\"\",\"symbols\":[\"TONUSDT\",\"CRVUSDT\"]},\"needs_followup\":false,\"ok\":true,\"phase\":\"SCREENING\",\"reason\":\"DIALOGUE_DECISION\",\"reply_sha256\":\"024fd81a58b868b0e1a6f1b3d7a3cd8edfdcd90db95bba00fc6e742c68c05310\",\"request_id\":\"d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b\",\"schema_version\":1,\"trading_authority\":false}",
+              "state": "DONE",
+              "updated_at": 1795223514.985785
+            },
+            "observed_at": 1795223515.407883,
+            "operation": "2026-11-21:robot-v9:0:screening:0:2",
+            "payload_sha256": "888cda3eacfaede8dcd11cd6ef3dd8c729cef2dea3d91be02a2aa3508651bdd8",
+            "phase": "SCREENING",
+            "reply_sha256": "024fd81a58b868b0e1a6f1b3d7a3cd8edfdcd90db95bba00fc6e742c68c05310",
+            "request": {
+              "conversation_context": {
+                "native_operation": "2026-11-21:robot-v9:0:screening:0:2",
+                "native_request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+                "turns": [
+                  {
+                    "attachments": [],
+                    "role": "user",
+                    "text": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_443723fc91f3c8eccbf622c7b1cf7b0d\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta."
+                  },
+                  {
+                    "complete": true,
+                    "id": "853fd3a7-11ff-4ecd-9f27-388943ee5983",
+                    "role": "assistant",
+                    "text": "Pasar lagi merah tebal hari ini - $BTC -5.5% ke $58.9K, $ETH -8.2% ke $1.619K, Nasdaq nyaris bear market. Jadi \"rate tinggi profit\" sekarang artinya cari yang paling tahan banting atau paling oversold buat bounce scalp, bukan ngejar momentum naik.\n\nDUA KANDIDAT PALING SOLID\n\n$TON - cuma minus 0.9% di tengah darah di mana-mana, baru cetak Bullish Engulfing di support 0.88-0.93. RSI 41 tapi MACD mulai balik - kandidat relative strength terbaik.\n$CRV - RSI 25.7 super oversold, nyentuh Bollinger bawah plus support 0.173-0.177. Pola Hammer muncul - setup bounce teknis paling strategis.\n\nLEVEL SCALP\n\nCoin\tEntry\tSL\tTP1\tTP2\tConf.\n$TON\t0.900\t0.855\t0.96\t1.00\t6/10 (R:R 1.59)\n$CRV\t0.177\t0.168\t0.195\t0.215\t6/10 (R:R 2.74)\n\nDua-duanya di luar daftar eksklusi rotasi kamu dan punya likuiditas cukup buat futures. Tapi ingat - kondisi masih risk-off, jadi jangan all-in, size kecil dan SL disiplin. $CRV kasih R:R terbaik kalau bounce-nya jalan.\n\n⚖️ Neurobro adalah tools riset dan bukan saran finansial! Kami terus improve, tapi bisa saja salah - yang kamu trading dan risiko yang kamu ambil tetap keputusanmu.\n\n{\"SYMBOLS\":[\"TONUSDT\",\"CRVUSDT\"]}"
+                  }
+                ]
+              },
+              "conversation_id": "neurobro:2026-11-21:4a07e63c7675450f88cef9607ad19418",
+              "deadline_epoch": 1795223599.2970362,
+              "gate": {
+                "native_dispatch_verified": true,
+                "robot_on": true
+              },
+              "market_context": null,
+              "phase": "SCREENING",
+              "reply": "Pasar lagi merah tebal hari ini - $BTC -5.5% ke $58.9K, $ETH -8.2% ke $1.619K, Nasdaq nyaris bear market. Jadi \"rate tinggi profit\" sekarang artinya cari yang paling tahan banting atau paling oversold buat bounce scalp, bukan ngejar momentum naik.\n\nDUA KANDIDAT PALING SOLID\n\n$TON - cuma minus 0.9% di tengah darah di mana-mana, baru cetak Bullish Engulfing di support 0.88-0.93. RSI 41 tapi MACD mulai balik - kandidat relative strength terbaik.\n$CRV - RSI 25.7 super oversold, nyentuh Bollinger bawah plus support 0.173-0.177. Pola Hammer muncul - setup bounce teknis paling strategis.\n\nLEVEL SCALP\n\nCoin\tEntry\tSL\tTP1\tTP2\tConf.\n$TON\t0.900\t0.855\t0.96\t1.00\t6/10 (R:R 1.59)\n$CRV\t0.177\t0.168\t0.195\t0.215\t6/10 (R:R 2.74)\n\nDua-duanya di luar daftar eksklusi rotasi kamu dan punya likuiditas cukup buat futures. Tapi ingat - kondisi masih risk-off, jadi jangan all-in, size kecil dan SL disiplin. $CRV kasih R:R terbaik kalau bounce-nya jalan.\n\n⚖️ Neurobro adalah tools riset dan bukan saran finansial! Kami terus improve, tapi bisa saja salah - yang kamu trading dan risiko yang kamu ambil tetap keputusanmu.\n\n{\"SYMBOLS\":[\"TONUSDT\",\"CRVUSDT\"]}",
+              "reply_sha256": "024fd81a58b868b0e1a6f1b3d7a3cd8edfdcd90db95bba00fc6e742c68c05310",
+              "request_id": "d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b",
+              "schema_version": 1
+            },
+            "request_id": "d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b",
+            "request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+            "response": {
+              "authority": "DIALOGUE_CONTROL_ONLY",
+              "conversation_id": "neurobro:2026-11-21:4a07e63c7675450f88cef9607ad19418",
+              "decision": {
+                "action": "SCREENING",
+                "question": "",
+                "symbols": [
+                  "TONUSDT",
+                  "CRVUSDT"
+                ]
+              },
+              "needs_followup": false,
+              "ok": true,
+              "phase": "SCREENING",
+              "reason": "DIALOGUE_DECISION",
+              "reply_sha256": "024fd81a58b868b0e1a6f1b3d7a3cd8edfdcd90db95bba00fc6e742c68c05310",
+              "request_id": "d21b024eee0a5976c2a451e21fd15be84e358e912eda495909e7d8d9d834298b",
+              "schema_version": 1,
+              "trading_authority": false
+            },
+            "schema_version": 1,
+            "transcript_sha256": "6b43b458a455228151f12371951eba55275461ad9ff266e01675e480297777bd"
+          }
+        }
+      ],
+      "room": {
+        "anchors": [
+          "a621db9eabe46619a7b504ef82c5f88e220ae9b973d3c6a132a39e4b8bcc60ff",
+          "bdee127ea57b3f611f83772a94c623dd53ae17eb93e3dcbd86639bf33872cdd4"
+        ],
+        "day": "2026-11-21",
+        "first_prompt_sha256": "c43d4b62aa6e763d1299e63231535af6a516c26317648e8c5a330dab6528d10b",
+        "history_titles": [
+          "Binance future coin recommendation",
+          "Pilih Coin Binance Future",
+          "Coin Pilihan Binance Futures",
+          "Coin Baik Pasar Binance",
+          "Pilih Dua Coin Menguntungkan",
+          "Dua Coin Menguntungkan Binance Futures",
+          "Rekomendasi Coin Future Binance",
+          "Coin Pilihan Futures Binance",
+          "Coin Pilihan Binance Futures",
+          "Coin Pilihan Binance Futures",
+          "Binance Futures Coin Pilihan",
+          "Pilih 2 Coin Binance Futures",
+          "Analisis Entry BTCUSDT Binance Futures",
+          "Entry Limit Belum Terjemput",
+          "Pilih Dua Coin Profit Tinggi",
+          "Coin Pilihan Binance Futures",
+          "Rekomendasi coin futures binance"
+        ],
+        "identifier_reconciliation": null,
+        "marker": "HARUN_443723fc91f3c8eccbf622c7b1cf7b0d",
+        "room_id": "4a07e63c7675450f88cef9607ad19418",
+        "updated_at": 1795223517.462895,
+        "url": "https://app.neurobro.ai/"
+      },
+      "room_initial_state": "BOUND",
+      "room_witness": {
+        "followup_user_rows": [],
+        "initial_screening_user_rows": [
+          0
+        ],
+        "journal_url_matches": true,
+        "native_room_matches": true,
+        "same_loaded_room_verified": true
+      },
+      "row_offset": 0,
+      "rows": [
+        {
+          "attachments": [],
+          "role": "user",
+          "text": "pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_443723fc91f3c8eccbf622c7b1cf7b0d\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta."
+        },
+        {
+          "complete": true,
+          "id": "5249cae1-deab-4ac3-8723-e12943b40e3b",
+          "role": "assistant",
+          "text": "Pasar lagi merah tebal hari ini - $BTC -5.5% ke $58.9K, $ETH -8.2% ke $1.619K, Nasdaq nyaris bear market. Jadi \"rate tinggi profit\" sekarang artinya cari yang paling tahan banting atau paling oversold buat bounce scalp, bukan ngejar momentum naik.\n\nDUA KANDIDAT PALING SOLID\n\n$TON - cuma minus 0.9% di tengah darah di mana-mana, baru cetak Bullish Engulfing di support 0.88-0.93. RSI 41 tapi MACD mulai balik - kandidat relative strength terbaik.\n$CRV - RSI 25.7 super oversold, nyentuh Bollinger bawah plus support 0.173-0.177. Pola Hammer muncul - setup bounce teknis paling strategis.\n\nLEVEL SCALP\n\nCoin\tEntry\tSL\tTP1\tTP2\tConf.\n$TON\t0.900\t0.855\t0.96\t1.00\t6/10 (R:R 1.59)\n$CRV\t0.177\t0.168\t0.195\t0.215\t6/10 (R:R 2.74)\n\nDua-duanya di luar daftar eksklusi rotasi kamu dan punya likuiditas cukup buat futures. Tapi ingat - kondisi masih risk-off, jadi jangan all-in, size kecil dan SL disiplin. $CRV kasih R:R terbaik kalau bounce-nya jalan.\n\n⚖️ Neurobro adalah tools riset dan bukan saran finansial! Kami terus improve, tapi bisa saja salah - yang kamu trading dan risiko yang kamu ambil tetap keputusanmu.\n\n{\"SYMBOLS\":[\"TONUSDT\",\"CRVUSDT\"]}"
+        }
+      ],
+      "schema_version": 2,
+      "screening_ended_return": null,
+      "session_observation": {
+        "counts": {
+          "current_account": 1,
+          "current_composer": 1,
+          "current_markers": 2,
+          "current_profile_markers": 1,
+          "current_visible_accounts": 1,
+          "current_visible_composers": 1,
+          "global_composers": 1,
+          "legacy_markers": 0
+        },
+        "reason": "CONNECTED"
+      },
+      "stable_snapshot_reads": 4,
+      "stage": "OBSERVED_WITHOUT_COMPLETION",
+      "status": "CONNECTED",
+      "uploads": 0
+    },
+    "observation_bytes": 11269,
+    "observation_sha256": "461059d4718a08872a0250969d9a3d906d6a67d53a5b0476a3e33276173ea54f",
+    "observed_at": 1795224384.3916843,
+    "operation": "2026-11-21:robot-v9:0:screening:0:2",
+    "operation_completed": false,
+    "request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+    "stage": "OBSERVED_WITHOUT_COMPLETION",
+    "status": "CONNECTED"
+  },
+  "fixture_scope": "AUTHENTIC_RECEIVED_SCREENING_INELIGIBLE_NO_EXECUTION",
+  "job": {
+    "cycle": "2026-11-21:robot-v9:0",
+    "kind": "SCREENING",
+    "operation": "2026-11-21:robot-v9:0:screening:0:2",
+    "risk_target": null,
+    "state": "NEEDS_REVIEW",
+    "symbol": null
+  },
+  "operation": "2026-11-21:robot-v9:0:screening:0:2",
+  "request": {
+    "contract_version": "neurobro-browser-decision-v2",
+    "marker": "HARUN_443723fc91f3c8eccbf622c7b1cf7b0d",
+    "operation": "2026-11-21:robot-v9:0:screening:0:2",
+    "provider": "NEUROBRO_WEB",
+    "request_body": "{\"context\":null,\"contract_version\":\"neurobro-browser-decision-v2\",\"marker\":\"HARUN_443723fc91f3c8eccbf622c7b1cf7b0d\",\"operation\":\"2026-11-21:robot-v9:0:screening:0:2\",\"output_schema\":{\"additionalProperties\":false,\"properties\":{\"symbols\":{\"description\":\"Exactly two distinct active Binance USD-M Futures trading symbols.\",\"items\":{\"description\":\"Exact uppercase Binance USD-M Futures trading symbol ending in USDT. BTCUSDT is a format example only, not a coin recommendation.\",\"pattern\":\"^[A-Z0-9]{2,18}USDT$\",\"type\":\"string\"},\"maxItems\":2,\"minItems\":2,\"type\":\"array\",\"uniqueItems\":true}},\"required\":[\"symbols\"],\"type\":\"object\"},\"prompt\":\"pilihkan 2 coin yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\",\"provider\":\"NEUROBRO_WEB\"}",
+    "request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33"
+  },
+  "request_sha256": "8d1c220842e2041aed1ce5eaf5b7e4f8a9427872564dd0c8597c9179a2ab0c33",
+  "source_job": "44850857488-1",
+  "source_sha256": "d8d37185a7641b8e80cc6d5f082fcb7319e3538063cfadb14273daf15e80cd0a"
+}

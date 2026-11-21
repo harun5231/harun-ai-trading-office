@@ -757,7 +757,10 @@ class GenericScreeningResponseRecoveryTests(unittest.TestCase):
                     entry.update(sha256=sha(raw), bytes=len(raw.encode()))
                     self.seal(envelope)
                 with self.assertRaises((Review, ValueError)):
-                    self.recover(envelope)
+                    # Executable validation remains strict; known ineligible
+                    # recovery now has a separate noncanonical NOEXEC path.
+                    recovery.validate_received_screening(self.provider, envelope, self.payload,
+                        self.created, catalog=self.catalog, max_age=180, now=NOW)
                 self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
                 self.assertIsNone(self.row('research_browser_responses'))
 
