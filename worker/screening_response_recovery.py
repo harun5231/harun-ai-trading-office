@@ -1236,7 +1236,7 @@ def _ineligible_screening_source(provider, envelope, payload, created, *, catalo
     from .neuroapi import screening_count, SYMBOL_PATTERN
     from agent.neurobro_reply import screening_market_hold
     _require(type(catalog_keys) is list and bool(catalog_keys)
-        and all(type(symbol) is str and re.fullmatch(SYMBOL_PATTERN, symbol) for symbol in catalog_keys)
+        and all(type(symbol) is str and 0 < len(symbol) <= 128 for symbol in catalog_keys)
         and catalog_keys == sorted(set(catalog_keys)), 'SCREENING_CATALOG_REQUIRED')
     result, _, _, review = _screening_source(provider, envelope, payload, created,
         catalog=dict.fromkeys(catalog_keys), max_age=max_age, now=now, retained=retained)
