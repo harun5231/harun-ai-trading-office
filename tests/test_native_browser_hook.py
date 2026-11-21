@@ -202,6 +202,45 @@ class ComposedMaterialGateTests(unittest.TestCase):
      self.reasoner.compose.assert_not_called();self.reasoner.request.assert_not_called()
 
 
+class TerminalScreeningHookTests(unittest.TestCase):
+ harness=ComposedMaterialGateTests.harness
+ def test_terminal_screening_ui_stops_as_unknown_after_four_throttled_samples_without_mini_review(self):
+  value=request();value['context']={'requested_count':1};self.harness(value)
+  self.bridge.after_click=lambda bridge:bridge.messages.__delitem__(slice(1,None))
+  samples=[]
+  def sample(*args):samples.append(self.bridge.current);return {'same_posted_user_and_terminal_body':True}
+  with patch('agent.native_received_screening.live_terminal_sample',side_effect=sample):
+   with self.assertRaises(OutcomeUnknown):self.hook.ask(value,lambda:True,deadline=80)
+  self.assertEqual(samples,[0.0,1.0,2.0,3.0]);self.assertEqual(self.bridge.clicks,1)
+  self.assertEqual(self.bridge.current,3.0);self.reasoner.compose.assert_called_once()
+  self.reasoner.request.assert_not_called();self.assertEqual(len(self.bridge.messages),1)
+
+ def test_late_actual_reply_wins_over_previous_terminal_samples(self):
+  value=request();value['context']={'requested_count':1};self.harness(value)
+  self.bridge.after_click=lambda bridge:bridge.messages.__delitem__(slice(1,None))
+  samples=[]
+  def sample(*args):
+   samples.append(self.bridge.current)
+   if len(samples)==3:
+    self.bridge.messages.append({'role':'native_assistant_role','text':'COIN: RUNEUSDT',
+     'complete':True,'id':'late-actual-reply'})
+   return {'same_posted_user_and_terminal_body':True}
+  with patch('agent.native_received_screening.live_terminal_sample',side_effect=sample):
+   result=self.hook.ask(value,lambda:True,deadline=80)
+  self.assertEqual(result['output'],{'symbols':['RUNEUSDT']});self.assertEqual(samples,[0.0,1.0,2.0])
+  self.assertEqual(self.bridge.clicks,1);self.reasoner.request.assert_called_once()
+
+ def test_owner_off_stops_terminal_sampling_through_existing_dispatch_gate(self):
+  value=request();value['context']={'requested_count':1};self.harness(value)
+  self.bridge.after_click=lambda bridge:bridge.messages.__delitem__(slice(1,None))
+  allowed=[True];samples=[]
+  def sample(*args):samples.append(self.bridge.current);allowed[0]=False;return {'terminal_body':True}
+  with patch('agent.native_received_screening.live_terminal_sample',side_effect=sample):
+   with self.assertRaises(OutcomeUnknown):self.hook.ask(value,lambda:allowed[0],deadline=80)
+  self.assertEqual(samples,[0.0]);self.assertEqual(self.bridge.clicks,1)
+  self.reasoner.request.assert_not_called()
+
+
 class NativeHookTests(unittest.TestCase):
  def distinct_questions_client(self):
   reasoner=client();original=reasoner.request.side_effect

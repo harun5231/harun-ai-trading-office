@@ -811,8 +811,12 @@ class DailyRoom:
                 rows = self.restore(anchors, self._binding, state)
             self.mode = 'REUSED'
             composer = self.composer()
-        need(not rows or rows[-1].get('role') == 'assistant'
-            and rows[-1].get('complete') is True)
+        complete_tail=not rows or rows[-1].get('role') == 'assistant'and rows[-1].get('complete') is True
+        if not complete_tail:
+            from .native_received_screening import terminal_tail_for_successor
+            try:complete_tail=terminal_tail_for_successor(self,rows,self._payload)
+            except (OSError,ValueError,KeyError,TypeError):complete_tail=False
+        need(complete_tail)
         self.offset, self.prefix = len(rows), identities(rows)
         if not rows:
             # A conclusive pre-Send failure may be followed by another request.

@@ -691,6 +691,7 @@ def observe(actor, delegated, value):
         stage='BOUND_ROOM_READ', errors=[])
     old_deadline, old_visible = raw.operation_deadline, raw._visible
     missing_names=object();old_names=getattr(raw,'uploaded_names',missing_names);names_changed=False
+    terminal_ui=None
     with room.lock:
         try:
             raw.operation_deadline = raw.clock() + 25
@@ -796,11 +797,23 @@ def observe(actor, delegated, value):
             need(room.full_turns() == rows and raw.page.url == capture['page_url'],
                  'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
             if generic:
+                terminal_ui=None
+                if screening and rows and rows[-1].get('role')=='user':
+                    from .native_received_screening import read_terminal_body
+                    terminal_diagnostic={}
+                    terminal_ui=read_terminal_body(raw,cached['rendered_prompt'],payload['marker'],
+                        diagnostics=terminal_diagnostic)
+                    if terminal_diagnostic:capture['terminal_ui_diagnostic']=terminal_diagnostic
                 capture['stable_snapshot_reads'] = 1
                 for _ in range(3):
                     _gate(actor); raw.page.wait_for_timeout(250)
                     need(room.full_turns() == rows and raw.page.url == capture['page_url'],
                          'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+                    if terminal_ui is not None:
+                        from .native_received_screening import terminal_ui_authority
+                        sampled_ui=read_terminal_body(raw,cached['rendered_prompt'],payload['marker'])
+                        need(sampled_ui is not None and terminal_ui_authority(sampled_ui)==terminal_ui_authority(terminal_ui),
+                             'SCREENING_TERMINAL_UI_CHANGED')
                     capture['stable_snapshot_reads'] += 1
                 if (snapshot['state']=='SENT' and capture['status']=='CONNECTED'
                         and scope.get('verified')is True and scope.get('reply_complete')is True):
@@ -818,6 +831,17 @@ def observe(actor, delegated, value):
                 else:raw.uploaded_names=old_names
         capture['finished_at'] = time.time()
         if screening:
+            if (capture['errors']==[]and capture['stage']=='OBSERVED_WITHOUT_COMPLETION'
+                    and terminal_ui is not None):
+                from .native_received_screening import terminal_error_proof,retain_terminal_error
+                try:
+                    proof=terminal_error_proof(capture,payload,terminal_ui)
+                    retain_terminal_error(room.store.root,proof,cached['rendered_prompt'])
+                except (OSError,ValueError,KeyError,TypeError) as error:
+                    code=str(error)
+                    capture['screening_terminal_error_error']=dict(exception_class=type(error).__name__,
+                        reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code)else None)
+                else:capture['screening_terminal_error']=proof
             # Observe the native call's first retained return only. This does
             # not ask a model, authorize a new Send, or close any operation.
             capture['screening_ended_return'] = None

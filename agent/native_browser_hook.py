@@ -879,7 +879,9 @@ class DelegatedDOMBridge:
                 unknown()
             return answer
 
+        terminal_check_at,terminal_sample,terminal_reads=started,None,0
         def delegated_answer(prompt, attachment_names=()):
+            nonlocal terminal_check_at,terminal_sample,terminal_reads
             if self.clock() >= until:
                 unknown()
             if delivery is not None:
@@ -900,6 +902,20 @@ class DelegatedDOMBridge:
             # unchanged native ask loop owns its three stable final polls; do
             # not repeat those full daily-history reads before calling Mini.
             if answer is None:
+                if (_received is None and self.daily_room is not None
+                        and set(payload.get('output_schema',{}).get('required',[]))=={'symbols'}
+                        and self.clock()>=terminal_check_at):
+                    # One passive sample per second; the ordinary deadline and
+                    # dispatch gates still apply. A failed WEB response is not
+                    # an assistant answer, a market HOLD, or proof of NOT_SENT.
+                    terminal_check_at=self.clock()+1.0
+                    gate()
+                    from .native_received_screening import live_terminal_sample
+                    sampled=live_terminal_sample(self.daily_room,payload,prompt)
+                    terminal_reads=terminal_reads+1 if sampled is not None and sampled==terminal_sample else int(sampled is not None)
+                    terminal_sample=sampled
+                    if terminal_reads>=4:
+                        raise self.native.OutcomeUnknown('NEUROBRO_WEB_PROCESSING_FAILED')
                 return None
             if state['initial_url'] is None:
                 state['initial_url'] = self.bridge.page.url
