@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import re
 import time
 
@@ -18,16 +19,194 @@ PREVIOUS_RETURN_FAILURE_HOOK='8498214906365ec2081af01a1049f466308cb36498c1dda1f7
 CONTEXT_RETURN_FAILURE_HOOK='235fb14a9932269beebf55dc669298cbeeef90d35d22e1b6e413e29129b5a007'
 CURRENT_RETURN_FAILURE_HOOK='f4b5a212c6d5547dc97abe5f230353b1f744dfcc76704f2ee6b9fb578750b768'
 PHASE_JSON_RETURN_FAILURE_HOOK='5f73c0629157ee1a44346cc0e31287997a44a4dafd3f4f00e17ba69316617b47'
+TERMINAL_ERROR_RETURN_FAILURE_HOOK='1d516829b20a27229be3a991953b60fb2b78bfe97fa53c4f4c27b4301c7c31ae'
 RETURN_FAILURE_SOURCES=frozenset(((RETURN_FAILURE_PRODUCER,RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,PREVIOUS_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CONTEXT_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CURRENT_RETURN_FAILURE_HOOK),
-    (RETURN_FAILURE_PRODUCER,PHASE_JSON_RETURN_FAILURE_HOOK)))
+    (RETURN_FAILURE_PRODUCER,PHASE_JSON_RETURN_FAILURE_HOOK),
+    (RETURN_FAILURE_PRODUCER,TERMINAL_ERROR_RETURN_FAILURE_HOOK)))
 REVIEW_IDENTITY_KIND='NATIVE_SCREENING_RECEIVED_REVIEW_IDENTITIES_V1'
+TERMINAL_ERROR_KIND='NATIVE_SCREENING_TERMINAL_PROVIDER_ERROR_V1'
+TERMINAL_BODY_CONTRACT='RENDERED_BODY_TERMINAL_SUFFIX_ID_V1'
+TERMINAL_BODY_SUFFIX=(r'\n(?:\n?Tampilkan lebih banyak\n)?(?:[01]?\d|2[0-3])\.[0-5]\d\n'
+    r'Neurobro tidak dapat menjawab pertanyaan ini\n(?:\n?Coba lagi\n)?Tanyakan apa saja\n'
+    r'(?:\n?Ringan\nPrompt\n)?\n'
+    r'Neurobro bisa keliru\. Bukan nasihat keuangan\.\n?')
 
 
 def need(value,code='SCREENING_RECOVERY_RECEIVED_SCREENING_UNVERIFIED'):
     if not value:raise ValueError(code)
+
+
+def terminal_body_ui(body,rendered,marker):
+    """Recognize the complete observed failure suffix, never quoted error text."""
+    from .native_received_analysis import MAX_CAPTURE,text_sha
+    if not(type(body)is str and type(rendered)is str and rendered
+            and type(marker)is str and 0<len(body.encode())<=MAX_CAPTURE):return None
+    body=body.replace('\r\n','\n')
+    if body.count(rendered)!=1 or body.count(marker)!=1:return None
+    suffix=body.split(rendered,1)[1]
+    if re.fullmatch(TERMINAL_BODY_SUFFIX,suffix) is None:return None
+    return dict(contract=TERMINAL_BODY_CONTRACT,body_text=body,body_sha256=text_sha(body),
+        body_bytes=len(body.encode()),rendered_prompt_occurrences=1,marker_occurrences=1,suffix=suffix)
+
+
+def read_terminal_body(raw,rendered,marker,*,diagnostics=None):
+    """Passive rendered-body read on the existing actor; no Retry or navigation."""
+    locator=getattr(raw.page,'locator',None)
+    if not callable(locator):return None
+    body=locator('body').inner_text(timeout=5000)
+    ui=terminal_body_ui(body,rendered,marker)
+    if (ui is None and type(diagnostics)is dict and type(body)is str
+            and 'Neurobro tidak dapat menjawab pertanyaan ini'in body):
+        diagnostics.update(kind='DIAGNOSTIC_ONLY_TERMINAL_UI_UNVERIFIED',body_tail=body[-4000:],
+            body_sha256=hashlib.sha256(body.encode()).hexdigest(),body_bytes=len(body.encode()),
+            rendered_prompt_occurrences=body.count(rendered),marker_occurrences=body.count(marker))
+    return ui
+
+
+def terminal_ui_authority(ui):
+    """A terminal error is not pricing authority for unrelated page widgets."""
+    return {key:ui[key]for key in('contract','suffix','rendered_prompt_occurrences','marker_occurrences')}
+
+
+def valid_terminal_ui(ui,rendered,marker):
+    from .native_received_analysis import native_digest
+    return bool(type(ui)is dict and type(ui.get('body_bytes'))is int
+        and type(ui.get('rendered_prompt_occurrences'))is int and type(ui.get('marker_occurrences'))is int
+        and native_digest(terminal_body_ui(ui.get('body_text'),rendered,marker))==native_digest(ui))
+
+
+def terminal_error_proof(capture,payload,ui):
+    """Bind a real posted user and terminal provider failure without an answer."""
+    from .native_daily_room import identities
+    from .native_received_analysis import native_digest,text_sha
+    from .native_screening_recovery import NATIVE_DOM_SHA256
+    validate(dict(action=OBSERVE,payload=payload))
+    rows=capture.get('rows',[]);scope=capture.get('operation_scope',{});room=capture.get('room',{})
+    rendered=capture.get('rendered_prompt_receipt',{}).get('rendered_prompt')
+    initial=capture.get('room_witness',{}).get('initial_screening_user_rows')
+    need(capture.get('kind')==KIND and capture.get('native_source_sha256')==NATIVE_DOM_SHA256
+        and capture.get('operation')==payload['operation']and capture.get('request_sha256')==payload['request_sha256']
+        and capture.get('payload_sha256')==native_digest(payload)and capture.get('status')=='CONNECTED'
+        and capture.get('errors')==[]and capture.get('operation_completed')is False
+        and capture.get('stage')=='OBSERVED_WITHOUT_COMPLETION'and capture.get('stable_snapshot_reads')==4)
+    need(rows and initial==[len(rows)-1]and scope.get('initial_user')==scope.get('latest_user')==len(rows)-1
+        and scope.get('user_rows')==initial and scope.get('reply_row')is None
+        and scope.get('reply_complete')is False and scope.get('verified')is False
+        and scope.get('unmatched_intents')==[]and rows[-1].get('role')=='user'
+        and rows[-1].get('text')==rendered and rows[-1].get('attachments',[])==[]
+        and capture.get('review_receipts')==[]and capture.get('receipt_files')=={}
+        and capture.get('file_tiles')==[]and capture.get('prepared_materials')==[]
+        and capture.get('room_witness',{}).get('native_room_matches')is True
+        and capture.get('room_witness',{}).get('same_loaded_room_verified')is True
+        and room.get('day')==payload['operation'][:10]and room.get('url')==capture.get('page_url')
+        and type(room.get('room_id'))is str and re.fullmatch('[a-f0-9]{32}',room['room_id'])
+        and type(room.get('url'))is str and room['url'].startswith('https://app.neurobro.ai/'))
+    need(valid_terminal_ui(ui,rendered,payload['marker']))
+    anchors=identities(rows)
+    return dict(schema_version=1,kind=TERMINAL_ERROR_KIND,operation=payload['operation'],
+        request_sha256=payload['request_sha256'],payload_sha256=native_digest(payload),marker=payload['marker'],
+        native_source_sha256=NATIVE_DOM_SHA256,room={key:room[key]for key in('day','room_id','url')},
+        rendered_prompt_sha256=text_sha(rendered),user_row=len(rows)-1,row_count=len(rows),
+        row_identities=anchors,user_identity_sha256=anchors[-1],rows_identity_sha256=native_digest(anchors),
+        prefix_identity_sha256=native_digest(anchors[:-1]),terminal_ui=copy.deepcopy(ui),
+        observed_at=capture['observed_at'],stable_snapshot_reads=4)
+
+
+def _terminal_error_name(day,room_id,anchors):
+    from .native_received_analysis import native_digest
+    return 'terminal-screening-error-'+native_digest(dict(day=day,room_id=room_id,anchors=anchors))+'.json'
+
+
+def retain_terminal_error(root,proof,rendered):
+    """Keep the first exact terminal observation; it never claims ledger closure."""
+    import os
+    from .native_turn_batch import _write
+    from .native_chart_followup import _directory,_private_file,pairs
+    name=_terminal_error_name(proof['room']['day'],proof['room']['room_id'],proof['row_identities'])
+    _write(root,name,proof)
+    directory=_directory(root)
+    try:raw=_private_file(directory,name,8*1024*1024)
+    finally:os.close(directory)
+    old=json.loads(raw,object_pairs_hook=pairs)
+    need(type(old)is dict and {key:value for key,value in old.items()if key not in('observed_at','terminal_ui')}==
+        {key:value for key,value in proof.items()if key not in('observed_at','terminal_ui')}
+        and valid_terminal_ui(old.get('terminal_ui'),rendered,old.get('marker'))
+        and valid_terminal_ui(proof.get('terminal_ui'),rendered,proof.get('marker'))
+        and terminal_ui_authority(old['terminal_ui'])==terminal_ui_authority(proof['terminal_ui'])
+        and type(old.get('observed_at'))in(int,float)and 0<old['observed_at']<=proof['observed_at'])
+    return name
+
+
+def live_terminal_sample(room,payload,rendered):
+    """Sample a posted screening failure; its native result remains UNKNOWN."""
+    from .native_daily_room import identities
+    from .native_screening_recovery import _native_source_digest,NATIVE_DOM_SHA256
+    if room is None or getattr(room,'_connection',None) is None or getattr(room,'_prepared',False) is not True:return None
+    validate(dict(action=OBSERVE,payload=payload))
+    rows=room.full_turns();room.verify_prefix(rows)
+    if (len(rows)!=room.offset+1 or rows[-1].get('role')!='user'
+            or rows[-1].get('text')!=rendered or rows[-1].get('attachments',[])!=[]):return None
+    selected=room._connection.execute('SELECT room_id,state FROM daily_rooms WHERE day=?',(room.day,)).fetchone()
+    need(selected is not None and selected[0]==room.room_id and selected[1]=='SENT'
+        and room.day==payload['operation'][:10]and _native_source_digest(room.native)==NATIVE_DOM_SHA256)
+    ui=read_terminal_body(room.bridge,rendered,payload['marker'])
+    if ui is None:return None
+    return dict(operation=payload['operation'],request_sha256=payload['request_sha256'],
+        room_id=room.room_id,url=room.bridge.page.url,row_identities=identities(rows),
+        terminal_ui=terminal_ui_authority(ui))
+
+
+def terminal_tail_for_successor(room,rows,payload):
+    """Admit only a new native dispatch after an exactly observed failed tail.
+
+    The ordinary worker owns the NOEXEC transition. This browser evidence
+    attests the old UI outcome, never that the worker ledger was changed.
+    The existing native hook checks the new dispatch before ask and Send.
+    """
+    import os
+    from .native_daily_room import identities
+    from .native_chart_followup import _directory,_private_file,pairs
+    from .native_received_analysis import native_digest,text_sha
+    from .native_screening_recovery import _native_source_digest,NATIVE_DOM_SHA256
+    validate(dict(action=OBSERVE,payload=payload))
+    anchors=identities(rows);name=_terminal_error_name(room.day,room.room_id,anchors)
+    directory=_directory(room.store.root)
+    try:
+        try:raw=_private_file(directory,name,8*1024*1024)
+        except FileNotFoundError:return False
+    finally:os.close(directory)
+    proof=json.loads(raw,object_pairs_hook=pairs);need(type(proof)is dict)
+    old=proof.get('operation','')
+    old_match=re.fullmatch(r'(\d{4}-\d{2}-\d{2}:robot-v9:(?:0|[1-9]\d{0,11})):screening:(0|[1-9]\d{0,11}):([12])',old)
+    new_match=re.fullmatch(r'(\d{4}-\d{2}-\d{2}:robot-v9:(?:0|[1-9]\d{0,11})):screening:(0|[1-9]\d{0,11}):([12])',payload['operation'])
+    fields={'schema_version','kind','operation','request_sha256','payload_sha256','marker','native_source_sha256',
+        'room','rendered_prompt_sha256','user_row','row_count','row_identities','user_identity_sha256',
+        'rows_identity_sha256','prefix_identity_sha256','terminal_ui','observed_at','stable_snapshot_reads'}
+    need(type(proof)is dict and set(proof)==fields
+        and all(type(proof.get(key))is int for key in('schema_version','row_count','user_row','stable_snapshot_reads'))
+        and type(proof.get('observed_at'))in(int,float)and math.isfinite(proof['observed_at'])
+        and 0<proof['observed_at']<=time.time()+5
+        and all(type(proof.get(key))is str and re.fullmatch('[a-f0-9]{64}',proof[key])for key in('request_sha256','payload_sha256'))
+        and old_match is not None and new_match is not None and old_match[1]==new_match[1]
+        and int(new_match[2])==int(old_match[2])+1 and old[:10]==room.day
+        and proof.get('kind')==TERMINAL_ERROR_KIND and proof.get('schema_version')==1
+        and proof.get('native_source_sha256')==_native_source_digest(room.native)==NATIVE_DOM_SHA256
+        and proof.get('room')==dict(day=room.day,room_id=room.room_id,url=room.bridge.page.url)
+        and proof.get('row_identities')==anchors and proof.get('row_count')==len(rows)
+        and proof.get('user_row')==len(rows)-1 and rows[-1].get('role')=='user'
+        and rows[-1].get('attachments',[])==[]and proof.get('user_identity_sha256')==anchors[-1]
+        and proof.get('rows_identity_sha256')==native_digest(anchors)
+        and proof.get('prefix_identity_sha256')==native_digest(anchors[:-1])
+        and proof.get('rendered_prompt_sha256')==text_sha(rows[-1]['text'])
+        and proof.get('request_sha256')!=payload['request_sha256']
+        and proof.get('marker')=='HARUN_'+text_sha(old)[:32]and proof.get('stable_snapshot_reads')==4)
+    current_ui=read_terminal_body(room.bridge,rows[-1]['text'],proof['marker'])
+    need(type(current_ui)is dict and valid_terminal_ui(proof.get('terminal_ui'),rows[-1]['text'],proof['marker'])
+        and terminal_ui_authority(current_ui)==terminal_ui_authority(proof['terminal_ui']))
+    return True
 
 
 def read_ended_return(root,payload):
