@@ -51,6 +51,9 @@ class CompletedStaleScreeningResumeTests(unittest.TestCase):
         from worker.screening_response_recovery import recover_received_screening
         self.assertEqual(recover_received_screening(case.provider, envelope,
             catalog=case.catalog, max_age=180, now=fixtures.NOW), 'RESUME_CACHED')
+        self.primary_recovery = dict(self.db.execute(
+            'SELECT * FROM screening_response_recoveries WHERE operation=?',
+            (self.operation,)).fetchone())
         # Production's direct native completion has the same validated source
         # rows, without the fixture's additional uncertain-response seal.
         self.db.execute('DELETE FROM screening_response_recoveries')
@@ -407,6 +410,81 @@ class CompletedStaleScreeningResumeTests(unittest.TestCase):
         with patch.object(recovery.time, 'time', return_value=self.clock):
             self.assertIsNone(recovery._resume_completed_stale_screening(
                 self.robot, fixtures.DAY, self.account))
+
+    def retain_original_resume_cached(self):
+        self.db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
+            tuple(self.primary_recovery[name] for name in ('operation', 'request_sha256',
+                'proof_sha256', 'proof', 'preimage', 'phase', 'created', 'updated')))
+
+    def test_existing_resume_cached_is_preserved_with_separate_audit_then_restart_and_new_request(self):
+        self.retain_original_resume_cached()
+        source = self.make_historical_stall()
+        self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING')
+        self.assertEqual(self.source_rows(), source)
+        primary = dict(self.db.execute('SELECT * FROM screening_response_recoveries WHERE operation=?',
+            (self.operation,)).fetchone())
+        self.assertEqual(primary, self.primary_recovery)
+        audit = dict(self.db.execute('SELECT * FROM screening_response_recoveries WHERE operation=?',
+            (self.operation + recovery.COMPLETED_STALE_AUDIT_SUFFIX,)).fetchone())
+        proof = json.loads(audit['proof'])
+        self.assertEqual(proof['operation'], self.operation)
+        self.assertEqual(proof['primary_recovery_sha256'], recovery._sha(recovery._wire(primary)))
+        self.assertEqual(self.db.execute('SELECT count(*) FROM screening_response_recoveries').fetchone()[0], 2)
+        with tempfile.TemporaryDirectory() as directory:
+            reopened = sqlite3.connect(Path(directory) / 'restart.sqlite', isolation_level=None)
+            reopened.row_factory = sqlite3.Row
+            self.db.backup(reopened); self.addCleanup(reopened.close)
+            self.db = reopened; self.case.provider.db = reopened
+            restarted = object.__new__(self.native.Coordinator)
+            restarted.__dict__.update(self.robot.__dict__); restarted.db = reopened
+            self.robot = restarted
+            data = json.loads(reopened.execute('SELECT data FROM robot_cycles').fetchone()[0])
+            self.assertEqual(recovery.received_screening_replacement_due(reopened, self.cycle, data), 1)
+            snapshot = tuple(reopened.iterdump())
+            with patch.object(recovery.time, 'time', return_value=self.clock):
+                self.assertIsNone(recovery._resume_completed_stale_screening(
+                    self.robot, fixtures.DAY, self.account))
+            self.assertEqual(tuple(reopened.iterdump()), snapshot)
+            calls = []
+            def new_only(*args, **kwargs):
+                calls.append(args[0]); return self.local_reply(*args, **kwargs)
+            self.case.provider.ask = new_only
+            self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_COMPLETE_ANALYSIS_PENDING')
+            self.assertEqual(calls, [self.cycle + ':screening:1:1'])
+            self.assertEqual(self.source_rows(), source)
+            self.assertEqual(dict(reopened.execute('SELECT * FROM screening_response_recoveries '
+                'WHERE operation=?', (self.operation,)).fetchone()), primary)
+
+    def test_pending_cached_recovery_settles_once_without_overwriting_primary(self):
+        self.retain_original_resume_cached(); source = self.source_rows()
+        self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING')
+        self.assertEqual(dict(self.db.execute('SELECT * FROM screening_response_recoveries '
+            'WHERE operation=?', (self.operation,)).fetchone()), self.primary_recovery)
+        self.assertEqual(self.row('robot_jobs'), {**source['robot_jobs'], 'state': 'COMPLETE'})
+        self.assertEqual(self.row('api_requests'), source['api_requests'])
+
+    def test_prior_recovery_corruption_or_prepared_state_cannot_authorize_an_audit(self):
+        self.retain_original_resume_cached(); self.make_historical_stall()
+        for field, value in (('phase', 'PREPARED'), ('proof_sha256', '0' * 64),
+                ('request_sha256', '0' * 64)):
+            with self.subTest(field=field):
+                self.db.execute('UPDATE screening_response_recoveries SET ' + field + '=? WHERE operation=?',
+                    (value, self.operation))
+                snapshot = tuple(self.db.iterdump())
+                self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_COMPLETED_STALE_RECOVERY_UNVERIFIED')
+                self.assertEqual(tuple(self.db.iterdump()), snapshot)
+                self.db.execute('UPDATE screening_response_recoveries SET ' + field + '=? WHERE operation=?',
+                    (self.primary_recovery[field], self.operation))
+
+    def test_malformed_audit_cannot_fall_back_to_valid_original_cached_recovery(self):
+        self.retain_original_resume_cached(); self.make_historical_stall()
+        self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING')
+        audit_key = self.operation + recovery.COMPLETED_STALE_AUDIT_SUFFIX
+        self.db.execute('UPDATE screening_response_recoveries SET proof_sha256=? WHERE operation=?',
+            ('0' * 64, audit_key))
+        snapshot = tuple(self.db.iterdump())
+        self.assertEqual(self.run_tick()['wait_reason'], 'SCREENING_COMPLETED_STALE_RECOVERY_UNVERIFIED')
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
 
 
 if __name__ == '__main__':

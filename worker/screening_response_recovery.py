@@ -281,6 +281,7 @@ ENDED_NOEXEC = 'SCREENING_ENDED_STALE_NOEXEC_V1'
 DUPLICATE_NOEXEC = 'SCREENING_REVIEWED_DUPLICATE_STALE_NOEXEC_V1'
 INELIGIBLE_NOEXEC = 'SCREENING_INELIGIBLE_SELECTION_NOEXEC_V1'
 COMPLETED_STALE_NOEXEC = 'SCREENING_COMPLETED_STALE_NOEXEC_V1'
+COMPLETED_STALE_AUDIT_SUFFIX = ':completed-stale-v1'
 RECEIVED_INELIGIBLE_TERMINAL = 'RECEIVED_INELIGIBLE_NOT_EXECUTED'
 RECEIVED_INELIGIBLE_REASON = 'INVALID_SCREENING_SYMBOL'
 ENDED_RETURN_KIND = 'NATIVE_SCREENING_ENDED_RETURN_V1'
@@ -1549,7 +1550,9 @@ def received_screening_replacement_due(db, cycle_id, data, *, _cycle=None):
         return 0
     operation = cycle_id + ':screening:' + str(index) + ':' + str(due)
     try:
-        journal = _row(db, 'screening_response_recoveries', 'operation', operation)
+        journal = (_row(db, 'screening_response_recoveries', 'operation',
+            operation + COMPLETED_STALE_AUDIT_SUFFIX)
+            or _row(db, 'screening_response_recoveries', 'operation', operation))
         if journal is None or journal['phase'] != 'NOEXEC' or journal['proof_sha256'] != _sha(journal['proof']):
             return 0
         body, request_hash, match = stored_screening_request(db, operation)
@@ -1687,24 +1690,75 @@ def _completed_stale_recovery_schema(db):
         for row in db.execute('PRAGMA table_info(screening_response_recoveries)')] == expected)
 
 
+def _completed_stale_primary_recovery(db, primary, before):
+    """Validate a prior RESUME_CACHED seal without overwriting its history."""
+    if primary is None:
+        return None
+    api = before['api_requests']; job = before['robot_jobs']
+    _require(primary['operation'] == api['operation'] and primary['phase'] == 'RESUME_CACHED'
+        and primary['request_sha256'] == api['body_hash']
+        and primary['proof_sha256'] == _sha(primary['proof'])
+        and _finite(primary['created']) and _finite(primary['updated'])
+        and primary['created'] <= primary['updated'])
+    original = json.loads(primary['preimage']); envelope = json.loads(primary['proof'])
+    old_api = original['api_requests']; old_job = original['robot_jobs']; old_cycle = original['robot_cycles']
+    body, request_hash, match = stored_screening_request(db, api['operation'])
+    _require(old_api['state'] in ('PENDING', 'NEEDS_REVIEW') and old_api['output'] is None
+        and old_job['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and old_cycle['state'] in ('ACTIVE', 'NEEDS_REVIEW')
+        and api == {**old_api, 'state': 'COMPLETE', 'output': api['output'], 'failure_code': None}
+        and job == {**old_job, 'state': job['state']}
+        and original['research_browser_requests'] == before['research_browser_requests'])
+    output = json.loads(api['output']); catalog = {symbol: {} for symbol in output['symbols']}
+    # This validates the genuine archived browser/Mini approval, not merely a
+    # self-consistent journal hash. Final approvals require no provider object.
+    result, received, stale = validate_received_screening(None, envelope,
+        {**body, 'request_sha256': request_hash}, api['created'], catalog=catalog,
+        max_age=before['research_browser_responses']['chart_max_age'],
+        now=primary['updated'], retained=True)
+    from agent.neurobro_reply import screening_market_hold
+    _require(not stale and not screening_market_hold(result['assistant_text'], output['symbols'])
+        and canonical_output(result['output'], body['output_schema'], catalog) == api['output'])
+    receipt = before['research_browser_responses']; retained = original['research_browser_responses']
+    _require(receipt['assistant_text'] == result['assistant_text']
+        and receipt['response_id'] == result['response_id']
+        and receipt['output_sha256'] == _sha(api['output'])
+        and receipt['received_at'] == (retained['received_at'] if retained is not None else received)
+        and (retained is None or retained == receipt))
+    old_data = json.loads(old_cycle['data']); data = json.loads(before['robot_cycles']['data'])
+    index = int(match[3])
+    _require(old_cycle['id'] == before['robot_cycles']['id']
+        and all(old_cycle[name] == before['robot_cycles'][name] for name in ('day', 'entry_epoch'))
+        and old_data['screen'] == index - 1
+        and (data == old_data if job['state'] == 'PENDING' else data == {**old_data,
+            'screen': index, 'replacements': old_data['replacements'] + bool(index),
+            'queue': [], 'round_symbols': []}))
+    return _sha(_wire(primary))
+
+
 def _sealed_completed_stale_screening(db, journal, *, _cycle=None):
     """Recheck the append-only seal and unchanged original source after restart."""
     _completed_stale_recovery_schema(db)
     before = json.loads(journal['preimage']); proof = json.loads(journal['proof'])
     _require(type(proof) is dict and set(proof) == {'kind', 'operation', 'request_sha256',
-        'preimage_sha256', 'source_evidence', 'max_age', 'market_hold'}
+        'preimage_sha256', 'source_evidence', 'max_age', 'market_hold', 'primary_recovery_sha256'}
         and proof['kind'] == COMPLETED_STALE_NOEXEC and journal['phase'] == 'NOEXEC'
-        and proof['operation'] == journal['operation']
+        and journal['operation'] in (proof['operation'], proof['operation'] + COMPLETED_STALE_AUDIT_SUFFIX)
+        and proof['operation'] == before['api_requests']['operation']
         and proof['request_sha256'] == journal['request_sha256']
         and proof['preimage_sha256'] == _sha(journal['preimage'])
         and journal['proof_sha256'] == _sha(journal['proof'])
         and journal['created'] == journal['updated']
         and type(proof['market_hold']) is bool
-        and proof['market_hold'] == completed_screening_market_hold(db, journal['operation']))
+        and proof['market_hold'] == completed_screening_market_hold(db, proof['operation']))
+    primary = (_row(db, 'screening_response_recoveries', 'operation', proof['operation'])
+        if journal['operation'] != proof['operation'] else None)
+    _require((journal['operation'] == proof['operation']) == (proof['primary_recovery_sha256'] is None)
+        and _completed_stale_primary_recovery(db, primary, before) == proof['primary_recovery_sha256'])
     request_hash, evidence, expected_data = _completed_stale_screening_source(db, before,
         now=journal['created'], max_age=proof['max_age'])
     _require(request_hash == journal['request_sha256'] and evidence == proof['source_evidence'])
-    after = _snapshot(db, journal['operation'], before['robot_cycles']['id'])
+    after = _snapshot(db, proof['operation'], before['robot_cycles']['id'])
     retained_cycle = after['robot_cycles'] if _cycle is None else _cycle
     _require(all(after[name] == before[name] for name in
         ('api_requests', 'research_browser_requests', 'research_browser_responses'))
@@ -1757,11 +1811,15 @@ def _resume_completed_stale_screening(coordinator, today, account):
         operation = jobs[0]['operation']
         existing_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='screening_response_recoveries'").fetchone()
-        journal = _row(db, 'screening_response_recoveries', 'operation', operation) if existing_table else None
+        primary = _row(db, 'screening_response_recoveries', 'operation', operation) if existing_table else None
+        audit = (_row(db, 'screening_response_recoveries', 'operation',
+            operation + COMPLETED_STALE_AUDIT_SUFFIX) if existing_table else None)
+        journal = audit or primary
         if journal is not None:
-            if json.loads(journal['proof']).get('kind') == COMPLETED_STALE_NOEXEC:
+            if audit is not None or json.loads(journal['proof']).get('kind') == COMPLETED_STALE_NOEXEC:
                 _sealed_completed_stale_screening(db, journal)
-            return None
+                return None
+            _require(journal['phase'] == 'RESUME_CACHED')
         if jobs[0]['state'] == 'COMPLETE':
             # A successfully consumed screening legitimately leaves an ACTIVE
             # cycle while its HOLD/setup results are handled. Its old request
@@ -1785,25 +1843,33 @@ def _resume_completed_stale_screening(coordinator, today, account):
         before = _snapshot(db, operation, cycle_id)
         request_hash, evidence, replacement = _completed_stale_screening_source(db, before,
             now=current, max_age=max_age)
+        primary_hash = _completed_stale_primary_recovery(db, primary, before)
+        audit_key = operation if primary is None else operation + COMPLETED_STALE_AUDIT_SUFFIX
         _completed_stale_no_other_pending(db, operation)
         proof = {'kind': COMPLETED_STALE_NOEXEC, 'operation': operation,
             'request_sha256': request_hash, 'preimage_sha256': _sha(_wire(before)),
             'source_evidence': evidence, 'max_age': max_age,
-            'market_hold': completed_screening_market_hold(db, operation)}
+            'market_hold': completed_screening_market_hold(db, operation),
+            'primary_recovery_sha256': primary_hash}
         raw = _wire(proof)
         db.execute('BEGIN IMMEDIATE')
         try:
             _require(coordinator.allowed(today) and _snapshot(db, operation, cycle_id) == before,
                 'RESEARCH_PAUSED')
+            if existing_table:
+                _require(_row(db, 'screening_response_recoveries', 'operation', operation) == primary
+                    and _row(db, 'screening_response_recoveries', 'operation',
+                        operation + COMPLETED_STALE_AUDIT_SUFFIX) is None)
             _completed_stale_no_other_pending(db, operation)
             _require(coordinator.execution_slots(account, today) > 0
                 and coordinator.research_budget(data, coordinator.store.results(cycle_id)) > 0
                 and _completed_stale_screening_source(db, before, now=current, max_age=max_age)
-                    == (request_hash, evidence, replacement))
+                    == (request_hash, evidence, replacement)
+                and _completed_stale_primary_recovery(db, primary, before) == primary_hash)
             db.execute(RECEIVED_SCHEMA)
             _completed_stale_recovery_schema(db)
             db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
-                (operation, request_hash, _sha(raw), raw, _wire(before), 'NOEXEC', current, current))
+                (audit_key, request_hash, _sha(raw), raw, _wire(before), 'NOEXEC', current, current))
             if before['robot_jobs']['state'] == 'PENDING':
                 _require(db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state='PENDING'",
                     (operation,)).rowcount == 1)
