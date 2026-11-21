@@ -2203,8 +2203,8 @@ def resume_uncertain_screening(coordinator, today, account):
         (j.state IN ('PENDING','NEEDS_REVIEW') AND ((a.state='NEEDS_REVIEW' AND a.failure_code IN
         ('NEUROBRO_BROWSER_OUTCOME_UNKNOWN','LOCAL_PROCESSING_FAILED')) OR a.state='PENDING')) OR
         (j.state='REQUEST_REJECTED' AND a.state='REJECTED_PROVIDER_ERROR'
-        AND a.failure_code='NEUROBRO_WEB_PROCESSING_FAILED' AND c.state='NEEDS_REVIEW'))
-        ORDER BY a.created LIMIT 2'''))
+        AND a.failure_code='NEUROBRO_WEB_PROCESSING_FAILED' AND c.state='NEEDS_REVIEW' AND c.day=?))
+        ORDER BY a.created LIMIT 2''', (today,)))
     accepted = list(coordinator.db.execute('''SELECT j.* FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation
         WHERE j.kind='SCREENING' AND j.state='PENDING' AND a.state='COMPLETE'
         AND a.attempts=1 ORDER BY a.created LIMIT 2'''))
