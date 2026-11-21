@@ -171,6 +171,7 @@ class DuplicateScreeningNoexecTests(unittest.TestCase):
         self.assertEqual(recovery.received_screening_replacement_due(self.db, self.cycle, data), 2)
 
     def test_restart_reuses_same_noexec_seal_without_new_writes(self):
+        self.case.catalog = {'INJUSDT': {}}  # Historical TON/AAVE need not remain eligible today.
         self.assertEqual(self.recover(), 'NOEXEC')
         resumed = sqlite3.connect(':memory:', isolation_level=None)
         resumed.row_factory = sqlite3.Row
@@ -183,6 +184,33 @@ class DuplicateScreeningNoexecTests(unittest.TestCase):
         data = json.loads(self.row('robot_cycles')['data'])
         self.assertEqual(recovery.received_screening_replacement_due(self.db, self.cycle, data), 2)
         self.assertEqual(recovery.received_screening_replacement_due(self.db, self.cycle, {**data, 'screen': 1}), 0)
+
+    def test_stale_first_seal_uses_bound_historical_symbols_without_current_catalog_membership(self):
+        self.case.catalog = {'INJUSDT': {}}
+        finances = self.case.finances()
+        changes = self.db.total_changes
+        self.assertEqual(self.recover(), 'NOEXEC')
+        self.assertEqual(self.db.total_changes - changes, 4)
+        self.assertEqual(self.row('api_requests')['state'], recovery.RECEIVED_TERMINAL)
+        self.assertIsNone(self.row('api_requests')['output'])
+        self.assertIsNone(self.row('research_browser_responses'))
+        self.assertEqual(self.case.finances(), finances)
+
+    def test_fresh_request_still_requires_current_catalog_and_cannot_be_retired(self):
+        self.case.catalog = {'INJUSDT': {}}
+        self.db.execute('UPDATE api_requests SET created=? WHERE operation=?', (NOW-90, self.operation))
+        def reclock(proof):
+            proof['room']['updated_at'] = NOW-20
+            value = proof['review_receipts'][0]['value']
+            value['observed_at'] = NOW-15
+            value['model_operation']['updated_at'] = NOW-16
+            value['request']['deadline_epoch'] = NOW+50
+        envelope = self.changed(reclock)
+        before = tuple(self.db.iterdump())
+        with self.assertRaisesRegex(Review, '^INVALID_SCREENING_SYMBOL$'):
+            self.recover(envelope)
+        self.assertEqual(tuple(self.db.iterdump()), before)
+        self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
 
     def test_fresh_received_duplicate_cannot_be_used_for_noexec_or_selection(self):
         self.db.execute('UPDATE api_requests SET created=? WHERE operation=?', (NOW-90, self.operation))

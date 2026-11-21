@@ -1058,6 +1058,8 @@ def _duplicate_screening_source(envelope, payload, created, *, catalog, max_age,
     def semantic(row):
         return (row['role'], row['text'], row.get('complete'), row.get('attachments', []))
 
+    stale = (now - created > max_age
+        or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat() != room['day'])
     approved = []
     for entry in proof['review_receipts']:
         value = _review_entry(entry); request = value.get('request', {})
@@ -1083,11 +1085,11 @@ def _duplicate_screening_source(envelope, payload, created, *, catalog, max_age,
         _require(review['decision']['action'] == 'SCREENING' and review['needs_followup'] is False
             and review['decision']['question'] == '' and created <= value['model_operation']['updated_at']
             <= value['observed_at'] <= proof['observed_at'])
-        # A new seal uses the existing live catalog guard.  Re-reading a
-        # non-executable seal must not depend on later market delistings or a
-        # network lookup; its original source symbols remain lexical evidence.
+        # Expired NOEXEC evidence is historical, including its first seal.
+        # Current market eligibility cannot make a received old reply unknown.
+        # Fresh decisions still require the existing live catalog guard.
         count = int(payload['operation'][-1])
-        if retained:
+        if retained or stale:
             from .neuroapi import SYMBOL_PATTERN
             _require(type(output) is dict and set(output) == {'symbols'}
                 and type(output['symbols']) is list and len(output['symbols']) == count
@@ -1098,8 +1100,6 @@ def _duplicate_screening_source(envelope, payload, created, *, catalog, max_age,
         approved.append(dict(review_sha256=entry['sha256'], request_id=value['request_id'],
             reviewed_reply_sha256=_sha(source[1]['text']), duplicate_tail_sha256=_digest(rows[2:])))
     _require(len(approved) == 1)
-    stale = (now - created > max_age
-        or datetime.fromtimestamp(now, ZoneInfo('Asia/Jakarta')).date().isoformat() != room['day'])
     return approved[0], stale
 
 
