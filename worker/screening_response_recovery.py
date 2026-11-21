@@ -279,6 +279,9 @@ RECEIVED_HOLD_TERMINAL = 'RECEIVED_HOLD_NOT_EXECUTED'
 RECEIVED_HOLD_REASON = 'SCREENING_RESPONSE_RECEIVED_HOLD'
 ENDED_NOEXEC = 'SCREENING_ENDED_STALE_NOEXEC_V1'
 DUPLICATE_NOEXEC = 'SCREENING_REVIEWED_DUPLICATE_STALE_NOEXEC_V1'
+INELIGIBLE_NOEXEC = 'SCREENING_INELIGIBLE_SELECTION_NOEXEC_V1'
+RECEIVED_INELIGIBLE_TERMINAL = 'RECEIVED_INELIGIBLE_NOT_EXECUTED'
+RECEIVED_INELIGIBLE_REASON = 'INVALID_SCREENING_SYMBOL'
 ENDED_RETURN_KIND = 'NATIVE_SCREENING_ENDED_RETURN_V1'
 ENDED_RETURN_PRODUCER = '879e885b0a800b3a41a2de8523a706a4147e2214415e9f2a1e6022c5b7e932d5'
 ENDED_RETURN_HOOK = 'ca2bccfea0c9f389c066dd15f63b136c60e609a638b80e36ccb1b8bee903784b'
@@ -1171,9 +1174,9 @@ def _sealed_duplicate_screening(db, journal, body, request_hash):
     return before, envelope
 
 
-def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
+def _screening_source(provider, envelope, payload, created, *, catalog, max_age, now,
         retained=False, require_approval=True):
-    """Check a no-send observation before admitting any native recorder write."""
+    """Validate original source/decision custody without admitting market eligibility."""
     from agent.neurobro_reply import _TECHNICAL
     from .neuroapi import screening_count
     proof = _received_screening_shape(envelope, payload, created,
@@ -1182,7 +1185,6 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
     count = screening_count(payload['output_schema'])
     _require(count in (1, 2) and _TECHNICAL.search(rows[-1]['text']) is None, 'NEUROBRO_INPUT_UNREADABLE')
     output, review = _reviewed_screening_output(proof, payload, rows, require_approval=require_approval)
-    selections(output, catalog, count)
     if payload['context'] is not None:
         _require(not set(output['symbols']) & set(payload['context']['excluded_symbols']))
     for index in users[1:]:
@@ -1214,7 +1216,152 @@ def validate_received_screening(provider, envelope, payload, created, *, catalog
     result = {key: payload[key] for key in ('operation', 'marker', 'request_sha256')}
     result.update(output=output, assistant_text=rows[-1]['text'], chart_evidence=[],
         response_id='dom-' + _sha(room['url'] + '\n' + payload['marker'] + '\n' + rows[-1]['text']))
-    return result, proof['finished_at'], stale
+    return result, proof['finished_at'], stale, review
+
+
+
+def validate_received_screening(provider, envelope, payload, created, *, catalog, max_age, now,
+        retained=False, require_approval=True):
+    """Check source custody and live market eligibility before native recording."""
+    from .neuroapi import screening_count
+    result, received, stale, _ = _screening_source(provider, envelope, payload, created,
+        catalog=catalog, max_age=max_age, now=now, retained=retained, require_approval=require_approval)
+    selections(result['output'], catalog, screening_count(payload['output_schema']))
+    return result, received, stale
+
+
+def _ineligible_screening_source(provider, envelope, payload, created, *, catalog_keys, max_age, now,
+        retained=False):
+    """A complete, authentic choice can be known yet ineligible for execution."""
+    from .neuroapi import screening_count, SYMBOL_PATTERN
+    from agent.neurobro_reply import screening_market_hold
+    _require(type(catalog_keys) is list and bool(catalog_keys)
+        and all(type(symbol) is str and re.fullmatch(SYMBOL_PATTERN, symbol) for symbol in catalog_keys)
+        and catalog_keys == sorted(set(catalog_keys)), 'SCREENING_CATALOG_REQUIRED')
+    result, _, _, review = _screening_source(provider, envelope, payload, created,
+        catalog=dict.fromkeys(catalog_keys), max_age=max_age, now=now, retained=retained)
+    output = result['output']; count = screening_count(payload['output_schema'])
+    _require(type(output) is dict and set(output) == {'symbols'} and type(output['symbols']) is list
+        and len(output['symbols']) == count
+        and all(type(symbol) is str and re.fullmatch(SYMBOL_PATTERN, symbol) for symbol in output['symbols'])
+        and len(set(output['symbols'])) == count)
+    # A HOLD or clarification retains its own existing decision semantics.
+    if (review['needs_followup'] is not False or review['decision'] != {
+            'action': 'SCREENING', 'symbols': output['symbols'], 'question': ''}
+            or screening_market_hold(result['assistant_text'], output['symbols'])):
+        return None
+    missing = [symbol for symbol in output['symbols'] if symbol not in catalog_keys]
+    return (output['symbols'], missing) if missing else None
+
+
+def _ineligible_cycle_data(before, *, index, count, missing):
+    data = json.loads(before['robot_cycles']['data'])
+    _require(type(index) is int and index >= 0 and type(count) is int and count in (1, 2)
+        and before['api_requests']['operation'] == before['robot_cycles']['id'] + ':screening:' + str(index) + ':' + str(count))
+    _require(type(data) is dict and data.get('queue') == [] and data.get('screen') == index - 1
+        and type(data.get('screen')) is int and type(data.get('replacements')) is int
+        and data['replacements'] >= 0 and type(data.get('seen')) is list
+        and type(data.get('round_symbols')) is list)
+    data.update(screen=index, replacement_due=count,
+        seen=data['seen'] + [symbol for symbol in missing if symbol not in data['seen']])
+    if index:
+        data['replacements'] += 1
+    return data
+
+
+def _ineligible_preimage(before, operation, request_hash):
+    api = before['api_requests']; job = before['robot_jobs']; cycle = before['robot_cycles']
+    request = before['research_browser_requests']
+    _require(api['operation'] == job['operation'] == request['operation'] == operation
+        and api['body_hash'] == request['request_sha256'] == request_hash
+        and _sha(request['request_body']) == request_hash
+        and type(api['attempts']) is int and api['attempts'] == 1 and api['idempotency'] is None
+        and api['state'] in ('PENDING', 'NEEDS_REVIEW') and api['output'] is None
+        and api['failure_code'] in (None, 'NEUROBRO_BROWSER_OUTCOME_UNKNOWN', 'LOCAL_PROCESSING_FAILED')
+        and job['kind'] == 'SCREENING' and job['symbol'] is None and job['risk_target'] is None
+        and job['state'] in ('PENDING', 'NEEDS_REVIEW') and job['cycle'] == cycle['id']
+        and cycle['id'] == operation.rsplit(':screening:', 1)[0] and cycle['day'] == operation[:10]
+        and cycle['entry_epoch'] == int(cycle['id'].rsplit(':', 1)[1])
+        and cycle['state'] in ('ACTIVE', 'NEEDS_REVIEW') and before['robot_settings']['enabled'] == 1
+        and before['research_browser_responses'] is None)
+    return api, job, cycle
+
+
+def _retire_ineligible_screening(provider, envelope, payload, before, *, index, count,
+        current, catalog, max_age, permitted):
+    db = provider.db; operation = payload['operation']
+    api, job, cycle = _ineligible_preimage(before, operation, payload['request_sha256'])
+    _require(type(catalog) is dict and bool(catalog) and all(type(key) is str for key in catalog),
+        'SCREENING_CATALOG_REQUIRED')
+    keys = sorted(catalog)
+    source = _ineligible_screening_source(provider, envelope, payload, api['created'],
+        catalog_keys=keys, max_age=max_age, now=current)
+    if source is None:
+        return None
+    selected, missing = source
+    _require(before['research_browser_responses'] is None and api['output'] is None
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+    sealed = copy.deepcopy(envelope)
+    sealed['retirement'] = dict(kind=INELIGIBLE_NOEXEC, canonical_result=False,
+        disposition='INELIGIBLE_SELECTION', reason=RECEIVED_INELIGIBLE_REASON, max_age=max_age,
+        preimage_sha256=_sha(_wire(before)), selected_symbols=selected, missing_symbols=missing,
+        catalog_keys=keys, catalog_keys_sha256=_digest(keys), catalog_observed_at=current)
+    raw = _wire(sealed); data = _ineligible_cycle_data(before, index=index, count=count, missing=missing)
+    db.execute('BEGIN IMMEDIATE')
+    try:
+        _require(permitted() is True and _snapshot(db, operation, cycle['id']) == before, 'RESEARCH_PAUSED')
+        _require(not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+        _require(db.execute('SELECT 1 FROM screening_response_recoveries WHERE operation=?', (operation,)).fetchone() is None)
+        db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
+            (operation, payload['request_sha256'], _sha(raw), raw, _wire(before), 'NOEXEC', current, current))
+        _require(db.execute('UPDATE api_requests SET state=?,output=NULL,failure_code=? '
+            'WHERE operation=? AND state=? AND body_hash=? AND attempts=1 AND output IS NULL',
+            (RECEIVED_INELIGIBLE_TERMINAL, RECEIVED_INELIGIBLE_REASON, operation,
+                api['state'], payload['request_sha256'])).rowcount == 1)
+        _require(db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state=?",
+            (operation, job['state'])).rowcount == 1)
+        _require(db.execute("UPDATE robot_cycles SET state='ACTIVE',data=? WHERE id=? AND state=? AND data=?",
+            (json.dumps(data), cycle['id'], cycle['state'], cycle['data'])).rowcount == 1)
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    return 'NOEXEC'
+
+
+def _sealed_ineligible_screening(db, journal, body, request_hash):
+    envelope = json.loads(journal['proof']); before = json.loads(journal['preimage'])
+    retirement = envelope.get('retirement'); operation = body['operation']
+    _require(type(retirement) is dict and set(retirement) == {'kind', 'canonical_result',
+        'disposition', 'reason', 'max_age', 'preimage_sha256', 'selected_symbols', 'missing_symbols',
+        'catalog_keys', 'catalog_keys_sha256', 'catalog_observed_at'}
+        and retirement['kind'] == INELIGIBLE_NOEXEC and retirement['canonical_result'] is False
+        and retirement['disposition'] == 'INELIGIBLE_SELECTION'
+        and retirement['reason'] == RECEIVED_INELIGIBLE_REASON
+        and retirement['preimage_sha256'] == _sha(journal['preimage'])
+        and retirement['catalog_keys_sha256'] == _digest(retirement['catalog_keys'])
+        and retirement['catalog_observed_at'] == journal['created']
+        and journal['phase'] == 'NOEXEC' and journal['request_sha256'] == request_hash
+        and journal['proof_sha256'] == _sha(journal['proof'])
+        and journal['created'] == journal['updated'] and _finite(journal['created']))
+    api, job, cycle = _ineligible_preimage(before, operation, request_hash)
+    source = _ineligible_screening_source(None, envelope, {**body, 'request_sha256': request_hash},
+        api['created'], catalog_keys=retirement['catalog_keys'], max_age=retirement['max_age'],
+        now=journal['created'], retained=True)
+    _require(source is not None and source == (retirement['selected_symbols'], retirement['missing_symbols']))
+    match = re.fullmatch(r'.*:screening:(0|[1-9]\d*):([12])', operation)
+    _require(match is not None)
+    _ineligible_cycle_data(before, index=int(match[1]), count=int(match[2]), missing=source[1])
+    _require(_row(db, 'api_requests', 'operation', operation) == {**api,
+            'state': RECEIVED_INELIGIBLE_TERMINAL, 'output': None, 'failure_code': RECEIVED_INELIGIBLE_REASON}
+        and _row(db, 'robot_jobs', 'operation', operation) == {**job, 'state': 'COMPLETE'}
+        and _row(db, 'research_browser_requests', 'operation', operation) == before['research_browser_requests']
+        and (current_cycle := _row(db, 'robot_cycles', 'id', cycle['id'])) is not None
+        and all(current_cycle[name] == cycle[name] for name in ('id', 'day', 'entry_epoch'))
+        and _row(db, 'research_browser_responses', 'operation', operation) is None
+        and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone())
+    return before, envelope
 
 
 def _native_screening_receipt(provider, operation, result, received, cached):
@@ -1273,6 +1420,8 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
                 _sealed_ended_screening(db, journal, body, request_hash)
             elif retirement_kind == DUPLICATE_NOEXEC:
                 _sealed_duplicate_screening(db, journal, body, request_hash)
+            elif retirement_kind == INELIGIBLE_NOEXEC:
+                _sealed_ineligible_screening(db, journal, body, request_hash)
             return journal['phase']
         _require(journal['phase'] == 'PREPARED')
         envelope = json.loads(journal['proof']); before = json.loads(journal['preimage'])
@@ -1317,6 +1466,11 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
         else:
             return _retire_ended_screening(provider, envelope, payload, before, index=index,
                 count=count, current=current, max_age=max_age, permitted=permitted)
+    if journal is None and not accepted_hold and old_receipt is None:
+        retired = _retire_ineligible_screening(provider, envelope, payload, before, index=index,
+            count=count, current=current, catalog=catalog, max_age=max_age, permitted=permitted)
+        if retired is not None:
+            return retired
     result, received, stale = validate_received_screening(provider, envelope, payload, api['created'],
         catalog=catalog, max_age=max_age, now=current, retained=journal is not None)
     interpretation = _received_interpretation_proof(envelope['observation'], payload)
@@ -1384,7 +1538,7 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
 
 
 def received_screening_replacement_due(db, cycle_id, data):
-    """Only a sealed stale or market-HOLD screening receipt requests a new round."""
+    """Only a sealed non-executable or market-HOLD screening requests a new round."""
     due = data.get('replacement_due')
     index = data.get('screen')
     if (type(due) is not int or due not in (1, 2) or type(index) is not int
@@ -1400,6 +1554,13 @@ def received_screening_replacement_due(db, cycle_id, data):
         body, request_hash, match = stored_screening_request(db, operation)
         before = json.loads(journal['preimage']); envelope = json.loads(journal['proof'])
         retirement_kind = envelope.get('retirement', {}).get('kind')
+        if retirement_kind == INELIGIBLE_NOEXEC:
+            before, envelope = _sealed_ineligible_screening(db, journal, body, request_hash)
+            expected_data = _ineligible_cycle_data(before, index=index, count=due,
+                missing=envelope['retirement']['missing_symbols'])
+            cycle = _row(db, 'robot_cycles', 'id', cycle_id)
+            _require(data == expected_data and json.loads(cycle['data']) == data and cycle['state'] == 'ACTIVE')
+            return due
         if retirement_kind in (ENDED_NOEXEC, DUPLICATE_NOEXEC):
             before, envelope = (_sealed_ended_screening(db, journal, body, request_hash)
                 if retirement_kind == ENDED_NOEXEC else _sealed_duplicate_screening(db, journal, body, request_hash))
@@ -1513,7 +1674,10 @@ def resume_uncertain_screening(coordinator, today, account):
             'SCREENING_RESPONSE_OBSERVATION_PENDING', 'SCREENING_REVIEW_OUTCOME_UNKNOWN', 'SCREENING_REVIEW_INCOMPLETE'}
         return coordinator.store.report('WAITING', account,
             wait_reason=reason if reason in safe else 'SCREENING_RESPONSE_RECOVERY_UNVERIFIED')
-    held = _row(coordinator.db, 'api_requests', 'operation', operation)['state'] == RECEIVED_HOLD_TERMINAL
+    state = _row(coordinator.db, 'api_requests', 'operation', operation)['state']
+    held = state == RECEIVED_HOLD_TERMINAL
+    if state == RECEIVED_INELIGIBLE_TERMINAL:
+        return coordinator.store.report('WAITING', account, wait_reason='SCREENING_INELIGIBLE_REPLACEMENT_PENDING')
     return coordinator.store.report('WAITING', account, wait_reason=(
         'SCREENING_HOLD_REPLACEMENT_PENDING' if held else
         'SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING' if phase == 'NOEXEC' else 'SCREENING_RECEIVED_RESUME_PENDING'))
