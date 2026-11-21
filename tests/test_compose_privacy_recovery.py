@@ -16,6 +16,7 @@ from tests.test_agent_native_market_context import native_context
 from agent.native_market_context import convert_native_market_context
 
 FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_fil_compose_privacy_20261110.json').read_text())
+ORCA_FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_orca_compose_privacy_20261121.json').read_text())
 REMINDER='Jangan minta atau sarankan ukuran/quantity/anggaran risiko akun.'
 
 
@@ -93,6 +94,93 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
         rendered=compact_protocol('Analisa FILUSDT.\n\nOUTPUT_JSON_SCHEMA:\n{}',{'marker':'owned_marker','output_schema':{'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']}})
         self.assertNotIn('Risk Manager',rendered);self.assertIn('RISK REWARD 1:2',rendered)
         self.assertIn('ENTRY dan SL ditetapkan Neurobro',rendered);self.assertIn('RR 1:3 atau 1:4',rendered)
+
+    def orca_request(self):
+        now=time.time();native=native_context(now);native['symbol']='ORCAUSDT'
+        for frame in native['timeframes'].values():frame['symbol']='ORCAUSDT'
+        self.request={**self.request,'conversation_id':'compose:offline-ORCA',
+            'market_context':convert_native_market_context(native,now=now),
+            'reply':'Analisis ORCAUSDT Binance Futures, 1H dan 15M, 200 candle tertutup.'}
+        self.request['reply_sha256']=hashlib.sha256(self.request['reply'].encode()).hexdigest()
+        return self.request
+
+    def test_actual_orca_drafts_pass_shared_and_generated_validators_without_changing_prices(self):
+        from tests.test_mini_dialogue_profile import retained_module
+        modules=(d,retained_module());request=self.orca_request()
+        self.assertEqual(ORCA_FIXTURE['evidence_run'],'44919401932')
+        self.assertEqual(len(ORCA_FIXTURE['drafts']),2)
+        for draft in ORCA_FIXTURE['drafts']:
+            raw=draft['question'];authored={'action':'PROMPT','symbols':[],'question':raw}
+            expected=(raw.replace('Jangan minta rekomendasi quantity atau ukuran posisi. ','')
+                .replace('Risk Manager hanya menormalkan TP eksekusi ke target bersih 2R. ','')
+                .replace('Risk Manager hanya menormalkan TP eksekusi menjadi target bersih 2R. ',''))
+            with self.subTest(operation=draft['operation_id']):
+                self.assertEqual(hashlib.sha256(raw.encode()).hexdigest(),draft['question_sha256'])
+                self.assertEqual(len(raw),draft['question_chars'])
+                self.assertFalse(draft['before_validation']['decision']['ok'])
+                self.assertEqual(draft['before_validation']['decision']['code'],'DIALOGUE_MODEL_RESULT_INVALID')
+                self.assertFalse(web_prompt_allowed(raw));self.assertTrue(web_prompt_allowed(expected))
+                self.assertEqual(outbound_question(raw),expected)
+                for module in modules:
+                    self.assertEqual(module.validate_request(copy.deepcopy(request),now=time.time()),request)
+                    accepted=module.validate_decision(copy.deepcopy(authored),request)
+                    self.assertEqual(accepted,{'action':'PROMPT','symbols':[],'question':expected})
+                    self.assertEqual(module.validate_web_question(raw,request),expected)
+                    with self.assertRaises(module.DialogueError):
+                        module.validate_decision({**authored,'question':raw+' ENTRY 12345.6789.'},request)
+                    with self.assertRaisesRegex(module.DialogueError,'DIALOGUE_FOREIGN_SYMBOL'):
+                        module.validate_decision({**authored,'question':raw+' Analisis BTCUSDT.'},request)
+                self.assertEqual(authored['question'],raw)
+                self.assertIn('ORCAUSDT',expected);self.assertIn('ENTRY',expected);self.assertIn('SL',expected)
+        self.assertEqual(self.calls,[])
+
+    def test_value_free_negative_grammar_never_hides_positive_mixed_or_numeric_instructions(self):
+        request=self.orca_request();prefix='Analisis ORCAUSDT RR 1:2. '
+        reminders=('Jangan minta rekomendasi quantity atau ukuran posisi.',
+            'Tidak perlu meminta saran quantity dan perhitungan ukuran posisi.',
+            'Jangan menghitung quantity.', 'Jangan berikan rekomendasi ukuran posisi.',
+            'Jangan tentukan quantity atau sarankan ukuran posisi.')
+        for reminder in reminders[:-1]:
+            with self.subTest(reminder=reminder):
+                self.assertEqual(outbound_question(prefix+reminder),prefix.rstrip())
+        # Different predicates mixed into a topic list are not partially erased.
+        self.assertEqual(normalize_privacy_reminders(prefix+reminders[-1]),prefix+reminders[-1])
+        mixed_role='Risk Manager hanya menormalkan TP eksekusi ke target bersih 2R dan ubah SL.'
+        self.assertEqual(normalize_privacy_reminders(prefix+mixed_role),prefix+mixed_role)
+        unsafe=('Minta rekomendasi quantity atau ukuran posisi.',
+            'Jangan minta rekomendasi quantity atau ukuran posisi 2 ORCA.',
+            'Jangan minta rekomendasi quantity atau ukuran posisi: 2 ORCA.',
+            'Jangan minta rekomendasi quantity atau ukuran posisi\n2 ORCA.',
+            'Jangan minta rekomendasi quantity atau ukuran posisi dan ubah SL.',
+            'Jangan minta rekomendasi quantity atau ukuran posisi supaya risiko lebih besar.',
+            'Berikan saran quantity hanya sebagai bahan diskusi; quantity akhir tetap Risk Manager.',
+            'Risk Manager hanya menormalkan TP eksekusi ke 2188.',
+            'Risk Manager hanya menormalkan TP eksekusi menjadi target bersih 2R 5 USDT.',
+            'Risk Manager hanya menormalkan TP eksekusi ke target bersih 2R dengan fee 0.0004.',
+            'Jangan sebut anggaran risiko akun 5 USDT.')
+        for sentence in unsafe:
+            with self.subTest(sentence=sentence):
+                self.assertEqual(normalize_privacy_reminders(prefix+sentence),prefix+sentence)
+                with self.assertRaises((d.DialogueError,ValueError)):
+                    d.validate_web_question(prefix+sentence,request)
+
+    def test_actual_orca_known_response_recovery_is_same_id_and_no_extra_call_after_restart(self):
+        for draft in ORCA_FIXTURE['drafts']:
+            with self.subTest(operation=draft['operation_id']):
+                self.memory.db.execute('DELETE FROM metadata');self.memory.db.execute('DELETE FROM operations')
+                self.memory.db.execute('DELETE FROM budgets');self.memory.db.execute('DELETE FROM messages');self.calls=[]
+                self.orca_request();self.authored={'action':'PROMPT','symbols':[],'question':draft['question']}
+                operation=self.seed_unknown();before=self.rows()
+                result=self.engine.process(self.request);self.assertEqual(result['request_id'],self.request['request_id'])
+                self.assertEqual(result['decision']['question'],outbound_question(draft['question']))
+                audit_key='dialogue-compose-response-recovery-v1:'+operation;audit=d.canonical(self.memory.get(audit_key))
+                self.assertEqual(self.rows(),before);self.assertEqual(self.rows()[0][3],'UNKNOWN');self.assertEqual(len(self.calls),1)
+                self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
+                self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport)
+                self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
+                self.assertEqual(self.engine.process(self.request),result)
+                self.assertEqual(d.canonical(self.memory.get(audit_key)),audit)
+                self.assertEqual(self.rows(),before);self.assertEqual(len(self.calls),1)
 
     def test_known_response_uses_exact_input_and_dispatch_and_retains_unknown_across_restart(self):
         operation=self.seed_unknown();before=self.rows();metadata=list(self.memory.db.execute('SELECT * FROM metadata'));budget=list(self.memory.db.execute('SELECT * FROM budgets'))
