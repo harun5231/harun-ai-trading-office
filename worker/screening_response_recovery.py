@@ -280,6 +280,8 @@ RECEIVED_HOLD_REASON = 'SCREENING_RESPONSE_RECEIVED_HOLD'
 ENDED_NOEXEC = 'SCREENING_ENDED_STALE_NOEXEC_V1'
 DUPLICATE_NOEXEC = 'SCREENING_REVIEWED_DUPLICATE_STALE_NOEXEC_V1'
 INELIGIBLE_NOEXEC = 'SCREENING_INELIGIBLE_SELECTION_NOEXEC_V1'
+COMPLETED_STALE_NOEXEC = 'SCREENING_COMPLETED_STALE_NOEXEC_V1'
+COMPLETED_STALE_AUDIT_SUFFIX = ':completed-stale-v1'
 RECEIVED_INELIGIBLE_TERMINAL = 'RECEIVED_INELIGIBLE_NOT_EXECUTED'
 RECEIVED_INELIGIBLE_REASON = 'INVALID_SCREENING_SYMBOL'
 ENDED_RETURN_KIND = 'NATIVE_SCREENING_ENDED_RETURN_V1'
@@ -1537,7 +1539,7 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
     return phase
 
 
-def received_screening_replacement_due(db, cycle_id, data):
+def received_screening_replacement_due(db, cycle_id, data, *, _cycle=None):
     """Only a sealed non-executable or market-HOLD screening requests a new round."""
     due = data.get('replacement_due')
     index = data.get('screen')
@@ -1548,17 +1550,23 @@ def received_screening_replacement_due(db, cycle_id, data):
         return 0
     operation = cycle_id + ':screening:' + str(index) + ':' + str(due)
     try:
-        journal = _row(db, 'screening_response_recoveries', 'operation', operation)
+        journal = (_row(db, 'screening_response_recoveries', 'operation',
+            operation + COMPLETED_STALE_AUDIT_SUFFIX)
+            or _row(db, 'screening_response_recoveries', 'operation', operation))
         if journal is None or journal['phase'] != 'NOEXEC' or journal['proof_sha256'] != _sha(journal['proof']):
             return 0
         body, request_hash, match = stored_screening_request(db, operation)
         before = json.loads(journal['preimage']); envelope = json.loads(journal['proof'])
+        if envelope.get('kind') == COMPLETED_STALE_NOEXEC:
+            expected = _sealed_completed_stale_screening(db, journal, _cycle=_cycle)
+            _require(expected == data)
+            return due
         retirement_kind = envelope.get('retirement', {}).get('kind')
         if retirement_kind == INELIGIBLE_NOEXEC:
             before, envelope = _sealed_ineligible_screening(db, journal, body, request_hash)
             expected_data = _ineligible_cycle_data(before, index=index, count=due,
                 missing=envelope['retirement']['missing_symbols'])
-            cycle = _row(db, 'robot_cycles', 'id', cycle_id)
+            cycle = _row(db, 'robot_cycles', 'id', cycle_id) if _cycle is None else _cycle
             _require(data == expected_data and json.loads(cycle['data']) == data and cycle['state'] == 'ACTIVE')
             return due
         if retirement_kind in (ENDED_NOEXEC, DUPLICATE_NOEXEC):
@@ -1567,11 +1575,12 @@ def received_screening_replacement_due(db, cycle_id, data):
             original_data = json.loads(before['robot_cycles']['data'])
             expected_data = {**original_data, 'screen': index, 'replacement_due': due}
             if index: expected_data['replacements'] += 1
-            cycle = _row(db, 'robot_cycles', 'id', cycle_id)
+            cycle = _row(db, 'robot_cycles', 'id', cycle_id) if _cycle is None else _cycle
             _require(data == expected_data and json.loads(cycle['data']) == data and cycle['state'] == 'ACTIVE')
             return due
         api = _row(db, 'api_requests', 'operation', operation); job = _row(db, 'robot_jobs', 'operation', operation)
-        cycle = _row(db, 'robot_cycles', 'id', cycle_id); receipt = _row(db, 'research_browser_responses', 'operation', operation)
+        cycle = _row(db, 'robot_cycles', 'id', cycle_id) if _cycle is None else _cycle
+        receipt = _row(db, 'research_browser_responses', 'operation', operation)
         proof = envelope['observation']; final = proof['rows'][-1]
         original_data = json.loads(before['robot_cycles']['data'])
         held = api['state'] == RECEIVED_HOLD_TERMINAL and api['failure_code'] == RECEIVED_HOLD_REASON
@@ -1606,6 +1615,286 @@ def received_screening_replacement_due(db, cycle_id, data):
         return 0
 
 
+def _completed_stale_screening_source(db, before, *, now, max_age):
+    """Validate an expired accepted reply, without another browser/model call."""
+    from .research_provider import source_evidence, BROWSER_SOURCE
+    api, job, request, receipt, cycle, settings = (before[name] for name in (
+        'api_requests', 'robot_jobs', 'research_browser_requests',
+        'research_browser_responses', 'robot_cycles', 'robot_settings'))
+    _require(all(value is not None for value in (api, job, request, receipt, cycle, settings)))
+    body, request_hash, match = stored_screening_request(db, api['operation'])
+    count = int(match[4]); index = int(match[3]); data = json.loads(cycle['data'])
+    _require(cycle['id'] == api['operation'].rsplit(':screening:', 1)[0]
+        and cycle['day'] == match[1] and cycle['entry_epoch'] == int(match[2])
+        and job['operation'] == api['operation'] and job['cycle'] == cycle['id']
+        and job['kind'] == 'SCREENING' and job['symbol'] is None and job['risk_target'] is None
+        and ((job['state'], cycle['state']) == ('COMPLETE', 'COMPLETE')
+            and data.get('screen') == index and data.get('replacements') == index
+            or (job['state'], cycle['state']) == ('PENDING', 'ACTIVE')
+            and data.get('screen') == index - 1 and data.get('replacements') == max(0, index - 1))
+        and type(data.get('target')) is int and count <= data['target'] <= 2
+        and data.get('queue') == [] and type(data.get('round_symbols')) is list
+        and type(data.get('seen')) is list and len(data['seen']) == len(set(data['seen']))
+        and all(type(symbol) is str and re.fullmatch('[A-Z0-9]{2,18}USDT', symbol)
+            for symbol in data['seen'] + data['round_symbols'])
+        and (job['state'] == 'PENDING' or data['round_symbols'] == [])
+        and api['state'] == 'COMPLETE' and api['failure_code'] is None
+        and type(api['attempts']) is int and api['attempts'] == 1 and api['idempotency'] is None
+        and type(settings['enabled']) is int and settings['enabled'] == 1
+        and type(max_age) is int and 30 <= max_age <= 300
+        and _finite(now) and _finite(api['created']) and _finite(receipt['received_at'])
+        and 0 < api['created'] <= receipt['received_at'] <= now
+        and now - api['created'] > max_age)
+    if 'replacement_due' in data:
+        # A new screening can complete before its coordinator consumes the
+        # previous round's due flag. Revalidate that exact predecessor against
+        # this retained preimage even after a later retirement advances it.
+        previous = {**data, 'screen': index - 1, 'replacements': max(0, index - 1)}
+        predecessor = {**cycle, 'state': 'ACTIVE', 'data': json.dumps(previous)}
+        _require(index > 0 and type(data['replacement_due']) is int
+            and data['replacement_due'] in (1, 2)
+            and received_screening_replacement_due(db, cycle['id'], previous,
+                _cycle=predecessor) == data['replacement_due'])
+    output = json.loads(api['output'])
+    catalog = {symbol: {} for symbol in output.get('symbols', [])} if type(output) is dict else {}
+    _require(canonical_output(output, body['output_schema'], catalog) == api['output'])
+    _require(not set(output['symbols']) & set(data['seen'])
+        and (index == 0 or not set(output['symbols']) & set(body['context']['excluded_symbols'])))
+    for symbol in output['symbols']:
+        _require(not db.execute('SELECT 1 FROM robot_candidates WHERE cycle=? AND symbol=? LIMIT 1',
+                (cycle['id'], symbol)).fetchone()
+            and not db.execute('SELECT 1 FROM robot_jobs WHERE cycle=? AND kind=\'ANALYSIS\' AND symbol=? LIMIT 1',
+                (cycle['id'], symbol)).fetchone()
+            and not db.execute('SELECT 1 FROM order_intents WHERE candidate_id=? LIMIT 1',
+                (cycle['id'] + ':analysis-v9:' + symbol,)).fetchone())
+    evidence = source_evidence(db, api['operation'])
+    _require(evidence.get('source_type') == BROWSER_SOURCE
+        and type(evidence.get('provider_evidence_sha256')) is str
+        and re.fullmatch('[a-f0-9]{64}', evidence['provider_evidence_sha256']) is not None
+        and request == _row(db, 'research_browser_requests', 'operation', api['operation'])
+        and receipt == _row(db, 'research_browser_responses', 'operation', api['operation']))
+    held = completed_screening_market_hold(db, api['operation'])
+    expected = {**data, 'screen': index, 'round_symbols': [],
+        'replacements': index, 'replacement_due': count}
+    if held:
+        expected['seen'] = list(dict.fromkeys(data['seen'] + output['symbols']))
+    return request_hash, evidence, expected
+
+
+def _completed_stale_recovery_schema(db):
+    expected = [('operation', 'TEXT', 0, 1), ('request_sha256', 'TEXT', 1, 0),
+        ('proof_sha256', 'TEXT', 1, 0), ('proof', 'TEXT', 1, 0),
+        ('preimage', 'TEXT', 1, 0), ('phase', 'TEXT', 1, 0),
+        ('created', 'REAL', 1, 0), ('updated', 'REAL', 1, 0)]
+    _require([(row['name'], row['type'], row['notnull'], row['pk'])
+        for row in db.execute('PRAGMA table_info(screening_response_recoveries)')] == expected)
+
+
+def _completed_stale_primary_recovery(db, primary, before):
+    """Validate a prior RESUME_CACHED seal without overwriting its history."""
+    if primary is None:
+        return None
+    api = before['api_requests']; job = before['robot_jobs']
+    _require(primary['operation'] == api['operation'] and primary['phase'] == 'RESUME_CACHED'
+        and primary['request_sha256'] == api['body_hash']
+        and primary['proof_sha256'] == _sha(primary['proof'])
+        and _finite(primary['created']) and _finite(primary['updated'])
+        and primary['created'] <= primary['updated'])
+    original = json.loads(primary['preimage']); envelope = json.loads(primary['proof'])
+    old_api = original['api_requests']; old_job = original['robot_jobs']; old_cycle = original['robot_cycles']
+    body, request_hash, match = stored_screening_request(db, api['operation'])
+    _require(old_api['state'] in ('PENDING', 'NEEDS_REVIEW') and old_api['output'] is None
+        and old_job['state'] in ('PENDING', 'NEEDS_REVIEW')
+        and old_cycle['state'] in ('ACTIVE', 'NEEDS_REVIEW')
+        and api == {**old_api, 'state': 'COMPLETE', 'output': api['output'], 'failure_code': None}
+        and job == {**old_job, 'state': job['state']}
+        and original['research_browser_requests'] == before['research_browser_requests'])
+    output = json.loads(api['output']); catalog = {symbol: {} for symbol in output['symbols']}
+    # This validates the genuine archived browser/Mini approval, not merely a
+    # self-consistent journal hash. Final approvals require no provider object.
+    result, received, stale = validate_received_screening(None, envelope,
+        {**body, 'request_sha256': request_hash}, api['created'], catalog=catalog,
+        max_age=before['research_browser_responses']['chart_max_age'],
+        now=primary['updated'], retained=True)
+    from agent.neurobro_reply import screening_market_hold
+    _require(not stale and not screening_market_hold(result['assistant_text'], output['symbols'])
+        and canonical_output(result['output'], body['output_schema'], catalog) == api['output'])
+    receipt = before['research_browser_responses']; retained = original['research_browser_responses']
+    _require(receipt['assistant_text'] == result['assistant_text']
+        and receipt['response_id'] == result['response_id']
+        and receipt['output_sha256'] == _sha(api['output'])
+        and receipt['received_at'] == (retained['received_at'] if retained is not None else received)
+        and (retained is None or retained == receipt))
+    old_data = json.loads(old_cycle['data']); data = json.loads(before['robot_cycles']['data'])
+    index = int(match[3])
+    _require(old_cycle['id'] == before['robot_cycles']['id']
+        and all(old_cycle[name] == before['robot_cycles'][name] for name in ('day', 'entry_epoch'))
+        and old_data['screen'] == index - 1
+        and (data == old_data if job['state'] == 'PENDING' else data == {**old_data,
+            'screen': index, 'replacements': old_data['replacements'] + bool(index),
+            'queue': [], 'round_symbols': []}))
+    return _sha(_wire(primary))
+
+
+def _sealed_completed_stale_screening(db, journal, *, _cycle=None):
+    """Recheck the append-only seal and unchanged original source after restart."""
+    _completed_stale_recovery_schema(db)
+    before = json.loads(journal['preimage']); proof = json.loads(journal['proof'])
+    _require(type(proof) is dict and set(proof) == {'kind', 'operation', 'request_sha256',
+        'preimage_sha256', 'source_evidence', 'max_age', 'market_hold', 'primary_recovery_sha256'}
+        and proof['kind'] == COMPLETED_STALE_NOEXEC and journal['phase'] == 'NOEXEC'
+        and journal['operation'] in (proof['operation'], proof['operation'] + COMPLETED_STALE_AUDIT_SUFFIX)
+        and proof['operation'] == before['api_requests']['operation']
+        and proof['request_sha256'] == journal['request_sha256']
+        and proof['preimage_sha256'] == _sha(journal['preimage'])
+        and journal['proof_sha256'] == _sha(journal['proof'])
+        and journal['created'] == journal['updated']
+        and type(proof['market_hold']) is bool
+        and proof['market_hold'] == completed_screening_market_hold(db, proof['operation']))
+    primary = (_row(db, 'screening_response_recoveries', 'operation', proof['operation'])
+        if journal['operation'] != proof['operation'] else None)
+    _require((journal['operation'] == proof['operation']) == (proof['primary_recovery_sha256'] is None)
+        and _completed_stale_primary_recovery(db, primary, before) == proof['primary_recovery_sha256'])
+    request_hash, evidence, expected_data = _completed_stale_screening_source(db, before,
+        now=journal['created'], max_age=proof['max_age'])
+    _require(request_hash == journal['request_sha256'] and evidence == proof['source_evidence'])
+    after = _snapshot(db, proof['operation'], before['robot_cycles']['id'])
+    retained_cycle = after['robot_cycles'] if _cycle is None else _cycle
+    _require(all(after[name] == before[name] for name in
+        ('api_requests', 'research_browser_requests', 'research_browser_responses'))
+        and after['robot_jobs'] == {**before['robot_jobs'], 'state': 'COMPLETE'}
+        and retained_cycle == {**before['robot_cycles'],
+            'state': 'ACTIVE', 'data': json.dumps(expected_data)})
+    return expected_data
+
+
+def _completed_stale_no_other_pending(db, operation):
+    _require(not db.execute("SELECT 1 FROM api_requests WHERE operation!=? "
+        "AND operation NOT LIKE 'post-trade-evaluation:%' AND state IN ('PENDING','NEEDS_REVIEW') LIMIT 1",
+        (operation,)).fetchone()
+        and not db.execute("SELECT 1 FROM robot_jobs WHERE operation!=? "
+            "AND state IN ('PENDING','NEEDS_REVIEW') LIMIT 1", (operation,)).fetchone())
+
+
+def _resume_completed_stale_screening(coordinator, today, account):
+    """Retire only a proved unconsumed screening, never replay its Send."""
+    db = coordinator.db
+    if not coordinator.allowed(today):
+        return None
+    # Research-only recovery callers retain their smaller existing interface.
+    # This optional transition needs the real coordinator's quota/budget view.
+    if not all(callable(method) for method in (
+            getattr(coordinator.store, 'entries', None),
+            getattr(coordinator.store, 'results', None),
+            getattr(coordinator, 'execution_slots', None),
+            getattr(coordinator, 'research_budget', None))):
+        return None
+    if db.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN "
+            "('research_browser_requests','research_browser_responses')").fetchone()[0] != 2:
+        return None
+    cycle_id = today + ':robot-v9:' + str(coordinator.store.entries(today))
+    cycle = _row(db, 'robot_cycles', 'id', cycle_id)
+    if cycle is None or cycle['state'] not in ('ACTIVE', 'COMPLETE'):
+        return None
+    data = json.loads(cycle['data'])
+    if (data.get('queue') != [] or type(data.get('screen')) is not int
+            or data['screen'] < -1 or type(data.get('replacements')) is not int):
+        return None
+    jobs = list(db.execute("SELECT j.* FROM robot_jobs j JOIN api_requests a ON a.operation=j.operation "
+        "JOIN research_browser_requests r ON r.operation=j.operation AND r.provider='NEUROBRO_WEB' "
+        "WHERE j.cycle=? AND j.kind='SCREENING' AND j.state IN ('PENDING','COMPLETE') "
+        "AND a.state='COMPLETE' AND a.output IS NOT NULL", (cycle_id,)))
+    if not jobs:
+        return None
+    try:
+        jobs = [job for job in jobs if (match := re.fullmatch(re.escape(cycle_id)
+            + r':screening:(0|[1-9]\d{0,11}):([12])', job['operation'])) is not None
+            and int(match[1]) == data['screen'] + (job['state'] == 'PENDING')]
+        if not jobs:
+            return None
+        pending = [job for job in jobs if job['state'] == 'PENDING']
+        if pending:
+            jobs = pending
+        _require(len(jobs) == 1)
+        operation = jobs[0]['operation']
+        existing_table = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='screening_response_recoveries'").fetchone()
+        primary = _row(db, 'screening_response_recoveries', 'operation', operation) if existing_table else None
+        audit = (_row(db, 'screening_response_recoveries', 'operation',
+            operation + COMPLETED_STALE_AUDIT_SUFFIX) if existing_table else None)
+        journal = audit or primary
+        if journal is not None:
+            if audit is not None or json.loads(journal['proof']).get('kind') == COMPLETED_STALE_NOEXEC:
+                _sealed_completed_stale_screening(db, journal)
+                return None
+            _require(journal['phase'] == 'RESUME_CACHED')
+        if jobs[0]['state'] == 'COMPLETE':
+            # A successfully consumed screening legitimately leaves an ACTIVE
+            # cycle while its HOLD/setup results are handled. Its old request
+            # age is not a new recovery operation or a replacement blocker.
+            if cycle['state'] != 'COMPLETE' or data.get('round_symbols') != []:
+                return None
+            output = json.loads(_row(db, 'api_requests', 'operation', operation)['output'])
+            if (type(output) is dict and type(output.get('symbols')) is list
+                    and any(symbol in data.get('seen', []) or db.execute(
+                        'SELECT 1 FROM robot_candidates WHERE cycle=? AND symbol=? LIMIT 1',
+                        (cycle_id, symbol)).fetchone() for symbol in output['symbols'])):
+                return None
+        if jobs[0]['state'] == 'PENDING' and completed_screening_market_hold(db, operation):
+            return None
+        api = _row(db, 'api_requests', 'operation', operation)
+        current = time.time(); max_age = coordinator.market.max_age
+        if _finite(api['created']) and current - api['created'] <= max_age:
+            return None
+        _require(coordinator.execution_slots(account, today) > 0
+            and coordinator.research_budget(data, coordinator.store.results(cycle_id)) > 0)
+        before = _snapshot(db, operation, cycle_id)
+        request_hash, evidence, replacement = _completed_stale_screening_source(db, before,
+            now=current, max_age=max_age)
+        primary_hash = _completed_stale_primary_recovery(db, primary, before)
+        audit_key = operation if primary is None else operation + COMPLETED_STALE_AUDIT_SUFFIX
+        _completed_stale_no_other_pending(db, operation)
+        proof = {'kind': COMPLETED_STALE_NOEXEC, 'operation': operation,
+            'request_sha256': request_hash, 'preimage_sha256': _sha(_wire(before)),
+            'source_evidence': evidence, 'max_age': max_age,
+            'market_hold': completed_screening_market_hold(db, operation),
+            'primary_recovery_sha256': primary_hash}
+        raw = _wire(proof)
+        db.execute('BEGIN IMMEDIATE')
+        try:
+            _require(coordinator.allowed(today) and _snapshot(db, operation, cycle_id) == before,
+                'RESEARCH_PAUSED')
+            if existing_table:
+                _require(_row(db, 'screening_response_recoveries', 'operation', operation) == primary
+                    and _row(db, 'screening_response_recoveries', 'operation',
+                        operation + COMPLETED_STALE_AUDIT_SUFFIX) is None)
+            _completed_stale_no_other_pending(db, operation)
+            _require(coordinator.execution_slots(account, today) > 0
+                and coordinator.research_budget(data, coordinator.store.results(cycle_id)) > 0
+                and _completed_stale_screening_source(db, before, now=current, max_age=max_age)
+                    == (request_hash, evidence, replacement)
+                and _completed_stale_primary_recovery(db, primary, before) == primary_hash)
+            db.execute(RECEIVED_SCHEMA)
+            _completed_stale_recovery_schema(db)
+            db.execute('INSERT INTO screening_response_recoveries VALUES(?,?,?,?,?,?,?,?)',
+                (audit_key, request_hash, _sha(raw), raw, _wire(before), 'NOEXEC', current, current))
+            if before['robot_jobs']['state'] == 'PENDING':
+                _require(db.execute("UPDATE robot_jobs SET state='COMPLETE' WHERE operation=? AND state='PENDING'",
+                    (operation,)).rowcount == 1)
+            _require(db.execute("UPDATE robot_cycles SET state='ACTIVE',data=? WHERE id=? AND state=? AND data=?",
+                (json.dumps(replacement), cycle_id, cycle['state'], cycle['data'])).rowcount == 1)
+            db.execute('COMMIT')
+        except BaseException:
+            if db.in_transaction:
+                db.execute('ROLLBACK')
+            raise
+        return coordinator.store.report('WAITING', account,
+            wait_reason='SCREENING_RECEIVED_STALE_REPLACEMENT_PENDING')
+    except Exception:
+        return coordinator.store.report('WAITING', account,
+            wait_reason='SCREENING_COMPLETED_STALE_RECOVERY_UNVERIFIED')
+
+
 def resume_uncertain_screening(coordinator, today, account):
     """Observe/review a once-sent screening while its original job stays owned."""
     observe = getattr(coordinator.neuro, 'observe_received_screening', None)
@@ -1627,6 +1916,14 @@ def resume_uncertain_screening(coordinator, today, account):
             AND j.state IN ('PENDING','NEEDS_REVIEW') AND a.state='COMPLETE' AND a.attempts=1
             AND r.phase='PREPARED' AND r.request_sha256=a.body_hash ORDER BY a.created LIMIT 2'''))
         jobs.extend(job for job in prepared if job['operation'] not in {item['operation'] for item in jobs})
+    if not jobs:
+        try:
+            completed_stale = _resume_completed_stale_screening(coordinator, today, account)
+        except Exception:
+            return coordinator.store.report('WAITING', account,
+                wait_reason='SCREENING_COMPLETED_STALE_RECOVERY_UNVERIFIED')
+        if completed_stale is not None:
+            return completed_stale
     if len(jobs) != 1:
         return None
     operation = jobs[0]['operation']
