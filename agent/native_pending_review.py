@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from worker.fill_priority import owned_intent_lock
 from worker.existing_risk_monitor import estimate_owned_order
+from worker.core import Review
 from worker.owner_source_protocol import (MATERIAL_CONTRACT, NEW_OPERATION_SECONDS,
     owner_material_request, completed_decision_fresh)
 
@@ -37,6 +38,11 @@ REVIEW_SECONDS = 5 * 60 * 60
 RETRY_SECONDS = 60
 JOURNAL_NAME = 'agent-pending-reviews.sqlite3'
 _UNRESOLVED = ('REVIEWING', 'CANCEL_PREPARED', 'NEEDS_REVIEW')
+_BROWSER_PAUSES = frozenset((
+    'NEUROBRO_LOGIN_REQUIRED', 'NEUROBRO_LOGIN_IN_PROGRESS',
+    'NEUROBRO_CHALLENGE_REQUIRED', 'NEUROBRO_UNAVAILABLE', 'NEUROBRO_BUSY',
+    'NEUROBRO_BROWSER_NOT_CONFIGURED',
+))
 _SCHEMA = '''CREATE TABLE pending_reviews (
  operation TEXT PRIMARY KEY,intent_id TEXT NOT NULL,intent_ref TEXT NOT NULL,
  sequence INTEGER NOT NULL,entry_created_at TEXT NOT NULL,created REAL NOT NULL,
@@ -60,7 +66,7 @@ _FAILURE_PHASES = frozenset((
     'RECOVER_CANCEL', 'RECOVER_TERMINAL', 'SELECT_DUE',
     'CHECK_UNRESOLVED_RESEARCH', 'VERIFY_INTENT', 'OWNED_INTENT_LOCK',
     'GATEWAY_RECONCILE', 'GATEWAY_OBSERVATION', 'READ_CURRENT_INTENT',
-    'PENDING_ENTRY', 'CHECK_ACCEPTED_TIME', 'MARKET_CONTEXT', 'MARKET_FRESHNESS',
+    'PENDING_ENTRY', 'CHECK_ACCEPTED_TIME', 'BROWSER_READINESS', 'MARKET_CONTEXT', 'MARKET_FRESHNESS',
     'RISK_ESTIMATE', 'MARKET_MATERIALS', 'ORDER_CONTEXT', 'CLAIM_PREPARE',
     'REQUEST_PREPARE', 'CLAIM_WRITE', 'BROWSER_DISCUSSION', 'DECISION_VALIDATE',
     'SOURCE_EVIDENCE', 'DECISION_RECEIPT', 'CHECK_CURRENT_AUTHORITY',
@@ -1062,6 +1068,23 @@ def review_then_advance(coordinator, account, today):
         coordinator.verified_intent(fresh)
         if row['payload'] != fresh['payload'] or row['created'] != fresh['created']:
             raise PendingReviewUnavailable('PENDING_REVIEW_INTENT_CHANGED')
+        # A known browser pause must not rebuild market materials or reserve a
+        # new review every poll. Existing order reconciliation above still runs;
+        # ask() retains its own immediate readiness and pre-Send owner checks.
+        phase = 'BROWSER_READINESS'
+        if not _gate(coordinator, today):
+            return _report(coordinator, account)
+        try:
+            coordinator.neuro.require_key()
+        except (Review, native['neuroapi'].ResearchPaused) as error:
+            reason = error.args[0] if len(error.args) == 1 and type(error.args[0]) is str else None
+            if reason not in _BROWSER_PAUSES:
+                raise
+            if not _gate(coordinator, today):
+                return _report(coordinator, account)
+            return _report(coordinator, account, reason='PENDING_REVIEW_' + reason[len('NEUROBRO_'):])
+        if not _gate(coordinator, today):
+            return _report(coordinator, account)
         phase = 'MARKET_CONTEXT'
         with _maintenance_reads(coordinator, native):
             context, _ = native['analysis'].analysis_context(coordinator.market, intent['symbol'],
