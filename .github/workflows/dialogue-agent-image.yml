@@ -77,7 +77,7 @@ jobs:
           assert re.fullmatch(r'[0-9a-f]{64}',os.environ['DIALOGUE_SHA'])
           assert os.environ['DIALOGUE_SHA']=='f90a3fe4ca6d22f8776794dbcf29a4d0ec8a93b601c2b12f5e0eb2d858c1af14'
           assert os.environ['LLM_SHA']=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
-          assert os.environ['PROMPT_SHA']=='4a9a1c32168a3c1ff19bc45f196e1e8d1972326321b40b774f6746e5cf2aee28'
+          assert os.environ['PROMPT_SHA']=='4d2ed0100690aaf8ccd3fe3324ec3e8f80d499f6bfa1b516c56c155ab501ce02'
           with open('dialogue-agent-image.json','w') as output:
               json.dump({'schema_version':1,'source_repository':'harun5231/harun-ai-trading-office',
                   'source_commit':os.environ['SOURCE_COMMIT'],'image':image,'image_id':os.environ['IMAGE_ID'],

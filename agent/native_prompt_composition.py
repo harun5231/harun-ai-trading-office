@@ -31,23 +31,29 @@ def normalize_privacy_reminders(question):
     """Remove only complete, value-free negative internal privacy sentences."""
     if type(question) is not str:
         raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
-    verb = r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|tanyakan|menanyakan|sarankan|menyarankan|tentukan|menentukan)'
+    verb = (r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|'
+        r'tanyakan|menanyakan|sarankan|menyarankan|tentukan|menentukan|'
+        r'hitung|menghitung|berikan|memberikan|rekomendasikan|merekomendasikan)')
     topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+(?:pribadi|akun))?'
         r'|nominal\s+risiko(?:\s+(?:pribadi|akun))?|risiko\s+pribadi)')
+    # A request prohibition can name the recommendation rather than the
+    # quantity itself. Match only the entire value-free negative clause.
+    subject = r'(?:(?:rekomendasi|saran|perhitungan)\s+)?' + topic
     reminder = (r'(?:jangan|tidak\s+perlu)\s+' + verb
-        + r'(?:\s+(?:atau|dan)\s+' + verb + r')*\s+' + topic
-        + r'(?:\s*(?:/|,|\bdan\b|\batau\b)\s*' + topic + r')*[.!?;]?')
+        + r'(?:\s+(?:atau|dan)\s+' + verb + r')*\s+' + subject
+        + r'(?:\s*(?:/|,|\bdan\b|\batau\b)\s*' + subject + r')*[.!?;]?')
     # A wrapped value on the next line belongs to the same sentence; a line
     # break must not detach a real budget/quantity from its privacy subject.
-    internal_role_clauses={
-        'risk manager hanya menormalkan tp ke target bersih 2r saat eksekusi',
-        'risk manager nantinya hanya menormalkan tp ke target bersih 2r',
-        'risk manager hanya menormalkan tp ke eksekusi 2r',
-        'risk manager hanya menormalkan tp eksekusi'}
+    # Only fixed 2R role vocabulary is disposable, never prices, fees,
+    # quantities, owner risk values, or instructions to alter an order.
+    internal_role_clause=(r'risk manager(?: nantinya)? hanya menormalkan tp'
+        r'(?: eksekusi(?:(?: ke| menjadi) target bersih 2r(?: saat eksekusi)?)?'
+        r'| ke target bersih 2r(?: saat eksekusi)?| ke eksekusi 2r)')
     parts = re.split(r'((?<=[.!?;])\s+)', question)
     for index in range(0, len(parts), 2):
         clause=re.sub(r'\s+',' ',parts[index].strip()).rstrip('.!?;').casefold()
-        if re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE)or clause in internal_role_clauses:
+        if (re.fullmatch(reminder, parts[index].strip(), re.IGNORECASE)
+                or re.fullmatch(internal_role_clause,clause)):
             parts[index] = ''
             if index:
                 parts[index - 1] = ''

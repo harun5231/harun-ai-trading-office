@@ -1,0 +1,125 @@
+{
+  "authority": "RETAINED_OFFICIAL_MINI_OUTPUT_NOT_A_TRADING_RECEIPT",
+  "drafts": [
+    {
+      "before_validation": {
+        "decision": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_MODEL_RESULT_INVALID",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_decision",
+              "line": 473
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_position_size_discussion",
+              "line": 302
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        },
+        "web": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_MODEL_RESULT_INVALID",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_web_question",
+              "line": 260
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 235
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        }
+      },
+      "official_usage": {
+        "input_tokens": 24723,
+        "output_tokens": 528,
+        "total_tokens": 25251
+      },
+      "operation_id": "delegated-model:cc482cb5b743de970be401e6dc84e63124774977f2847d02b029bc6c2dc3dd15",
+      "provider_response_id": "resp_0106f63137a08c15016b01af784a6087d09ab15ec216702848",
+      "question": "Saya sudah kirim data chart Binance Futures ORCAUSDT (timeframe 1H dan 15M — 200 candle closed + running candle). Saya ingin scalp entry di timeframe 15M. Tolong analisa dan tentukan: LONG / SHORT / HOLD, ENTRY, TP, dan SL. Persyaratan: minta RISK REWARD 1:2 (Risk:Reward minimal 1:2) dan tetapkan SL berdasarkan struktur pasar — swing high/low, likuiditas, volatilitas, wick, false breakout, serta titik invalidasi setup; jangan letakkan SL di area yang mudah tersapu wick. Gunakan timeframe 1H untuk konteks struktur dan 15M untuk timing entry. Neurobro yang menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi ke target bersih 2R. Jangan minta rekomendasi quantity atau ukuran posisi. Sertakan alasan singkat untuk arah, level ENTRY/SL/TP, dan titik invalidasi. Gunakan data Binance yang dikirim (candles, mark_price, running_candles).",
+      "question_chars": 854,
+      "question_sha256": "c67af1b3f7cc962f9f4ed25cb785be4c386ca06ad7cca44c88c351d78913bc44"
+    },
+    {
+      "before_validation": {
+        "decision": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_MODEL_RESULT_INVALID",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_decision",
+              "line": 473
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_position_size_discussion",
+              "line": 302
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        },
+        "web": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_MODEL_RESULT_INVALID",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_web_question",
+              "line": 260
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 235
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        }
+      },
+      "official_usage": {
+        "input_tokens": 24735,
+        "output_tokens": 440,
+        "total_tokens": 25175
+      },
+      "operation_id": "delegated-model:1d435bbf380a34418ccf29d03771566bec7a37b780d0e689298237df0926023f",
+      "provider_response_id": "resp_0832bc0c9876255a016b01afdf617887d0aaca281a5cd1a633",
+      "question": "Neurobro, analisa ORCAUSDT menggunakan data 1H dan 15M (chart Binance Futures yang saya kirim). Saya mau entry scalp TF 15M. Tentukan dengan jelas: LONG / SHORT / HOLD, ENTRY (harga), SL (harus berdasarkan struktur pasar: swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi — jangan letakkan SL di area mudah tersapu wick), serta rekomendasi TP. Neurobro menetapkan ENTRY dan SL; Risk Manager hanya menormalkan TP eksekusi menjadi target bersih 2R. Pada setiap setup baru, sertakan juga permintaan RISK REWARD 1:2 dan jelaskan level SL struktural menurut kriteria di atas. Jangan minta rekomendasi quantity atau ukuran posisi. Jawab singkat, teknis, dan sertakan sumber/rasional (1H dan 15M) untuk tiap level yang diberikan.",
+      "question_chars": 756,
+      "question_sha256": "6eaa397cc36d0fb0bbd0d93fe4e22b058cb9030f4e81817bc839e9a7ccbf7aa5"
+    }
+  ],
+  "evidence_run": "44919401932",
+  "native_operation": "2026-11-21:robot-v9:1:analysis-v9:ORCAUSDT",
+  "prompt_sha256": "2e8887bd6a7edd4e659e3065c308a0f791a03f5cdbc6dd7cdf101679a0c3928d",
+  "service_sha256": "c2605b7ad4228f0ade7192fd67437ffda296337ff3871a6d68544ec89d35a390"
+}
