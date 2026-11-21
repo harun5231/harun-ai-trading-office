@@ -348,6 +348,18 @@ def _project_operation(capture):
         result['review_receipts']=[max(reviews,key=lambda entry:entry['value']['observed_at'])]
     start=scope.get('initial_user');end=scope.get('reply_row')
     if start is None:
+        # Keep the normal unique-message guard closed.  A stale screening can
+        # nevertheless have a genuine, already reviewed prefix followed by an
+        # identical initial prompt.  Expose those actual rows separately so
+        # the worker can prove custody and retire it without executing either
+        # answer; never relabel the duplicate as a follow-up or chosen reply.
+        if (capture.get('kind')=='NATIVE_RECEIVED_SCREENING_OBSERVATION_V1'
+                and scope.get('reason')=='INITIAL_PROMPT_NOT_UNIQUE'
+                and capture.get('room_witness',{}).get('initial_screening_user_rows')==[0,2]
+                and len(rows)==4
+                and [row.get('role')for row in rows]==['user','assistant','user','assistant']
+                and rows[0].get('text')==rows[2].get('text')):
+            result['duplicate_screening_rows']=copy.deepcopy(rows)
         result['rows']=[];result['file_tiles']=[];result['row_offset']=None
         return result
     stop=(end+1)if end is not None else scope['latest_user']+1
