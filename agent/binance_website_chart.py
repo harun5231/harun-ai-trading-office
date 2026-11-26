@@ -22,9 +22,28 @@ ROOT = '.chart-widget-root'
 TIMEFRAMES = {'15m': '15m', '1h': '1H'}
 PERIODS = {'15m': 900000, '1h': 3600000}
 
+# The visible volume labels remain present when Binance omits the old VOL[0]
+# DOM keys. Resolve the owned public header, never application/indicator state.
+PUBLIC_VOLUME_ROWS = r"""
+ const publicVolumeRows=chart=>{
+  const visible=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
+  const pair=location.pathname.match(/^\/en\/futures\/([A-Z0-9]{2,24}USDT)$/);
+  if(!pair)return [];
+  const base=pair[1].slice(0,-4),number=/^[0-9][0-9,]*(?:\.[0-9]+)?[KMBT]?$/;
+  return Array.from(chart.querySelectorAll('.chart-title-row')).filter(visible).flatMap(element=>{
+   const controls=new Set(Array.from(element.querySelectorAll('.indicator-title-toolbox')).flatMap(e=>e.innerText.split('\n').map(s=>s.trim())).filter(Boolean));
+   const lines=element.innerText.split('\n').map(s=>s.trim()).filter(s=>s&&(!controls.has(s)||number.test(s)));
+   if(lines.length<4||lines[0]!=='Vol('+base+')'||!number.test(lines[1])||lines[2]!=='Vol(USDT)'||!number.test(lines[3]))return [];
+   // Extra displayed values are not assumed absent just because legacy series
+   // keys disappeared. They must vanish through the actual volume settings.
+   return [{element,lines,extra_values:lines.slice(4)}];
+  });
+ };
+"""
+
 # This reads only rendered DOM/canvas and the browser's public URL/title. Canvas
 # pixels establish that a real chart was drawn; prices are read from visible UI.
-OBSERVE = r"""roots => {
+OBSERVE = r"""roots => {""" + PUBLIC_VOLUME_ROWS + r"""
  const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
  const charts=Array.from(document.querySelectorAll('.chart-widget-root')).filter(show);
  const result={url:location.href,title:document.title,timezone:Intl.DateTimeFormat().resolvedOptions().timeZone,chart_count:charts.length};
@@ -39,13 +58,25 @@ OBSERVE = r"""roots => {
   result.timeframes[tf]={count:nodes.length,active:nodes.length===1&&nodes[0].classList.contains('text-PrimaryText')};
  }
  result.header_rows=Array.from(chart.querySelectorAll('.chart-title-row')).filter(show).map(e=>e.innerText);
- result.indicators=Array.from(chart.querySelectorAll('.chart-title-indicator-container')).filter(e=>show(e)&&
-   (e.hasAttribute('key')||e.querySelector('[key="VOL[0]"]'))).map(e=>({
-  id:e.getAttribute('key')||(e.querySelector('[key="VOL[0]"]')?'@VOL':null),
+ const volume=publicVolumeRows(chart),headers=Array.from(chart.querySelectorAll('.chart-title-row')).filter(show);
+ const belongsToVolume=e=>volume.length===1&&(volume[0].element.contains(e)||
+   (e.contains(volume[0].element)&&Array.from(e.querySelectorAll('.chart-title-row')).filter(show).length===1));
+ const keyed=Array.from(chart.querySelectorAll('.chart-title-indicator-container[key]')).filter(e=>show(e)&&e.getAttribute('key')!=='@VOL'&&!belongsToVolume(e));
+ result.indicators=keyed.map(e=>({
+  id:e.getAttribute('key'),
   visible:Array.from(e.querySelectorAll('.default-label-box')).some(show)}));
+ if(volume.length===1)result.indicators.push({id:'@VOL',visible:true});
+ for(const row of headers.slice(1)){
+  if(volume.length===1&&row===volume[0].element)continue;
+  if(keyed.some(e=>e.contains(row)||row.contains(e)))continue;
+  // An unfamiliar unkeyed indicator must remain visible to the final strict
+  // volume-only guard, rather than disappearing from the observation.
+  result.indicators.push({id:null,visible:true});
+ }
  result.volume_average_series=Array.from(chart.querySelectorAll('.chart-title-indicator-container--sub [key]'))
   .filter(e=>/^VOL\[\d+\]Series$/.test(e.getAttribute('key'))&&!['VOL[0]Series','VOL[1]Series'].includes(e.getAttribute('key'))&&show(e))
   .map(e=>e.getAttribute('key'));
+ if(volume.length===1)result.volume_average_series.push(...volume[0].extra_values.map((_,i)=>'PUBLIC_VOLUME_EXTRA_VALUE_'+(i+1)));
  const original=Array.from(chart.querySelectorAll('*')).filter(e=>e.children.length===0&&show(e)&&e.textContent.trim()==='Original');
  result.original_chart_visible=original.length===1;
  if(canvases.length===1){
@@ -75,13 +106,23 @@ DISMISS_TOUR = r"""roots => {
 # These controls were observed on the actual public Original chart 2026-11-07.
 # Locate the chart's own controls; RPC hover/click performs normal UI actions.
 # Never cover/remove DOM or alter pixels to pretend an overlay was disabled.
-VOLUME_ONLY = r"""roots => {
+VOLUME_ONLY = r"""roots => {""" + PUBLIC_VOLUME_ROWS + r"""
  const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
  const charts=Array.from(document.querySelectorAll('.chart-widget-root')).filter(show);
  if(charts.length!==1)return false;
  const chart=charts[0];
  return {ma_rows:chart.querySelectorAll('.chart-title-indicator-container[key="@MA"]').length,
-  volume_rows:chart.querySelectorAll('.chart-title-indicator-container--sub:has([key="VOL[0]"])').length};
+  volume_rows:publicVolumeRows(chart).length};
+}"""
+VOLUME_CONTROL = r"""roots => {""" + PUBLIC_VOLUME_ROWS + r"""
+ const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};
+ const charts=Array.from(document.querySelectorAll('.chart-widget-root')).filter(show);
+ if(charts.length!==1)return null;
+ const rows=publicVolumeRows(charts[0]);if(rows.length!==1)return null;
+ const row=rows[0].element,scopes=[row,row.closest('.chart-title-indicator-container--sub'),...row.querySelectorAll('.chart-title-indicator-container--sub')].filter(Boolean);
+ const settings=Array.from(new Set(scopes.flatMap(e=>Array.from(e.querySelectorAll('.indicator-title-toolbox [tooltip="Settings"]'))))).filter(show);
+ const box=e=>{const r=e.getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};};
+ return {row:box(row),settings:settings.map(box)};
 }"""
 VOLUME_SETTINGS = r"""roots => {
  const show=e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e);return e.isConnected&&s.display!=='none'&&s.visibility!=='hidden'&&r.width>0&&r.height>0;};

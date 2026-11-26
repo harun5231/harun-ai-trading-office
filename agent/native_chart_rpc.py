@@ -172,7 +172,7 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
     Reuses the installed SDK and caller-owned isolated context. Its action set
     has no typing, financial endpoint, account login, storage or order control.
     """
-    from .binance_website_chart import (OBSERVE, SELECT, DISMISS_TOUR, VOLUME_ONLY, VOLUME_SETTINGS,
+    from .binance_website_chart import (OBSERVE, SELECT, DISMISS_TOUR, VOLUME_ONLY, VOLUME_CONTROL, VOLUME_SETTINGS,
         VIEWPORT as website_viewport, url_for)
     _need(type(expected_playwright_version) is str
           and version('playwright') == expected_playwright_version)
@@ -221,9 +221,22 @@ def make_website_rpc(*, expected_playwright_version, monotonic=time.monotonic):
                     dialog='[role="dialog"][aria-label="modal"]'
                     settings=await impl.eval_on_selector_all('html',VOLUME_SETTINGS)
                     if settings is None:
-                        selector='.chart-widget-root .chart-title-indicator-container--sub:has([key="VOL[0]"])'
-                        await impl.hover(selector,strict=True,timeout=timeout)
-                        await impl.click(selector+' .indicator-title-toolbox [tooltip="Settings"]',strict=True,timeout=timeout)
+                        # Locate the actual visible public volume header. New
+                        # Binance markup may omit the legacy VOL[0] DOM key.
+                        def center(box):
+                            _need(type(box) is dict and set(box)=={'x','y','width','height'}
+                                  and all(type(box[k]) in (int,float) and math.isfinite(box[k]) for k in box)
+                                  and box['width']>0 and box['height']>0)
+                            x,y=box['x']+box['width']/2,box['y']+box['height']/2
+                            _need(0<=x<website_viewport['width'] and 0<=y<website_viewport['height'])
+                            return x,y
+                        controls=await impl.eval_on_selector_all('html',VOLUME_CONTROL)
+                        _need(type(controls) is dict)
+                        await impl.mouse.move(*center(controls['row']))
+                        controls=await impl.eval_on_selector_all('html',VOLUME_CONTROL)
+                        _need(type(controls) is dict and type(controls.get('settings')) is list
+                              and len(controls['settings'])==1)
+                        await impl.mouse.click(*center(controls['settings'][0]))
                         await impl.wait_for_selector(dialog+' [role="checkbox"]:text-is("MAVOL1")',
                                                      strict=True,state='visible',timeout=timeout)
                         settings=await impl.eval_on_selector_all('html',VOLUME_SETTINGS)

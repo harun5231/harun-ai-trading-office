@@ -1,0 +1,58 @@
+{
+  "evidence_run": 45838169255,
+  "operation": "2026-11-26:robot-v9:0:analysis-v9:WIFUSDT",
+  "request_sha256": "e8dfe4cb56f406cda852862ea58172d47dfc48b15fa08f6949777914a3cb83ad",
+  "artifact": {
+    "bytes": 1148,
+    "name": "binance-website-failure-7152bbc6b72e07535e4800bcda8c44d07930c9c9ee96acf233dcb41e57853eb5.json",
+    "sha256": "82aa8b0125752632076ece7a7acb12c4a1a27704edbe09c45c58e3ce48f5a365"
+  },
+  "ui_observation_sha256": "888c5ff4eaf9cb40db5766ba7861a02a440f5b9ca97067dbf0cb3a79b798da5a",
+  "ui_observation": {
+    "canvas": {
+      "height": 696.59375,
+      "pixel_height": 697,
+      "pixel_width": 1754,
+      "sampled_color_count": 100,
+      "width": 1753.875,
+      "x": 0,
+      "y": 257
+    },
+    "canvas_count": 1,
+    "capture_clip": {
+      "height": 954,
+      "width": 1754,
+      "x": 0,
+      "y": 0
+    },
+    "chart_count": 1,
+    "header_rows": [
+      "2026/11/26 14:00\nOpen\n0.1331\nHigh\n0.1338\nLow\n0.1327\nClose\n0.1337\nCHANGE\n0.52%\nRange\n0.82%",
+      "MA(7)\n0.1325\nMA(25)\n0.1326\nMA(99)\n0.1273",
+      "Vol(WIF)\n721.535K\nVol(USDT)\n96.042K\n704.836K\n983.181K"
+    ],
+    "indicators": [
+      {
+        "id": "@MA",
+        "visible": true
+      }
+    ],
+    "original_chart_visible": true,
+    "price_visible": true,
+    "timeframes": {
+      "15m": {
+        "active": true,
+        "count": 1
+      },
+      "1h": {
+        "active": false,
+        "count": 1
+      }
+    },
+    "timezone": "UTC",
+    "title": "0.1337 | WIFUSDT USDⓈ-Margined Perpetual Chart | Binance Futures",
+    "url": "https://www.binance.com/en/futures/WIFUSDT",
+    "visible_price": "0.1337",
+    "volume_average_series": []
+  }
+}
