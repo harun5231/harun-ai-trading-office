@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from agent import dialogue_service as d
 from agent.llm import OpenAIDialogue,web_prompt_allowed
@@ -18,15 +19,21 @@ from agent.native_market_context import convert_native_market_context
 FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_fil_compose_privacy_20261110.json').read_text())
 ORCA_FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_orca_compose_privacy_20261121.json').read_text())
 REMINDER='Jangan minta atau sarankan ukuran/quantity/anggaran risiko akun.'
+FIXED_SYNTHETIC_TIME=1795706700.0  # 2026-11-26 15:25 UTC, never production time.
 
 
 class ComposePrivacyRecoveryTests(unittest.TestCase):
     def setUp(self):
+        # ISO minute/second tokens and candle fingerprints are source values.
+        # Keep synthetic facts stable so forbidden example numbers cannot be
+        # incidentally sourced by the time at which the suite happens to run.
+        clock=patch('time.time',return_value=FIXED_SYNTHETIC_TIME)
+        clock.start();self.addCleanup(clock.stop)
         self.temp=tempfile.TemporaryDirectory();self.base=Path(self.temp.name);self.memory=Memory(self.base/'agent.sqlite3')
         self.key=self.base/'model.key';self.key.write_text('offline-model-key-value-01234567890123456789');self.key.chmod(0o600)
         self.calls=[];self.authored={'action':'PROMPT','symbols':[],'question':FIXTURE['question']}
         self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport,daily_requests=math.inf,daily_input_tokens=math.inf,daily_output_tokens=math.inf)
-        self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
+        self.engine=d.DialogueEngine(self.memory,self.key,model=self.model,clock=time.time)
         now=time.time();native=native_context(now);native['symbol']='FILUSDT';native['mark_price']['price']='0.77725194'
         for frame in native['timeframes'].values():frame['symbol']='FILUSDT'
         context=convert_native_market_context(native,now=now);reply='Analisis FILUSDT Binance Futures, 1H dan15M. Mark price 0.77725194.'
@@ -136,6 +143,7 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
 
     def test_value_free_negative_grammar_never_hides_positive_mixed_or_numeric_instructions(self):
         request=self.orca_request();prefix='Analisis ORCAUSDT RR 1:2. '
+        self.assertNotIn(5,d._number_values(request['reply'])|d._number_values(request['market_context']))
         reminders=('Jangan minta rekomendasi quantity atau ukuran posisi.',
             'Tidak perlu meminta saran quantity dan perhitungan ukuran posisi.',
             'Jangan menghitung quantity.', 'Jangan berikan rekomendasi ukuran posisi.',
@@ -177,7 +185,7 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
                 self.assertEqual(self.rows(),before);self.assertEqual(self.rows()[0][3],'UNKNOWN');self.assertEqual(len(self.calls),1)
                 self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
                 self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport)
-                self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
+                self.engine=d.DialogueEngine(self.memory,self.key,model=self.model,clock=time.time)
                 self.assertEqual(self.engine.process(self.request),result)
                 self.assertEqual(d.canonical(self.memory.get(audit_key)),audit)
                 self.assertEqual(self.rows(),before);self.assertEqual(len(self.calls),1)
@@ -194,7 +202,7 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
         self.assertEqual(list(self.memory.db.execute('SELECT * FROM budgets')),budget);self.assertEqual(self.memory.counts()['messages'],0)
         saved=d.canonical(audit);self.assertEqual(self.engine.process(incoming),result);self.assertEqual(d.canonical(self.memory.get(audit_key)),saved)
         self.memory.close();self.memory=Memory(self.base/'agent.sqlite3');self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport)
-        self.engine=d.DialogueEngine(self.memory,self.key,model=self.model)
+        self.engine=d.DialogueEngine(self.memory,self.key,model=self.model,clock=time.time)
         self.assertEqual(self.engine.process(incoming),result);self.assertEqual(len(self.calls),1);self.assertEqual(self.rows(),before)
         self.assertEqual(d.canonical(self.memory.get(audit_key)),saved)
     def test_existing_recovery_audit_is_append_only_and_cannot_supply_changed_text(self):

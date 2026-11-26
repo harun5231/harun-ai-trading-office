@@ -378,7 +378,11 @@ class DailyRoom:
             self.bridge._visible = current
 
     def verify_prefix(self, rows):
-        need(len(rows) >= self.offset and identities(rows[:self.offset]) == self.prefix)
+        need(len(rows) >= self.offset and len(self.prefix) == self.offset)
+        if identities(rows[:self.offset]) == self.prefix:
+            return
+        need(prefix_snapshot_matches(self.store.root, self.day, self.room_id,
+            self.prefix, rows, binding=None, allow_window=False))
 
     def turns(self):
         rows = self.full_turns()

@@ -356,7 +356,8 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(set(self.calls[0]["text"]["format"]["schema"]["properties"]), {"action", "symbols", "question"})
         self.assertFalse(model.evidence()["verified"])
 
-    def test_mini_input_projects_public_facts_without_mutating_private_caller_receipt(self):
+    @patch('time.time',return_value=1795706700.0)
+    def test_mini_input_projects_public_facts_without_mutating_private_caller_receipt(self,_clock):
         import hashlib
         from agent.memory import canonical
         values = {'symbol': 'BTCUSDT', 'risk_usdt': '5', 'execution_tp': '103.21',
@@ -365,10 +366,16 @@ class LLMTests(unittest.TestCase):
         facts = [{'producer': 'RISK_MANAGER', 'operation': 'owned:analysis:one', 'values': values,
             'sha256': hashlib.sha256(canonical(values).encode()).hexdigest()}]
         before = copy.deepcopy(facts)
+        # A public timestamp such as 16:10:05.123 can accidentally contain a
+        # private canary substring. Keep only this fixture's clock stable and
+        # prove its public data does not already contain either numeric canary.
+        context=self.context()
+        for private_number in ('5.234','5.123'):
+            self.assertNotIn(private_number,json.dumps(context,sort_keys=True))
         model = self.model({'action': 'CLARIFY', 'symbols': [],
             'question': 'Apakah TP 103.21 masih sesuai struktur 15M?'})
         model.plan([], 'BTCUSDT setup belum lengkap', phase='ANALYSIS',
-            jakarta_day='2026-11-05', context=self.context(), source_facts=facts)
+            jakarta_day='2026-11-05', context=context, source_facts=facts)
         text = self.calls[0]['input'][-1]['content']
         self.assertIn('103.21', text)
         for private in ('risk_usdt', 'estimated_loss', 'fee_entry_rate',
