@@ -10,6 +10,7 @@ import copy
 import hashlib
 import importlib
 import json
+import logging
 import math
 import os
 import re
@@ -21,6 +22,9 @@ from .native_data_files import final_json_prompt
 from .neurobro_reply import (ReplyIncomplete, parse_reply_for_payload,
                             screening_interpretation, author_market_hold)
 from .llm import web_prompt_allowed
+
+
+logger = logging.getLogger(__name__)
 
 
 # A technical budget for one native browser RPC, not a discussion-round or
@@ -57,6 +61,39 @@ def _require_web_prompt(text):
 def _render_web_prompt(native, payload):
     formatter = getattr(native, 'user_prompt', None)
     return _require_web_prompt(formatter(payload) if callable(formatter) else payload.get('prompt'))
+
+
+def _compose_question(client, request):
+    """Resolve a definitely refused analysis draft without asking Mini again."""
+    from .dialogue_service import DialogueError, validate_result, validate_web_question
+    from .native_prompt_composition import outbound_question
+
+    analysis = request['phase'] == 'COMPOSE_ANALYSIS'
+    try:
+        result = validate_result(client.compose(request), request)
+    except DialogueError as error:
+        if not analysis or str(error) != 'DIALOGUE_PRICE_PROPOSAL_REFUSED':
+            raise
+        refusal = 'DIALOGUE_PRICE_PROPOSAL_REFUSED'
+    else:
+        if result['decision']['action'] != 'PROMPT':
+            raise ValueError('NATIVE_COMPOSE_RESULT_UNVERIFIED')
+        question = result['decision']['question']
+        if not analysis:
+            return question, None
+        try:
+            return outbound_question(question), None
+        except ValueError as error:
+            if str(error) != 'NATIVE_COMPOSE_RENDER_UNVERIFIED':
+                raise
+            refusal = 'NATIVE_COMPOSE_RENDER_UNVERIFIED'
+
+    # The native operation already carries the owner's source prompt. Check
+    # it separately, and never forward text from the refused Mini decision.
+    question = validate_web_question(request['reply'], request)
+    if question != request['reply']:
+        raise ValueError('NATIVE_SOURCE_PROMPT_UNVERIFIED')
+    return question, refusal
 
 
 def _store_new_composed_prompt(cache, payload, question, model_request_id):
@@ -985,13 +1022,14 @@ class DelegatedDOMBridge:
                         'deadline_epoch': self.wall_clock() + min(90.0, until - self.clock())}
                     facts = _source_facts(payload)
                     if facts: compose['source_facts'] = facts
-                    from .dialogue_service import validate_request, validate_result
+                    from .dialogue_service import validate_request
                     validate_request(compose, now=self.wall_clock())
-                    result = validate_result(self.client.compose(compose), compose)
-                    if result['decision']['action'] != 'PROMPT':
-                        raise ValueError('NATIVE_COMPOSE_RESULT_UNVERIFIED')
+                    question, refusal = _compose_question(self.client, compose)
                     gate(check_material=True)
-                    _store_new_composed_prompt(self.prompt_cache, payload, result['decision']['question'], identity)
+                    _store_new_composed_prompt(self.prompt_cache, payload, question, identity)
+                    if refusal is not None:
+                        logger.warning('COMPOSE_ANALYSIS reused native source prompt after %s; payload_sha256=%s',
+                            refusal, payload_digest)
                     gate(check_material=True)
                 except Exception:
                     raise self.native.NotSubmitted('UNAVAILABLE') from None

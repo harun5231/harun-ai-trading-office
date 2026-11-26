@@ -201,6 +201,40 @@ class ComposedMaterialGateTests(unittest.TestCase):
      self.assertEqual(self.bridge.clicks,0)
      self.reasoner.compose.assert_not_called();self.reasoner.request.assert_not_called()
 
+ def test_rejected_analysis_draft_keeps_operation_material_and_dispatch_bound(self):
+  from agent.binance_website_chart import SOURCE
+  from agent.dialogue_service import DialogueError
+  from agent.native_market_context import convert_native_market_context
+  from tests.test_agent_closed_candles_200 import native_context_200
+  from worker.neuroapi import SETUP_SCHEMA_V4
+  from worker.prompts import ANALYSIS
+
+  now=1793864323.0
+  value=request();value.update(operation='2026-11-05:robot-v9:0:analysis-v9:BTCUSDT',
+    prompt=ANALYSIS,context=native_context_200(now),output_schema=SETUP_SCHEMA_V4)
+  before=copy.deepcopy(value)
+  charts=[{'source':SOURCE,'symbol':'BTCUSDT','timeframe':tf,
+    'captured_at':datetime.fromtimestamp(now,timezone.utc).isoformat(),'sha256':digest*64}
+    for tf,digest in (('1h','1'),('15m','2'))]
+  self.harness(value)
+  self.converter.side_effect=convert_native_market_context
+  self.reasoner.compose.side_effect=DialogueError('DIALOGUE_PRICE_PROPOSAL_REFUSED')
+  # The native browser retains ownership of sending and creating its receipt.
+  self.bridge.ask=Mock(return_value={'assistant_text':'actual native response'})
+  with self.assertLogs('agent.native_browser_hook',level='WARNING') as trace:
+   self.hook.ask(value,lambda:True,deadline=80,chart_images=('1h.png','15m.png'),chart_evidence=charts)
+  self.reasoner.compose.assert_called_once()
+  self.bridge.ask.assert_called_once()
+  self.assertIs(self.bridge.ask.call_args.args[0],value)
+  self.assertIs(self.bridge.ask.call_args.kwargs['chart_evidence'],charts)
+  self.assertIn('DIALOGUE_PRICE_PROPOSAL_REFUSED',trace.output[0])
+  cached=self.hook.prompt_cache.read(value)
+  self.assertTrue(cached['rendered_prompt'].startswith(ANALYSIS))
+  self.assertEqual(cached['rendered_prompt'].count(value['marker']),1)
+  self.assertEqual(cached['operation'],value['operation'])
+  self.assertEqual(cached['model_request_id'],self.reasoner.compose.call_args.args[0]['request_id'])
+  self.assertEqual(value,before)
+
 
 class TerminalScreeningHookTests(unittest.TestCase):
  harness=ComposedMaterialGateTests.harness

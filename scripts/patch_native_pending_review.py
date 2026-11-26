@@ -22,7 +22,7 @@ SOURCE_PINS = {
 }
 # This is the reviewed successor's existing pending route. It is verified as
 # already installed, never passed through the historical six-file migration.
-CURRENT_HOOK_SOURCE_SHA256 = 'e99f8b1aa3668bc9798f899dee29e7143d57d844f9a69849e4d9a91ad204487d'
+CURRENT_HOOK_SOURCE_SHA256 = '917e3a71f8df653c27a2f414c1f2a1a9b2aa672f242a8b58af26f010a4deb1b8'
 MAX_SOURCE = 262144
 PROTOCOL = b"__import__('agent.native_pending_protocol', fromlist=('%s',)).%s"
 
