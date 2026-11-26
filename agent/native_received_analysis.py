@@ -907,12 +907,14 @@ def observe(actor, delegated, value):
                     sampled = screening_target(rows)
                     target = sampled.pop('target')
                     outcome = 'INCONCLUSIVE'
-                    if capture['status'] == 'CONNECTED' and capture['session_observation'].get('reason') == 'CONNECTED':
+                    if capture['status'] == 'CONNECTED':
                         if target is True:
                             outcome = 'TARGET_OBSERVED'
-                        elif target is False and not marker_seen:
+                        elif (capture['session_observation'].get('reason') == 'CONNECTED'
+                                and not marker_seen and target is False):
                             outcome = 'TARGET_ABSENT'
-                        elif initial_search_exhausted and not marker_seen:
+                        elif (capture['session_observation'].get('reason') == 'CONNECTED'
+                                and not marker_seen and initial_search_exhausted):
                             outcome = 'UNBOUND_INITIAL_EXHAUSTED'
                     search.update(sampled, outcome=outcome, finished_at=time.time())
                     capture['screening_history_search'] = search
@@ -966,6 +968,13 @@ def observe(actor, delegated, value):
                 capture['continuation_not_sent_error'] = dict(exception_class=type(error).__name__,
                     reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code) else None)
         saved = _save(room.store.root, capture)
+        progress = capture.get('screening_history_search', {})
+        if (screening and capture['errors'] == [] and progress.get('outcome') == 'TARGET_OBSERVED'
+                and capture['operation_scope']['verified'] is True):
+            try:
+                claim_history_search(room.store.root, payload, progress['started_at'], target_observed=True)
+            except (OSError, ValueError):
+                pass  # The immutable observed result already exists.
     return _observation_result(capture, saved, generic=generic)
 
 

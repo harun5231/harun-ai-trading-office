@@ -98,7 +98,7 @@ def same_historical_prefix(before, after, prefix_size):
     return True
 
 
-def claim_history_search(root, payload, now):
+def claim_history_search(root, payload, now, *, target_observed=False):
     """Remember navigation attempts across restarts without copying a result forward."""
     from .native_chart_followup import _directory, _private_file, pairs
     from .native_turn_batch import _write
@@ -108,6 +108,7 @@ def claim_history_search(root, payload, now):
     identity = {key: payload[key] for key in ('operation', 'request_sha256')}
     name = 'screening-history-checkpoint-' + native_digest(identity) + '.json'
     directory = _directory(root)
+    prior = None
     try:
         try:
             raw = _private_file(directory, name, 4096)
@@ -115,15 +116,22 @@ def claim_history_search(root, payload, now):
             pass
         else:
             prior = json.loads(raw, object_pairs_hook=pairs)
-            need(type(prior) is dict and set(prior) == {*identity, 'started_at'}
+            need(type(prior) is dict and set(prior) in ({*identity, 'started_at'},
+                    {*identity, 'started_at', 'target_observed'})
                 and all(prior[key] == value for key, value in identity.items())
                 and type(prior['started_at']) in (int, float) and math.isfinite(prior['started_at'])
+                and prior.get('target_observed', True) is True
                 and 0 < prior['started_at'] <= now, 'SCREENING_HISTORY_CHECKPOINT_UNVERIFIED')
-            if now - prior['started_at'] < HISTORY_RETRY_SECONDS:
+            if (not target_observed and not prior.get('target_observed')
+                    and now - prior['started_at'] < HISTORY_RETRY_SECONDS):
                 return False
     finally:
         os.close(directory)
-    _write(root, name, {**identity, 'started_at': now}, replace=True)
+    record = {**identity, 'started_at': now}
+    if target_observed:
+        need(prior is not None and prior['started_at'] == now, 'SCREENING_HISTORY_CHECKPOINT_UNVERIFIED')
+        record['target_observed'] = True
+    _write(root, name, record, replace=True)
     return True
 
 
