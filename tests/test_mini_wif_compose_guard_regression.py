@@ -14,6 +14,7 @@ from agent.llm import OpenAIDialogue, web_prompt_allowed
 from agent.memory import Memory
 from agent.native_market_context import convert_native_market_context
 from agent.native_prompt_composition import normalize_privacy_reminders, outbound_question
+from scripts import prepare_mini_dialogue_runtime as mini_profile
 from tests.test_agent_native_market_context import native_context
 from tests import test_compose_privacy_recovery as privacy_tests
 from tests.test_mini_dialogue_profile import retained_module
@@ -87,6 +88,13 @@ class WifKnownPaidResponseRecoveryTests(unittest.TestCase):
     def setUp(self):
         privacy_tests.ComposePrivacyRecoveryTests.setUp(self)
         self.service=retained_module()
+        # Recovery checks the sibling llm.py source. A clean checkout has not
+        # prepared Docker build inputs; keep both exact sources test-private.
+        self.service.__file__=str(self.base/'dialogue_service.py')
+        Path(self.service.__file__).write_bytes(mini_profile.build_source())
+        model_source=Path(current.__file__).with_name('llm.py').read_bytes()
+        self.assertEqual(hashlib.sha256(model_source).hexdigest(),mini_profile.MODEL_SOURCE_SHA256)
+        (self.base/'llm.py').write_bytes(model_source)
         self.engine=self.service.DialogueEngine(self.memory,self.key,model=self.model)
 
     def tearDown(self):privacy_tests.ComposePrivacyRecoveryTests.tearDown(self)
