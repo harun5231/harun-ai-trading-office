@@ -208,12 +208,12 @@ def _without_discussion_structure(question):
     blocks=re.split(r'(\n[ \t]*\n)',question)
     for index in range(0,len(blocks),2):
         block=blocks[index]
-        labels=list(re.finditer(r'(?m)(^|[,;:\n])[ \t]*([1-9]\d?)\)[ \t]+(?=[^\W\d_])',block))
+        labels=list(re.finditer(r'(?m)(^|[,;:\n]|\.(?=[ \t]))[ \t]*([1-9]\d?)\)[ \t]+(?=[^\W\d_])',block))
         if len(labels)<2 or [int(item.group(2)) for item in labels]!=list(range(1,len(labels)+1)):
             continue
         first=labels[0];intro=block[:first.start()]
         introduced=(first.start()==0 or first.group(1)==':'
-            and re.search(r'\b(?:output|jawaban|ringkasan|format|poin|langkah|syarat|kriteria|evaluasi|rincian)\b',intro,re.I)
+            and re.search(r'\b(?:output|jawaban|ringkasan|format|poin|langkah|syarat|persyaratan|kriteria|evaluasi|rincian)\b',intro,re.I)
             and not re.search(r'\b(?:ENTRY|SL|TP|harga|price)\s*$',intro,re.I))
         if introduced:
             for item in reversed(labels):
@@ -221,7 +221,7 @@ def _without_discussion_structure(question):
             blocks[index]=block
     question=''.join(blocks)
     ratio=r'1\s*:\s*[1-9]\d{0,2}(?!\d|[.,]\d)'
-    series=ratio+r'(?:\s*(?:/|\batau\b)\s*'+ratio+r')*'
+    series=ratio+r'(?:\s*(?:/|\batau\b|[\u2013\u2014-])\s*'+ratio+r')*'
     question=re.sub(r'(?i)(\b(?:RISK\s*REWARD|R\s*:\s*R|RR)\s*'
         r'(?:(?:minimal|minimum|target|sebesar|adalah)\s*)?)('+series+r')',r'\1',question)
     question=re.sub(r'(?i)(\b(?:rekomendasi\s+)?TP\s*\(\s*'
