@@ -111,6 +111,120 @@ class EndedScreeningTests(unittest.TestCase):
             user_rows=list(range(0, count, 2)))
         proof['room_witness']['followup_user_rows'] = list(range(2, count, 2))
 
+    def technical_initial(self):
+        # Reproduce the sanitized phase, stack and technical phrase shape
+        # observed in run 45886454600 without importing private conversation data.
+        c = self.case
+        c.data['seen'] = ['AVAXUSDT', 'INJUSDT']
+        c.context['excluded_symbols'] = ['AVAXUSDT', 'HYPEUSDT', 'INJUSDT']
+        c.body, serialized, c.request_hash = c.source.request_body(self.operation,
+            c.body['prompt'], c.body['output_schema'], c.context)
+        c.payload = {**c.body, 'request_sha256': c.request_hash}
+        self.db.execute('UPDATE api_requests SET body_hash=?', (c.request_hash,))
+        self.db.execute('UPDATE research_browser_requests SET request_sha256=?,request_body=?',
+            (c.request_hash, serialized))
+        self.db.execute('UPDATE robot_cycles SET data=?', (json.dumps(c.data),))
+        reply = ('ATOMUSDT dan ONDOUSDT adalah kandidat. Data yang diperoleh belum cukup.\n'
+            '{"SYMBOLS":["ATOMUSDT","ONDOUSDT"]}')
+        self.envelope = c.fixture(operation=self.operation, reply=reply,
+            symbols=['ATOMUSDT', 'ONDOUSDT'])
+        proof = self.envelope['observation']
+        proof['room_initial_state'] = 'BOUND'
+        proof['room_witness']['journal_url_matches'] = True
+        receipt = proof['review_receipts'][0]
+        review = receipt['value']
+        review['request']['conversation_context'] = dict(native_operation=self.operation,
+            native_request_sha256=c.request_hash, turns=copy.deepcopy(proof['rows']))
+        review['model_operation']['request_hash'] = recovery._digest(review['request'])
+        self.seal_entry(receipt)
+        ended = failure(c.payload, proof['page_url'], phase='INITIAL', at=fixture.NOW - 13,
+            model=True, hook=native.SCREENING_ATTEMPT_RETURN_FAILURE_HOOK)
+        reason = 'NEUROBRO_INPUT_UNREADABLE'
+        frames = [
+            ('native_browser_hook.py', 'review', 740),
+            ('neurobro_reply.py', 'screening_interpretation', 830),
+            ('neurobro_reply.py', '_screening_json_choices', 711),
+            ('neurobro_reply.py', '_public_json_tail', 286),
+            ('neurobro_reply.py', '_explanation_scope', 257)]
+        ended['value']['chain'][1] = dict(reason=reason, message_sha256=recovery._sha(reason),
+            message_characters=len(reason), frames=[dict(file='/app/agent/' + file,
+                function=function, line=line) for file, function, line in frames])
+        ended['value']['chain'][1]['class'] = 'ReplyIncomplete'
+        self.seal_entry(ended)
+        proof['screening_ended_return'] = ended
+        self.seal()
+
+    @staticmethod
+    def seal_entry(entry):
+        raw = recovery._wire(entry['value'], ascii=True)
+        entry.update(sha256=recovery._sha(raw), bytes=len(raw.encode()))
+
+    def test_initial_technical_rejection_retires_without_selection_or_replay(self):
+        self.technical_initial()
+        self.envelope['observation']['rows'][1]['id'] = 'assistant-rehydrated'
+        self.seal()
+        self.pre_api = self.row('api_requests')
+        finances = self.finances()
+        self.assertEqual(self.recover(), 'NOEXEC')
+        self.assert_sealed()
+        proof = json.loads(self.row('screening_response_recoveries')['proof'])
+        self.assertEqual(proof['retirement']['disposition'], 'TECHNICAL_REPLY_RECEIVED')
+        self.assertEqual(proof['observation']['review_receipts'],
+            self.envelope['observation']['review_receipts'])
+        self.assertEqual(self.finances(), finances)
+        before = tuple(self.db.iterdump())
+        self.assertEqual(self.recover(), 'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()), before)
+
+    def test_initial_technical_rejection_keeps_source_and_expiry_guards(self):
+        self.technical_initial()
+        self.db.execute('UPDATE api_requests SET created=?', (fixture.NOW - 90,))
+        snapshot = tuple(self.db.iterdump())
+        with self.assertRaisesRegex(Review, 'SCREENING_ENDED_RESPONSE_AWAITING_EXPIRY'):
+            self.recover()
+        self.assertEqual(tuple(self.db.iterdump()), snapshot)
+        self.db.execute('UPDATE api_requests SET created=?', (fixture.NOW - 1000,))
+        snapshot = tuple(self.db.iterdump())
+        for change in ('no_receipt', 'new_send', 'wrong_frame', 'changed_reply', 'wrong_hook',
+                'wrong_room', 'model_unknown', 'review_after_failure'):
+            envelope = copy.deepcopy(self.envelope)
+            proof = envelope['observation']
+            ended = proof['screening_ended_return']
+            receipt = proof['review_receipts'][0]
+            if change == 'no_receipt':
+                proof['review_receipts'] = []
+            elif change == 'new_send':
+                ended['value']['followup_intent_sha256'] = ['a' * 64]
+                self.seal_entry(ended)
+            elif change == 'wrong_frame':
+                ended['value']['chain'][1]['frames'][0]['function'] = 'send_followup'
+                self.seal_entry(ended)
+            elif change == 'changed_reply':
+                proof['rows'][1]['text'] += ' Data berubah.'
+            elif change == 'wrong_hook':
+                ended['hook_source_sha256'] = native.TERMINAL_ERROR_RETURN_FAILURE_HOOK
+            elif change == 'wrong_room':
+                proof['room_witness']['journal_url_matches'] = False
+            elif change == 'model_unknown':
+                receipt['value']['model_operation']['state'] = 'UNKNOWN'
+                self.seal_entry(receipt)
+            else:
+                receipt['value']['observed_at'] = fixture.NOW - 12
+                self.seal_entry(receipt)
+            with self.subTest(change=change):
+                with self.assertRaises(Review):
+                    self.recover(self.seal(envelope))
+                self.assertEqual(tuple(self.db.iterdump()), snapshot)
+
+    def test_initial_technical_rejection_refuses_later_job(self):
+        self.technical_initial()
+        self.db.execute('INSERT INTO robot_jobs VALUES(?,?,?,?,?,?)',
+            (fixture.CYCLE + ':analysis-v9:ATOMUSDT', fixture.CYCLE, 'ANALYSIS', 'ATOMUSDT', 'PENDING', '5'))
+        before = tuple(self.db.iterdump())
+        with self.assertRaisesRegex(Review, 'SCREENING_RESPONSE_RECOVERY_UNVERIFIED'):
+            self.recover()
+        self.assertEqual(tuple(self.db.iterdump()), before)
+
     def row(self, table):
         key, value = ('id', fixture.CYCLE) if table == 'robot_cycles' else ('operation', self.operation)
         row = self.db.execute('SELECT * FROM ' + table + ' WHERE ' + key + '=?', (value,)).fetchone()
