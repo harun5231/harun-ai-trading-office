@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "provenance": {
+    "source_run": 45828166745,
+    "source_commit": "c68942156ad8eaaba894d9feb0d3e0c11ad5face",
+    "capture_sha256": "31f372ad27d235a0a64c4263eaecbeb199d518ce18c4f84c08b2bde36fea24a3",
+    "operation": "2026-11-22:robot-v9:0:screening:3:2",
+    "request_sha256": "2f905cbd33217e6a72307c634057d574025d364826f431c7d89e1cc7e14ba10e",
+    "receipt_scope_verified": true,
+    "assistant_reply_sha256": "9ed8e4d7565150974c266de8b6bfdecd7c5db07c4092dbf8e5a49ce04bfd508b",
+    "source_scope": "ORIGINAL_AUTHORED_REPLY_AND_ACTUAL_SEALED_MINI_REVIEW",
+    "mini_review_evidence_run": 45829306019
+  },
+  "latest_user": "pilihkan 2 coin pengganti yang bagus dan rate tinggi mandapatkan profit saat ini di future market binance\n\nKapasitas saat ini 2 coin. Pilih coin pengganti; jangan mengulang coin berikut dalam siklus ini: AAVEUSDT, ARUSDT, CYBERUSDT, HYPEUSDT, KERNELUSDT.\n\nAkhiri dengan daftar COIN yang dipilih sesuai jumlah permintaan, beserta alasan singkat.\nAcuan percakapan: HARUN_1ca5873835eeedbbddafa056ee8b32db\n\nIsi SYMBOLS dengan tepat 2 coin, tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. Format: {\"SYMBOLS\":[\"SIMBOL_USDT_1\",\"SIMBOL_USDT_2\"]}.\nSetelah penjelasanmu, akhiri jawaban dengan satu JSON final sesuai format yang diminta.",
+  "reply": "Peluang “profit pasti” tidak ada - untuk day trading, dua kandidat paling layak dari data Binance Futures saat ini adalah:\n\n$ZECUSDT Perpetual - naik 4.25% dalam 24 jam dengan volume $2.62B dan open interest naik 1.48%. Momentum dan likuiditas paling kuat di antara kandidat yang dicek. Setup long bersyarat: entry $775, SL $755, TP $815; target agresif $835. Rasio risk-reward tertimbang: 2.16R.\n$ENAUSDT Perpetual - volume $190.7M/24 jam dan perubahan harga +0.74%, tetapi open interest turun 3.26%, jadi momentum belum sekuat ZEC. Setup long bersyarat: entry $0.097, SL $0.094, TP $0.103; target agresif $0.106. Rasio risk-reward tertimbang: 2.19R.\n\nTunggu harga mencapai entry dan konfirmasi momentum intraday - jangan mengejar candle yang sudah lari. Keduanya bisa diperdagangkan langsung di NeuroWallet.\n\n⚖️ Neurobro adalah alat riset, bukan nasihat keuangan; analisis bisa salah - keputusan trading dan risiko tetap tanggung jawabmu.\n\n{\"SYMBOLS\":[\"ZECUSDT\",\"ENAUSDT\"]}",
+  "reply_sha256": "9ed8e4d7565150974c266de8b6bfdecd7c5db07c4092dbf8e5a49ce04bfd508b",
+  "authored_symbols": [
+    "ZECUSDT",
+    "ENAUSDT"
+  ],
+  "mini_review": {
+    "artifact": {
+      "bytes": 5452,
+      "name": "screening-review-6bd4596711612bbdb3d2020456bee83c6edaac34f75c834e794e7c4d34b1e1d4-c9567b8922339bfc3f897d9f4be8963e28b9403259fa5faf00e0d927093d3b46.json",
+      "sha256": "9f07981a4a7d22191dcb663d615dd0eaa737f3aca3168a9027a180392739e6fe"
+    },
+    "request_id": "c9567b8922339bfc3f897d9f4be8963e28b9403259fa5faf00e0d927093d3b46",
+    "phase": "SCREENING",
+    "reply_sha256": "9ed8e4d7565150974c266de8b6bfdecd7c5db07c4092dbf8e5a49ce04bfd508b",
+    "decision": {
+      "action": "SCREENING",
+      "question_present": false,
+      "symbols": [
+        "ENAUSDT",
+        "ZECUSDT"
+      ]
+    },
+    "needs_followup": false,
+    "model_operation": {
+      "operation_id": "delegated-model:c9567b8922339bfc3f897d9f4be8963e28b9403259fa5faf00e0d927093d3b46",
+      "request_hash": "cbc4c26b6755ac7e3068198e36bc25fa586d5e7d5a4f0dec6a092527f8a6c42a",
+      "state": "DONE",
+      "updated_at": 1795282856.3713284
+    }
+  },
+  "mini_symbols": [
+    "ENAUSDT",
+    "ZECUSDT"
+  ]
+}
