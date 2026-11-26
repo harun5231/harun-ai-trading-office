@@ -1365,7 +1365,7 @@ def _ended_screening_return(proof, payload, created, *, max_age):
         _require(entry['hook_source_sha256'] == SCREENING_ATTEMPT_HOOK and value['phase'] == 'INITIAL'
             and chain[1]['reason'] == reason and chain[1]['message_sha256'] == _sha(reason)
             and chain[1]['message_characters'] == len(reason) and 'gate_failure' not in value
-            and inner == [('native_browser_hook.py', 'review')] + [('neurobro_reply.py', name)
+            and inner == prefix + [('neurobro_reply.py', name)
                 for name in ('screening_interpretation', '_screening_json_choices', '_public_json_tail', '_explanation_scope')])
     elif chain[1]['class'] == 'DialogueError':
         _require(chain[1]['reason'] == 'DIALOGUE_MODEL_UNAVAILABLE' and 'gate_failure' not in value

@@ -113,7 +113,7 @@ class EndedScreeningTests(unittest.TestCase):
 
     def technical_initial(self):
         # Reproduce the sanitized phase, stack and technical phrase shape
-        # observed in run 45886454600 without importing private conversation data.
+        # observed in run 45887279988 without importing private conversation data.
         c = self.case
         c.data['seen'] = ['AVAXUSDT', 'INJUSDT']
         c.context['excluded_symbols'] = ['AVAXUSDT', 'HYPEUSDT', 'INJUSDT']
@@ -141,13 +141,15 @@ class EndedScreeningTests(unittest.TestCase):
             model=True, hook=native.SCREENING_ATTEMPT_RETURN_FAILURE_HOOK)
         reason = 'NEUROBRO_INPUT_UNREADABLE'
         frames = [
+            ('dom.py', 'ask', 522),
+            ('native_browser_hook.py', 'delegated_answer', 927),
             ('native_browser_hook.py', 'review', 740),
             ('neurobro_reply.py', 'screening_interpretation', 830),
             ('neurobro_reply.py', '_screening_json_choices', 711),
             ('neurobro_reply.py', '_public_json_tail', 286),
             ('neurobro_reply.py', '_explanation_scope', 257)]
         ended['value']['chain'][1] = dict(reason=reason, message_sha256=recovery._sha(reason),
-            message_characters=len(reason), frames=[dict(file='/app/agent/' + file,
+            message_characters=len(reason), frames=[dict(file=('/app/browser_runtime/' if file == 'dom.py' else '/app/agent/') + file,
                 function=function, line=line) for file, function, line in frames])
         ended['value']['chain'][1]['class'] = 'ReplyIncomplete'
         self.seal_entry(ended)
@@ -185,7 +187,7 @@ class EndedScreeningTests(unittest.TestCase):
         self.assertEqual(tuple(self.db.iterdump()), snapshot)
         self.db.execute('UPDATE api_requests SET created=?', (fixture.NOW - 1000,))
         snapshot = tuple(self.db.iterdump())
-        for change in ('no_receipt', 'new_send', 'wrong_frame', 'changed_reply', 'wrong_hook',
+        for change in ('no_receipt', 'new_send', 'wrong_frame', 'truncated_trace', 'changed_reply', 'wrong_hook',
                 'wrong_room', 'model_unknown', 'review_after_failure'):
             envelope = copy.deepcopy(self.envelope)
             proof = envelope['observation']
@@ -198,6 +200,9 @@ class EndedScreeningTests(unittest.TestCase):
                 self.seal_entry(ended)
             elif change == 'wrong_frame':
                 ended['value']['chain'][1]['frames'][0]['function'] = 'send_followup'
+                self.seal_entry(ended)
+            elif change == 'truncated_trace':
+                ended['value']['chain'][1]['frames'] = ended['value']['chain'][1]['frames'][2:]
                 self.seal_entry(ended)
             elif change == 'changed_reply':
                 proof['rows'][1]['text'] += ' Data berubah.'
