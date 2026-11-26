@@ -1,0 +1,283 @@
+{
+  "evidence_run": "45845805226",
+  "native_operation": "2026-11-26:robot-v9:0:analysis-v9:WIFUSDT",
+  "native_request_binding": "OPERATION_AND_TIME_CORRELATION_ONLY",
+  "matching_archived_request_count": 11,
+  "original_full_capture_sha256": "489f3d5d426e7424324c6dfefcaef3253dc2345459c9c3b23106e4ba9a399409",
+  "original_full_capture_bytes": 14264,
+  "source_hashes": {
+    "agent/__init__.py": "743af0cfff03ee01024f1af8c3bd9365ece635aea0590caf6312030d4d22ccc2",
+    "agent/dialogue_service.py": "f90a3fe4ca6d22f8776794dbcf29a4d0ec8a93b601c2b12f5e0eb2d858c1af14",
+    "agent/llm.py": "f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a",
+    "agent/memory.py": "0fc28cf527a27e653cd9992946afbbba14bb2ed276833c06d1f9e88634dfb272",
+    "agent/models.py": "a2c94ff91b1374c60d7773e5f6255fc3afbe60921e733f6b2466fcaa7c1977f4",
+    "agent/native_prompt_composition.py": "4d2ed0100690aaf8ccd3fe3324ec3e8f80d499f6bfa1b516c56c155ab501ce02"
+  },
+  "fixture_scope": "Verbatim retained Mini questions, official API and numeric replay evidence. Complete original market_context/source_facts remain private; regression market data is explicitly synthetic, never a reconstruction of production OHLC.",
+  "proven_official_api_responses": 2,
+  "proven_official_usage": {
+    "input_tokens": 50720,
+    "output_tokens": 1008,
+    "total_tokens": 51728
+  },
+  "examples": [
+    {
+      "operation_id": "delegated-model:b1371f433b63212c997f9584b58917bad05ea8d396e4f7feaca46134fd886a3e",
+      "state": "UNKNOWN",
+      "archived_at": 1795704831.9409437,
+      "archive_ref": {
+        "bytes": 63481,
+        "key": "dialogue-compose-request-v1:delegated-model:b1371f433b63212c997f9584b58917bad05ea8d396e4f7feaca46134fd886a3e",
+        "stored_sha256": "1810059ed19343f3f65dda23b0a771fd85715c65ecdfc4d5ddc9ecfba4588182"
+      },
+      "original_request_sha256": "14b800793e0a43c5772d84deb63f415a0d661d304d74d9287ae2c67f3871515c",
+      "original_request_evidence": {
+        "conversation_id": "compose:d24cccfb4028cd6dfb7d288503bb068dcfc861624292c4bc55bcb9381daede5f",
+        "deadline_epoch": 1795704921.406905,
+        "market_context_sha256": "5f4ffd2bf77d982095f0dfd72cc12180e048dd64bb3d23b39ef87c27bfbbe7d1",
+        "market_context_symbol": "WIFUSDT",
+        "phase": "COMPOSE_ANALYSIS",
+        "reply": "Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : berdasarkan struktur pasar, swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi; jangan letakkan di area yang mudah tersapu wick.\nRISK REWARD 1:2",
+        "reply_redacted": false,
+        "reply_sha256": "f3c70406b175b3d8bf0e6939e8ea20001c1ba30a9a7eecfeffceba5da115c016",
+        "reply_truncated": false,
+        "request_id": "b1371f433b63212c997f9584b58917bad05ea8d396e4f7feaca46134fd886a3e",
+        "source_facts_reference": {
+          "bytes": 291,
+          "count": 1,
+          "details_inline": false,
+          "sha256": "46c331d4efbf6b690c3748c858dc66034036e68da059ab80faa683e8e8fcb178"
+        }
+      },
+      "question_sha256": "3814b87b5a2e3d9a4b1d1c29c6e6b5c73df6ca0da4edc3064c7c3a48d07d4270",
+      "raw_decision": {
+        "action": "PROMPT",
+        "symbols": [],
+        "question": "Analisa WIFUSDT menggunakan data 1H dan 15m (data candlestick Binance Futures terlampir, mark price 0.1343). Saya ingin scalping di TF 15m — Neurobro tentukan: ARAH (LONG/SHORT/HOLD), ENTRY (harga tepat), SL (ditetapkan Neurobro) dengan alasan struktural singkat dan titik invalidasi berdasarkan swing high/low, likuiditas, volatilitas, wick, false breakout; jangan letakkan SL di area yang mudah tersapu wick. Sertakan juga TP rekomendasi (boleh sampai RR 1:3–1:4) dan level TP yang setara RR minimal 1:2 (agar Risk Manager menormalkan). Jawaban singkat per poin (1–2 kalimat alasan). Jangan minta ukuran posisi atau anggaran risiko pribadi."
+      },
+      "raw_ref": {
+        "bytes": 1847,
+        "key": "dialogue-model-raw:282c51dc7d6309cb2d52483112796b91dafe3bf9b0346c38bb362d8afe5545d9",
+        "stored_sha256": "0cb748ea2c52a8375e19bbc31fd22d1c7a1550d1da8f32a3d5ff0cf9b36854fe"
+      },
+      "raw_sha256": "2ff8a83f1acc34372e7a32b8f8244e20c3f77b5514038cb6e57b5974ddacbbfe",
+      "before_validation": {
+        "decision": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_PRICE_PROPOSAL_REFUSED",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_decision",
+              "line": 472
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 250
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        },
+        "web": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_PRICE_PROPOSAL_REFUSED",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_web_question",
+              "line": 265
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 250
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        }
+      },
+      "before_numeric_source_evidence": {
+        "known_values_count": 1339,
+        "question_after_existing_metadata_filters": "Analisa WIFUSDT menggunakan data  dan  (data candlestick Binance Futures terlampir, mark price 0.1343). Saya ingin scalping di TF  — Neurobro tentukan: ARAH (LONG/SHORT/HOLD), ENTRY (harga tepat), SL (ditetapkan Neurobro) dengan alasan struktural singkat dan titik invalidasi berdasarkan swing high/low, likuiditas, volatilitas, wick, false breakout; jangan letakkan SL di area yang mudah tersapu wick. Sertakan juga TP rekomendasi (boleh sampai RR –1:4) dan level TP yang setara RR minimal  (agar Risk Manager menormalkan). Jawaban singkat per poin (1–2 kalimat alasan).",
+        "question_number_values": [
+          "0.1343",
+          "1",
+          "2",
+          "4"
+        ],
+        "rejected_values": [
+          "4"
+        ],
+        "source_values_for_question_numbers": [
+          "0.1343",
+          "1",
+          "2"
+        ],
+        "unicode_numeric_lookalikes": []
+      },
+      "official_api": {
+        "api_ref": {
+          "bytes": 829,
+          "key": "dialogue-model-api-result:36429f349d07019efc49412e52d1bf3e46af3ea8485c70de6f6d9dae78cf5f0f",
+          "stored_sha256": "36429f349d07019efc49412e52d1bf3e46af3ea8485c70de6f6d9dae78cf5f0f"
+        },
+        "dispatch_ref": {
+          "bytes": 518,
+          "key": "dialogue-model-api-dispatch:68e4e96b93d419319551a5ad76456c734e2f45561f5f0f7928028041abd8ab95",
+          "stored_sha256": "5af93004d9fa783fc14147db88be36e9e9fe77b556535449612f2494c4e39c4d"
+        },
+        "http_status": 200,
+        "provider_response_received": true,
+        "request_id": "req_eb3e9ab3004e426a8ebfaf4ca78c76ed",
+        "request_sent": true,
+        "response_id": "resp_0abf51463744d9d7016b0848008ab887d08ae2cd0cf784d724",
+        "stage": "PROVIDER_RESPONSE",
+        "usage": {
+          "input_tokens": 25357,
+          "output_tokens": 431,
+          "total_tokens": 25788
+        },
+        "usage_state": "OPENAI_RESPONSE_USAGE"
+      }
+    },
+    {
+      "operation_id": "delegated-model:7c164a5699eabc750ff9136fbad010dd05dddab69a81517b80a54e57563d6790",
+      "state": "UNKNOWN",
+      "archived_at": 1795704781.9419596,
+      "archive_ref": {
+        "bytes": 63480,
+        "key": "dialogue-compose-request-v1:delegated-model:7c164a5699eabc750ff9136fbad010dd05dddab69a81517b80a54e57563d6790",
+        "stored_sha256": "aa001fd0aa272cfe3901ef229500d0f989f269906cebd4e44ad0bef666ae0b2f"
+      },
+      "original_request_sha256": "1115d90090216fe69d92ef813bac527c28fd98193237f5685fb7d0014176ef50",
+      "original_request_evidence": {
+        "conversation_id": "compose:d24cccfb4028cd6dfb7d288503bb068dcfc861624292c4bc55bcb9381daede5f",
+        "deadline_epoch": 1795704871.7190323,
+        "market_context_sha256": "fceb74c86e64d15efb20c4941a5be08df14936abf5a067a409ba762caf52eb8f",
+        "market_context_symbol": "WIFUSDT",
+        "phase": "COMPOSE_ANALYSIS",
+        "reply": "Aku berikan data chart realtime di binance future 2 time frame 1 jam dan 15 menit, silahkan analisa dengan akurat dan Profitable. aku mau entry di time frame 15 menit untuk scalping.\nTentukan !\nLONG, SHORT, atau HOLD\nENTRY\nTP\nSL : berdasarkan struktur pasar, swing high/low, likuiditas, volatilitas, wick, false breakout, dan titik invalidasi; jangan letakkan di area yang mudah tersapu wick.\nRISK REWARD 1:2",
+        "reply_redacted": false,
+        "reply_sha256": "f3c70406b175b3d8bf0e6939e8ea20001c1ba30a9a7eecfeffceba5da115c016",
+        "reply_truncated": false,
+        "request_id": "7c164a5699eabc750ff9136fbad010dd05dddab69a81517b80a54e57563d6790",
+        "source_facts_reference": {
+          "bytes": 291,
+          "count": 1,
+          "details_inline": false,
+          "sha256": "3f3d3b52fc08664e561e29a5b3ef8ea6f4f7331dd0b5a0bdf543fa5b29ab2b82"
+        }
+      },
+      "question_sha256": "746969e4f898420f75ab4b8ff6c85ea87a4e02fbd2c60cfd75a316b82b074db5",
+      "raw_decision": {
+        "action": "PROMPT",
+        "symbols": [],
+        "question": "Analisa WIFUSDT berdasarkan data chart Binance Futures 1H & 15m yang saya kirim (scalping entry di TF 15m). Neurobro yang tentukan: ARAH (LONG / SHORT / HOLD), ENTRY (harga tepat untuk order), SL (struktural) dan TP rekomendasi. Persyaratan: 1) SL harus ditetapkan berdasarkan struktur pasar — swing high/low, level likuiditas, volatilitas, wick, potensi false breakout, dan titik invalidasi; jangan letakkan SL di area yang mudah tersapu wick. 2) Berikan juga level TP setara RISK:REWARD minimal 1:2 (sebutkan level untuk 2R) — Neurobro boleh merekomendasikan TP sampai RR 1:3/1:4; Risk Manager nanti hanya menormalkan TP ke target 2R. 3) ENTRY dan SL adalah wewenang Neurobro dan tidak boleh diubah oleh Risk Manager; jangan minta quantity/ukuran posisi atau anggaran risiko. Jawaban ringkas dan jelas: Arah; ENTRY; SL (sertakan titik invalidasi dan alasan struktural singkat); TP rekomendasi dan level TP untuk 2R. Jika butuh klarifikasi data atau ada bagian chart yang belum cukup jelas, minta penegasan spesifik."
+      },
+      "raw_ref": {
+        "bytes": 2886,
+        "key": "dialogue-model-raw:57e2e811faf1480dda833c40f7f9dea2248443d73f561b3762badfe011b2410b",
+        "stored_sha256": "e489228c7bdbcb45755c7ea830d99d63ed39992569d670ae9dc9476cb6ef9032"
+      },
+      "raw_sha256": "0902c4c7b7dfbef0b1f516722b610e525bc008d2c7fa389329fe1aa65549bf44",
+      "before_validation": {
+        "decision": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_PRICE_PROPOSAL_REFUSED",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_decision",
+              "line": 472
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 250
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        },
+        "web": {
+          "class": "DialogueError",
+          "code": "DIALOGUE_PRICE_PROPOSAL_REFUSED",
+          "frames": [
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_web_question",
+              "line": 265
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "validate_question_sources",
+              "line": 250
+            },
+            {
+              "file": "agent/dialogue_service.py",
+              "function": "need",
+              "line": 76
+            }
+          ],
+          "ok": false
+        }
+      },
+      "before_numeric_source_evidence": {
+        "known_values_count": 1341,
+        "question_after_existing_metadata_filters": "Analisa WIFUSDT berdasarkan data chart Binance Futures  &  yang saya kirim (scalping entry di TF ). Neurobro yang tentukan: ARAH (LONG / SHORT / HOLD), ENTRY (harga tepat untuk order), SL (struktural) dan TP rekomendasi. Persyaratan: 1) SL harus ditetapkan berdasarkan struktur pasar — swing high/low, level likuiditas, volatilitas, wick, potensi false breakout, dan titik invalidasi; jangan letakkan SL di area yang mudah tersapu wick. 2) Berikan juga level TP setara RISK:REWARD minimal  (sebutkan level untuk ) — Neurobro boleh merekomendasikan TP sampai RR ; Risk Manager nanti hanya menormalkan TP ke target . 3) ENTRY dan SL adalah wewenang Neurobro dan tidak boleh diubah oleh Risk Manager; Jawaban ringkas dan jelas: Arah; ENTRY; SL (sertakan titik invalidasi dan alasan struktural singkat); TP rekomendasi dan level TP untuk . Jika butuh klarifikasi data atau ada bagian chart yang belum cukup jelas, minta penegasan spesifik.",
+        "question_number_values": [
+          "1",
+          "2",
+          "3"
+        ],
+        "rejected_values": [
+          "3"
+        ],
+        "source_values_for_question_numbers": [
+          "1",
+          "2"
+        ],
+        "unicode_numeric_lookalikes": []
+      },
+      "official_api": {
+        "api_ref": {
+          "bytes": 829,
+          "key": "dialogue-model-api-result:d69d1252742e33018114345d9c9bed27991e2d501cd004b7710e8a33e5db917e",
+          "stored_sha256": "d69d1252742e33018114345d9c9bed27991e2d501cd004b7710e8a33e5db917e"
+        },
+        "dispatch_ref": {
+          "bytes": 517,
+          "key": "dialogue-model-api-dispatch:362c72fea864127e58c97da406e6c34132fc76f0ff3f33b1666d0a801c015d69",
+          "stored_sha256": "4fb9c314c5396ad4ede5fafafaa094d528f002d0af7ccd3886344e7ba84c62ba"
+        },
+        "http_status": 200,
+        "provider_response_received": true,
+        "request_id": "req_ad48d89b8e4142738aac9afb1d03efd4",
+        "request_sent": true,
+        "response_id": "resp_0c81c946c3e7e58a016b0847ce4a1887d0a501818ad3d6b19c",
+        "stage": "PROVIDER_RESPONSE",
+        "usage": {
+          "input_tokens": 25363,
+          "output_tokens": 577,
+          "total_tokens": 25940
+        },
+        "usage_state": "OPENAI_RESPONSE_USAGE"
+      }
+    }
+  ]
+}
