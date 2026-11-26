@@ -20,6 +20,7 @@ from tests import test_compose_privacy_recovery as privacy_tests
 from tests.test_mini_dialogue_profile import retained_module
 
 FIXTURE=json.loads((Path(__file__).parent/'fixtures/mini_wif_compose_structural_numbers_20261126.json').read_text())
+FIXED_RECOVERY_TIME=1795706700.0  # 2026-11-26 15:25 UTC, synthetic fixture only.
 
 
 def old_filter():
@@ -86,6 +87,11 @@ class WifSourceGuardTests(unittest.TestCase):
 
 class WifKnownPaidResponseRecoveryTests(unittest.TestCase):
     def setUp(self):
+        # Candle fingerprints vary with wall time. A leading hex digit can be
+        # read as a number by the existing generic source collector; keep the
+        # synthetic source stable so it cannot accidentally supply 3 or 4.
+        clock=patch('time.time',return_value=FIXED_RECOVERY_TIME)
+        clock.start();self.addCleanup(clock.stop)
         privacy_tests.ComposePrivacyRecoveryTests.setUp(self)
         self.service=retained_module()
         # Recovery checks the sibling llm.py source. A clean checkout has not
@@ -95,7 +101,7 @@ class WifKnownPaidResponseRecoveryTests(unittest.TestCase):
         model_source=Path(current.__file__).with_name('llm.py').read_bytes()
         self.assertEqual(hashlib.sha256(model_source).hexdigest(),mini_profile.MODEL_SOURCE_SHA256)
         (self.base/'llm.py').write_bytes(model_source)
-        self.engine=self.service.DialogueEngine(self.memory,self.key,model=self.model)
+        self.engine=self.service.DialogueEngine(self.memory,self.key,model=self.model,clock=time.time)
 
     def tearDown(self):privacy_tests.ComposePrivacyRecoveryTests.tearDown(self)
     def transport(self,payload):return privacy_tests.ComposePrivacyRecoveryTests.transport(self,payload)
@@ -109,6 +115,8 @@ class WifKnownPaidResponseRecoveryTests(unittest.TestCase):
             reply=original['reply'],reply_sha256=original['reply_sha256'],
             market_context=convert_native_market_context(native,now=now),deadline_epoch=now+80)
         self.authored=copy.deepcopy(example['raw_decision']);service=self.service
+        known=service._number_values(self.request['reply'])|service._number_values(self.request['market_context'])
+        self.assertTrue(known.isdisjoint({3,4}),'synthetic source must reproduce the original unsourced list/RR values')
         operation='delegated-model:'+self.request['request_id'];memo=service.dialogue_operation_memo(self.request)
         def paid_but_previously_rejected():
             service._archive_compose_request(self.memory,operation,self.request,time.time())
@@ -132,7 +140,7 @@ class WifKnownPaidResponseRecoveryTests(unittest.TestCase):
         self.assertEqual(self.engine.process(copy.deepcopy(self.request)),result)
         self.memory.close();self.memory=Memory(self.base/'agent.sqlite3')
         self.model=OpenAIDialogue(self.key,self.memory,transport=self.transport)
-        self.engine=service.DialogueEngine(self.memory,self.key,model=self.model)
+        self.engine=service.DialogueEngine(self.memory,self.key,model=self.model,clock=time.time)
         self.assertEqual(self.engine.process(copy.deepcopy(self.request)),result)
         self.assertEqual(self.memory.get(audit_key),audit)
         self.assertEqual(list(self.memory.db.execute('SELECT * FROM operations')),before)
