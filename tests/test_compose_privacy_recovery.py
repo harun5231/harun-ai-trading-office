@@ -102,6 +102,20 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
         self.assertNotIn('Risk Manager',rendered);self.assertIn('RISK REWARD 1:2',rendered)
         self.assertIn('ENTRY dan SL ditetapkan Neurobro',rendered);self.assertIn('RR 1:3 atau 1:4',rendered)
 
+    def test_ena_compose_allows_the_retained_value_free_negative_reminder(self):
+        # The clause hash matches six source-bound draft excerpts in Ops run 45884127721.
+        reminder = 'Jangan minta atau sebutkan quantity/ukuran posisi atau anggaran risiko pribadi.'
+        self.assertEqual(hashlib.sha256(reminder.encode()).hexdigest(),
+            '10303e521887a9ae159e6482626a553082bce102d68b66ccc9cfe769096eda3a')
+        analysis = 'Analisis ENAUSDT untuk scalping 15M dengan chart 1H dan 15M. Gunakan RR 1:2.'
+        draft = f'{analysis} {reminder}'
+        self.assertFalse(web_prompt_allowed(draft))
+        self.assertEqual(outbound_question(draft), analysis)
+        with_value = f'{analysis} {reminder[:-1]} 12 USDT.'
+        self.assertEqual(normalize_privacy_reminders(with_value), with_value)
+        with self.assertRaisesRegex(ValueError, 'NATIVE_COMPOSE_RENDER_UNVERIFIED'):
+            outbound_question(with_value)
+
     def orca_request(self):
         now=time.time();native=native_context(now);native['symbol']='ORCAUSDT'
         for frame in native['timeframes'].values():frame['symbol']='ORCAUSDT'

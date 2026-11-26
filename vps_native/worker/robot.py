@@ -883,6 +883,11 @@ class Coordinator:
         operation=cycle+':'+VERSION+':'+symbol
         try:cached=self.completed_research(operation,cycle,'ANALYSIS',symbol)
         except Exception:return self.store.report('REJECTED',account,'ROBOT_REQUEST_NEEDS_REVIEW')
+        presend_retry=getattr(self.neuro,'analysis_presend_retry',None)
+        retry=presend_retry(operation) if not cached and callable(presend_retry) else None
+        if retry is not None:
+            return self.store.report('WAITING',account,wait_reason='ANALYSIS_PRESEND_UNAVAILABLE',
+                analysis_retry=retry)
         target=cached[1]['risk_target'] if cached else self.store.settings()['risk_target_usdt']
         policy=request_policy(self.db,operation) if cached else self.new_setup_policy
         # Symbol catalog/rules/context are read before the paid call, never guessed.
@@ -941,6 +946,10 @@ class Coordinator:
                 state='READY_FOR_EXECUTION'
         except ResearchPaused as error:
             self.unclaim_unsent_research(operation)
+            retry=presend_retry(operation) if self.allowed(today) and callable(presend_retry) else None
+            if retry is not None:
+                return self.store.report('WAITING',account,wait_reason='ANALYSIS_PRESEND_UNAVAILABLE',
+                    analysis_retry=retry)
             return self.store.report('WAITING',account,wait_reason=self.provider_pause_reason(error,today))
         except Exception as error:
             reason=validation_code(error)

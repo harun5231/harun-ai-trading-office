@@ -74,7 +74,7 @@ def main():
     assert not Path('/app/worker/api_service.py').exists()
     assert hashlib.sha256(Path('/app/agent/dialogue_service.py').read_bytes()).hexdigest()=='3f7fa5933705f1ba840762449ebae4ee0b7d6487a28f1ff45972339adfe29079'
     assert hashlib.sha256(Path('/app/agent/llm.py').read_bytes()).hexdigest()=='f74911e9999c1f918f4651a5ae0555004a7401ab64ec1c67d40201ad2328110a'
-    assert hashlib.sha256(Path('/app/agent/native_prompt_composition.py').read_bytes()).hexdigest()=='4d2ed0100690aaf8ccd3fe3324ec3e8f80d499f6bfa1b516c56c155ab501ce02'
+    assert hashlib.sha256(Path('/app/agent/native_prompt_composition.py').read_bytes()).hexdigest()=='0bc0cf64f20445f970709902d1e8fbf57cb80156c08a1e221018877ca1fc6136'
     assert not list(Path('/app/agent').glob('hermes*.py')), 'MINI_IMAGE_MUST_NOT_INCLUDE_HERMES_BRIDGES'
     assert importlib.util.find_spec('hermes_cli') is None
     assert importlib.util.find_spec('run_agent') is None

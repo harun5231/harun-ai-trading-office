@@ -13,6 +13,7 @@ from unittest.mock import patch
 import zlib
 
 from agent.native_turn_batch import NativeTurnBatch, retain_return_failure
+from agent.neurobro_reply import author_market_hold, parse_analysis_reply
 
 REFERENCE=Path(__file__).parent/'fixtures/native_dom_turns_f017.py'
 spec=importlib.util.spec_from_file_location('native_f017_turn_reference',REFERENCE)
@@ -63,6 +64,28 @@ class ChromiumEquivalence(unittest.TestCase):
         self.assertEqual(self.reader.native_reads,1)
         self.assertIn('```json\n{"symbol":"ENAUSDT","side":"HOLD"}\n```',original[-1]['text'])
         self.assertNotIn('\n1',original[-1]['text'])
+    def test_pump_final_hold_excludes_the_trading_setup_widget(self):
+        # Model the screenshot's author/card boundary without treating its
+        # display as the original receipt. Only the final JSON is transcribed.
+        hold = '{"COIN":"PUMPUSDT","ARAH":"HOLD","ENTRY":null,"TP":null,"SL":null}'
+        prose = 'Kondisi pasar belum mendukung setup. Jangan entry.'
+        self.page.locator('[data-message-id=answer-11]').evaluate('''(turn, [prose, hold]) => {
+            turn.querySelector('p').textContent = prose;
+            turn.querySelector('code').textContent = hold;
+            turn.insertAdjacentHTML('beforeend',
+                '<aside><h3>Setup Trading</h3><p>PUMPUSDT SHORT</p></aside>');
+        }''', [prose, hold])
+        self.assertIn('PUMPUSDT SHORT', self.page.locator('aside').inner_text())
+        original = self.bridge._turns()
+        self.assertEqual(self.reader.read(), original)
+        self.assertTrue(self.reader.verified)
+        reply = original[-1]['text']
+        self.assertEqual(reply, prose + '\n\n\n```json\n' + hold + '\n```')
+        self.assertTrue(author_market_hold(reply, 'PUMPUSDT'))
+        self.assertEqual(parse_analysis_reply(reply, 'PUMPUSDT'), {
+            'symbol': 'PUMPUSDT', 'side': 'HOLD', 'entry_price': None,
+            'limit_entry': None, 'stop_loss': None, 'take_profit': None, 'risk_reward': None,
+        })
     def test_current_image_pending_hidden_or_wrong_alt_is_not_forged(self):
         self.reader.read()
         for update in ["image.src='https://invalid.test/pending.png'","image.style.visibility='hidden'","image.alt='foreign.png'"]:

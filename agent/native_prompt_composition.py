@@ -31,7 +31,7 @@ def normalize_privacy_reminders(question):
     """Remove only complete, value-free negative internal privacy sentences."""
     if type(question) is not str:
         raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
-    verb = (r'(?:minta|meminta|sebut|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|'
+    verb = (r'(?:minta|meminta|sebut(?:kan)?|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|'
         r'tanyakan|menanyakan|sarankan|menyarankan|tentukan|menentukan|'
         r'hitung|menghitung|berikan|memberikan|rekomendasikan|merekomendasikan)')
     topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+(?:pribadi|akun))?'
