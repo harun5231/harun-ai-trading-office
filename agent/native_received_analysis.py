@@ -18,7 +18,7 @@ import stat
 import threading
 import time
 
-from .native_daily_room import DailyRoom, identities
+from .native_daily_room import DailyRoom, DailyRoomUnavailable, identities
 from .native_file_upload import FILE_WITNESS
 from .native_chart_followup import _directory, _private_file, pairs
 
@@ -741,29 +741,102 @@ def observe(actor, delegated, value):
             binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
             if record['identifier_reconciliation'] is not None:
                 binding['identifier_reconciliation'] = record['identifier_reconciliation']
-            if (capture['status'] == 'CONNECTED'and not DailyRoom.matches(rows,record['anchors'],binding,
-                    history_state,archive_root=room.store.root,prefix_identity=(record['day'],record['room_id']))):
+            prefix_identity = (record['day'], record['room_id'])
+            restore_needed = not DailyRoom.matches(rows, record['anchors'], binding,
+                history_state, archive_root=room.store.root, prefix_identity=prefix_identity)
+            restore_options = {'prefix_identity': prefix_identity}
+            search = None
+            initial_search_exhausted = False
+            if screening:
+                from .native_received_screening import (HISTORY_SEARCH_KIND, claim_history_search,
+                    history_target, retained_reviewed_observation)
+
+                marker_seen = False
+
+                def screening_target(candidate):
+                    nonlocal marker_seen
+                    _gate(actor)
+                    sample = history_target(candidate, record, cached, payload, room.store.root,
+                        raw.page.url, restore_state)
+                    marker_seen = marker_seen or sample['marker_mentions'] > 0
+                    return sample
+
+                def screening_status():
+                    _gate(actor)
+                    return raw.status(maintenance_allowed=lambda: False)
+
+                initial_target = screening_target(rows)['target']
+                restore_needed = restore_needed or initial_target is not True
+                if restore_needed and capture['status'] == 'CONNECTED':
+                    started = time.time()
+                    reviews = capture.get('review_receipts', [])
+                    if reviews and not marker_seen:
+                        retained = retained_reviewed_observation(room.store.root, payload, record,
+                            cached, reviews, started, raw.clock)
+                        if retained is not None:
+                            _gate(actor)
+                            return _observation_result(*retained, generic=True)
+                    if claim_history_search(room.store.root, payload, started):
+                        search = dict(kind=HISTORY_SEARCH_KIND, operation=operation, request_sha256=request,
+                            day=record['day'], room_id=record['room_id'],
+                            rendered_prompt_sha256=cached['rendered_sha256'], started_at=started,
+                            history_reselected=False, actor_owned=True, stage='SCREENING')
+                        restore_options['target'] = lambda candidate: screening_target(candidate)['target']
+                        restore_options['check_status'] = screening_status
+                    else:
+                        restore_needed = False
+                        capture['history_search_cooldown'] = True
+            if capture['status'] == 'CONNECTED' and restore_needed:
                 capture['history_restore_attempted'] = True; capture['stage'] = restore_state+'_ROOM_RESTORE'
+                if screening:
+                    capture['operation_scope'] = dict(verified=False, initial_user=None,
+                        latest_user=None, user_rows=[], reply_row=None, reply_complete=False,
+                        unmatched_intents=[], reason='SCREENING_HISTORY_ROOM_UNVERIFIED')
                 _gate(actor)
-                try:rows = room.restore(record['anchors'], binding, history_state,
-                    prefix_identity=(record['day'],record['room_id']))
-                except BaseException:
+                try:
+                    # Leave time for the existing final source and session checks.
+                    if screening:
+                        raw.operation_deadline -= 2
+                    rows = room.restore(record['anchors'], binding, history_state, **restore_options)
+                except BaseException as error:
                     # A history load can expose a challenge or another room.
                     # Retain that actual observation without hiding the refusal.
+                    failure_observed = False
                     try:
                         capture['status']=raw.status(maintenance_allowed=lambda:False)
                         capture['session_observation']=copy.deepcopy(raw.session_observation())
                         capture['rows']=room.full_turns();capture['page_url']=raw.page.url
+                        failure_observed = True
                     except Exception:pass
-                    raise
-                capture['rows'] = rows; capture['history_restored'] = True
+                    # Without an archived prefix, the original first-send
+                    # journal can bind only an exhausted UNKNOWN search. It
+                    # cannot authorize another send in this day's room.
+                    if (search is None or not failure_observed or not isinstance(error, DailyRoomUnavailable)
+                            or str(error) != 'NEUROBRO_DAILY_ROOM_NOT_FOUND'
+                            or restore_state != 'SENT' or record['anchors'] != []
+                            or re.fullmatch(r'\d{4}-\d\d-\d\d:robot-v9:\d+:screening:0:[12]', operation) is None
+                            or record['marker'] != payload['marker']
+                            or record['first_prompt_sha256'] != text_sha(cached['rendered_prompt'].replace('\r\n', '\n').strip())
+                            or capture['status'] != 'CONNECTED' or screening_target(capture['rows'])['marker_mentions']
+                            or marker_seen):
+                        raise
+                    rows = capture['rows']
+                    initial_search_exhausted = True
+                finally:
+                    if screening:
+                        raw.operation_deadline += 2
+                capture['rows'] = rows; capture['history_restored'] = not initial_search_exhausted
                 capture['page_url'] = raw.page.url
+                if search is not None:
+                    search['history_reselected'] = not initial_search_exhausted
             _gate(actor); capture['stage'] = 'CURRENT_ATTACHMENT_WITNESSES'
             capture['room_witness'] = _room_witness(record,rows,raw,room.store.root,cached,
                 capture['receipt_files'],payload=payload,generic=generic)
             if screening:
                 from .native_received_screening import operation_scope,review_identity_rows
                 witness=capture['room_witness'];witness['initial_screening_user_rows']=witness.pop('initial_analysis_user_rows')
+                witness['same_loaded_room_verified'] = bool(witness['same_loaded_room_verified']
+                    and screening_target(rows)['target'] is True)
                 scope=operation_scope(rows,witness,capture.get('review_receipts',[]),payload)
                 capture['operation_scope']=scope
                 if scope.get('verified') is not True:
@@ -794,8 +867,21 @@ def observe(actor, delegated, value):
             capture['in_process_data_file_deliveries'] = copy.deepcopy(getattr(raw, 'data_file_deliveries', []))
             if not generic:
                 capture['room_witness'] = _room_witness(record, rows, raw, room.store.root, cached, capture['receipt_files'])
-            need(room.full_turns() == rows and raw.page.url == capture['page_url'],
-                 'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+            def stable_rows():
+                current = room.full_turns()
+                if screening and current != rows:
+                    from .native_received_screening import same_historical_prefix
+                    start = scope['initial_user']
+                    verified = same_historical_prefix(rows, current,
+                        len(record['anchors']) if start is None else start)
+                else:
+                    verified = current == rows
+                need(verified and raw.page.url == capture['page_url'],
+                    'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+                capture['rows'] = current
+                return current
+
+            rows = stable_rows()
             if generic:
                 terminal_ui=None
                 if screening and rows and rows[-1].get('role')=='user':
@@ -807,14 +893,29 @@ def observe(actor, delegated, value):
                 capture['stable_snapshot_reads'] = 1
                 for _ in range(3):
                     _gate(actor); raw.page.wait_for_timeout(250)
-                    need(room.full_turns() == rows and raw.page.url == capture['page_url'],
-                         'RECEIVED_ANALYSIS_MESSAGE_SNAPSHOT_CHANGED')
+                    rows = stable_rows()
                     if terminal_ui is not None:
                         from .native_received_screening import terminal_ui_authority
                         sampled_ui=read_terminal_body(raw,cached['rendered_prompt'],payload['marker'])
                         need(sampled_ui is not None and terminal_ui_authority(sampled_ui)==terminal_ui_authority(terminal_ui),
                              'SCREENING_TERMINAL_UI_CHANGED')
                     capture['stable_snapshot_reads'] += 1
+                if search is not None:
+                    capture['status'] = raw.status(maintenance_allowed=lambda: False)
+                    capture['session_observation'] = copy.deepcopy(raw.session_observation())
+                    rows = stable_rows()
+                    sampled = screening_target(rows)
+                    target = sampled.pop('target')
+                    outcome = 'INCONCLUSIVE'
+                    if capture['status'] == 'CONNECTED' and capture['session_observation'].get('reason') == 'CONNECTED':
+                        if target is True:
+                            outcome = 'TARGET_OBSERVED'
+                        elif target is False and not marker_seen:
+                            outcome = 'TARGET_ABSENT'
+                        elif initial_search_exhausted and not marker_seen:
+                            outcome = 'UNBOUND_INITIAL_EXHAUSTED'
+                    search.update(sampled, outcome=outcome, finished_at=time.time())
+                    capture['screening_history_search'] = search
                 if (snapshot['state']=='SENT' and capture['status']=='CONNECTED'
                         and scope.get('verified')is True and scope.get('reply_complete')is True):
                     _seal_sent_room(actor,room,raw,payload,capture,snapshot,screening=screening)
@@ -865,8 +966,12 @@ def observe(actor, delegated, value):
                 capture['continuation_not_sent_error'] = dict(exception_class=type(error).__name__,
                     reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code) else None)
         saved = _save(room.store.root, capture)
+    return _observation_result(capture, saved, generic=generic)
+
+
+def _observation_result(capture, saved, *, generic):
     rows = capture.get('rows', []); last = rows[-1] if rows else {}
-    result = dict(kind=kind, operation=operation, request_sha256=request,
+    result = dict(kind=capture['kind'], operation=capture['operation'], request_sha256=capture['request_sha256'],
         observed_at=capture['observed_at'], status=capture['status'], stage=capture['stage'],
         operation_completed=False, row_count=len(rows),
         same_loaded_room_verified=capture.get('room_witness', {}).get('same_loaded_room_verified', False),

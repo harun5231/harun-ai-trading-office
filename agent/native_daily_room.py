@@ -260,9 +260,9 @@ class DailyRoomHistory:
             and type(row['label']) is str and row['label'] for row in result))
         return result
 
-    def open_sidebar(self):
+    def open_sidebar(self, *, check_status=None):
         room = self.room
-        need(room.bridge.status() == 'CONNECTED')
+        need((check_status or room.bridge.status)() == 'CONNECTED')
         selector = getattr(room.native, 'CURRENT_CHAT_NAV', None)
         need(type(selector) is str and selector)
         navigation = room.original_visible(selector)
@@ -271,9 +271,9 @@ class DailyRoomHistory:
             return  # An already open sidebar may still be loading its rows.
         navigation[0].click(timeout=room.bridge._timeout(5000))
 
-    def select(self, row, *, occurrence=0):
+    def select(self, row, *, occurrence=0, check_status=None):
         room = self.room
-        need(room.bridge.status() == 'CONNECTED')
+        need((check_status or room.bridge.status)() == 'CONNECTED')
         # Loading a conversation adds message/tool buttons before the sidebar.
         # Re-resolve its observed title/label instead of reusing a stale global
         # button index. Duplicate titles retain their history occurrence.
@@ -281,10 +281,16 @@ class DailyRoomHistory:
             if (item['text'], item['label']) == (row['text'], row['label'])]
         need(type(occurrence) is int and 0 <= occurrence < len(matches))
         selected = matches[occurrence]
-        room.composer()  # No owner draft is discarded by a history selection.
+        # No owner draft is discarded by a history selection.
+        if check_status is None:
+            room.composer()
+        else:
+            room.composer(check_status=check_status)
         target = room.bridge.page.locator('button').nth(selected['index'])
         need(target.is_visible() and target.is_enabled()
             and ' '.join(target.inner_text().split()) == row['text'])
+        if check_status is not None:
+            need(check_status() == 'CONNECTED')
         target.click(timeout=room.bridge._timeout(5000))
 
 
@@ -456,26 +462,35 @@ class DailyRoom:
                 binding=binding if state=='BOUND'else None)
         return False
 
-    def restore(self, anchors, binding, state, *, prefix_identity=None):
+    def restore(self, anchors, binding, state, *, prefix_identity=None, target=None, check_status=None):
+        """Select owned history. A screening target can require more than room identity.
+
+        The target returns True for an observed operation, False for a fully
+        bound room without it, and None if the transcript is still unverified.
+        An absent target requires a full settling budget after actual selection.
+        """
         prefix_identity=prefix_identity or(self.day,self.room_id)
         self._history_windows = []
+        status_read = check_status or (lambda: self.bridge.status())
+        navigation = {'check_status': check_status} if check_status is not None else {}
+        poll_milliseconds = 250 if target is not None else 50
         # A root SPA URL identifies no chat. Reopen ordinary observed history
         # entries, and admit only the room whose actual native messages match.
-        self.composer()
+        self.composer(**navigation)
         choices = self.history.rows()
         if not choices:
-            self.history.open_sidebar()
+            self.history.open_sidebar(**navigation)
             # Opening the rail schedules React rendering. Its first empty DOM
             # snapshot does not establish that the owned room is absent.
             history_until = self.bridge._until(5)
             while self.bridge.clock() < history_until:
-                status = self.bridge.status()
+                status = status_read()
                 need(status in ('CONNECTED', 'UNAVAILABLE'))
                 if status == 'CONNECTED':
                     choices = self.history.rows()
                     if choices:
                         break
-                self.bridge.page.wait_for_timeout(min(50,
+                self.bridge.page.wait_for_timeout(min(poll_milliseconds,
                     max(1, int((history_until-self.bridge.clock())*1000))))
         hints = binding.get('history_titles', [])
         occurrences, ordered = {}, []
@@ -486,6 +501,8 @@ class DailyRoom:
             ordered.append((row, occurrence))
         ordered.sort(key=lambda item: item[0]['text'] not in hints)
         for candidate, (row, occurrence) in enumerate(ordered):
+            if target is not None and self.bridge.clock() >= self.bridge.operation_deadline:
+                raise DailyRoomUnavailable('NEUROBRO_DAILY_ROOM_HISTORY_DEADLINE')
             # Passive evidence uses only observations already reached below.
             # Never poll, match, navigate or read a draft for this diagnostic.
             selected = False; before = rows = observed_rows = status = matched = None
@@ -493,25 +510,29 @@ class DailyRoom:
             started = time.monotonic() if candidate == 0 else None
             try:
                 before = identities(self.full_turns())
-                self.history.select(row, occurrence=occurrence)
+                self.history.select(row, occurrence=occurrence, **navigation)
                 selected = True
+                started_wait = self.bridge.clock()
                 until = self.bridge._until(5)
+                complete_window = until >= started_wait + 5
                 previous, stable = None, 0
                 older_attempted = False
+                target_state = None
                 while self.bridge.clock() < until:
-                    status = self.bridge.status()
+                    status = status_read()
                     if status == 'UNAVAILABLE':
                         # Native detection can be unavailable while this selected
                         # history room renders. Wait within its existing budget;
                         # never resubmit, create a room or interact with a challenge.
-                        previous, stable = None, 0
-                        self.bridge.page.wait_for_timeout(50)
+                        previous, stable, target_state = None, 0, None
+                        self.bridge.page.wait_for_timeout(poll_milliseconds)
                         continue
                     need(status == 'CONNECTED')
                     rows = self.full_turns()
                     samples += 1
                     matched = self.matches(rows, anchors, binding, state, archive_root=self.store.root,prefix_identity=prefix_identity)
-                    if matched:
+                    target_state = target(rows) if target is not None else None
+                    if matched and (target is None or target_state is True):
                         disposition = 'MATCHED'
                         return rows
                     # A saved title is only a navigation hint. Load its older UI
@@ -520,25 +541,42 @@ class DailyRoom:
                         (choice['text'], choice['label']) == (row['text'], row['label'])
                         for choice in choices) == 1)
                     if (not older_attempted and unique_hint and state == 'BOUND'
-                            and 2 <= len(rows) < len(anchors)
+                            and (2 <= len(rows) < len(anchors) or (target is not None
+                                and matched and target_state is None and len(rows) >= 2))
                             and rows[-2].get('role') == 'user'
                             and rows[-1].get('role') == 'assistant'
                             and rows[-1].get('complete') is True):
                         older_attempted = True
-                        restored = self.restore_older(rows, anchors, binding, state,prefix_identity=prefix_identity)
+                        options = {'prefix_identity': prefix_identity, **navigation}
+                        if target is not None:
+                            options['target'] = target
+                        restored = self.restore_older(rows, anchors, binding, state, **options)
                         if restored is not None:
                             observed_rows = restored
                             disposition = 'RESTORED_OLDER'
                             return restored
-                    observed = identities(rows)
+                    # For a missing target, the strict target check has already
+                    # matched the entire prefix. Rehydrated assistant DOM IDs
+                    # are not progress through that same archived prefix.
+                    observed = anchors if target_state is False else identities(rows)
                     stable = stable + 1 if observed == previous else 0
                     previous = observed
-                    if observed != before and stable >= 3 and rows and rows[-1].get('complete') is True:
+                    if ((target is None or target_state is None) and observed != before
+                            and stable >= 3 and rows and rows[-1].get('complete') is True):
                         disposition = 'FOREIGN_STABLE'
                         break  # Loaded another historical room; inspect no reply there.
-                    self.bridge.page.wait_for_timeout(50)
+                    self.bridge.page.wait_for_timeout(poll_milliseconds)
                 else:
                     disposition = 'TIMEOUT'
+                    if target_state is False and complete_window and stable >= 3:
+                        current = self.full_turns()
+                        final_target = target(current)
+                        if final_target is not None and self.matches(current, anchors, binding, state,
+                                archive_root=self.store.root, prefix_identity=prefix_identity):
+                            disposition = 'MATCHED' if final_target else 'TARGET_NOT_OBSERVED'
+                            return current
+                    if target is not None and not complete_window:
+                        raise DailyRoomUnavailable('NEUROBRO_DAILY_ROOM_HISTORY_DEADLINE')
             finally:
                 if candidate == 0:
                     try:
@@ -667,12 +705,16 @@ class DailyRoom:
             'schema_version': 1, 'day': self.day, 'room_id': self.room_id,
             'windows': self._history_windows}, replace=True)
 
-    def restore_older(self, rows, anchors, binding, state, *, prefix_identity=None):
+    def restore_older(self, rows, anchors, binding, state, *, prefix_identity=None, target=None,
+                      check_status=None):
         """Load older messages in the observed room, without changing matches."""
         until = self.bridge._until(20)
+        status_read = check_status or (lambda: self.bridge.status())
+        poll_milliseconds = 250 if target is not None else 50
+        navigation = {'check_status': check_status} if check_status is not None else {}
         while self.bridge.clock() < until:
-            need(self.bridge.status() == 'CONNECTED')
-            self.composer()  # Preserve an owner draft or unsent attachments.
+            need(status_read() == 'CONNECTED')
+            self.composer(**navigation)  # Preserve an owner draft or unsent attachments.
             messages = self.bridge.page.locator(self.native.MESSAGE)
             container = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
             need(type(container) is dict)
@@ -680,7 +722,7 @@ class DailyRoom:
             if (container.get('available') is not True
                     or container.get('message_count') != len(rows)):
                 return None  # No unambiguous actual message scroll container.
-            need(self.bridge.status() == 'CONNECTED')
+            need(status_read() == 'CONNECTED')
             action = messages.evaluate_all(HISTORY_OLDER_UI_JS,
                 {'action': 'show_oldest', 'observed': container})
             after = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
@@ -691,18 +733,19 @@ class DailyRoom:
             previous_count = len(rows)
             advancement_until = min(until, self.bridge._until(5))
             while self.bridge.clock() < advancement_until:
-                status = self.bridge.status()
+                status = status_read()
                 need(status in ('CONNECTED', 'UNAVAILABLE'))
                 if status == 'CONNECTED':
                     current = self.full_turns()
                     if self.matches(current, anchors, binding, state, archive_root=self.store.root,
-                            prefix_identity=prefix_identity or(self.day,self.room_id)):
+                            prefix_identity=prefix_identity or(self.day,self.room_id)) and (
+                            target is None or target(current) is True):
                         return current
                     if (len(current) > previous_count and current[-1].get('role') == 'assistant'
                             and current[-1].get('complete') is True):
                         rows = current
                         break
-                self.bridge.page.wait_for_timeout(50)
+                self.bridge.page.wait_for_timeout(poll_milliseconds)
             else:
                 after = messages.evaluate_all(HISTORY_OLDER_UI_JS, {'action': 'observe'})
                 self.retain_history_window(self.full_turns(), anchors, binding,
@@ -844,8 +887,9 @@ class DailyRoom:
         self._connection.execute('UPDATE daily_rooms SET state=?,updated_at=? WHERE day=?',
             ('SENT', self.wall_clock(), self.day))
 
-    def composer(self):
-        need(self.bridge.status() == 'CONNECTED')
+    def composer(self, *, check_status=None):
+        status = self.bridge.status() if check_status is None else check_status()
+        need(status == 'CONNECTED')
         composers = self.original_visible(self.bridge._dom_contract.composer)
         need(len(composers) == 1 and not composers[0].input_value())
         previews = self.bridge._preview_scope(composers[0])

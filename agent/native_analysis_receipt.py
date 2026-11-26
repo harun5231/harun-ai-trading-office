@@ -42,6 +42,114 @@ def _need(value):
         raise ValueError('NATIVE_ANALYSIS_REVIEW_UNVERIFIED')
 
 
+def _screening_file(root, name):
+    from .native_chart_followup import pairs
+
+    directory = _directory(root)
+    try:
+        try:
+            raw = _private_file(directory, name, MAX_REVIEW_BYTES)
+        except FileNotFoundError:
+            return None
+        value = json.loads(raw, object_pairs_hook=pairs)
+        _need(type(value) is dict and canonical(value) == raw)
+        return value
+    finally:
+        os.close(directory)
+
+
+def _claim_screening_file(root, name, value):
+    raw = canonical(value)
+    _need(0 < len(raw) <= MAX_REVIEW_BYTES)
+    directory = _directory(root)
+    temporary = '.screening-attempt-' + os.urandom(16).hex() + '.tmp'
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        except FileExistsError:
+            return False
+        os.fsync(directory)
+        return True
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        os.close(directory)
+
+
+def _screening_origin(payload, rendered):
+    _need(_phase_kind(payload)[0] == 'SCREENING' and type(rendered) is str
+        and bool(payload.get('marker')) and rendered.count(payload['marker']) == 1)
+    identity = {key: payload[key] for key in ('operation', 'request_sha256')}
+    return 'screening-review-origin-' + digest(identity) + '.json', dict(
+        schema_version=1, **identity, payload_sha256=digest(payload),
+        rendered_prompt_sha256=hashlib.sha256(rendered.encode()).hexdigest())
+
+
+def arm_screening_reviews(root, payload, rendered):
+    """Before native Send, attest this operation uses durable review claims."""
+    name, origin = _screening_origin(payload, rendered)
+    if not _claim_screening_file(root, name, origin):
+        _need(_screening_file(root, name) == origin)
+
+
+def _screening_semantic_turns(request, payload):
+    from .dialogue_service import validate_conversation_context
+
+    rows = validate_conversation_context(request)
+    _need(type(rows) is list and len(rows) >= 2 and len(rows) % 2 == 0
+        and request['conversation_context']['native_operation'] == payload['operation']
+        and request['conversation_context']['native_request_sha256'] == payload['request_sha256'])
+    ids = set()
+    for row in rows[1::2]:
+        _need(row.get('complete') is True and type(row.get('id')) is str and row['id'] not in ids)
+        ids.add(row['id'])
+    return [{key: value for key, value in row.items() if key != 'id'} if index % 2 else row
+        for index, row in enumerate(rows)]
+
+
+def bind_screening_review_attempt(root, payload, request, room_url):
+    """Bind the native interpretation before asking Mini for its exact receipt.
+
+    Mini commits STARTED before its model transport. Only an authenticated
+    MISSING response admits the original identity under its existing atomic
+    operation guard. Legacy Sends without an origin can only look up DONE.
+    """
+    rows = _screening_semantic_turns(request, payload)
+    origin_name, origin = _screening_origin(payload, rows[0]['text'])
+    name = 'screening-review-attempt-' + digest({key: payload[key]
+        for key in ('operation', 'request_sha256')}) + '-' + str(len(rows) // 2) + '.json'
+    candidate = dict(schema_version=1, origin=origin, room_url=room_url, request=request)
+    retained = _screening_file(root, name)
+    if retained is not None:
+        original = retained.get('request')
+        _need(retained == {**candidate, 'request': original} and type(original) is dict
+            and _screening_semantic_turns(original, payload) == rows)
+        def request_binding(value):
+            return {key: item for key, item in value.items() if key not in (
+                'request_id', 'deadline_epoch', 'conversation_context')}
+        _need(request_binding(original) == request_binding(request))
+        def resume_missing():
+            _need(_screening_file(root, name) == retained and _screening_file(root, origin_name) == origin)
+            return True
+        return {**original, 'deadline_epoch': request['deadline_epoch']}, resume_missing
+
+    def claim():
+        armed = _screening_file(root, origin_name)
+        if armed is None:
+            return False
+        _need(armed == origin)
+        return _claim_screening_file(root, name, candidate)
+
+    return request, claim
+
+
 def persist_review(root, payload, request, response, turns, *, context, observed_at,model_operation=None):
     from .dialogue_service import (validate_result, screening_model_operation,
         validate_conversation_context, dialogue_operation_memo)
