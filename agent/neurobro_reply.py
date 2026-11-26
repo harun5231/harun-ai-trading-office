@@ -822,11 +822,14 @@ def screening_interpretation(reply, payload, request, response, turns):
     strong_final = _screening_strong_final(text)
     try:explicit=parse_screening_reply(reply)if strong_final else None
     except ReplyIncomplete:explicit=None
+    # Screening approves coin identities, not a model's ordering of the same
+    # distinct choices. Keep the sealed Mini order/result unchanged; native
+    # receipt validation still requires that exact output and author source.
     if explicit is not None:
-        need(explicit['symbols']==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
+        need(set(explicit['symbols'])==set(selected),'NEUROBRO_SCREENING_DECISION_CONFLICT')
     structured=_screening_json_choices(reply, semantic_symbols=selected)
     if structured is not None:
-        need(structured==selected,'NEUROBRO_SCREENING_DECISION_CONFLICT')
+        need(set(structured)==set(selected),'NEUROBRO_SCREENING_DECISION_CONFLICT')
     return {'symbols':selected}
 
 
