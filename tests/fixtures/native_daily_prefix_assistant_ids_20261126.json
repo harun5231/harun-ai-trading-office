@@ -1,0 +1,93 @@
+{
+  "evidence_run": "45853045595",
+  "fixture_scope": "Observed production UUID/hash changes only; test rows below are synthetic and never claim original private Neurobro text or provider outcome.",
+  "operation": "2026-11-26:robot-v9:0:screening:1:2",
+  "request_sha256": "bb4d6c853ce6d7fd39a4a11bb489ecc7e9cb7d0bf38f77cccd3fac2cb9e6ce9e",
+  "submitted_state": "UNKNOWN",
+  "journal": {
+    "day": "2026-11-26",
+    "room_id": "680a2d519bba4e8fb4f73a94ebe13054",
+    "state": "SENT",
+    "updated_at": 1795705651.5676503
+  },
+  "capture_sha256": "997e5ac5e875ec786084ab0817321c915e8a3412fe8616f6ce3b114640dbbc69",
+  "private_sha256": "ae6d8f633fe68d9359457a8e882f97c40767e21ce2f79ece0d5bbe737387e276",
+  "source_job": "45852208458-1",
+  "source_commit": "355504e6831dc2a7c7518bcca0a329f2a2e921f6",
+  "producer_sha256": "d9299a013b010d57e14c44aaa26b28a8358d3df01177ce74a05f8e7a31a83745",
+  "prefix_evidence": {
+    "all_changes_completed_assistant_id_only": true,
+    "all_user_rows_exact": true,
+    "changes": [
+      {
+        "changed_fields": [
+          "id"
+        ],
+        "observed_complete": true,
+        "observed_id": "5730848d-7217-4ed4-9222-3e698832b428",
+        "observed_identity_sha256": "e8cc1192308d368bef407f8046135e59ce2575b7ff8acfa1fe6bfe6b4fd32422",
+        "observed_role": "assistant",
+        "observed_text_sha256": "2334f0c5f73590b4aa1534e79b17941d0ebdd12b91423eef2ac4924b3c27abfc",
+        "prior_complete": true,
+        "prior_id": "c8b7c957-c8ee-40d5-b209-7ffce25f88c7",
+        "prior_identity_sha256": "4297ecf819ebbeae7b1718faa83f38b1e7d6c2a478d4a4233115a0623e9cfd16",
+        "prior_role": "assistant",
+        "prior_text_sha256": "2334f0c5f73590b4aa1534e79b17941d0ebdd12b91423eef2ac4924b3c27abfc",
+        "row": 3
+      },
+      {
+        "changed_fields": [
+          "id"
+        ],
+        "observed_complete": true,
+        "observed_id": "25e8a9c8-714a-4c7a-b696-2a02cdd62645",
+        "observed_identity_sha256": "530eb0f11a1544afc1dd45dfa6b489d0e78254a7a703b7de5790b571abb659c6",
+        "observed_role": "assistant",
+        "observed_text_sha256": "0485c2e7450efbe554111f760926b95d71cb09b950f5ce5141c00e715c167d9d",
+        "prior_complete": true,
+        "prior_id": "d79d8fa7-9187-449e-ab97-3d0fac597c60",
+        "prior_identity_sha256": "a5ebf7cfb2130c3186130274f0f59eb21e7c3ad44e709153539de2d7660c5d2d",
+        "prior_role": "assistant",
+        "prior_text_sha256": "0485c2e7450efbe554111f760926b95d71cb09b950f5ce5141c00e715c167d9d",
+        "row": 5
+      },
+      {
+        "changed_fields": [
+          "id"
+        ],
+        "observed_complete": true,
+        "observed_id": "a91f99ea-04ec-4bd0-8212-260b1bcacd0c",
+        "observed_identity_sha256": "61cad1f9bfb0fdaaca7c2a2e8d25430e52217f7184f331059aeff61386163fba",
+        "observed_role": "assistant",
+        "observed_text_sha256": "80afb2088edc2b6a6a49cafc06151d7ff692b6ac57a63c3a25d901c153b82591",
+        "prior_complete": true,
+        "prior_id": "2c733b35-1191-4786-a2fb-127dc6b1b927",
+        "prior_identity_sha256": "cf5bbaecfa244ca94e57afa0cc24c683ed69c1d8c8a205e04c8641a6d1e9b7c0",
+        "prior_role": "assistant",
+        "prior_text_sha256": "80afb2088edc2b6a6a49cafc06151d7ff692b6ac57a63c3a25d901c153b82591",
+        "row": 7
+      }
+    ],
+    "label": "ORIGINAL_CAPTURE_ROOM",
+    "observed_rows": 8,
+    "snapshot_artifact": {
+      "bytes": 9271,
+      "name": "daily-room-prefix-77d30085c20e6bf9f536ca487d1a1b17836cef6655fc8993574b6b0b2362014f.json",
+      "sha256": "5dd6cb10e42ba3a460b70dab8e1eb7c929036b963d855b34b274f9fd2916d164"
+    },
+    "stored_rows": 8
+  },
+  "native_ask_evidence": {
+    "evidence_run": "40781290522",
+    "native_dom_source_sha256": "f0172940be07f4126ac2fbcfb4c3f538da0c5d13d910af6e48b279ff3d6900d8",
+    "method_sha256": "252d398413620698bf3715a7abdef72d3b77a5b4d4e83c5412cf5d2dfceb9f38",
+    "source": "def ask(self, payload, dispatch_check, *, chart_images=(), chart_evidence=(), deadline=None, receipt_callback=None):\n        self.operation_deadline = deadline\n        state = self.status()\n        if state != 'CONNECTED':\n            raise NotSubmitted(state if state in ('LOGIN_REQUIRED', 'CHALLENGE_REQUIRED') else 'UNAVAILABLE')\n        sent = False\n        self._operation_contract = self._dom_contract\n        try:\n            artifacts = image_artifacts(chart_images, chart_evidence)\n            request_kind(payload, artifacts)\n            composer = self._fresh_conversation()\n            prompt = user_prompt(payload)\n            bound_charts = self._upload(composer, payload, artifacts)\n            attachment_names = [payload['marker'] + '-' + item[2]['timeframe'] + '-'\n                + item[2]['sha256'][:12] + '.png' for item in artifacts]\n            composer.fill(prompt, timeout=self._timeout(10000))\n            if composer.input_value().replace('\\r\\n', '\\n') != prompt or self._turns():\n                raise NotSubmitted('UNAVAILABLE')\n            buttons = self._visible(self._dom_contract.send)\n            if len(buttons) != 1 or not buttons[0].is_enabled() or self.status() != 'CONNECTED':\n                raise NotSubmitted('UNAVAILABLE')\n            # Loading the page and processing both previews can age a chart.\n            # Recheck the exact local artifacts immediately before permission\n            # to dispatch, so an old capture cannot ride a fresh operation.\n            image_artifacts(chart_images, chart_evidence)\n            self._timeout(10000)\n            # No DOM navigation or other preparation occurs between the worker's\n            # final enabled/job check and this single irreversible Send attempt.\n            if dispatch_check() is not True:\n                raise NotSubmitted('RESEARCH_PAUSED')\n            sent = True\n            buttons[0].click(timeout=self._timeout(10000))\n            answer_deadline = self._until(self.timeout)\n            previous, stable = None, 0\n            while self.clock() < answer_deadline:\n                state = self.status()\n                if state == 'UNAVAILABLE':\n                    # Send is already attempted. A loading DOM must neither\n                    # trigger a resend nor count toward a stable reply.\n                    previous, stable = None, 0\n                    self.page.wait_for_timeout(250)\n                    continue\n                if state != 'CONNECTED':\n                    raise OutcomeUnknown()\n                answer = self._answer(prompt, attachment_names)\n                stable = stable + 1 if answer is not None and answer == previous else 0\n                previous = answer\n                if answer is not None and stable >= 3:\n                    # Full rendered text is retained even when parsing fails.\n                    response_id = 'dom-' + hashlib.sha256(\n                        (self.page.url + '\\n' + payload['marker'] + '\\n' + answer).encode()).hexdigest()\n                    if receipt_callback is not None:\n                        receipt_callback(dict(**{key: payload[key] for key in ('operation', 'marker', 'request_sha256')},\n                            rendered_prompt=prompt, assistant_text=answer, response_id=response_id,\n                            chart_evidence=bound_charts, attachment_names=attachment_names,\n                            received_at=time.time()))\n                    return dict(output=exact_json(answer, payload['marker']), assistant_text=answer,\n                        response_id=response_id, chart_evidence=bound_charts)\n                self.page.wait_for_timeout(250)\n            raise OutcomeUnknown()\n        except NotSubmitted:\n            if sent:\n                raise OutcomeUnknown() from None\n            raise\n        except Exception:\n            if sent:\n                raise OutcomeUnknown() from None\n            raise NotSubmitted('UNAVAILABLE') from None\n        finally:\n            self._operation_contract = None"
+  },
+  "deployed_answer": {
+    "class": "DOMBridge",
+    "end_line": 476,
+    "line": 466,
+    "source": "def _answer(self, prompt, attachment_names=()):\n        turns = self._turns()\n        if (len(turns) != 2 or turns[0].get('role') != 'user'\n                or turns[0].get('text', '').replace('\\r\\n', '\\n').strip() != prompt.strip()\n                or sorted(turns[0].get('attachments', [])) != sorted(attachment_names)\n                or turns[1].get('role') != 'assistant' or turns[1].get('complete') is not True):\n            return None\n        text = turns[1].get('text')\n        if not isinstance(text, str) or not text or len(text.encode()) > MAX_ANSWER:\n            return None\n        return text",
+    "source_sha256": "a309cf963a1ab45e8ff137bbe29f806054bc63d80d3ff9848ac4abe0e4f2d474"
+  }
+}
