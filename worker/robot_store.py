@@ -185,12 +185,14 @@ class RobotStore:
         if type(running) is int and running>=0 and isinstance(symbols,list) and not value.get('account_failure_code'):
             value['available_slots']=self.available_slots(running,symbols,today,
                 pending_symbols=value.get('open_entry_symbols') or ())
-        if not value['robot_on']: value.update(bot_status='OFF', wait_reason='ROBOT_OFF')
+        if not value['robot_on']:
+            value.update(bot_status='OFF', wait_reason='ROBOT_OFF')
+            value.pop('analysis_retry',None)
         row = self.db.execute('SELECT symbol,status,failure_code FROM robot_candidates ORDER BY rowid DESC LIMIT 1').fetchone()
         value['last_decision'] = dict(row) if row else None
         return public(value)
 
-    def report(self, state, account=None, reason=None, wait_reason=None):
+    def report(self, state, account=None, reason=None, wait_reason=None, *, analysis_retry=None):
         observation = account_observation(account) if account else empty_account()
         encoded = json.dumps(observation)
         passive = (account is None and state in ('ENTRY_PENDING', 'POSITION_PROTECTED')
@@ -198,14 +200,15 @@ class RobotStore:
         previous = self.db.execute('SELECT data FROM robot_status WHERE id=1').fetchone()
         previous = json.loads(previous[0]) if previous else {}
         published = self.db.execute('''INSERT OR REPLACE INTO robot_status
-          SELECT 1,json_set(CASE WHEN ? AND robot_account_newer(?,previous)
+            SELECT 1,json_patch(json_set(CASE WHEN ? AND robot_account_newer(?,previous)
             THEN json_patch(previous,?) ELSE previous END,
-            '$.bot_status',?,'$.failure_code',?,'$.wait_reason',?,'$.checked_at',?)
+            '$.bot_status',?,'$.failure_code',?,'$.wait_reason',?,'$.checked_at',?),?)
           FROM (SELECT COALESCE((SELECT data FROM robot_status WHERE id=1),?) AS previous)
           WHERE NOT (? AND COALESCE(json_extract(previous,'$.bot_status'),'') IN ('WAITING','NEEDS_REVIEW')
             AND (COALESCE(json_extract(previous,'$.failure_code'),'') GLOB 'PENDING_REVIEW_*'
               OR COALESCE(json_extract(previous,'$.wait_reason'),'') GLOB 'PENDING_REVIEW_*'))''',
           (bool(account), encoded, encoded, state, reason, wait_reason, now(),
+           json.dumps(dict(analysis_retry=analysis_retry)),
            json.dumps(empty_account()), passive)).rowcount
         if published and (previous.get('bot_status'), previous.get('failure_code'), previous.get('wait_reason')) != (state, reason, wait_reason):
             agent = {'SCREENING': 'Market Analyst', 'ANALYZING': 'Neurobro',

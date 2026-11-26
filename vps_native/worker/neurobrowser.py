@@ -26,6 +26,13 @@ MAX_RESPONSE_BYTES = 700_000
 SESSION_STATES = frozenset(('CONNECTED', 'LOGIN_REQUIRED', 'LOGIN_IN_PROGRESS',
     'UNAVAILABLE', 'CHALLENGE_REQUIRED', 'BUSY'))
 NO_SEND_REASONS = frozenset(('RESEARCH_PAUSED', 'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED', 'BUSY', 'UNAVAILABLE'))
+ANALYSIS_RETRY_DELAYS = (45, 90, 180, 360, 900)
+ANALYSIS_PRESEND_SCHEMA = """CREATE TABLE IF NOT EXISTS analysis_presend_failures(
+    operation TEXT NOT NULL, sequence INTEGER NOT NULL, request_sha256 TEXT NOT NULL,
+    marker TEXT NOT NULL, request_created REAL NOT NULL, failed_at REAL NOT NULL,
+    first_started_at REAL NOT NULL, reason TEXT NOT NULL, repeated INTEGER NOT NULL,
+    next_retry_at REAL NOT NULL, submitted INTEGER NOT NULL CHECK(submitted=0),
+    PRIMARY KEY(operation, sequence), UNIQUE(operation, request_sha256))"""
 
 
 def helper_token():
@@ -228,6 +235,7 @@ class NeuroBrowser:
             self._token = ''
         self.transport = transport
         ensure_journal(self.db)
+        self.db.execute(ANALYSIS_PRESEND_SCHEMA)
         from .trade_evaluation_runtime import NativeEvaluationReads, EvaluationConsumer
         try:
             native_reads = NativeEvaluationReads(self)
@@ -386,6 +394,57 @@ class NeuroBrowser:
         self.db.execute("UPDATE api_requests SET failure_code=? WHERE operation=? AND state='COMPLETE'",
                         (validation_code(error), operation))
 
+    def _last_presend_failure(self, operation):
+        return self.db.execute('''SELECT * FROM analysis_presend_failures
+            WHERE operation=? ORDER BY sequence DESC LIMIT 1''', (operation,)).fetchone()
+
+    def analysis_presend_retry(self, operation):
+        failure = self._last_presend_failure(operation)
+        if failure is None or failure['reason'] != 'UNAVAILABLE' or time.time() >= failure['next_retry_at']:
+            return None
+        def utc(clock):
+            return datetime.fromtimestamp(clock, timezone.utc).isoformat()
+        return dict(operation=operation, phase='BEFORE_SEND', reason=failure['reason'],
+            submitted=False, attempts=failure['sequence'], consecutive_failures=failure['repeated'],
+            first_started_at=utc(failure['first_started_at']), last_failed_at=utc(failure['failed_at']),
+            next_check_at=utc(failure['next_retry_at']))
+
+    def _archive_presend_failure(self, body, serialized, request_hash, acknowledgement):
+        """Retain the bound negative acknowledgement before releasing its claims."""
+        operation = body['operation']
+        job = self.db.execute('SELECT * FROM robot_jobs WHERE operation=?', (operation,)).fetchone()
+        if job is None or job['kind'] != 'ANALYSIS':
+            return
+        api = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        request = self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
+        now = time.time()
+        if (not self._proven_unsent(acknowledgement, body, request_hash)
+                or job['state'] != 'PENDING' or job['symbol'] != body['context']['symbol']
+                or operation != job['cycle'] + ':analysis-v9:' + job['symbol']
+                or not api or (api['state'], api['body_hash'], api['attempts'], api['idempotency'], api['output'])
+                    != ('PENDING', request_hash, 1, None, None)
+                or api['failure_code'] is not None
+                or type(api['created']) not in (int, float) or not 0 < api['created'] <= now
+                or not request or tuple(request[key] for key in
+                    ('provider', 'contract_version', 'request_sha256', 'marker', 'request_body'))
+                    != (BROWSER_PROVIDER, BROWSER_CONTRACT, request_hash, body['marker'], serialized)
+                or self.db.execute('SELECT 1 FROM research_browser_responses WHERE operation=?',
+                    (operation,)).fetchone()
+                or self.db.execute('SELECT 1 FROM order_intents WHERE candidate_id=?', (operation,)).fetchone()):
+            raise Review('NEUROBRO_BROWSER_OUTCOME_UNKNOWN')
+        last = self._last_presend_failure(operation)
+        reason = acknowledgement['reason']
+        repeated = last['repeated'] + 1 if last and last['reason'] == reason else 1
+        delay = ANALYSIS_RETRY_DELAYS[min(repeated - 1, len(ANALYSIS_RETRY_DELAYS) - 1)] if reason == 'UNAVAILABLE' else 0
+        self.db.execute('''INSERT INTO analysis_presend_failures(operation,sequence,request_sha256,
+            marker,request_created,failed_at,first_started_at,reason,repeated,next_retry_at,submitted)
+            VALUES(?,?,?,?,?,?,?,?,?,?,0)''', (operation, last['sequence'] + 1 if last else 1,
+            request_hash, body['marker'], api['created'], now, last['first_started_at'] if last else api['created'],
+            reason, repeated, now + delay))
+        # The coordinator may stop before its catch handler drops the job. A
+        # proved negative return releases the matching analysis claim atomically.
+        self.db.execute("DELETE FROM robot_jobs WHERE operation=? AND state='PENDING'", (operation,))
+
     def ask(self, operation, prompt, schema, validate, context=None, *, catalog=None, continue_if=None):
         if continue_if is not None and not callable(continue_if):
             raise Review('INVALID_CONTINUATION_GUARD')
@@ -422,6 +481,14 @@ class NeuroBrowser:
         try:
             if self.db.execute('SELECT 1 FROM api_requests WHERE operation=?', (operation,)).fetchone():
                 raise Review('NEUROBRO_BROWSER_REQUEST_NEEDS_REVIEW')
+            if schema in (SETUP_SCHEMA, SETUP_SCHEMA_V4):
+                if self.analysis_presend_retry(operation) is not None:
+                    raise ResearchPaused('UNAVAILABLE')
+                # A new admitted attempt needs distinct fresh source material.
+                # Otherwise an old callback could match the replacement claim.
+                if self.db.execute('''SELECT 1 FROM analysis_presend_failures
+                        WHERE operation=? AND request_sha256=?''', (operation, request_hash)).fetchone():
+                    raise ResearchPaused('UNAVAILABLE')
             self.db.execute('INSERT INTO api_requests(operation,idempotency,body_hash,state,created,attempts,output) VALUES(?,?,?,?,?,?,?)',
                 (operation, None, request_hash, 'PENDING', time.time(), 0, None))
             self.db.execute('INSERT INTO research_browser_requests VALUES(?,?,?,?,?,?)',
@@ -431,6 +498,7 @@ class NeuroBrowser:
             self.db.execute('ROLLBACK')
             raise
         sent = False
+        acknowledgement = None
         failure = 'LOCAL_PROCESSING_FAILED'
         try:
             if not permitted():
@@ -446,6 +514,7 @@ class NeuroBrowser:
                 {**body, 'request_sha256': request_hash}, timeout=930)
             if code == 409 and self._proven_unsent(result, body, request_hash):
                 sent = False
+                acknowledgement = result
                 raise ResearchPaused(result['reason'])
             if code != 200:
                 raise Review('NEUROBRO_BROWSER_OUTCOME_UNKNOWN')
@@ -459,6 +528,8 @@ class NeuroBrowser:
             if isinstance(error, ResearchPaused) and not sent:
                 self.db.execute('BEGIN IMMEDIATE')
                 try:
+                    if acknowledgement is not None and schema in (SETUP_SCHEMA, SETUP_SCHEMA_V4):
+                        self._archive_presend_failure(body, serialized, request_hash, acknowledgement)
                     self.db.execute("DELETE FROM research_browser_requests WHERE operation=? AND NOT EXISTS(SELECT 1 FROM research_browser_responses WHERE operation=?)", (operation, operation))
                     self.db.execute("DELETE FROM api_requests WHERE operation=? AND state='PENDING' AND output IS NULL AND attempts<=1", (operation,))
                     self.db.execute('COMMIT')
