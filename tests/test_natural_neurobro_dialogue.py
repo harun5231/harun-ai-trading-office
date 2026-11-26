@@ -599,6 +599,58 @@ class PromptRenderReceiptTests(unittest.TestCase):
 
 
 class ComposedPromptServiceTests(unittest.TestCase):
+    def test_definitely_refused_analysis_draft_reuses_only_the_validated_source_prompt(self):
+        from agent.native_browser_hook import _compose_question
+        from tests.test_agent_dialogue_service import request
+        from worker.prompts import ANALYSIS
+
+        value = request(phase='COMPOSE_ANALYSIS', reply=ANALYSIS)
+        for code in ('DIALOGUE_PRICE_PROPOSAL_REFUSED', 'DIALOGUE_OPERATION_UNKNOWN',
+                     'DIALOGUE_UNAVAILABLE'):
+            with self.subTest(code=code):
+                client = Mock(compose=Mock(side_effect=service.DialogueError(code)))
+                if code == 'DIALOGUE_PRICE_PROPOSAL_REFUSED':
+                    self.assertEqual(_compose_question(client, value), (ANALYSIS, code))
+                else:
+                    with self.assertRaisesRegex(service.DialogueError, code):
+                        _compose_question(client, value)
+                client.compose.assert_called_once_with(value)
+
+        private_source = request(phase='COMPOSE_ANALYSIS', reply='Anggaran risiko akun: 5 USDT.')
+        client = Mock(compose=Mock(side_effect=service.DialogueError('DIALOGUE_PRICE_PROPOSAL_REFUSED')))
+        with self.assertRaises(service.DialogueError):
+            _compose_question(client, private_source)
+        client.compose.assert_called_once_with(private_source)
+
+    def test_analysis_draft_validation_keeps_sourced_model_text_and_rejects_private_text(self):
+        from agent.native_browser_hook import _compose_question
+        from tests.test_agent_dialogue_service import request
+        from worker.prompts import ANALYSIS
+
+        value = request(phase='COMPOSE_ANALYSIS', reply=ANALYSIS)
+        valid = 'Analisis struktur BTCUSDT pada 15M dan 1H. Tentukan SL dari invalidasi.'
+        for question, refusal in ((valid, None),
+                (valid + ' Jangan jelaskan anggaran risiko akun.', 'NATIVE_COMPOSE_RENDER_UNVERIFIED')):
+            with self.subTest(refusal=refusal):
+                result = {'schema_version': 1, 'ok': True,
+                    **{key: value[key] for key in ('request_id', 'conversation_id', 'phase', 'reply_sha256')},
+                    'authority': 'DIALOGUE_CONTROL_ONLY', 'trading_authority': False,
+                    'decision': {'action': 'PROMPT', 'symbols': [], 'question': question},
+                    'needs_followup': False, 'reason': 'DIALOGUE_DECISION'}
+                client = Mock(compose=Mock(return_value=result))
+                self.assertEqual(_compose_question(client, value), (ANALYSIS if refusal else valid, refusal))
+                client.compose.assert_called_once_with(value)
+
+    def test_screening_does_not_use_analysis_compose_recovery(self):
+        from agent.native_browser_hook import _compose_question
+        from tests.test_agent_dialogue_service import request
+
+        value = request(phase='COMPOSE_SCREENING', reply='Pilih coin untuk analisis.')
+        client = Mock(compose=Mock(side_effect=service.DialogueError('DIALOGUE_PRICE_PROPOSAL_REFUSED')))
+        with self.assertRaisesRegex(service.DialogueError, 'DIALOGUE_PRICE_PROPOSAL_REFUSED'):
+            _compose_question(client, value)
+        client.compose.assert_called_once_with(value)
+
     def test_compose_analysis_is_model_work_memoized_across_restart_and_new_transport_deadline(self):
         from agent.llm import OpenAIDialogue
         from agent.memory import Memory
