@@ -31,17 +31,28 @@ def normalize_privacy_reminders(question):
     """Remove only complete, value-free negative internal privacy sentences."""
     if type(question) is not str:
         raise ValueError('NATIVE_COMPOSE_RENDER_UNVERIFIED')
-    verb = (r'(?:minta|meminta|sebut(?:kan)?|menyebut(?:kan)?|ungkap|mengungkap(?:kan)?|'
+    verb = (r'(?:minta|meminta|sebut(?:kan)?|menyebut(?:kan)?|ungkap(?:kan)?|mengungkap(?:kan)?|'
         r'tanyakan|menanyakan|sarankan|menyarankan|tentukan|menentukan|'
-        r'hitung|menghitung|berikan|memberikan|rekomendasikan|merekomendasikan)')
+        r'hitung|menghitung|berikan|memberikan|rekomendasikan|merekomendasikan|'
+        r'cantumkan|mencantumkan|sertakan|menyertakan|bahas|membahas|singgung|menyinggung)')
+    role = r'(?:(?:peran|tugas)\s+)?risk\s+manager'
     topic = (r'(?:ukuran(?:\s+posisi)?|quantity|kuantitas|anggaran\s+risiko(?:\s+(?:pribadi|akun))?'
         r'|nominal\s+risiko(?:\s+(?:pribadi|akun))?|risiko\s+pribadi)')
     # A request prohibition can name the recommendation rather than the
     # quantity itself. Match only the entire value-free negative clause.
     subject = r'(?:(?:rekomendasi|saran|perhitungan)\s+)?' + topic
-    reminder = (r'(?:jangan|tidak\s+perlu)\s+' + verb
+    heading = r'(?:[-*]\s+)?(?:(?:catatan|batasan|ketentuan|instruksi|aturan|larangan)(?:\s+wajib)?\s*:\s*)?'
+    join = r'(?:/|,(?:\s*(?:dan|atau)\b)?|\bdan\b|\batau\b)'
+    # A joined subject can repeat a non-imperative speech verb. An imperative
+    # such as "atau sarankan ukuran posisi" remains ambiguous and guarded.
+    joined_subject = (r'(?:(?:meminta|menyebut(?:kan)?|mengungkap(?:kan)?|'
+        r'mencantumkan|menyertakan|membahas)\s+)?' + subject)
+    role_reference = (r'(?:sebut(?:kan)?|menyebut(?:kan)?|cantumkan|mencantumkan|'
+        r'sertakan|menyertakan|bahas|membahas|singgung|menyinggung)\s+' + role)
+    reminder = (heading + r'(?:jangan|tidak\s+perlu)\s+' + verb
         + r'(?:\s+(?:atau|dan)\s+' + verb + r')*\s+' + subject
-        + r'(?:\s*(?:/|,|\bdan\b|\batau\b)\s*' + subject + r')*[.!?;]?')
+        + r'(?:\s*' + join + r'\s*' + joined_subject + r')*'
+        + r'(?:\s*' + join + r'\s*' + role_reference + r')?[.!?;]?')
     # A wrapped value on the next line belongs to the same sentence; a line
     # break must not detach a real budget/quantity from its privacy subject.
     # Only fixed 2R role vocabulary is disposable, never prices, fees,

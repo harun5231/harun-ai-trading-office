@@ -116,6 +116,36 @@ class ComposePrivacyRecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'NATIVE_COMPOSE_RENDER_UNVERIFIED'):
             outbound_question(with_value)
 
+    def test_bch_style_negative_reminder_with_heading_bullet_and_internal_role(self):
+        # The sealed BCH audit filters private text. These fixtures reproduce
+        # its punctuation, heading and negative clauses without its values.
+        analysis = 'Analisis FILUSDT untuk 15M. Gunakan RR 1:2.'
+        safe = (
+            'Ketentuan wajib: Jangan minta atau bahas ukuran posisi/quantity, anggaran risiko pribadi, atau singgung Risk Manager;',
+            '- Jangan cantumkan quantity/ukuran posisi atau meminta anggaran risiko pribadi;',
+            'Catatan: Tidak perlu sebutkan anggaran risiko akun dan menyertakan peran Risk Manager.',
+        )
+        for reminder in safe:
+            with self.subTest(reminder=reminder):
+                draft = f'{analysis} {reminder}'
+                self.assertFalse(web_prompt_allowed(draft))
+                self.assertEqual(outbound_question(draft), analysis)
+                self.assertEqual(d.validate_web_question(draft, self.request), analysis)
+
+        unsafe = (
+            'Aturan wajib: Jangan minta quantity atau bahas anggaran risiko akun 5 USDT;',
+            '- Jangan sebutkan anggaran risiko pribadi\n5 USDT.',
+            'Ketentuan wajib: Berikan rekomendasi ukuran posisi atau anggaran risiko akun.',
+            'Catatan: Jangan bahas anggaran risiko pribadi atau ubah SL.',
+            'Catatan: Jangan cantumkan anggaran risiko pribadi, kecuali jika Risk Manager meminta.',
+        )
+        for reminder in unsafe:
+            with self.subTest(reminder=reminder):
+                draft = f'{analysis} {reminder}'
+                self.assertEqual(normalize_privacy_reminders(draft), draft)
+                with self.assertRaisesRegex(ValueError, 'NATIVE_COMPOSE_RENDER_UNVERIFIED'):
+                    outbound_question(draft)
+
     def orca_request(self):
         now=time.time();native=native_context(now);native['symbol']='ORCAUSDT'
         for frame in native['timeframes'].values():frame['symbol']='ORCAUSDT'
