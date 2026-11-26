@@ -20,14 +20,18 @@ CONTEXT_RETURN_FAILURE_HOOK='235fb14a9932269beebf55dc669298cbeeef90d35d22e1b6e41
 CURRENT_RETURN_FAILURE_HOOK='f4b5a212c6d5547dc97abe5f230353b1f744dfcc76704f2ee6b9fb578750b768'
 PHASE_JSON_RETURN_FAILURE_HOOK='5f73c0629157ee1a44346cc0e31287997a44a4dafd3f4f00e17ba69316617b47'
 TERMINAL_ERROR_RETURN_FAILURE_HOOK='1d516829b20a27229be3a991953b60fb2b78bfe97fa53c4f4c27b4301c7c31ae'
+SCREENING_ATTEMPT_RETURN_FAILURE_HOOK='e99f8b1aa3668bc9798f899dee29e7143d57d844f9a69849e4d9a91ad204487d'
 RETURN_FAILURE_SOURCES=frozenset(((RETURN_FAILURE_PRODUCER,RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,PREVIOUS_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CONTEXT_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CURRENT_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,PHASE_JSON_RETURN_FAILURE_HOOK),
-    (RETURN_FAILURE_PRODUCER,TERMINAL_ERROR_RETURN_FAILURE_HOOK)))
+    (RETURN_FAILURE_PRODUCER,TERMINAL_ERROR_RETURN_FAILURE_HOOK),
+    (RETURN_FAILURE_PRODUCER,SCREENING_ATTEMPT_RETURN_FAILURE_HOOK)))
 REVIEW_IDENTITY_KIND='NATIVE_SCREENING_RECEIVED_REVIEW_IDENTITIES_V1'
 TERMINAL_ERROR_KIND='NATIVE_SCREENING_TERMINAL_PROVIDER_ERROR_V1'
+HISTORY_SEARCH_KIND='NATIVE_SCREENING_HISTORY_SEARCH_V1'
+HISTORY_RETRY_SECONDS=60
 TERMINAL_BODY_CONTRACT='RENDERED_BODY_TERMINAL_SUFFIX_ID_V1'
 TERMINAL_BODY_SUFFIX=(r'\n(?:\n?Tampilkan lebih banyak\n)?(?:[01]?\d|2[0-3])\.[0-5]\d\n'
     r'Neurobro tidak dapat menjawab pertanyaan ini\n(?:\n?Coba lagi\n)?Tanyakan apa saja\n'
@@ -37,6 +41,152 @@ TERMINAL_BODY_SUFFIX=(r'\n(?:\n?Tampilkan lebih banyak\n)?(?:[01]?\d|2[0-3])\.[0
 
 def need(value,code='SCREENING_RECOVERY_RECEIVED_SCREENING_UNVERIFIED'):
     if not value:raise ValueError(code)
+
+
+def history_target(rows, record, cached, payload, archive_root, page_url, state):
+    """Classify only the operation's exact historical prompt in its owned room."""
+    from .native_daily_room import identities, prefix_snapshot_matches
+    from .native_received_analysis import native_digest, text_sha
+
+    prompt = cached['rendered_prompt']
+    marker = payload['marker']
+    need(record['day'] == payload['operation'][:10]
+        and cached['operation'] == payload['operation']
+        and cached['payload_sha256'] == native_digest(payload)
+        and cached['rendered_sha256'] == text_sha(prompt) and prompt.count(marker) == 1,
+        'SCREENING_HISTORY_REQUEST_UNVERIFIED')
+    matches = [index for index, row in enumerate(rows)
+               if row.get('role') == 'user' and row.get('text') == prompt]
+    anchors = record['anchors']
+    url_matches = page_url == record['url'] and page_url.startswith('https://app.neurobro.ai/')
+    binding = {key: record[key] for key in ('first_prompt_sha256', 'marker', 'history_titles')}
+    full_prefix = bool(url_matches and anchors and len(rows) >= len(anchors) and (
+        identities(rows[:len(anchors)]) == anchors or prefix_snapshot_matches(
+            archive_root, record['day'], record['room_id'], anchors, rows,
+            binding=binding, allow_window=False)))
+    # Initial SENT has no prefix. Its exact first authored prompt and marker
+    # identify the room, but an empty view can never prove target absence.
+    first_send = (url_matches and state == 'SENT' and not anchors and matches == [0]
+        and record['marker'] == marker and record['first_prompt_sha256'] == text_sha(
+            prompt.replace('\r\n', '\n').strip()))
+    marker_mentions = sum(row.get('text', '').count(marker) for row in rows if row.get('role') == 'user')
+    target = None
+    if full_prefix or first_send:
+        if matches and marker_mentions == len(matches):
+            target = True  # Duplicates remain visible for the existing refusal path.
+        elif len(rows) == len(anchors) and not marker_mentions:
+            target = False
+    return dict(target=target, strict_prefix_verified=full_prefix,
+        journal_url_matches=url_matches, target_matches=len(matches),
+        marker_mentions=marker_mentions, rows_count=len(rows), anchors_count=len(anchors),
+        rows_sha256=native_digest(rows), anchors_sha256=native_digest(anchors))
+
+
+def same_historical_prefix(before, after, prefix_size):
+    """Allow only a completed historical assistant's presentation ID to rotate."""
+    if len(before) != len(after):
+        return False
+    for index, (old, current) in enumerate(zip(before, after)):
+        if old == current:
+            continue
+        if (index >= prefix_size or old.get('role') != 'assistant' or old.get('complete') is not True
+                or type(current.get('id')) is not str
+                or re.fullmatch('[A-Za-z0-9_.:-]{1,160}', current['id']) is None
+                or {key: value for key, value in old.items() if key != 'id'}
+                != {key: value for key, value in current.items() if key != 'id'}):
+            return False
+    return True
+
+
+def claim_history_search(root, payload, now, *, target_observed=False):
+    """Remember navigation attempts across restarts without copying a result forward."""
+    from .native_chart_followup import _directory, _private_file, pairs
+    from .native_turn_batch import _write
+    from .native_received_analysis import native_digest
+    import os
+
+    identity = {key: payload[key] for key in ('operation', 'request_sha256')}
+    name = 'screening-history-checkpoint-' + native_digest(identity) + '.json'
+    directory = _directory(root)
+    prior = None
+    try:
+        try:
+            raw = _private_file(directory, name, 4096)
+        except FileNotFoundError:
+            pass
+        else:
+            prior = json.loads(raw, object_pairs_hook=pairs)
+            need(type(prior) is dict and set(prior) in ({*identity, 'started_at'},
+                    {*identity, 'started_at', 'target_observed'})
+                and all(prior[key] == value for key, value in identity.items())
+                and type(prior['started_at']) in (int, float) and math.isfinite(prior['started_at'])
+                and prior.get('target_observed', True) is True
+                and 0 < prior['started_at'] <= now, 'SCREENING_HISTORY_CHECKPOINT_UNVERIFIED')
+            if (not target_observed and not prior.get('target_observed')
+                    and now - prior['started_at'] < HISTORY_RETRY_SECONDS):
+                return False
+    finally:
+        os.close(directory)
+    record = {**identity, 'started_at': now}
+    if target_observed:
+        need(prior is not None and prior['started_at'] == now, 'SCREENING_HISTORY_CHECKPOINT_UNVERIFIED')
+        record['target_observed'] = True
+    _write(root, name, record, replace=True)
+    return True
+
+
+def retained_reviewed_observation(root, payload, record, cached, reviews, now, monotonic):
+    """Reuse a fresh immutable observation that already contains a final review."""
+    import os
+    from . import native_received_analysis as observer
+    from .native_chart_followup import _directory, _private_file, pairs
+    from .native_screening_recovery import NATIVE_DOM_SHA256
+
+    # The same operation-bound namespace and private reader used by
+    # review_identity_rows. Failed current observations cannot widen the scan.
+    key = observer.digest({name: payload[name] for name in ('operation', 'request_sha256')})[:16]
+    pattern = re.compile(r'received-analysis-observation-' + key + r'-([a-f0-9]{64})\.json')
+    deadline = monotonic() + 1
+    directory = _directory(root)
+    try:
+        recent = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if monotonic() >= deadline:
+                    return None
+                if pattern.fullmatch(entry.name):
+                    recent.append((entry.stat(follow_symlinks=False).st_mtime_ns, entry.name))
+        for _, name in sorted(recent, reverse=True)[:8]:
+            if monotonic() >= deadline:
+                return None
+            raw = _private_file(directory, name, observer.MAX_CAPTURE)
+            digest = hashlib.sha256(raw).hexdigest()
+            need(pattern.fullmatch(name)[1] == digest, 'SCREENING_HISTORY_CAPTURE_HASH_CHANGED')
+            prior = json.loads(raw, object_pairs_hook=pairs)
+            finished = prior.get('finished_at')
+            scope = prior.get('operation_scope', {})
+            if not (prior.get('kind') == KIND and prior.get('schema_version') == 2
+                    and prior.get('operation') == payload['operation']
+                    and prior.get('request_sha256') == payload['request_sha256']
+                    and prior.get('payload_sha256') == observer.native_digest(payload)
+                    and prior.get('native_source_sha256') == NATIVE_DOM_SHA256
+                    and prior.get('stage') == 'OBSERVED_WITHOUT_COMPLETION' and prior.get('errors') == []
+                    and prior.get('status') == 'CONNECTED' and prior.get('stable_snapshot_reads') == 4
+                    and type(finished) in (int, float) and 0 <= now-finished <= 120
+                    and scope.get('verified') is True and scope.get('reply_complete') is True
+                    and prior.get('room') == record and prior.get('page_url') == record['url']
+                    and prior.get('rendered_prompt_receipt') == cached and prior.get('review_receipts') == reviews):
+                continue
+            projected = observer._project_operation(prior)['rows']
+            if any(item['value'].get('transcript_sha256') == observer.native_digest(projected)
+                    and item['value'].get('model_operation', {}).get('state') == 'DONE'
+                    and item['value'].get('response', {}).get('decision', {}).get('action') == 'SCREENING'
+                    and item['value']['response'].get('needs_followup') is False
+                    for item in reviews):
+                return prior, dict(capture_name=name, capture_sha256=digest, capture_bytes=len(raw))
+    finally:
+        os.close(directory)
+    return None
 
 
 def terminal_body_ui(body,rendered,marker):
@@ -357,7 +507,7 @@ def operation_scope(rows,witness,reviews,payload,*,identity_rows=None):
     from .native_screening_recovery import clarification
     from .neurobro_reply import parse_reply_for_payload
     initial=witness['initial_screening_user_rows']
-    if len(initial)!=1:return dict(verified=False,initial_user=None,latest_user=None,user_rows=[],reply_row=None,reply_complete=False,unmatched_intents=[],reason='INITIAL_PROMPT_NOT_UNIQUE')
+    if len(initial)!=1:return dict(verified=False,initial_user=None,latest_user=None,user_rows=[],reply_row=None,reply_complete=False,unmatched_intents=[],reason='INITIAL_PROMPT_NOT_FOUND' if not initial else 'INITIAL_PROMPT_NOT_UNIQUE')
     start=initial[0];users=[start];index=start
     while index+2<len(rows):
         prefix=rows[start:index+2];following=rows[index+2]
@@ -384,8 +534,11 @@ def operation_scope(rows,witness,reviews,payload,*,identity_rows=None):
     reply=index+1 if index+1<len(rows)else None
     complete=reply is not None and rows[reply].get('role')=='assistant' and rows[reply].get('complete')is True
     verified=bool(witness['same_loaded_room_verified'] and reply==len(rows)-1 and complete)
+    pending = witness['same_loaded_room_verified'] and (reply is None or (
+        reply == len(rows)-1 and rows[reply].get('role') in ('assistant', 'unknown') and not complete))
     return dict(verified=verified,initial_user=start,latest_user=index,user_rows=users,reply_row=reply,
-        reply_complete=complete,unmatched_intents=[],reason=None if verified else'SCREENING_TRANSCRIPT_UNVERIFIED')
+        reply_complete=complete,unmatched_intents=[],reason=None if verified else (
+            'SCREENING_REPLY_NOT_COMPLETE' if pending else 'SCREENING_TRANSCRIPT_UNVERIFIED'))
 
 
 def review_received(actor,delegated,value):

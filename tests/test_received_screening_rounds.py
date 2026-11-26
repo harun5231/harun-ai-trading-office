@@ -10,7 +10,8 @@ from agent import native_received_analysis as observer
 from agent.native_browser_hook import DelegatedDOMBridge
 from agent.native_daily_room import identities
 from agent.native_screening_recovery import recover,clarification
-from agent.native_analysis_receipt import digest,read_reviews
+from agent.dialogue_service import DialogueError
+from agent.native_analysis_receipt import arm_screening_reviews,digest,read_reviews
 from tests import test_native_received_analysis as legacy
 from worker.account_state import screening_contract
 from worker.prompts import REPLACEMENT_SCREENING
@@ -28,6 +29,7 @@ class ReceivedScreeningRoundsTests(unittest.TestCase):
                 replacement_instruction='Choose different Binance USD-M USDT perpetual coins that are not in excluded_symbols.'))
         self.payload={**body,'request_sha256':observer.digest(body)}
         rendered=c.cache.store(self.payload,body['prompt'],'a'*64)
+        arm_screening_reviews(c.root, self.payload, rendered)
         c.raw.messages=c.raw.messages[:6]+[dict(role='user',text=rendered,attachments=[],display_names=[]),
             dict(role='assistant',text='COIN: SOLUSDT\nLikuiditas dan momentum sedang baik.',complete=True,id='screen9-reply')]
         self.anchor();self.before=list(copy.deepcopy(c.raw.messages))
@@ -109,6 +111,17 @@ class ReceivedScreeningRoundsTests(unittest.TestCase):
         self.assertEqual(result['kind'],screening.INCOMPLETE);self.assertFalse(result['operation_completed'])
         self.assertEqual(client.calls,1);self.assertEqual(self.case.raw.messages,self.before)
         self.assertTrue(read_reviews(self.case.root,self.payload)[0]['value']['response']['needs_followup'])
+
+    def test_legacy_missing_exact_mini_receipt_does_not_admit_an_uncertain_model_call(self):
+        origins = list(self.case.root.glob('screening-review-origin-*.json'))
+        self.assertEqual(len(origins), 1)
+        origins[0].unlink()  # Legacy observation from before the dispatch witness existed.
+        client = self.install_review()
+        with self.assertRaisesRegex(DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.review(self.invoke())
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(self.case.raw.messages, self.before)
+        self.assertEqual(read_reviews(self.case.root, self.payload), [])
 
 
 if __name__=='__main__':unittest.main()

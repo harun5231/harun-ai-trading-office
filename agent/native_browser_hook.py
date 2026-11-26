@@ -668,17 +668,22 @@ class DelegatedDOMBridge:
             validate_request(request, now=self.wall_clock())
             model_operation=None
             lookup=(phase=='SCREENING' and getattr(self.client,'supports_screening_receipt_lookup',False)is True)
-            try:
-                stored=self.client.completed_screening(request)if lookup else None
-            except DialogueError as error:
-                if str(error)!='DIALOGUE_OPERATION_UNKNOWN':raise
-                # The authenticated service alone can admit a uniquely proven
-                # rejected interpretation under its distinct once-only child.
-                # Ordinary ambiguous model deliveries remain blocked there.
-                stored=None
+            receipt_turns = observed_turns
+            claim = None
+            if lookup and self.daily_room is not None:
+                from .native_analysis_receipt import bind_screening_review_attempt
+                request, claim = bind_screening_review_attempt(self.daily_room.store.root,
+                    payload, request, self.bridge.page.url)
+                validate_request(request, now=self.wall_clock())
+                receipt_turns = request['conversation_context']['turns']
+            stored=self.client.completed_screening(request)if lookup else None
             if stored is not None:
                 response=validate_result(stored['result'],request);model_operation=stored['operation']
             else:
+                if claim is not None:
+                    gate()
+                    if not claim():
+                        raise DialogueError('DIALOGUE_OPERATION_UNKNOWN')
                 response = validate_result(self.client.request(request), request)
                 if lookup:
                     stored=self.client.completed_screening(request)
@@ -695,7 +700,7 @@ class DelegatedDOMBridge:
                 # while later recovering an uncertain browser outcome.
                 from .native_analysis_receipt import persist_review
                 sealed_review=persist_review(self.daily_room.store.root, payload, request, response,
-                    observed_turns, context=active_context, observed_at=self.wall_clock(),
+                    receipt_turns, context=active_context, observed_at=self.wall_clock(),
                     model_operation=model_operation)
             if evaluation is not None:
                 if not response['needs_followup']:
@@ -732,7 +737,7 @@ class DelegatedDOMBridge:
                 # analyst conversation. A text-layout parser cannot overrule
                 # that choice merely because it expects a particular heading.
                 try:
-                    output=screening_interpretation(answer,payload,request,response,observed_turns)
+                    output=screening_interpretation(answer,payload,request,response,receipt_turns)
                     natural_parsed=True;parse_error=None
                 except ReplyIncomplete as error:
                     if str(error)not in {'NEUROBRO_SCREENING_EXCLUDED_SYMBOL','NEUROBRO_SCREENING_COUNT_MISMATCH'}:
@@ -766,7 +771,7 @@ class DelegatedDOMBridge:
                         state['screening_interpretation']={'kind':'NATIVE_SCREENING_INTERPRETATION_V1',
                             'operation':operation,'request_sha256':request_sha,'payload_sha256':payload_digest,
                             'assistant_sha256':reply_sha,'room':{'day':day,'room_id':room_id,
-                                'url':self.bridge.page.url},'turns':copy.deepcopy(observed_turns),
+                                'url':self.bridge.page.url},'turns':copy.deepcopy(receipt_turns),
                             'observed_at':sealed_review['observed_at'],'review_receipt':copy.deepcopy(entries[0])}
             complete = type(output) is dict and set(required).issubset(output)
             expected_symbol = (payload.get('context') or {}).get('symbol')
@@ -1000,7 +1005,12 @@ class DelegatedDOMBridge:
                     {'LOGIN_REQUIRED', 'CHALLENGE_REQUIRED'} else 'UNAVAILABLE') from None
             def final_dispatch():
                 if dispatch_check() is not True: return False
-                _render_web_prompt(self.native, payload)
+                rendered = _render_web_prompt(self.native, payload)
+                if (self.daily_room is not None and getattr(self.client, 'supports_screening_receipt_lookup', False) is True
+                        and _phase(payload, payload['output_schema']['required']) == 'SCREENING'):
+                    from .native_analysis_receipt import arm_screening_reviews
+                    arm_screening_reviews(self.daily_room.store.root, payload, rendered)
+                    return dispatch_check() is True
                 if evaluation is not None:
                     evaluation.before_send(self.native.user_prompt(payload),
                         transcript=self.daily_room.full_turns())

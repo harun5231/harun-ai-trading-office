@@ -2,7 +2,7 @@
 import copy
 import json
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from agent.dialogue_service import DialogueError
 from agent.native_analysis_receipt import persist_review,read_reviews,digest,SCREENING_KIND
@@ -48,28 +48,88 @@ class ScreeningReviewReceiptTests(unittest.TestCase):
         self.assertEqual(case.bridge.clicks,1)
         case.reasoner.request.assert_not_called()
 
-    def test_unknown_parent_uses_one_interpretation_request_and_persists_the_real_child(self):
+    def test_unknown_parent_does_not_request_another_paid_interpretation(self):
         case,payload=self.child_hook()
-        stored=case.reasoner.completed_screening.side_effect
-        seen=[]
-        def lookup(request):
-            seen.append(copy.deepcopy(request))
-            if len(seen)==1:raise DialogueError('DIALOGUE_OPERATION_UNKNOWN')
-            return stored(request)
-        case.reasoner.completed_screening.side_effect=lookup
-        case.reasoner.request.side_effect=lambda request:stored(request)['result']
-        result=case.hook.ask(payload,lambda:True,deadline=80)
-        self.assertEqual(len(seen),2)
-        case.reasoner.request.assert_called_once()
-        self.assertEqual(case.reasoner.request.call_args.args[0],seen[0])
-        self.assertEqual(seen[0],seen[1])
-        values=read_reviews(case.hook.daily_room.store.root,payload)
-        self.assertEqual(len(values),1);proof=values[0]['value']
-        self.assertEqual(proof['model_operation']['operation_id'],
-            'delegated-model-screening-recovery:'+proof['request_id'])
-        self.assertEqual(proof['response'],stored(seen[1])['result'])
-        self.assertEqual(proof['response']['decision']['symbols'],result['output']['symbols'])
+        case.reasoner.completed_screening.side_effect=DialogueError('DIALOGUE_OPERATION_UNKNOWN')
+        with self.assertRaises(fixtures.OutcomeUnknown):
+            case.hook.ask(payload,lambda:True,deadline=80)
+        case.reasoner.completed_screening.assert_called_once()
+        case.reasoner.request.assert_not_called()
+        self.assertEqual(read_reviews(case.hook.daily_room.store.root,payload),[])
         self.assertEqual(case.bridge.clicks,1)
+
+    def recovered_review(self, case, payload):
+        rows = case.bridge._turns()
+        case.bridge.operation_deadline = 80
+        def forbidden():
+            self.fail('An observed screening review cannot Send or upload')
+        return case.hook._ask(payload, lambda: True, deadline=80, _received=dict(rows=rows,
+            prompt=rows[0]['text'], turn_names=[[]], followup_intents=[], completed_intents=[], bound_charts=[],
+            before_upload=forbidden, before_send=forbidden, review_only=True))
+
+    def test_paid_result_before_receipt_survives_changed_assistant_id_without_new_model(self):
+        case,payload=self.child_hook(operation_prefix='delegated-model:')
+        make_result = case.reasoner.completed_screening.side_effect
+        stored = {}
+        def paid(request):
+            result = make_result(request)
+            stored[request['request_id']] = result
+            return result['result']
+        case.reasoner.request.side_effect = paid
+        case.reasoner.completed_screening.side_effect = lambda request: stored.get(request['request_id'])
+        with patch('agent.native_analysis_receipt.persist_review', side_effect=OSError('simulated interruption')):
+            with self.assertRaises(fixtures.OutcomeUnknown):
+                case.hook.ask(payload, lambda: True, deadline=80)
+        self.assertEqual(read_reviews(case.hook.daily_room.store.root,payload), [])
+        original = copy.deepcopy(case.reasoner.request.call_args.args[0])
+        case.bridge.messages[-1]['id'] = 'rehydrated-after-restart'
+        case.reasoner.request.side_effect = AssertionError('Paid interpretation duplicated')
+        result = self.recovered_review(case, payload)
+        receipt = read_reviews(case.hook.daily_room.store.root,payload)[0]['value']
+        self.assertEqual(case.reasoner.request.call_count, 1)
+        self.assertEqual(case.bridge.clicks, 1)
+        self.assertEqual(receipt['request_id'], original['request_id'])
+        self.assertEqual(receipt['request']['conversation_context'], original['conversation_context'])
+        self.assertEqual(result['output'], {'symbols': ['RUNEUSDT']})
+
+    def test_uncertain_original_model_result_never_uses_new_id(self):
+        case,payload=self.child_hook()
+        case.reasoner.completed_screening.side_effect = None
+        case.reasoner.completed_screening.return_value = None
+        case.reasoner.request.side_effect = TimeoutError('simulated lost model return')
+        with self.assertRaises(fixtures.OutcomeUnknown):
+            case.hook.ask(payload, lambda: True, deadline=80)
+        original = case.reasoner.request.call_args.args[0]['request_id']
+        case.bridge.messages[-1]['id'] = 'new-display-id'
+        case.reasoner.completed_screening.side_effect = DialogueError('DIALOGUE_OPERATION_UNKNOWN')
+        with self.assertRaisesRegex(DialogueError, 'DIALOGUE_OPERATION_UNKNOWN'):
+            self.recovered_review(case, payload)
+        self.assertEqual(case.reasoner.completed_screening.call_args.args[0]['request_id'], original)
+        self.assertEqual(case.reasoner.request.call_count, 1)
+        self.assertEqual(case.bridge.clicks, 1)
+        self.assertEqual(read_reviews(case.hook.daily_room.store.root,payload), [])
+
+    def test_authoritative_missing_after_local_claim_uses_the_original_id(self):
+        case,payload=self.child_hook(operation_prefix='delegated-model:')
+        make_result = case.reasoner.completed_screening.side_effect
+        case.reasoner.completed_screening.side_effect = None
+        case.reasoner.completed_screening.return_value = None
+        case.reasoner.request.side_effect = OSError('connection interrupted before reaching Mini')
+        with self.assertRaises(fixtures.OutcomeUnknown):
+            case.hook.ask(payload, lambda: True, deadline=80)
+        original = copy.deepcopy(case.reasoner.request.call_args.args[0])
+        case.bridge.messages[-1]['id'] = 'restored-id'
+        recorded = {}
+        def paid(request):
+            result = make_result(request)
+            recorded[request['request_id']] = result
+            return result['result']
+        case.reasoner.completed_screening.side_effect = lambda request: recorded.get(request['request_id'])
+        case.reasoner.request.side_effect = paid
+        self.assertEqual(self.recovered_review(case,payload)['output'], {'symbols': ['RUNEUSDT']})
+        self.assertEqual(list(recorded), [original['request_id']])
+        self.assertEqual(case.reasoner.request.call_args.args[0]['conversation_context'], original['conversation_context'])
+        self.assertEqual(case.bridge.clicks, 1)
 
     def test_other_lookup_error_is_not_routed_to_a_new_interpretation(self):
         case,payload=self.child_hook()

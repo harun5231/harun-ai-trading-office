@@ -97,6 +97,16 @@ class TerminalProviderErrorRecoveryTests(unittest.TestCase):
             sealed['retirement']['retry_not_before']), (1, 60, fixture.NOW + 60))
         self.assertEqual(json.loads(journal['preimage'])['api_requests'], before_api)
 
+    def test_native_incomplete_scope_preserves_independently_proved_terminal_error(self):
+        from agent.native_received_screening import operation_scope
+
+        proof = self.envelope['observation']
+        proof['operation_scope'] = operation_scope(proof['rows'], proof['room_witness'], [], self.case.payload)
+        self.assertEqual(proof['operation_scope']['reason'], 'SCREENING_REPLY_NOT_COMPLETE')
+        self.assertEqual(self.recover(self.case.seal(self.envelope)), 'NOEXEC')
+        self.assertEqual(self.row('api_requests')['state'], recovery.PROVIDER_ERROR_TERMINAL)
+        self.assertIsNone(self.row('research_browser_responses'))
+
     def test_repeat_and_restart_read_same_append_only_seal_without_replay(self):
         self.assertEqual(self.recover(), 'NOEXEC'); before = tuple(self.db.iterdump())
         self.assertEqual(self.recover(), 'NOEXEC'); self.assertEqual(tuple(self.db.iterdump()), before)

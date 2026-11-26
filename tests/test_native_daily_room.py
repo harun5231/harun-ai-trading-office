@@ -100,8 +100,9 @@ def native():
 class History:
  def __init__(self, bridge):self.bridge=bridge;self.rooms=[];self.selected=[]
  def rows(self):return [dict(index=i,text=title,label='Hari ini')for i,(title,_)in enumerate(self.rooms)]
- def open_sidebar(self):pass
- def select(self,row,*,occurrence=0):
+ def open_sidebar(self,*,check_status=None):pass
+ def select(self,row,*,occurrence=0,check_status=None):
+  if check_status is not None and check_status()!='CONNECTED':raise DailyRoomUnavailable()
   matches=[item for item in self.rooms if item[0]==row['text']]
   self.selected.append(row['text']);self.bridge.messages=copy.deepcopy(matches[occurrence][1])
 
