@@ -35,9 +35,12 @@ TERMINAL_ERROR_KIND='NATIVE_SCREENING_TERMINAL_PROVIDER_ERROR_V1'
 HISTORY_SEARCH_KIND='NATIVE_SCREENING_HISTORY_SEARCH_V1'
 HISTORY_RETRY_SECONDS=60
 TERMINAL_BODY_CONTRACT='RENDERED_BODY_TERMINAL_SUFFIX_ID_V1'
+# Some provider error views omit the composer placeholder. That layout still
+# shows its Retry control and the complete composer toolbar before the footer.
 TERMINAL_BODY_SUFFIX=(r'\n(?:\n?Tampilkan lebih banyak\n)?(?:[01]?\d|2[0-3])\.[0-5]\d\n'
-    r'Neurobro tidak dapat menjawab pertanyaan ini\n(?:\n?Coba lagi\n)?Tanyakan apa saja\n'
-    r'(?:\n?Ringan\nPrompt\n)?\n'
+    r'Neurobro tidak dapat menjawab pertanyaan ini\n'
+    r'(?:(?:\n?Coba lagi\n)?Tanyakan apa saja\n(?:\n?Ringan\nPrompt\n)?\n'
+    r'|\n?Coba lagi\n\n?Ringan\nPrompt\n\n?)'
     r'Neurobro bisa keliru\. Bukan nasihat keuangan\.\n?')
 
 

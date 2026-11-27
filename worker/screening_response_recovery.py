@@ -294,9 +294,12 @@ UNKNOWN_HISTORY_OUTCOMES = ('TARGET_ABSENT', 'UNBOUND_INITIAL_EXHAUSTED')
 # The dispatch admission allows 900 seconds. Keep the existing 45-second
 # observation window as additional grace before closing an ended operation.
 UNKNOWN_DISPATCH_GRACE_SECONDS = 45
+# Keep the worker's exact suffix checks aligned with the browser proof producer.
 PROVIDER_ERROR_SUFFIX = (r'\n(?:\n?Tampilkan lebih banyak\n)?(?:[01]?\d|2[0-3])\.[0-5]\d\n'
-    r'Neurobro tidak dapat menjawab pertanyaan ini\n(?:\n?Coba lagi\n)?Tanyakan apa saja\n'
-    r'(?:\n?Ringan\nPrompt\n)?\nNeurobro bisa keliru\. Bukan nasihat keuangan\.\n?')
+    r'Neurobro tidak dapat menjawab pertanyaan ini\n'
+    r'(?:(?:\n?Coba lagi\n)?Tanyakan apa saja\n(?:\n?Ringan\nPrompt\n)?\n'
+    r'|\n?Coba lagi\n\n?Ringan\nPrompt\n\n?)'
+    r'Neurobro bisa keliru\. Bukan nasihat keuangan\.\n?')
 COMPLETED_STALE_AUDIT_SUFFIX = ':completed-stale-v1'
 RECEIVED_INELIGIBLE_TERMINAL = 'RECEIVED_INELIGIBLE_NOT_EXECUTED'
 RECEIVED_INELIGIBLE_REASON = 'INVALID_SCREENING_SYMBOL'

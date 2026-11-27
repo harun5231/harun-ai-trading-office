@@ -18,6 +18,10 @@ from worker.core import Review
 
 
 ACTUAL = json.loads((Path(__file__).parent / 'fixtures/neurobro_terminal_screening_failure_20261121.json').read_text())
+# Reproduce the public control sequence of the 27 November capture (run
+# 46050215013). Earlier room text, prompt and clock label use fixture values.
+RETRY_TOOLBAR_SUFFIX = ('\nTampilkan lebih banyak\n15.24\nNeurobro tidak dapat menjawab pertanyaan ini\n'
+    'Coba lagi\nRingan\nPrompt\nNeurobro bisa keliru. Bukan nasihat keuangan.')
 
 
 class TerminalProviderErrorRecoveryTests(unittest.TestCase):
@@ -211,23 +215,41 @@ class TerminalProviderErrorRecoveryTests(unittest.TestCase):
         self.assertEqual(self.row('api_requests')['state'], 'NEEDS_REVIEW')
 
     def test_screenshot_known_rendered_controls_are_accepted_without_permitting_arbitrary_words(self):
-        from agent.native_received_screening import TERMINAL_BODY_SUFFIX
+        from agent.native_received_screening import TERMINAL_BODY_SUFFIX, terminal_body_ui
         self.assertEqual(recovery.PROVIDER_ERROR_SUFFIX, TERMINAL_BODY_SUFFIX)
         suffix = ('\nTampilkan lebih banyak\n15.24\nNeurobro tidak dapat menjawab pertanyaan ini\n'
             'Coba lagi\nTanyakan apa saja\nRingan\nPrompt\n\nNeurobro bisa keliru. Bukan nasihat keuangan.\n')
-        for text, allowed in ((suffix, True), (suffix.replace('Coba lagi', 'Unknown UI control'), False),
-                (suffix.replace('Ringan\nPrompt', 'Ringan\nBuy now'), False)):
-            envelope = copy.deepcopy(self.envelope); ui = envelope['observation']['screening_terminal_error']['terminal_ui']
-            body = 'Known historical discussion\n' + envelope['observation']['rows'][0]['text'] + text
-            ui.update(body_text=body, body_sha256=recovery._sha(body), body_bytes=len(body.encode()), suffix=text)
-            self.case.seal(envelope)
-            if allowed:
-                recovery._terminal_provider_error_shape(envelope, self.case.payload, self.case.created,
-                    max_age=180, now=fixture.NOW)
-            else:
-                with self.assertRaises(Review):
+        padded = RETRY_TOOLBAR_SUFFIX.replace('\nCoba lagi\nRingan', '\n\nCoba lagi\n\nRingan')
+        padded = padded.replace('\nPrompt\nNeurobro', '\nPrompt\n\nNeurobro') + '\n'
+        rejected = (
+            suffix.replace('Coba lagi', 'Unknown UI control'),
+            suffix.replace('Ringan\nPrompt', 'Ringan\nBuy now'),
+            RETRY_TOOLBAR_SUFFIX.replace('Coba lagi\n', ''),
+            RETRY_TOOLBAR_SUFFIX.replace('Ringan\n', ''),
+            RETRY_TOOLBAR_SUFFIX.replace('Prompt\n', ''),
+            RETRY_TOOLBAR_SUFFIX.replace('Coba lagi', 'Coba lagi.'),
+            RETRY_TOOLBAR_SUFFIX.replace('Prompt', 'Prompt\nStreaming'),
+            RETRY_TOOLBAR_SUFFIX.replace('Neurobro bisa keliru.', 'Neurobro bisa keliru'),
+            RETRY_TOOLBAR_SUFFIX + '\n{"SYMBOLS":["SOLUSDT"]}',
+            padded.replace('\n\nRingan', '\n\n\nRingan'),
+        )
+        for text, allowed in [(value, True) for value in (suffix, RETRY_TOOLBAR_SUFFIX, padded)] + [
+                (value, False) for value in rejected]:
+            with self.subTest(suffix=text):
+                envelope = copy.deepcopy(self.envelope)
+                ui = envelope['observation']['screening_terminal_error']['terminal_ui']
+                rendered = envelope['observation']['rows'][0]['text']
+                body = 'Known historical discussion\n' + rendered + text
+                self.assertEqual(terminal_body_ui(body, rendered, self.case.payload['marker']) is not None, allowed)
+                ui.update(body_text=body, body_sha256=recovery._sha(body), body_bytes=len(body.encode()), suffix=text)
+                self.case.seal(envelope)
+                if allowed:
                     recovery._terminal_provider_error_shape(envelope, self.case.payload, self.case.created,
                         max_age=180, now=fixture.NOW)
+                else:
+                    with self.assertRaises(Review):
+                        recovery._terminal_provider_error_shape(envelope, self.case.payload, self.case.created,
+                            max_age=180, now=fixture.NOW)
 
     def test_authorized_cached_composition_is_bound_without_requiring_verbatim_owner_template(self):
         envelope = copy.deepcopy(self.envelope); proof = envelope['observation']
@@ -420,13 +442,28 @@ class TerminalProviderErrorRecoveryTests(unittest.TestCase):
         self.db.execute('UPDATE api_requests SET body_hash=?', (c.request_hash,))
         self.db.execute('UPDATE research_browser_requests SET request_sha256=?,marker=?,request_body=?',
             (c.request_hash, c.body['marker'], encoded))
+        browser.body = 'Earlier bound discussion\n' + browser.rendered + RETRY_TOOLBAR_SUFFIX
         result = browser.observe()
         self.assertEqual(result['observation']['room_initial_state'], 'BOUND')
-        self.assertEqual(self.recover(result, now=result['observation']['finished_at'] + 1), 'NOEXEC')
+        self.assertEqual(browser.body_reads, 4)
+        now = result['observation']['finished_at'] + 1
+        finances = c.finances()
+        self.assertEqual(self.recover(result, now=now), 'NOEXEC')
         self.assertEqual(self.row('api_requests')['state'], recovery.PROVIDER_ERROR_TERMINAL)
         self.assertIsNone(self.row('api_requests')['output'])
         self.assertIsNone(self.row('research_browser_responses'))
         self.assertEqual(len(json.loads(self.row('screening_response_recoveries')['proof'])['observation']['rows']), 1)
+        # An actual author reply that arrives after NOEXEC has no execution
+        # rights. Re-observing it cannot replace the already sealed result.
+        protected = tuple(self.db.iterdump())
+        browser.c.raw.messages.append(dict(role='assistant', text='{"SYMBOLS":["SOLUSDT"]}',
+            id='late-provider-answer', complete=True, attachments=[]))
+        late = browser.observe()
+        self.assertTrue(late['observation']['operation_scope']['reply_complete'])
+        self.assertNotIn('screening_terminal_error', late['observation'])
+        self.assertEqual(self.recover(late, now=late['observation']['finished_at'] + 1), 'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()), protected)
+        self.assertEqual(c.finances(), finances)
 
     def test_native_coordinator_reads_terminal_research_and_next_replacement_without_touching_owned_position(self):
         self.db.execute("UPDATE order_intents SET state='POSITION_PROTECTED' WHERE id='accepted-inj'")
