@@ -25,7 +25,7 @@ class NativeDataFileTests(unittest.TestCase):
             def handle_data(self, data): self.text.append(data)
         cases = [
             ({'required':['symbols'], 'properties':{'symbols':{'minItems':count,'maxItems':count}}},
-                {'requested_count':count}, {'SYMBOLS':['SIMBOL_USDT_'+str(i+1) for i in range(count)]})
+                {'requested_count':count}, {'SYMBOLS':['SIMBOLUSDT','SIMBOLLAINUSDT'][:count]})
             for count in (1, 2)]
         cases += [
             ({'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']},
@@ -34,7 +34,7 @@ class NativeDataFileTests(unittest.TestCase):
                 {'COIN':'FILUSDT','KEPUTUSAN':'TAHAN/BATALKAN'}),
             ({'required':['symbol','side']}, {},
                 {'COIN':'SIMBOL_USDT','ARAH':'LONG/SHORT','ENTRY':'harga','TP':'harga','SL':'harga'}),
-            ({'required':['symbols']}, {}, {'SYMBOLS':['SIMBOL_USDT']})]
+            ({'required':['symbols']}, {}, {'SYMBOLS':['SIMBOLUSDT']})]
         for schema, context, example in cases:
             with self.subTest(schema=schema,context=context):
                 payload={'output_schema':schema,'context':context,'marker':'HARUN_'+'a'*32}

@@ -47,14 +47,14 @@ def final_json_prompt(payload, rendered):
                 and minimum in (1, 2) and (count is None or count == minimum))
             count = minimum
         _need(count is None or type(count) is int and count in (1, 2))
-        # Plain placeholders neither seed a real coin recommendation nor
-        # become HTML tags removed by Neurobro's historical message renderer.
-        symbols = ['SIMBOL_USDT'] if count is None else [
-            'SIMBOL_USDT_' + str(index + 1) for index in range(count)]
+        # Illustrate the exchange's spelling without adding list indices to
+        # the placeholders or seeding a real coin recommendation.
+        symbols = ['SIMBOLUSDT', 'SIMBOLLAINUSDT'][:count or 1]
         instruction = ('Isi SYMBOLS dengan tepat ' + str(count) + ' coin'
             if count is not None else 'Isi SYMBOLS sesuai jumlah coin yang diminta')
         contract = (instruction + ', tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. '
-            'Format: ' + json.dumps({'SYMBOLS': symbols}, separators=(',', ':')) + '.')
+            'Gunakan simbol Binance yang sebenarnya tanpa pemisah atau nomor urut tambahan. '
+            'Contoh format saja: ' + json.dumps({'SYMBOLS': symbols}, separators=(',', ':')) + '.')
     elif fields == {'symbol', 'order_ref', 'decision'} or {'symbol', 'side'} <= fields:
         symbol = context.get('symbol')
         _need(symbol is None or type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,24}USDT', symbol))

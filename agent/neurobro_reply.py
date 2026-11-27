@@ -587,18 +587,19 @@ def _screening_public_summary(value, prefix, *, semantic_symbols=None):
     if set(value) != {'SYMBOLS'} or type(value['SYMBOLS']) is not list:
         raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
     selected = []
-    for choice in value['SYMBOLS']:
+    for position, choice in enumerate(value['SYMBOLS'], start=1):
         if type(choice) is not str:
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
         if re.fullmatch(PAIR, choice, re.I) is not None:
             selected.append(symbol(choice))
             continue
         # A public quote separator is presentation only after the actual
-        # Mini/source checks have already admitted that exact USDT pair. Do
-        # not remove underscores inside a base or grant aliases to the local
-        # deterministic parser.
+        # Mini/source checks have already admitted that exact USDT pair.
+        # The old prompt used SIMBOL_USDT_1 and SIMBOL_USDT_2. Recognize
+        # that exact item suffix only in its own position.
+        spelling = choice.strip().upper()
         matches = ([pair for pair in semantic_symbols
-            if choice.strip().upper() in (pair, pair[:-4], pair[:-4] + '_USDT')]
+            if spelling in (pair, pair[:-4], pair[:-4] + '_USDT', f'{pair[:-4]}_USDT_{position}')]
             if semantic_symbols is not None else [])
         if len(matches) != 1:
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
