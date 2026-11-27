@@ -178,6 +178,33 @@ class EndedScreeningTests(unittest.TestCase):
         self.assertEqual(self.recover(), 'NOEXEC')
         self.assertEqual(tuple(self.db.iterdump()), before)
 
+    def test_new_hook_reuses_archived_technical_refusal_only_for_expired_noexec(self):
+        self.technical_initial()
+        proof = self.envelope['observation']; entry = proof['screening_ended_return']
+        entry['hook_source_sha256'] = native.ANALYSIS_COMPOSE_RETURN_FAILURE_HOOK
+        self.seal()
+        later = fixture.NOW + 7200
+        before = tuple(self.db.iterdump())
+        with self.assertRaises(Review):
+            self.case.recover(self.envelope, now=later)
+        self.assertEqual(tuple(self.db.iterdump()), before)
+        self.envelope['retained_screening_end'] = True
+        rejected = copy.deepcopy(self.envelope)
+        edited = rejected['observation']['screening_ended_return']
+        edited['value']['followup_intent_sha256'] = ['1' * 64]
+        self.seal_entry(edited)
+        for packet, now in ((self.envelope, fixture.NOW), (self.seal(rejected), later)):
+            with self.assertRaises(Review):
+                self.case.recover(packet, now=now)
+            self.assertEqual(tuple(self.db.iterdump()), before)
+        self.pre_api = self.row('api_requests'); finances = self.finances()
+        self.assertEqual(self.case.recover(self.envelope, now=later), 'NOEXEC')
+        self.assert_sealed()
+        self.assertEqual(self.finances(), finances)
+        before = tuple(self.db.iterdump())
+        self.assertEqual(self.case.recover(self.envelope, now=later + 1), 'NOEXEC')
+        self.assertEqual(tuple(self.db.iterdump()), before)
+
     def test_initial_technical_rejection_keeps_source_and_expiry_guards(self):
         self.technical_initial()
         self.db.execute('UPDATE api_requests SET created=?', (fixture.NOW - 90,))

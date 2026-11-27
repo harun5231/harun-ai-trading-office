@@ -775,7 +775,10 @@ def observe(actor, delegated, value):
                             cached, reviews, started, raw.clock)
                         if retained is not None:
                             _gate(actor)
-                            return _observation_result(*retained, generic=True)
+                            result = _observation_result(*retained, generic=True)
+                            if started - retained[0]['finished_at'] > 120:
+                                result['retained_screening_end'] = True
+                            return result
                     if claim_history_search(room.store.root, payload, started):
                         search = dict(kind=HISTORY_SEARCH_KIND, operation=operation, request_sha256=request,
                             day=record['day'], room_id=record['room_id'],
@@ -968,6 +971,12 @@ def observe(actor, delegated, value):
                 capture['continuation_not_sent_error'] = dict(exception_class=type(error).__name__,
                     reason=code if re.fullmatch('[A-Z][A-Z0-9_]{0,119}',code) else None)
         saved = _save(room.store.root, capture)
+        if screening:
+            from .native_received_screening import retain_ended_capture
+            try:
+                retain_ended_capture(room.store.root, payload, capture, saved)
+            except (OSError, ValueError):
+                pass  # The original immutable capture was already committed.
         progress = capture.get('screening_history_search', {})
         if (screening and capture['errors'] == [] and progress.get('outcome') == 'TARGET_OBSERVED'
                 and capture['operation_scope']['verified'] is True):

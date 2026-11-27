@@ -22,6 +22,8 @@ PHASE_JSON_RETURN_FAILURE_HOOK='5f73c0629157ee1a44346cc0e31287997a44a4dafd3f4f00
 TERMINAL_ERROR_RETURN_FAILURE_HOOK='1d516829b20a27229be3a991953b60fb2b78bfe97fa53c4f4c27b4301c7c31ae'
 SCREENING_ATTEMPT_RETURN_FAILURE_HOOK='e99f8b1aa3668bc9798f899dee29e7143d57d844f9a69849e4d9a91ad204487d'
 ANALYSIS_COMPOSE_RETURN_FAILURE_HOOK='917e3a71f8df653c27a2f414c1f2a1a9b2aa672f242a8b58af26f010a4deb1b8'
+TECHNICAL_RETURN_HOOKS = frozenset((SCREENING_ATTEMPT_RETURN_FAILURE_HOOK,
+    ANALYSIS_COMPOSE_RETURN_FAILURE_HOOK))
 RETURN_FAILURE_SOURCES=frozenset(((RETURN_FAILURE_PRODUCER,RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,PREVIOUS_RETURN_FAILURE_HOOK),
     (RETURN_FAILURE_PRODUCER,CONTEXT_RETURN_FAILURE_HOOK),
@@ -140,8 +142,47 @@ def claim_history_search(root, payload, now, *, target_observed=False):
     return True
 
 
+def _technical_initial_return(entry):
+    if type(entry) is not dict or type(entry.get('value')) is not dict:
+        return False
+    value = entry['value']
+    chain = value.get('chain', [])
+    return (entry.get('hook_source_sha256') in TECHNICAL_RETURN_HOOKS
+        and value.get('phase') == 'INITIAL' and value.get('accepted_reply_sha256') is None
+        and type(value.get('at')) in (int, float) and math.isfinite(value['at'])
+        and value.get('followup_intent_sha256') == [] and type(chain) is list and len(chain) == 2
+        and type(chain[1]) is dict
+        and chain[1].get('class') == 'ReplyIncomplete' and chain[1].get('reason') == 'NEUROBRO_INPUT_UNREADABLE')
+
+
+def _ended_capture_index(payload):
+    from .native_received_analysis import native_digest
+    key = native_digest({name: payload[name] for name in ('operation', 'request_sha256')})
+    return 'screening-ended-capture-' + key + '.json'
+
+
+def retain_ended_capture(root, payload, capture, saved):
+    """Pin the first fully observed review for a refused initial response."""
+    from .native_received_analysis import native_digest
+    from .native_turn_batch import _write
+
+    scope = capture.get('operation_scope', {})
+    if (not _technical_initial_return(capture.get('screening_ended_return'))
+            or capture.get('status') != 'CONNECTED' or capture.get('errors') != []
+            or capture.get('stage') != 'OBSERVED_WITHOUT_COMPLETION'
+            or capture.get('stable_snapshot_reads') != 4 or scope.get('verified') is not True
+            or scope.get('reply_complete') is not True or scope.get('unmatched_intents') != []):
+        return
+    reviews = capture.get('review_receipts', [])
+    if (len(reviews) == 1 and len(scope['user_rows']) == 1
+            and reviews[0]['value'].get('transcript_sha256') == native_digest(
+                capture['rows'][scope['initial_user']:scope['reply_row'] + 1])
+            and reviews[0]['value'].get('model_operation', {}).get('state') == 'DONE'):
+        _write(root, _ended_capture_index(payload), saved)
+
+
 def retained_reviewed_observation(root, payload, record, cached, reviews, now, monotonic):
-    """Reuse a fresh immutable observation that already contains a final review."""
+    """Reuse an immutable current review or original proof of a refused turn."""
     import os
     from . import native_received_analysis as observer
     from .native_chart_followup import _directory, _private_file, pairs
@@ -154,22 +195,22 @@ def retained_reviewed_observation(root, payload, record, cached, reviews, now, m
     deadline = monotonic() + 1
     directory = _directory(root)
     try:
-        recent = []
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                if monotonic() >= deadline:
-                    return None
-                if pattern.fullmatch(entry.name):
-                    recent.append((entry.stat(follow_symlinks=False).st_mtime_ns, entry.name))
-        for _, name in sorted(recent, reverse=True)[:8]:
-            if monotonic() >= deadline:
-                return None
+        try:
+            ended = read_ended_return(root, payload)
+        except (OSError, ValueError, TypeError, KeyError):
+            ended = None  # Invalid return custody grants no archived recovery.
+        technical = _technical_initial_return(ended)
+
+        def read_capture(name):
             raw = _private_file(directory, name, observer.MAX_CAPTURE)
             digest = hashlib.sha256(raw).hexdigest()
             need(pattern.fullmatch(name)[1] == digest, 'SCREENING_HISTORY_CAPTURE_HASH_CHANGED')
             prior = json.loads(raw, object_pairs_hook=pairs)
             finished = prior.get('finished_at')
             scope = prior.get('operation_scope', {})
+            archived = (technical and prior.get('screening_ended_return') == ended
+                and scope.get('unmatched_intents') == [] and len(scope.get('user_rows', [])) == 1
+                and len(reviews) == 1)
             if not (prior.get('kind') == KIND and prior.get('schema_version') == 2
                     and prior.get('operation') == payload['operation']
                     and prior.get('request_sha256') == payload['request_sha256']
@@ -177,11 +218,12 @@ def retained_reviewed_observation(root, payload, record, cached, reviews, now, m
                     and prior.get('native_source_sha256') == NATIVE_DOM_SHA256
                     and prior.get('stage') == 'OBSERVED_WITHOUT_COMPLETION' and prior.get('errors') == []
                     and prior.get('status') == 'CONNECTED' and prior.get('stable_snapshot_reads') == 4
-                    and type(finished) in (int, float) and 0 <= now-finished <= 120
+                    and type(finished) in (int, float) and 0 <= now-finished
+                    and (now-finished <= 120 or archived)
                     and scope.get('verified') is True and scope.get('reply_complete') is True
                     and prior.get('room') == record and prior.get('page_url') == record['url']
                     and prior.get('rendered_prompt_receipt') == cached and prior.get('review_receipts') == reviews):
-                continue
+                return None
             projected = observer._project_operation(prior)['rows']
             if any(item['value'].get('transcript_sha256') == observer.native_digest(projected)
                     and item['value'].get('model_operation', {}).get('state') == 'DONE'
@@ -189,6 +231,36 @@ def retained_reviewed_observation(root, payload, record, cached, reviews, now, m
                     and item['value']['response'].get('needs_followup') is False
                     for item in reviews):
                 return prior, dict(capture_name=name, capture_sha256=digest, capture_bytes=len(raw))
+            return None
+
+        if technical:
+            try:
+                entry = json.loads(_private_file(directory, _ended_capture_index(payload), 4096),
+                    object_pairs_hook=pairs)
+                name = entry.get('capture_name') if type(entry) is dict else None
+                indexed = read_capture(name) if type(name) is str and pattern.fullmatch(name) else None
+            except (OSError, ValueError):
+                indexed = None  # The index is a hint; its target is verified independently.
+            if indexed is not None:
+                return indexed
+        recent = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if monotonic() >= deadline:
+                    return None
+                if pattern.fullmatch(entry.name):
+                    recent.append((entry.stat(follow_symlinks=False).st_mtime_ns, entry.name))
+        names = [name for _, name in sorted(recent, reverse=True)[:8]]
+        if technical:
+            # Older deployments did not index the first readable capture.
+            floor = ended['value']['at'] * 1_000_000_000
+            names.extend([name for timestamp, name in sorted(recent) if timestamp >= floor][:8])
+        for name in dict.fromkeys(names):
+            if monotonic() >= deadline:
+                return None
+            result = read_capture(name)
+            if result is not None:
+                return result
     finally:
         os.close(directory)
     return None
