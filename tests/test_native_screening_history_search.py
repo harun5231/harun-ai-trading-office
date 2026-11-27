@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent import native_received_analysis as observer
+from agent import native_received_screening as screening
 from agent.native_daily_room import DailyRoom, JOURNAL_NAME, identities, retain_prefix_snapshot
 from agent.native_prompt_composition import PromptCompositionCache
 from tests import test_received_screening_rounds as rounds
@@ -198,6 +199,44 @@ class ScreeningHistorySearchTests(unittest.TestCase):
         self.assertEqual(resumed['capture_sha256'], original['capture_sha256'])
         self.assertEqual(proof, original_proof)
         self.assertEqual(client.calls, 1)
+
+    def test_expired_technical_response_survives_partial_history_and_later_failed_captures(self):
+        # Source shape from 46075052688, without retaining private chat text.
+        self.complete[-1]['text'] = ('SOLUSDT adalah kandidat. Data yang diperoleh belum cukup.\n'
+            '{"SYMBOLS":["SOLUSDT"]}')
+        self.case.raw.messages = copy.deepcopy(self.complete)
+        client = self.fixture.install_review()
+        with self.assertRaisesRegex(ValueError, 'NEUROBRO_INPUT_UNREADABLE'):
+            self.fixture.review(self.fixture.invoke())
+        self.assertEqual(client.calls, 1)
+        ended = dict(hook_source_sha256=screening.ANALYSIS_COMPOSE_RETURN_FAILURE_HOOK,
+            value=dict(phase='INITIAL', accepted_reply_sha256=None, followup_intent_sha256=[],
+                at=observer.time.time(), chain=[{}, {'class':'ReplyIncomplete', 'reason':'NEUROBRO_INPUT_UNREADABLE'}]))
+        with patch.object(screening, 'read_ended_return', return_value=ended):
+            original, _ = self.observe()
+            capture = json.loads((self.case.root / original['capture_name']).read_bytes())
+            index = self.case.root / screening._ended_capture_index(self.fixture.payload)
+            self.assertTrue(index.exists())
+            self.epoch += 3600
+            self.case.raw.messages = copy.deepcopy(self.prefix[-2:])
+            self.case.room.history.select = self.forbidden
+            with patch('os.scandir', side_effect=self.forbidden):
+                resumed, _ = self.observe()
+            self.assertTrue(resumed['retained_screening_end'])
+            self.assertEqual(resumed['capture_name'], original['capture_name'])
+
+            # The previous runtime lacks an index. Failed reload artifacts
+            # must not push the authentic capture out of the read window.
+            index.unlink()
+            for attempt in range(12):
+                observer._save(self.case.root, {**capture, 'stage':'BOUND_ROOM_RESTORE',
+                    'errors':[{'reason':'NEUROBRO_DAILY_ROOM_HISTORY_DEADLINE'}], 'attempt':attempt})
+            resumed, proof = self.observe()
+            self.assertTrue(resumed['retained_screening_end'])
+            self.assertEqual(resumed['capture_sha256'], original['capture_sha256'])
+            self.assertEqual(proof, original['observation'])
+        self.assertEqual(client.calls, 1)
+        self.assertEqual((self.case.root / JOURNAL_NAME).read_bytes(), self.journal)
 
     def test_authentication_required_does_not_select_history(self):
         self.case.status = 'CHALLENGE_REQUIRED'

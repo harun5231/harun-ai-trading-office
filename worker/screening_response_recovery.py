@@ -1367,7 +1367,8 @@ def _ended_screening_return(proof, payload, created, *, max_age):
     technical = chain[1]['class'] == 'ReplyIncomplete'
     if technical:
         reason = 'NEUROBRO_INPUT_UNREADABLE'
-        _require(entry['hook_source_sha256'] == SCREENING_ATTEMPT_HOOK and value['phase'] == 'INITIAL'
+        _require(entry['hook_source_sha256'] in (SCREENING_ATTEMPT_HOOK, ANALYSIS_COMPOSE_ENDED_RETURN_HOOK)
+            and value['phase'] == 'INITIAL'
             and chain[1]['reason'] == reason and chain[1]['message_sha256'] == _sha(reason)
             and chain[1]['message_characters'] == len(reason) and 'gate_failure' not in value
             and inner == prefix + [('neurobro_reply.py', name)
@@ -1474,13 +1475,17 @@ def _validate_ended_screening(envelope, payload, created, *, max_age, now, retai
 
 
 def _retire_ended_screening(provider, envelope, payload, before, *, index, count, current,
-        max_age, permitted):
+        max_age, permitted, retained=False):
     """Atomically retain the received text without fabricating typed output."""
     from agent.neurobro_reply import _TECHNICAL
     db = provider.db; operation = payload['operation']; cycle = before['robot_cycles']
     api, job = before['api_requests'], before['robot_jobs']
     proof, ended, stale = _validate_ended_screening(envelope, payload, api['created'],
-        max_age=max_age, now=current)
+        max_age=max_age, now=current, retained=retained)
+    if retained:
+        _require(current - proof['finished_at'] > 120 and ended['phase'] == 'INITIAL'
+            and ended['chain'][1]['class'] == 'ReplyIncomplete'
+            and ended['chain'][1]['reason'] == 'NEUROBRO_INPUT_UNREADABLE')
     _require(stale, 'SCREENING_ENDED_RESPONSE_AWAITING_EXPIRY')
     _require(before['research_browser_responses'] is None and api['output'] is None
         and api['state'] in ('PENDING', 'NEEDS_REVIEW')
@@ -2012,6 +2017,11 @@ def recover_received_screening(provider, envelope, *, catalog, max_age, now=None
     if index:
         _require(set(data['seen']) <= set(body['context']['excluded_symbols']))
     _require(not classified_error or 'screening_terminal_error' in envelope.get('observation', {}))
+    if journal is None and envelope.get('retained_screening_end') is True:
+        # A reloaded room can lose the visible turn. Archived proof has only
+        # the expired technical-response retirement route, never resume/output.
+        return _retire_ended_screening(provider, envelope, payload, before, index=index,
+            count=count, current=current, max_age=max_age, permitted=permitted, retained=True)
     history = envelope.get('observation', {}).get('screening_history_search')
     if journal is None and type(history) is dict and history.get('outcome') in UNKNOWN_HISTORY_OUTCOMES:
         return _retire_unknown_screening(provider, envelope, payload, before, match,
@@ -2611,7 +2621,8 @@ def resume_uncertain_screening(coordinator, today, account):
                 raise Review('NEUROBRO_' + observation['status'])
             history = observation.get('screening_history_search') if type(observation) is dict else None
             noexec_candidate = type(observation) is dict and ('screening_terminal_error' in observation
-                or type(history) is dict and history.get('outcome') in UNKNOWN_HISTORY_OUTCOMES)
+                or type(history) is dict and history.get('outcome') in UNKNOWN_HISTORY_OUTCOMES
+                or envelope.get('retained_screening_end') is True)
             scope_reason = observation.get('operation_scope', {}).get('reason') if type(observation) is dict else None
             if scope_reason in ('INITIAL_PROMPT_NOT_FOUND', 'SCREENING_REPLY_NOT_COMPLETE',
                     'SCREENING_HISTORY_ROOM_UNVERIFIED') and not noexec_candidate:
