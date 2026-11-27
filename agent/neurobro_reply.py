@@ -515,10 +515,11 @@ def _screening_explicit_alias_conflict(scope, selected):
     """Compare explicit final fields, never ticker mentions in their reasons.
 
     Actual Mini/source verification already owns the interpretation. This only
-    preserves the existing contradiction guard for labelled standalone
-    cashtags that the strict pair parser cannot read. It completes no ticker.
+    preserves the contradiction guard for labelled cashtags and old indexed
+    examples that the strict pair parser cannot read.
     """
-    identity = r'(?:\$?' + PAIR + r'|\$[A-Z0-9]{2,20})'
+    indexed_pair = r'([A-Z0-9]{2,20})_USDT_([0-9]+)'
+    identity = r'(?:\$?' + indexed_pair + r'|\$?' + PAIR + r'|\$[A-Z0-9]{2,20})'
     choices = identity + r'(?:[ \t]*(?:,|&|\bdan\b)[ \t]*' + identity + r')?'
     label = r'(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)(?:[ \t]*\([12]\))?[ \t]*[:=]'
     final = r'(?:ringkasan|keputusan|setup)[ \t]+(?:akhir|final|aktif)'
@@ -526,12 +527,18 @@ def _screening_explicit_alias_conflict(scope, selected):
     def identities(body):
         clause = re.split(r';|[ \t]+(?:karena|[-—])[ \t]+', body, maxsplit=1, flags=re.I)[0].strip()
         clause = re.sub(r'[.!]$', '', clause).strip()
-        return re.findall(identity, clause, re.I) if re.fullmatch(choices, clause, re.I) else None
+        return [match[0] for match in re.finditer(identity, clause, re.I)] if re.fullmatch(choices, clause, re.I) else None
 
     def compare(tokens):
         authored = []
-        for token in tokens:
+        for position, token in enumerate(tokens, start=1):
             plain = token.removeprefix('$')
+            indexed = re.fullmatch(indexed_pair, plain, re.I)
+            if indexed is not None:
+                if indexed[2] != str(position):
+                    raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+                authored.append(indexed[1].upper() + 'USDT')
+                continue
             if re.fullmatch(PAIR, plain, re.I):
                 authored.append(symbol(plain))
                 continue
@@ -587,18 +594,19 @@ def _screening_public_summary(value, prefix, *, semantic_symbols=None):
     if set(value) != {'SYMBOLS'} or type(value['SYMBOLS']) is not list:
         raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
     selected = []
-    for choice in value['SYMBOLS']:
+    for position, choice in enumerate(value['SYMBOLS'], start=1):
         if type(choice) is not str:
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')
         if re.fullmatch(PAIR, choice, re.I) is not None:
             selected.append(symbol(choice))
             continue
         # A public quote separator is presentation only after the actual
-        # Mini/source checks have already admitted that exact USDT pair. Do
-        # not remove underscores inside a base or grant aliases to the local
-        # deterministic parser.
+        # Mini/source checks have already admitted that exact USDT pair.
+        # The old prompt used SIMBOL_USDT_1 and SIMBOL_USDT_2. Recognize
+        # that exact item suffix only in its own position.
+        spelling = choice.strip().upper()
         matches = ([pair for pair in semantic_symbols
-            if choice.strip().upper() in (pair, pair[:-4], pair[:-4] + '_USDT')]
+            if spelling in (pair, pair[:-4], pair[:-4] + '_USDT', f'{pair[:-4]}_USDT_{position}')]
             if semantic_symbols is not None else [])
         if len(matches) != 1:
             raise ReplyIncomplete('NEUROBRO_JSON_SUMMARY_INVALID')

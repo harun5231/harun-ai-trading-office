@@ -56,6 +56,41 @@ class ScreeningQuoteSeparatorTests(unittest.TestCase):
                 self.assertEqual(screening_interpretation(reply, *bound(reply, symbols)), {'symbols': symbols})
                 with self.assertRaises(ReplyIncomplete): parse_screening_reply(reply)
 
+    def test_numbered_prompt_examples_are_bound_to_the_real_selections_and_item_positions(self):
+        cases = [(['DOGEUSDT'], ['DOGE_USDT_1']),
+            (['AAVEUSDT', '1000PEPEUSDT'], ['AAVE_USDT_1', '1000PEPE_USDT_2']),
+            (['AAVEUSDT', '1000PEPEUSDT'], ['1000PEPE_USDT_1', 'AAVE_USDT_2'])]
+        for symbols, choices in cases:
+            reply = 'Pilihan: ' + ', '.join(symbols) + '.\n' + json.dumps({'SYMBOLS': choices})
+            args = bound(reply, symbols, count=len(symbols)); before = copy.deepcopy(args)
+            with self.subTest(choices=choices):
+                self.assertEqual(screening_interpretation(reply, *args), {'symbols': symbols})
+                self.assertEqual(args, before)
+                with self.assertRaises(ReplyIncomplete):
+                    parse_screening_reply(reply)
+        for choice in ('DOGE_USDT_2', 'DOGE_USDT_01', 'DOGEUSDT_1', 'DOGE_USDC_1', 'OP_USDT_1',
+                'DOGE_USDT_1 / OP_USDT_1'):
+            reply = 'Pilihan: DOGEUSDT.\n' + json.dumps({'SYMBOLS': [choice]})
+            with self.subTest(choice=choice), self.assertRaises(ReplyIncomplete):
+                screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+        reply = '{"SYMBOLS":["DOGE_USDT_1"]}'
+        with self.assertRaises(ReplyIncomplete):
+            screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+
+    def test_indexed_summary_cannot_hide_a_conflicting_prior_final(self):
+        tail = '\nDOGEUSDT tersedia di Binance.\n{"SYMBOLS":["DOGE_USDT_1"]}'
+        for competing in ('Keputusan akhir: OP_USDT_1.', 'Keputusan akhir: DOGE_USDT_2.',
+                'Pilihan coin:\nCOIN: OP_USDT_1'):
+            reply = competing + tail
+            with self.subTest(competing=competing), self.assertRaises(ReplyIncomplete):
+                screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+        reply = 'Keputusan akhir: DOGE_USDT_1.' + tail
+        self.assertEqual(screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1)),
+            {'symbols': ['DOGEUSDT']})
+        reply = 'DOGEUSDT tersedia.\n{"SYMBOLS":["OP_USDT_1"]}\n{"SYMBOLS":["DOGE_USDT_1"]}'
+        with self.assertRaises(ReplyIncomplete):
+            screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+
     def test_embedded_underscores_foreign_quotes_and_extra_content_do_not_name_a_pair(self):
         for invalid in ('AV_AX_USDT', 'AVAX__USDT', '_AVAX_USDT', 'AVAX_USDT_', 'AVAX_USDC',
                 'AVAX_USDT Perpetual', '$AVAX_USDT', 'AVAX_USDT/NEAR_USDT', 'BTC_USDT', None):

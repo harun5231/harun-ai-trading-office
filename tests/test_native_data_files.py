@@ -25,7 +25,7 @@ class NativeDataFileTests(unittest.TestCase):
             def handle_data(self, data): self.text.append(data)
         cases = [
             ({'required':['symbols'], 'properties':{'symbols':{'minItems':count,'maxItems':count}}},
-                {'requested_count':count}, {'SYMBOLS':['SIMBOL_USDT_'+str(i+1) for i in range(count)]})
+                {'requested_count':count}, {'SYMBOLS':['SIMBOL_USDT','SIMBOLLAIN_USDT'][:count]})
             for count in (1, 2)]
         cases += [
             ({'required':['symbol','side','limit_entry','take_profit','stop_loss','risk_reward']},
