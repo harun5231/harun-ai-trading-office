@@ -77,6 +77,20 @@ class ScreeningQuoteSeparatorTests(unittest.TestCase):
         with self.assertRaises(ReplyIncomplete):
             screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
 
+    def test_indexed_summary_cannot_hide_a_conflicting_prior_final(self):
+        tail = '\nDOGEUSDT tersedia di Binance.\n{"SYMBOLS":["DOGE_USDT_1"]}'
+        for competing in ('Keputusan akhir: OP_USDT_1.', 'Keputusan akhir: DOGE_USDT_2.',
+                'Pilihan coin:\nCOIN: OP_USDT_1'):
+            reply = competing + tail
+            with self.subTest(competing=competing), self.assertRaises(ReplyIncomplete):
+                screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+        reply = 'Keputusan akhir: DOGE_USDT_1.' + tail
+        self.assertEqual(screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1)),
+            {'symbols': ['DOGEUSDT']})
+        reply = 'DOGEUSDT tersedia.\n{"SYMBOLS":["OP_USDT_1"]}\n{"SYMBOLS":["DOGE_USDT_1"]}'
+        with self.assertRaises(ReplyIncomplete):
+            screening_interpretation(reply, *bound(reply, ['DOGEUSDT'], count=1))
+
     def test_embedded_underscores_foreign_quotes_and_extra_content_do_not_name_a_pair(self):
         for invalid in ('AV_AX_USDT', 'AVAX__USDT', '_AVAX_USDT', 'AVAX_USDT_', 'AVAX_USDC',
                 'AVAX_USDT Perpetual', '$AVAX_USDT', 'AVAX_USDT/NEAR_USDT', 'BTC_USDT', None):

@@ -515,10 +515,11 @@ def _screening_explicit_alias_conflict(scope, selected):
     """Compare explicit final fields, never ticker mentions in their reasons.
 
     Actual Mini/source verification already owns the interpretation. This only
-    preserves the existing contradiction guard for labelled standalone
-    cashtags that the strict pair parser cannot read. It completes no ticker.
+    preserves the contradiction guard for labelled cashtags and old indexed
+    examples that the strict pair parser cannot read.
     """
-    identity = r'(?:\$?' + PAIR + r'|\$[A-Z0-9]{2,20})'
+    indexed_pair = r'([A-Z0-9]{2,20})_USDT_([0-9]+)'
+    identity = r'(?:\$?' + indexed_pair + r'|\$?' + PAIR + r'|\$[A-Z0-9]{2,20})'
     choices = identity + r'(?:[ \t]*(?:,|&|\bdan\b)[ \t]*' + identity + r')?'
     label = r'(?:COIN|KOIN|PILIHAN COIN|COIN PILIHAN)(?:[ \t]*\([12]\))?[ \t]*[:=]'
     final = r'(?:ringkasan|keputusan|setup)[ \t]+(?:akhir|final|aktif)'
@@ -526,12 +527,18 @@ def _screening_explicit_alias_conflict(scope, selected):
     def identities(body):
         clause = re.split(r';|[ \t]+(?:karena|[-—])[ \t]+', body, maxsplit=1, flags=re.I)[0].strip()
         clause = re.sub(r'[.!]$', '', clause).strip()
-        return re.findall(identity, clause, re.I) if re.fullmatch(choices, clause, re.I) else None
+        return [match[0] for match in re.finditer(identity, clause, re.I)] if re.fullmatch(choices, clause, re.I) else None
 
     def compare(tokens):
         authored = []
-        for token in tokens:
+        for position, token in enumerate(tokens, start=1):
             plain = token.removeprefix('$')
+            indexed = re.fullmatch(indexed_pair, plain, re.I)
+            if indexed is not None:
+                if indexed[2] != str(position):
+                    raise ReplyIncomplete('NEUROBRO_SCREENING_DECISION_CONFLICT')
+                authored.append(indexed[1].upper() + 'USDT')
+                continue
             if re.fullmatch(PAIR, plain, re.I):
                 authored.append(symbol(plain))
                 continue

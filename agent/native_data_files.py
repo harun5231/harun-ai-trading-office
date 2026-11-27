@@ -49,12 +49,12 @@ def final_json_prompt(payload, rendered):
         _need(count is None or type(count) is int and count in (1, 2))
         # Illustrate the exchange's spelling without adding list indices to
         # the placeholders or seeding a real coin recommendation.
-        symbols = ['SIMBOLUSDT', 'SIMBOLLAINUSDT'][:count or 1]
+        symbols = ['SIMBOL_USDT', 'SIMBOLLAIN_USDT'][:count or 1]
         instruction = ('Isi SYMBOLS dengan tepat ' + str(count) + ' coin'
             if count is not None else 'Isi SYMBOLS sesuai jumlah coin yang diminta')
         contract = (instruction + ', tanpa duplikasi, coin pembanding, atau coin yang dikecualikan. '
-            'Gunakan simbol Binance yang sebenarnya tanpa pemisah atau nomor urut tambahan. '
-            'Contoh format saja: ' + json.dumps({'SYMBOLS': symbols}, separators=(',', ':')) + '.')
+            'Ganti contoh dengan simbol Binance yang sebenarnya, tanpa pemisah atau nomor urut tambahan. '
+            'Format: ' + json.dumps({'SYMBOLS': symbols}, separators=(',', ':')) + '.')
     elif fields == {'symbol', 'order_ref', 'decision'} or {'symbol', 'side'} <= fields:
         symbol = context.get('symbol')
         _need(symbol is None or type(symbol) is str and re.fullmatch(r'[A-Z0-9]{2,24}USDT', symbol))
