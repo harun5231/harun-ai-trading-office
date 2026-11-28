@@ -94,6 +94,43 @@ class ParserTests(unittest.TestCase):
             with self.assertRaisesRegex(Review, 'INVALID_OUTPUT_SCHEMA'):
                 self.read(text, body)
 
+    def test_public_pending_json_uses_the_same_owned_decision_as_the_browser(self):
+        from agent.neurobro_reply import parse_reply_for_payload
+
+        body = dict(operation='pending-review-v1:' + REF[:32] + ':3',
+            output_schema=pending.REVIEW_SCHEMA,
+            context=dict(symbol='FILUSDT', pending_review=dict(symbol='FILUSDT', intent_ref=REF)))
+        other_schema = dict(pending.REVIEW_SCHEMA, additionalProperties=True)
+        for decision in ('TAHAN', 'BATALKAN'):
+            authored = {'COIN': 'FILUSDT', 'KEPUTUSAN': decision}
+            raw = json.dumps(authored)
+            for text in (raw, f'FILUSDT sudah dievaluasi.\n```json\n{raw}\n```'):
+                with self.subTest(decision=decision, fenced=text != raw):
+                    legacy = Mock(return_value=authored)
+                    result = owner.parse_bound_assistant_text(text, body, legacy, max_assistant_bytes=512000)
+                    self.assertEqual(result, parse_reply_for_payload(text, body))
+                    self.assertEqual(result, dict(symbol='FILUSDT', order_ref=REF, decision=decision))
+                    legacy.assert_called_once_with(text)
+            native = dict(symbol='FILUSDT', order_ref=REF, decision=decision)
+            self.assertEqual(self.read(json.dumps(native), body), native)
+            self.assertEqual(self.read(raw, dict(body, output_schema=other_schema)), authored)
+
+    def test_public_pending_json_cannot_supply_authority_or_override_the_authored_reply(self):
+        body = dict(operation='pending-review-v1:' + REF[:32] + ':3',
+            output_schema=pending.REVIEW_SCHEMA,
+            context=dict(symbol='FILUSDT', pending_review=dict(symbol='FILUSDT', intent_ref=REF)))
+        authored = {'COIN': 'FILUSDT', 'KEPUTUSAN': 'BATALKAN'}
+        for document, prefix, payload in (
+                (dict(authored, COIN='BTCUSDT'), '', body),
+                (dict(authored, order_ref=REF), '', body),
+                (authored, 'COIN: FILUSDT\nKEPUTUSAN: TAHAN\n', body),
+                (authored, '', dict(body, operation='pending-review-v1:' + 'b' * 32 + ':3'))):
+            with self.subTest(document=document, prefix=prefix, operation=payload['operation']):
+                raw = prefix + '```json\n' + json.dumps(document) + '\n```'
+                with self.assertRaisesRegex(Review, 'INVALID_OUTPUT_SCHEMA'):
+                    owner.parse_bound_assistant_text(raw, payload, Mock(return_value=document),
+                        max_assistant_bytes=512000)
+
     def test_no_missing_prices_or_technical_hold_or_oversize_invented(self):
         body = dict(output_schema=neuroapi.SETUP_SCHEMA_V4, context=dict(symbol='BTCUSDT'))
         for text in ('COIN: BTCUSDT\nARAH: LONG',
@@ -343,6 +380,41 @@ class ActualNativeReceiptTests(unittest.TestCase):
         with self.assertRaises(Review):
             self.provider.validate_chart_evidence(old_charts, neuroapi.SETUP_SCHEMA_V4,
                 self.context, NOW - 600, NOW, 180)
+
+    def test_pending_receipt_recovery_revalidates_original_output_and_never_replays(self):
+        operation = 'pending-review-v1:' + REF[:32] + ':3'
+        context = native_context(NOW - 4)
+        context.update(material_contract=owner.MATERIAL_CONTRACT, pending_review={
+            'intent_ref': REF, 'symbol': 'BTCUSDT', 'entry_created_at': utc(NOW - 18_300)})
+        body, request, request_hash = self.provider.request_body(operation, 'Evaluasi order yang sama.',
+            pending.REVIEW_SCHEMA, context)
+        text = 'Keputusan akhir: BATALKAN.\n```json\n{"COIN":"BTCUSDT","KEPUTUSAN":"BATALKAN"}\n```'
+        canonical = neuroapi.canonical_output(dict(symbol='BTCUSDT', order_ref=REF, decision='BATALKAN'),
+            pending.REVIEW_SCHEMA)
+        output_sha = self.provider.sha(canonical)
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            (operation, None, request_hash, 'NEEDS_REVIEW', NOW - 3, 1, None, 'INVALID_OUTPUT_SCHEMA'))
+        self.db.execute('INSERT INTO research_browser_requests VALUES(?,?,?,?,?,?)',
+            (operation, body['provider'], body['contract_version'], request_hash, body['marker'], request))
+        self.db.execute('INSERT INTO research_browser_responses VALUES(?,?,?,?,?,?,?,?)',
+            (operation, 'original-receipt', '0' * 64, text, self.provider.sha(text),
+             self.provider.response_output_text(charts(NOW - 2)), NOW, self.actor.chart_max_age))
+
+        def recover():
+            with patch.object(self.browser.time, 'time', return_value=NOW + 3_600):
+                return self.actor.recover_pending_review_response(operation, request, request_hash, REF, 'BTCUSDT')
+
+        self.assertFalse(recover())
+        self.assertEqual(self.db.execute('SELECT state FROM api_requests').fetchone()['state'], 'NEEDS_REVIEW')
+        self.db.execute('UPDATE research_browser_responses SET output_sha256=?', (output_sha,))
+        receipt = dict(self.db.execute('SELECT * FROM research_browser_responses').fetchone())
+        self.assertTrue(recover())
+        self.assertFalse(recover())
+        api = self.db.execute('SELECT state,output,attempts FROM api_requests').fetchone()
+        self.assertEqual(tuple(api), ('COMPLETE', canonical, 1))
+        self.assertEqual(dict(self.db.execute('SELECT * FROM research_browser_responses').fetchone()), receipt)
+        self.assertEqual(self.provider.source_evidence(self.db, operation)['source_type'], 'NEUROBRO_BROWSER')
+        self.assertEqual(self.calls, [])
 
 
 class ActualNativeDispatchTests(unittest.TestCase):

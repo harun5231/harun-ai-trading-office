@@ -631,6 +631,46 @@ class NeuroBrowser:
         except Exception:
             raise Review(failure) from None
 
+    def recover_pending_review_response(self, operation, expected_request, expected_hash, intent_ref, symbol):
+        """Revalidate a previously received pending review without browser I/O."""
+        from agent.native_pending_protocol import is_pending_schema
+        row = self.db.execute('SELECT * FROM research_browser_requests WHERE operation=?', (operation,)).fetchone()
+        current = self.db.execute('SELECT * FROM api_requests WHERE operation=?', (operation,)).fetchone()
+        receipt = self.db.execute('SELECT * FROM research_browser_responses WHERE operation=?', (operation,)).fetchone()
+        if row is None or current is None or receipt is None:
+            return False
+        if (current['state'] != 'NEEDS_REVIEW' or current['failure_code'] != 'INVALID_OUTPUT_SCHEMA'
+                or current['idempotency'] is not None or current['attempts'] != 1 or current['output'] is not None
+                or row['request_body'] != expected_request or current['body_hash'] != expected_hash
+                or row['request_sha256'] != expected_hash or sha(expected_request) != expected_hash
+                or receipt['chart_max_age'] != self.chart_max_age
+                or type(receipt['received_at']) not in (int, float)
+                or not current['created'] <= receipt['received_at'] <= time.time()
+                or sha(receipt['assistant_text']) != receipt['assistant_sha256']):
+            return False
+        try:
+            body = json.loads(expected_request, object_pairs_hook=unique)
+            schema, context = body['output_schema'], body['context']
+            rebuilt, serialized, digest = request_body(operation, body['prompt'], schema, context)
+            if (not is_pending_schema(schema) or (rebuilt, serialized, digest) != (body, expected_request, expected_hash)
+                    or (row['provider'], row['contract_version'], row['marker']) != (BROWSER_PROVIDER, BROWSER_CONTRACT, body['marker'])
+                    or context['symbol'] != symbol or context['pending_review']['intent_ref'] != intent_ref):
+                return False
+            output = parse_bound_assistant_text(receipt['assistant_text'], body, parse_assistant_text,
+                max_assistant_bytes=MAX_ASSISTANT_BYTES, db=self.db)
+            canonical = canonical_output(output, schema)
+            if (output['symbol'] != symbol or output['order_ref'] != intent_ref
+                    or sha(canonical) != receipt['output_sha256']):
+                return False
+            result = dict(operation=operation, marker=row['marker'], request_sha256=digest, output=output,
+                assistant_text=receipt['assistant_text'], response_id=receipt['response_id'],
+                chart_evidence=json.loads(receipt['chart_evidence'], object_pairs_hook=unique))
+            self._record_browser_response(operation, body, digest, result, schema, lambda value: None,
+                context, received_at=receipt['received_at'], recovery=True)
+        except (Review, ValueError, TypeError, KeyError):
+            return False
+        return True
+
     def recover_evaluation_response(self, operation, completion):
         """Record actual durable native completion without calling ask/transport.
 

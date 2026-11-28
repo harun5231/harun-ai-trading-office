@@ -187,12 +187,15 @@ def parse_bound_assistant_text(text, body, legacy_parser, *, max_assistant_bytes
     try:
         value=legacy_parser(text)
         from .neuroapi import SETUP_SCHEMA_V4
-        human_setup_json=(type(body)is dict and body.get('output_schema')==SETUP_SCHEMA_V4
-            and type(value)is dict and any(type(key)is str and key.upper()in{'COIN','ARAH'}for key in value))
-        if not human_setup_json:return value
-        # A human final-summary JSON is a presentation of authored levels, not
-        # the native symbol/side wire schema. Use the SAME per-coin parser as
-        # the browser instead of handing untranslated keys to the recorder.
+        from agent.native_pending_protocol import is_pending_schema
+        schema = body.get('output_schema') if type(body) is dict else None
+        keys = {key.upper() for key in value if type(key) is str} if type(value) is dict else set()
+        public_setup = schema == SETUP_SCHEMA_V4 and bool(keys & {'COIN', 'ARAH'})
+        public_pending = is_pending_schema(schema) and bool(keys & {'COIN', 'KEPUTUSAN'})
+        if not (public_setup or public_pending):
+            return value
+        # Project the authored public summary through the browser's parser,
+        # using the original request to bind the coin and any pending order.
     except Exception:
         pass
     try:
