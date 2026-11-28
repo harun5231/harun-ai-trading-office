@@ -736,6 +736,46 @@ class PendingReviewTests(unittest.TestCase):
         self.assertEqual(self.coordinator.advance_count, 0)
         self.assertEqual(self.coordinator.ask_count, 1)
 
+    def test_completed_receipt_for_recovered_review_never_replays_stale_cancel(self):
+        self.coordinator.raise_at_ask = ValueError('BROWSER_OUTPUT_NEEDS_REVALIDATION')
+        self.assertEqual(self.run_tick()['failure_code'], 'PENDING_REVIEW_OUTCOME_UNKNOWN')
+        claim = self.claims()[0]
+        response = {'symbol': self.intent['symbol'], 'order_ref': claim['intent_ref'], 'decision': 'BATALKAN'}
+        self.db.execute('INSERT INTO api_requests VALUES(?,?,?,?,?,?,?,?)',
+            (claim['operation'], None, claim['request_sha256'], 'NEEDS_REVIEW',
+             claim['created'], 1, None, 'INVALID_OUTPUT_SCHEMA'))
+        reply = json.dumps(response)
+        self.db.execute('INSERT INTO research_browser_responses VALUES(?,?,?,?,?,?)',
+            (claim['operation'], reply, digest(reply), time.time(), '[]', 180))
+
+        def recover(operation, request, request_hash, order_ref, symbol):
+            self.assertEqual((operation, request, request_hash, order_ref, symbol),
+                (claim['operation'], claim['request_body'], claim['request_sha256'],
+                 claim['intent_ref'], self.intent['symbol']))
+            self.db.execute("UPDATE api_requests SET state='COMPLETE',output=?,failure_code=NULL WHERE operation=?",
+                (canonical(response, protocol.REVIEW_SCHEMA), operation))
+            return True
+
+        self.coordinator.neuro.recover_pending_review_response = recover
+        # Simulate interruption after the worker's API commit and before the
+        # pending-review journal commit. The resulting COMPLETE is read by
+        # the next tick, using that original non-cancelling recovery branch.
+        with patch.object(pending, '_set_state', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_tick()
+        self.assertEqual(self.claims()[0]['state'], 'NEEDS_REVIEW')
+        self.assertEqual(self.db.execute('SELECT state FROM api_requests').fetchone()['state'], 'COMPLETE')
+        def unavailable():
+            raise ResearchPaused('NEUROBRO_BUSY')
+
+        self.coordinator.neuro.require_key = unavailable
+        self.run_tick()
+        finished = self.claims()[0]
+        self.assertEqual((finished['state'], finished['decision']), ('COMPLETE', 'BATALKAN'))
+        self.assertTrue(json.loads(finished['result'])['decision_not_applied_after_restart'])
+        self.assertEqual((self.coordinator.ask_count, self.coordinator.gateway.cancel_count), (1, 0))
+        self.assertEqual(len(self.claims()), 1)
+
     def test_unknown_cancel_resolves_only_after_native_gateway_confirms_terminal_entry(self):
         self.coordinator.decision = 'BATALKAN'
         self.coordinator.gateway.cancel_error = True

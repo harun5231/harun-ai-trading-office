@@ -699,6 +699,10 @@ def screening_day_rejected_result(coordinator, candidate):
         return False
 
 
+_RECEIVED_DECISION_CLAIMS = ("state='REVIEWING' OR (state='PAUSED' AND decision='TAHAN') "
+    "OR (state='NEEDS_REVIEW' AND decision IS NULL AND source_sha256 IS NULL AND result IS NULL)")
+
+
 def _recover_completed_decisions(coordinator, journal, native, now):
     """Drain completed replies without replaying their browser operations.
 
@@ -707,17 +711,14 @@ def _recover_completed_decisions(coordinator, journal, native, now):
     current-order review may discuss that recorded decision with fresh charts.
     CANCEL_PREPARED ambiguity remains under the original gateway reconciliation.
     """
-    for claim in journal.execute("SELECT * FROM pending_reviews WHERE state='REVIEWING' "
-            "OR (state='PAUSED' AND decision='TAHAN')").fetchall():
+    for claim in journal.execute('SELECT * FROM pending_reviews WHERE ' + _RECEIVED_DECISION_CLAIMS).fetchall():
         api = coordinator.db.execute('SELECT * FROM api_requests WHERE operation=?',
                                     (claim['operation'],)).fetchone()
-        if not api or api['state'] != 'COMPLETE':
+        if not api or api['body_hash'] != claim['request_sha256']:
             continue
-        value = json.loads(api['output'])
-        if (api['body_hash'] != claim['request_sha256']
-                or json.loads(native['neuroapi'].canonical_output(value, REVIEW_SCHEMA)) != value
-                or value.get('decision') not in ('TAHAN', 'BATALKAN')
-                or value.get('order_ref') != claim['intent_ref']):
+        recover = (claim['state'] in ('REVIEWING', 'NEEDS_REVIEW') and api['state'] == 'NEEDS_REVIEW'
+            and api['failure_code'] == 'INVALID_OUTPUT_SCHEMA')
+        if api['state'] != 'COMPLETE' and not recover:
             continue
         current = _intent_row(coordinator.db, claim['intent_id'])
         if current is not None and current['state'] == 'PROTECTION_INCOMPLETE':
@@ -727,6 +728,19 @@ def _recover_completed_decisions(coordinator, journal, native, now):
             and _sha(current['payload']) == claim['intent_ref'])
         row = current if terminal else _matching_intent(coordinator.db, claim)
         intent, _ = _verified_from_store(coordinator.db, row, native)
+        if recover:
+            if not coordinator.neuro.recover_pending_review_response(claim['operation'], claim['request_body'],
+                    claim['request_sha256'], claim['intent_ref'], intent['symbol']):
+                continue
+            api = coordinator.db.execute("SELECT * FROM api_requests WHERE operation=? AND state='COMPLETE'",
+                                        (claim['operation'],)).fetchone()
+            if api is None:
+                continue
+        value = json.loads(api['output'])
+        if (json.loads(native['neuroapi'].canonical_output(value, REVIEW_SCHEMA)) != value
+                or value.get('decision') not in ('TAHAN', 'BATALKAN')
+                or value.get('order_ref') != claim['intent_ref']):
+            continue
         if value['symbol'] != intent['symbol']:
             raise PendingReviewUnavailable('PENDING_REVIEW_DECISION_UNVERIFIED')
         evidence = native['research_provider'].source_evidence(coordinator.db, claim['operation'])
@@ -976,8 +990,7 @@ def review_then_advance(coordinator, account, today):
         with _journal(coordinator.db) as existing:
             phase = 'CHECK_UNRESOLVED_REVIEW'
             if existing is not None and existing.execute(
-                    "SELECT 1 FROM pending_reviews WHERE state='REVIEWING' "
-                    "OR (state='PAUSED' AND decision='TAHAN') LIMIT 1").fetchone():
+                    'SELECT 1 FROM pending_reviews WHERE ' + _RECEIVED_DECISION_CLAIMS + ' LIMIT 1').fetchone():
                 phase = 'RECOVER_COMPLETED'
                 with _journal(coordinator.db, create=True) as recovering:
                     _recover_completed_decisions(coordinator, recovering, native, now)
